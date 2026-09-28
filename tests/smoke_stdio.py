@@ -1,4 +1,4 @@
-"""Optional live MCP smoke check; does not invoke a simulation.
+"""Optional live MCP check: read-only unless PVSYST_SMOKE_RUN_* is set.
 
 Set PVSYST_CLI and PVSYST_WORKSPACE first, then:
     python tests/smoke_stdio.py
@@ -57,6 +57,32 @@ async def main():
                 if result.is_error:
                     raise RuntimeError("MCP simulation reported an error")
                 print("MCP simulation: OK")
+            batch = os.environ.get("PVSYST_SMOKE_RUN_BATCH_PARAMS")
+            batch_rvt = os.environ.get("PVSYST_SMOKE_RUN_BATCH_RVT")
+            if all((project, variant, batch, batch_rvt)):
+                result = await session.call_tool("pvsyst_run_simulation", {
+                    "project": project, "variant": variant,
+                    "batch_params_name": batch, "batch_rvt_name": batch_rvt,
+                })
+                if result.is_error:
+                    raise RuntimeError("MCP batch simulation reported an error")
+                print("MCP batch simulation: OK")
+            batch_summary = os.environ.get("PVSYST_SMOKE_BATCH_SUMMARY")
+            if batch_summary:
+                result = await session.call_tool("pvsyst_read_batch_results", {
+                    "summary_name": batch_summary,
+                })
+                if result.is_error:
+                    raise RuntimeError("MCP batch summary reported an error")
+                print("MCP batch summary: OK")
+            batch_hourly = os.environ.get("PVSYST_SMOKE_BATCH_HOURLY")
+            if batch_hourly:
+                result = await session.call_tool("pvsyst_read_results", {
+                    "csv_name": batch_hourly, "folder": "UserHourly",
+                })
+                if result.is_error:
+                    raise RuntimeError("MCP batch hourly CSV reported an error")
+                print("MCP batch hourly CSV: OK")
 
 
 if __name__ == "__main__":
