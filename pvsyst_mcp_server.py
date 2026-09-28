@@ -1,17 +1,18 @@
-"""Local stdio MCP bridge to PVsystCLI 8.0.6 (MCP Python SDK 2.x).
+"""Workspace-scoped stdio MCP bridge for PVsystCLI 8.0/8.1 (SDK 2.x).
 
-Configure PVSYST_CLI and PVSYST_WORKSPACE in your MCP client's server env.
-The server exposes only typed, workspace-scoped operations; it never exposes
-arbitrary CLI commands or the machine's Host ID.
+Set PVSYST_CLI and PVSYST_WORKSPACE in the client's MCP server environment.
+Only supported CLI options discovered from the installed binary are used.
 """
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from pvsyst_cli import PVsystCLI, VAR_GROUPS, build_sfi, parse_result_csv
+from pvsyst_cli import (PVsystCLI, VAR_GROUPS, build_monthly_weather_csv,
+                        build_sfi, iter_result_csv)
 
 mcp = MCPServer("pvsyst-cli")
 _cli: PVsystCLI | None = None
@@ -25,7 +26,7 @@ def cli() -> PVsystCLI:
 
 
 def workspace_path(folder: str, filename: str, extension: str) -> Path:
-    """Keep tool-controlled file access inside one named workspace directory."""
+    """Allow a filename only within a named directory of the configured workspace."""
     if (not filename or filename in (".", "..") or Path(filename).name != filename
             or "\\" in filename or "/" in filename
             or not filename.lower().endswith(extension)):
@@ -40,29 +41,56 @@ def workspace_path(folder: str, filename: str, extension: str) -> Path:
     return target
 
 
+def optional_path(folder: str, filename: str, extension: str) -> Path | None:
+    return workspace_path(folder, filename, extension) if filename else None
+
+
+@mcp.tool()
+def pvsyst_capabilities() -> dict:
+    """List commands and option names actually available in the installed CLI."""
+    return {"version": cli().version(), "commands": cli().capabilities()}
+
+
 @mcp.tool()
 def pvsyst_license_info() -> dict:
-    """Read PVsystCLI license status and remaining quota, without Host ID."""
+    """Read CLI license state and quota without returning keys or Host ID."""
     return cli().license_info()
 
 
 @mcp.tool()
+def pvsyst_license_activate(key: str, confirm: bool = False) -> dict:
+    """Activate a CLI license using a supplied key. Requires confirm=true;
+    MCP clients may retain tool arguments, so handle license keys accordingly."""
+    return cli().license_activate(key, confirm=confirm)
+
+
+@mcp.tool()
+def pvsyst_license_deactivate(customer_id: str, confirm: bool = False) -> dict:
+    """Deactivate this computer's CLI license. Requires confirm=true."""
+    return cli().license_deactivate(customer_id, confirm=confirm)
+
+
+@mcp.tool()
+def pvsyst_license_sync(confirm: bool = False) -> dict:
+    """Synchronize CLI license information with its server. Requires confirm=true."""
+    return cli().license_sync(confirm=confirm)
+
+
+@mcp.tool()
 def pvsyst_list_projects() -> list[str]:
-    """List existing PRJ filenames in the configured PVsyst workspace."""
+    """List PRJ filenames in the configured workspace."""
     return cli().list_projects()
 
 
 @mcp.tool()
 def pvsyst_list_variants(project: str) -> list[str]:
-    """List existing variant IDs for an existing PRJ filename."""
+    """List variant IDs belonging to an existing project."""
     return cli().list_variants(project)
 
 
 @mcp.tool()
 def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
-    """Create a new hourly SFI in workspace/Models; select a verified group
-    (energy, inverter_losses, all_common) or comma-separated vi* identifiers.
-    This operation does not consume a simulation execution."""
+    """Create a NEW hourly export definition in workspace/Models."""
     target = workspace_path("Models", filename, ".sfi")
     names = (VAR_GROUPS[variables] if variables in VAR_GROUPS
              else [part.strip() for part in variables.split(",")])
@@ -71,52 +99,145 @@ def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
 
 
 @mcp.tool()
-def pvsyst_run_simulation(project: str, variant: str, sfi_name: str,
-                          csv_name: str, pdf_name: str = "") -> dict:
-    """Run a pre-existing project variant with a workspace/Models SFI.
-    Write a NEW CSV (and optionally PDF) to workspace/Results. A successful
-    run consumes the CLI license's simulation execution quota."""
-    sfi = workspace_path("Models", sfi_name, ".sfi")
-    out_csv = workspace_path("Results", csv_name, ".csv")
-    report_pdf = workspace_path("Results", pdf_name, ".pdf") if pdf_name else None
-    if not sfi.is_file():
-        raise ValueError("SFI does not exist; create it first")
-    return cli().run_simulation(project, variant, sfi=sfi, out_csv=out_csv,
-                                report_pdf=report_pdf)
+def pvsyst_build_monthly_weather(filename: str, global_h: list[float],
+                                 temperature: list[float],
+                                 diffuse_h: list[float] | None = None,
+                                 wind_velocity: list[float] | None = None) -> dict:
+    """Create the 14-row monthly weather CSV for create-site in workspace/Meteo."""
+    target = workspace_path("Meteo", filename, ".csv")
+    build_monthly_weather_csv(target, global_h, temperature, diffuse_h, wind_velocity)
+    return {"weather_csv": str(target)}
+
+
+@mcp.tool()
+def pvsyst_create_site(site_name: str, latitude: float, longitude: float,
+                       weather_csv_name: str, sit_name: str,
+                       altitude: float | None = None, timezone: float | None = None,
+                       country_code: str = "", region: str = "", source: str = "",
+                       albedo: float | None = None, log_level: int | None = None) -> dict:
+    """Use CLI create-site to create a NEW SIT in workspace/Sites (8.1+).
+    Stage or generate monthly weather CSV in workspace/Meteo. If altitude,
+    timezone or country are omitted, the CLI may query an external service."""
+    weather = workspace_path("Meteo", weather_csv_name, ".csv")
+    target = workspace_path("Sites", sit_name, ".sit")
+    output = cli().create_site(site_name, latitude, longitude, weather, target,
+                               altitude=altitude, timezone=timezone,
+                               country_code=country_code, region=region, source=source,
+                               albedo=albedo, log_level=log_level)
+    return {"site": str(output)}
+
+
+@mcp.tool()
+def pvsyst_run_simulation(project: str, variant: str,
+                          sfi_name: str = "", csv_name: str = "", pdf_name: str = "",
+                          met_name: str = "", rvt_name: str = "",
+                          params_name: str = "", batch_params_name: str = "",
+                          batch_rvt_name: str = "", site_name: str = "",
+                          synthetic_weather: bool = False,
+                          time_step: str = "", start_date: str = "", end_date: str = "",
+                          report_language: str = "", report_pages: str = "",
+                          recompute_shading: bool | None = None,
+                          log_level: int | None = None) -> dict:
+    """Run an existing project/variant. Results go to workspace/Results.
+    Optional input names refer to workspace/Models (SFI,RVT), Meteo (MET),
+    UserData (advanced DAT), UserBatch (batch CSV/RVT), or Sites (SIT).
+    8.0 lacks site, time_step and batch options; unsupported features fail
+    before simulation. Each run can consume a license execution."""
+    license_state = cli().license_info()
+    if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
+        raise ValueError("PVsystCLI reports no remaining trial executions")
+    return cli().run_simulation(
+        project, variant,
+        sfi=optional_path("Models", sfi_name, ".sfi"),
+        out_csv=optional_path("Results", csv_name, ".csv"),
+        report_pdf=optional_path("Results", pdf_name, ".pdf"),
+        met=optional_path("Meteo", met_name, ".met"),
+        rvt=optional_path("Models", rvt_name, ".rvt"),
+        params=optional_path("UserData", params_name, ".dat"),
+        batch_params=optional_path("UserBatch", batch_params_name, ".csv"),
+        batch_rvt=optional_path("UserBatch", batch_rvt_name, ".rvt"),
+        site=optional_path("Sites", site_name, ".sit"),
+        synthetic_weather=synthetic_weather, time_step=time_step or None,
+        start_date=start_date or None, end_date=end_date or None,
+        report_language=report_language or None,
+        report_pages=[p.strip() for p in report_pages.split(",")] if report_pages else None,
+        recompute_shading=recompute_shading, log_level=log_level,
+    )
 
 
 @mcp.tool()
 def pvsyst_convert_meteo(csv_name: str, mef_name: str, sit_name: str,
-                         met_name: str, timeshift: int = 0) -> dict:
-    """Convert staged workspace/Meteo CSV+MEF and workspace/Sites SIT into
-    a NEW workspace/Meteo MET file. This may consume a CLI execution."""
+                         met_name: str, timeshift: int = 0,
+                         log_level: int | None = None) -> dict:
+    """Convert a staged CSV + MEF in Meteo and SIT in Sites to a NEW MET."""
     source = workspace_path("Meteo", csv_name, ".csv")
     mef = workspace_path("Meteo", mef_name, ".mef")
     sit = workspace_path("Sites", sit_name, ".sit")
     target = workspace_path("Meteo", met_name, ".met")
-    result = cli().convert_meteo(source, mef, sit, target, timeshift)
-    return {"met": str(result)}
+    return {"met": str(cli().convert_meteo(source, mef, sit, target, timeshift,
+                                            log_level=log_level))}
+
+
+@mcp.tool()
+def pvsyst_export_logs() -> dict:
+    """Export CLI diagnostic logs to a ZIP under workspace/Results.
+    The archive may contain private data; only its path is returned."""
+    root = cli().workspace.resolve(strict=True)
+    folder = (root / "Results").resolve()
+    if root not in folder.parents:
+        raise ValueError("Results folder resolves outside the workspace")
+    return {"zip": str(cli().export_logs(folder))}
 
 
 @mcp.tool()
 def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR") -> dict:
-    """Summarize specified columns of a workspace/Results CSV. Numeric `sum`
-    is a sample sum; for hourly kW data its unit is kWh."""
-    target = workspace_path("Results", csv_name, ".csv")
-    headers, rows = parse_result_csv(target)
+    """Summarize SFI hourly numeric columns in workspace/Results."""
     requested = [column.strip() for column in columns.split(",") if column.strip()]
-    if not requested or any(column not in headers[1:] for column in requested):
-        raise ValueError(f"Choose columns from {headers[1:]}")
-    summary = {}
-    for column in requested:
-        values = [row[headers.index(column)] for row in rows]
-        import math
-        finite = [value for value in values if math.isfinite(value)]
-        if finite:
-            summary[column] = {"samples": len(finite), "sum": sum(finite),
-                               "mean": sum(finite) / len(finite), "max": max(finite)}
-    return {"columns": headers, "rows": len(rows), "first": str(rows[0][0]),
-            "last": str(rows[-1][0]), "summary": summary}
+    indices = None
+    stats = {name: {"samples": 0, "sum": 0.0, "max": -math.inf} for name in requested}
+    count = 0
+    first = last = None
+    for headers, row in iter_result_csv(workspace_path("Results", csv_name, ".csv")):
+        if indices is None:
+            if not requested or any(name not in headers[1:] for name in requested):
+                raise ValueError(f"Choose columns from {headers[1:]}")
+            indices = {name: headers.index(name) for name in requested}
+            first = str(row[0])
+        count += 1
+        last = str(row[0])
+        for name, index in indices.items():
+            value = row[index]
+            if math.isfinite(value):
+                stats[name]["samples"] += 1
+                stats[name]["sum"] += value
+                stats[name]["max"] = max(stats[name]["max"], value)
+    summary = {name: {**state, "mean": state["sum"] / state["samples"]}
+               for name, state in stats.items() if state["samples"]}
+    return {"columns": headers, "rows": count, "first": first,
+            "last": last, "summary": summary}
+
+
+@mcp.tool()
+def pvsyst_read_rows(csv_name: str, columns: str = "E_Grid,PR",
+                     offset: int = 0, limit: int = 100) -> dict:
+    """Read a bounded page of hourly results without returning an entire year."""
+    if offset < 0 or not 1 <= limit <= 500:
+        raise ValueError("Offset must be >= 0 and limit between 1 and 500")
+    selected = [s.strip() for s in columns.split(",") if s.strip()]
+    indices = None
+    total = 0
+    page: list[list] = []
+    for headers, row in iter_result_csv(workspace_path("Results", csv_name, ".csv")):
+        if indices is None:
+            if not selected or any(name not in headers[1:] for name in selected):
+                raise ValueError(f"Choose columns from {headers[1:]}")
+            indices = [headers.index(name) for name in selected]
+        if offset <= total < offset + limit:
+            page.append([str(row[0]), *(row[i] if math.isfinite(row[i]) else None
+                                        for i in indices)])
+        total += 1
+    return {"total": total, "offset": offset, "columns": ["date", *selected],
+            "rows": page}
 
 
 if __name__ == "__main__":

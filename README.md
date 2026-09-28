@@ -1,26 +1,39 @@
 # PVsyst CLI MCP
 
-Unofficial, local-only [Model Context Protocol](https://modelcontextprotocol.io/) server and dependency-free Python adapter for **PVsystCLI 8.0.6 on Windows**. It wraps the vendor's installed CLI; it does not bundle PVsyst, projects, weather data, license material, or simulation output.
+Unofficial local [Model Context Protocol](https://modelcontextprotocol.io/) server and Python adapter for the **installed Windows PVsystCLI**. Tested with 8.0.6 and 8.1.6. The server wraps the vendor CLI; this repository does not include PVsyst, projects, license material, weather data or simulation output.
 
-## Requirements
+## Scope and version differences
 
-- Windows, Python 3.10+, PVsystCLI 8.0.6 and a configured PVsyst workspace.
-- A PVsystCLI license or an available evaluation quota. **The GUI and CLI have separate licensing states**; check `pvsyst_license_info` before running simulations.
-- An existing `.PRJ` project and `.VC*` variant in the workspace. The CLI does not create projects.
+PVsystCLI automates simulations of **existing** projects/variants; editing an entire project, shading scene, component database or GUI is outside the official CLI interface. This integration does not claim to automate the whole PVsyst desktop UI.
 
-The `run-simulation` and `convert-meteo` flags used here were checked against `PVsystCLI.exe help <command>` for 8.0.6. Newer CLI versions may differ. A compatible SFI is needed for numeric result columns; without one, the generated CSV can contain only dates.
+The adapter reads `PVsystCLI.exe help` for command/option availability. Unsupported features fail **before** a simulation consumes an execution:
 
-## Install
+| Feature | 8.0.6 | 8.1.6 |
+|---|---|---|
+| Existing project simulation, CSV/PDF, date range, language, pages | Yes | Yes |
+| Weather CSV to MET, license commands, logs export | Yes | Yes |
+| Batch params/RVT, shading recomputation | No | Yes |
+| Site creation, site override, synthetic weather generation | No | Yes |
+| Hour/subhour option | No | Yes |
+
+Options-file indirection (`-cof`) and overwriting the CLI's default CSV (`-odc`) are deliberately omitted from the MCP tools: all supported functional options are named explicitly and output filenames must be new. A site file is not a full project. Features not present in the installed executable's own help remain unavailable regardless of the latest online documentation.
+
+## Installation
+
+- Windows and Python 3.10+; install your own PVsystCLI and configure a workspace.
+- An existing `.PRJ` project plus `.VC*` variant for simulation.
+- Check **the CLI's** license/quota with `pvsyst_license_info` before running jobs. GUI and CLI license states can differ.
 
 ```powershell
 cd path\to\pvsyst-cli-mcp
 py -m pip install -r requirements.txt
-$env:PVSYST_CLI = 'C:\Program Files\PVsyst8.0.6\PVsystCLI.exe'
-$env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.0_Data'
+$env:PVSYST_CLI = 'C:\Program Files\PVsyst8.1.6\PVsystCLI.exe'
+$env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 py -m unittest discover -s tests -v
+py tests\smoke_stdio.py   # real CLI: capability, license, project queries only
 ```
 
-Configure a local stdio MCP client with absolute paths (substitute your real paths and Python executable):
+Configure a local stdio MCP client, substituting the Python executable and paths on your machine:
 
 ```json
 {
@@ -29,55 +42,76 @@ Configure a local stdio MCP client with absolute paths (substitute your real pat
       "command": "C:\\path\\to\\python.exe",
       "args": ["C:\\path\\to\\pvsyst-cli-mcp\\pvsyst_mcp_server.py"],
       "env": {
-        "PVSYST_CLI": "C:\\Program Files\\PVsyst8.0.6\\PVsystCLI.exe",
-        "PVSYST_WORKSPACE": "C:\\path\\to\\PVsyst8.0_Data"
+        "PVSYST_CLI": "C:\\Program Files\\PVsyst8.1.6\\PVsystCLI.exe",
+        "PVSYST_WORKSPACE": "C:\\path\\to\\PVsyst8.1_Data"
       }
     }
   }
 }
 ```
 
-Restart the MCP client after editing its configuration. This server uses the `mcp` Python SDK 2.x and exposes **seven typed tools**:
+Restart the client after editing its MCP configuration. The server requires Python MCP SDK 2.x (`requirements.txt`).
 
-| Tool | Action |
+## MCP tools
+
+| Tool | Function |
 |---|---|
-| `pvsyst_license_info` | Read CLI status and remaining quota; no Host ID in the response |
-| `pvsyst_list_projects` | List workspace projects |
-| `pvsyst_list_variants` | List a project's variant IDs |
-| `pvsyst_build_sfi` | Create a new hourly SFI in `workspace/Models` |
-| `pvsyst_run_simulation` | Run an existing project/variant; write a new CSV/PDF in `workspace/Results` |
-| `pvsyst_convert_meteo` | Convert staged CSV + MEF + SIT into a new MET file |
-| `pvsyst_read_results` | Summarize numeric result columns from `workspace/Results` |
+| `pvsyst_capabilities` | Version and commands/options detected from the installed executable |
+| `pvsyst_license_info` | License state and trial quota; no key or Host ID |
+| `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | License management; all require `confirm=true` |
+| `pvsyst_list_projects`, `pvsyst_list_variants` | Workspace inventory |
+| `pvsyst_build_sfi` | New hourly SFI export definition |
+| `pvsyst_build_monthly_weather` | New 14-row monthly CSV for site creation |
+| `pvsyst_create_site` | New SIT from monthly weather and coordinates (8.1+) |
+| `pvsyst_run_simulation` | Simulation with available CLI options and new CSV/PDF outputs |
+| `pvsyst_convert_meteo` | Weather CSV + MEF + SIT into a new MET |
+| `pvsyst_export_logs` | Export diagnostic ZIP (may contain private information) |
+| `pvsyst_read_results`, `pvsyst_read_rows` | Numeric summaries or a page of at most 500 hourly rows |
 
-MCP file tools accept **filenames, not arbitrary filesystem paths**. Stage weather CSV and MEF files under `workspace/Meteo`, and SIT under `workspace/Sites`. Results go under `workspace/Results`, SFI definitions under `workspace/Models`. The MCP server does not expose an unrestricted shell or CLI escape hatch. It rejects existing output files rather than overwriting them.
+All MCP file arguments are **filenames, never unrestricted paths**. Inputs must be staged under the configured workspace:
 
-## Example with Python
+| File | Directory |
+|---|---|
+| SFI, input RVT | `Models` |
+| Weather CSV, MEF, MET, monthly weather CSV | `Meteo` |
+| SIT | `Sites` |
+|---|---|
+| Advanced parameters `.dat` | `UserData` |
+|---|---|
+| Batch parameters `.csv`, batch RVT | `UserBatch` |
+|---|---|
+| Simulation CSV/PDF, diagnostic ZIP | `Results` |
+
+Place an existing SFI under `Models`, or call `pvsyst_build_sfi` first. A CSV with no SFI/RVT export definition may contain dates only. Generated output files are never overwritten. For `create-site`, supply altitude, timezone and country code to avoid its optional online location lookups. License mutation tool arguments can be retained by the MCP client; do not echo keys in logs. When `lic-info` provides no usable status or expiration, `pvsyst_license_info` reports `UNSPECIFIED` rather than assuming the license is active.
+
+## Python example
 
 ```python
-from pathlib import Path
 from pvsyst_cli import PVsystCLI, build_sfi, summarize
 
-cli = PVsystCLI(cli_path=r"C:\Program Files\PVsyst8.0.6\PVsystCLI.exe",
-                workspace=r"C:\path\to\PVsyst8.0_Data")
+cli = PVsystCLI(cli_path=r"C:\Program Files\PVsyst8.1.6\PVsystCLI.exe",
+                workspace=r"C:\path\to\PVsyst8.1_Data")
+print(cli.capabilities()["run-simulation"])
 print(cli.license_info())
-print(cli.list_projects())
 
-# Replace project and variant with ones present in your own workspace.
 sfi = build_sfi(cli.workspace / "Models" / "energy.sfi", "energy")
-result = cli.run_simulation("MY_PROJECT.PRJ", "VC0", sfi=sfi,
-                            out_csv=cli.workspace / "Results" / "run01.csv")
-print(result)
-print(summarize(result["csv"], "E_Grid"))
+result = cli.run_simulation(
+    "MY_PROJECT.PRJ", "VC0", sfi=sfi,
+    out_csv=cli.workspace / "Results" / "run01.csv",
+    start_date="1990.01.01", end_date="1990.01.02",
+    report_pdf=cli.workspace / "Results" / "report01.pdf",
+    report_pages=["cover", "summary", "results"],
+)
+print(result, summarize(result["csv"], "E_Grid"))
 ```
 
-`sum` in the summary is the sum of samples. For an **hourly** CSV whose `E_Grid` unit is kW, it corresponds to kWh; check units and time step before interpreting other outputs. SFI output columns and variables vary by version and project. Predefined groups use identifiers observed in the official 8.0.6 example (`viGlobInc`, `viE_Grid`, `viPR`, etc.); custom `vi*` identifiers are accepted without implying that all are supported.
+`sum` is a sum of numeric samples, not automatically an energy unit. For *hourly* `E_Grid` expressed in kW, it corresponds to kWh. Interpret other variables and subhour outputs using their own units and time step. The 8.1.6 batch output format and subhour result parsing have not been verified with a real batch/subhour fixture.
 
-## Checks performed
+## Validation
 
-On a local 8.0.6 installation, an existing demo project completed a full-year hourly run in roughly 8-11 seconds. Both the vendor's SFI and an SFI generated by this adapter yielded 8760 rows with numeric `GlobInc`, `E_Grid`, and `PR` columns. CSV parsing and license-status queries were exercised; the included tests use mocks and temporary files, so they do not consume simulation quota. Actual behavior of `convert-meteo`, PDF generation, or other PVsystCLI releases requires separate validation.
+- 8.0.6: existing demo project full-year hourly simulation; generated SFI with 8760 numeric rows.
+- 8.1.6: full-year simulation with 8760 rows, date-limited simulation with 48 rows and PDF report, official `create-site` generated a SIT, vendor sample CSV+MEF+SIT converted to MET, and a short simulation/results query through a real MCP stdio client.
+- Offline tests mock CLI calls and use temporary files, so they do not consume license executions. An optional live protocol check is provided in `tests/smoke_stdio.py`.
+- License status is reported exactly as inferred from CLI output; successful simulation is not evidence of a particular licensing tier.
 
-Official references: [PVsystCLI product](https://www.pvsyst.com/en/products/pvsyst-cli/), [command reference](https://www.pvsyst.com/help-cli/reference/index.html), [simulation use cases](https://www.pvsyst.com/help-cli/use-cases/simulation.html).
-
-## License
-
-The source code in this repository is licensed under MIT. PVsyst and PVsystCLI are separate proprietary products; this integration is not affiliated with or endorsed by PVsyst SA.
+Official reference: [PVsystCLI command reference](https://www.pvsyst.com/help-cli/reference/index.html) and [release notes](https://www.pvsyst.com/help-cli/release-notes.html). This source code is MIT licensed and is not affiliated with or endorsed by PVsyst SA.
