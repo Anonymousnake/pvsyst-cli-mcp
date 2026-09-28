@@ -12,7 +12,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 
 from pvsyst_cli import (PVsystCLI, VAR_GROUPS, build_monthly_weather_csv,
-                        build_sfi, iter_result_csv)
+                        build_sfi, iter_result_csv, parse_batch_results, result_units)
 
 mcp = MCPServer("pvsyst-cli")
 _cli: PVsystCLI | None = None
@@ -43,6 +43,12 @@ def workspace_path(folder: str, filename: str, extension: str) -> Path:
 
 def optional_path(folder: str, filename: str, extension: str) -> Path | None:
     return workspace_path(folder, filename, extension) if filename else None
+
+
+def result_path(folder: str, csv_name: str) -> Path:
+    if folder not in ("Results", "UserHourly"):
+        raise ValueError("Results folder must be Results or UserHourly")
+    return workspace_path(folder, csv_name, ".csv")
 
 
 @mcp.tool()
@@ -138,11 +144,12 @@ def pvsyst_run_simulation(project: str, variant: str,
                           report_language: str = "", report_pages: str = "",
                           recompute_shading: bool | None = None,
                           log_level: int | None = None) -> dict:
-    """Run an existing project/variant. Results go to workspace/Results.
-    Optional input names refer to workspace/Models (SFI,RVT), Meteo (MET),
-    UserData (advanced DAT), UserBatch (batch CSV/RVT), or Sites (SIT).
-    8.0 lacks site, time_step and batch options; unsupported features fail
-    before simulation. Each run can consume a license execution."""
+    """Run an existing project/variant. Regular CSV/PDF go to Results.
+    For batch_params_name, leave csv_name/pdf_name empty: the CLI generates a
+    UserBatch summary plus optional UserHourly scenario files automatically.
+    Optional inputs live in Models (SFI,RVT), Meteo (MET), UserData (DAT),
+    UserBatch (batch CSV/RVT), or Sites (SIT). Unsupported options fail early.
+    Each run can consume a license execution."""
     license_state = cli().license_info()
     if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
         raise ValueError("PVsystCLI reports no remaining trial executions")
@@ -190,19 +197,30 @@ def pvsyst_export_logs() -> dict:
 
 
 @mcp.tool()
-def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR") -> dict:
-    """Summarize SFI hourly numeric columns in workspace/Results."""
+def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR",
+                        folder: str = "Results") -> dict:
+    """Summarize hourly or subhour SFI rows in Results or UserHourly.
+    Energy is integrated only for a regular cadence and E_Grid/EArray power."""
+    path = result_path(folder, csv_name)
     requested = [column.strip() for column in columns.split(",") if column.strip()]
     indices = None
     stats = {name: {"samples": 0, "sum": 0.0, "max": -math.inf} for name in requested}
     count = 0
-    first = last = None
-    for headers, row in iter_result_csv(workspace_path("Results", csv_name, ".csv")):
+    first = last = previous = step_minutes = None
+    regular = True
+    for headers, row in iter_result_csv(path):
         if indices is None:
             if not requested or any(name not in headers[1:] for name in requested):
                 raise ValueError(f"Choose columns from {headers[1:]}")
             indices = {name: headers.index(name) for name in requested}
             first = str(row[0])
+        if previous is not None:
+            delta = (row[0] - previous).total_seconds() / 60
+            if delta <= 0 or (step_minutes is not None and delta != step_minutes):
+                regular = False
+            elif step_minutes is None:
+                step_minutes = delta
+        previous = row[0]
         count += 1
         last = str(row[0])
         for name, index in indices.items():
@@ -211,23 +229,34 @@ def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR") -> dict:
                 stats[name]["samples"] += 1
                 stats[name]["sum"] += value
                 stats[name]["max"] = max(stats[name]["max"], value)
-    summary = {name: {**state, "mean": state["sum"] / state["samples"]}
-               for name, state in stats.items() if state["samples"]}
-    return {"columns": headers, "rows": count, "first": first,
-            "last": last, "summary": summary}
+    step = step_minutes if regular else None
+    units = result_units(path)
+    summary = {}
+    for name, state in stats.items():
+        if state["samples"]:
+            unit = units.get(name, "")
+            energy = None
+            if name in ("E_Grid", "EArray") and step and unit in ("W", "kW"):
+                energy = state["sum"] * step / 60 * (0.001 if unit == "W" else 1)
+            summary[name] = {**state, "mean": state["sum"] / state["samples"],
+                             "unit": unit, "energy_kwh": energy}
+    return {"columns": headers, "rows": count, "first": first, "last": last,
+            "step_minutes": step, "summary": summary}
 
 
 @mcp.tool()
 def pvsyst_read_rows(csv_name: str, columns: str = "E_Grid,PR",
-                     offset: int = 0, limit: int = 100) -> dict:
-    """Read a bounded page of hourly results without returning an entire year."""
+                     offset: int = 0, limit: int = 100,
+                     folder: str = "Results") -> dict:
+    """Read a bounded page from Results or batch UserHourly CSVs."""
     if offset < 0 or not 1 <= limit <= 500:
         raise ValueError("Offset must be >= 0 and limit between 1 and 500")
     selected = [s.strip() for s in columns.split(",") if s.strip()]
     indices = None
     total = 0
     page: list[list] = []
-    for headers, row in iter_result_csv(workspace_path("Results", csv_name, ".csv")):
+    path = result_path(folder, csv_name)
+    for headers, row in iter_result_csv(path):
         if indices is None:
             if not selected or any(name not in headers[1:] for name in selected):
                 raise ValueError(f"Choose columns from {headers[1:]}")
@@ -236,8 +265,23 @@ def pvsyst_read_rows(csv_name: str, columns: str = "E_Grid,PR",
             page.append([str(row[0]), *(row[i] if math.isfinite(row[i]) else None
                                         for i in indices)])
         total += 1
+    units = result_units(path)
     return {"total": total, "offset": offset, "columns": ["date", *selected],
+            "units": {name: units.get(name, "") for name in selected},
             "rows": page}
+
+
+@mcp.tool()
+def pvsyst_read_batch_results(summary_name: str,
+                              columns: str = "E_Grid,PR") -> dict:
+    """Read SIM_* scenario values from a UserBatch/*Results.CSV summary."""
+    if not summary_name.lower().endswith("results.csv"):
+        raise ValueError("Expected a batch Results.CSV filename")
+    target = workspace_path("UserBatch", summary_name, ".csv")
+    requested = tuple(s.strip() for s in columns.split(",") if s.strip())
+    if not requested:
+        raise ValueError("Select at least one batch result column")
+    return parse_batch_results(target, requested)
 
 
 if __name__ == "__main__":
