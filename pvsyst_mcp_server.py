@@ -45,6 +45,15 @@ def optional_path(folder: str, filename: str, extension: str) -> Path | None:
     return workspace_path(folder, filename, extension) if filename else None
 
 
+def simulation_csv_path(filename: str) -> Path | None:
+    """Accept a bare single-run output name while preserving workspace checks."""
+    if not filename:
+        return None
+    if filename not in (".", "..") and not filename.endswith(".") and not Path(filename).suffix:
+        filename += ".csv"
+    return workspace_path("Results", filename, ".csv")
+
+
 def result_path(folder: str, csv_name: str) -> Path:
     if folder not in ("Results", "UserHourly"):
         raise ValueError("Results folder must be Results or UserHourly")
@@ -145,8 +154,10 @@ def pvsyst_run_simulation(project: str, variant: str,
                           recompute_shading: bool | None = None,
                           log_level: int | None = None) -> dict:
     """Run an existing project/variant. Regular CSV/PDF go to Results.
-    For batch_params_name, leave csv_name/pdf_name empty: the CLI generates a
-    UserBatch summary plus optional UserHourly scenario files automatically.
+    For a single run, csv_name accepts a bare filename (e.g. run01) or a .csv
+    filename (run01.csv); both create Results/run01.csv. Existing outputs are
+    never overwritten. For batch_params_name, leave csv_name/pdf_name empty:
+    the CLI generates UserBatch/UserHourly outputs automatically.
     Optional inputs live in Models (SFI,RVT), Meteo (MET), UserData (DAT),
     UserBatch (batch CSV/RVT), or Sites (SIT). Unsupported options fail early.
     Each run can consume a license execution."""
@@ -156,7 +167,7 @@ def pvsyst_run_simulation(project: str, variant: str,
     return cli().run_simulation(
         project, variant,
         sfi=optional_path("Models", sfi_name, ".sfi"),
-        out_csv=optional_path("Results", csv_name, ".csv"),
+        out_csv=simulation_csv_path(csv_name),
         report_pdf=optional_path("Results", pdf_name, ".pdf"),
         met=optional_path("Meteo", met_name, ".met"),
         rvt=optional_path("Models", rvt_name, ".rvt"),
