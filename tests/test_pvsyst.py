@@ -144,6 +144,8 @@ class PVsystTests(unittest.TestCase):
         self.assertIn("pvsyst_read_batch_results", names)
         self.assertIn("pvsyst_create_site", names)
         self.assertIn("pvsyst_read_rows", names)
+        simulation = next(tool for tool in tools if tool.name == "pvsyst_run_simulation")
+        self.assertIn("bare filename", simulation.description)
         self.assertNotIn("pvsyst_raw", names)
         self.assertEqual(server.pvsyst_list_projects(), ["Example.PRJ"])
         with self.assertRaises(ValueError):
@@ -152,6 +154,40 @@ class PVsystTests(unittest.TestCase):
             server.workspace_path("Results", "../secret.csv", ".csv")
         with self.assertRaises(ValueError):
             server.workspace_path("Results", "C:\\secret.csv", ".csv")
+
+    def test_mcp_single_run_bare_csv_name_and_no_overwrite(self):
+        server._cli = self.client
+        target = self.workspace / "Results" / "ans_btr_curve1.csv"
+
+        def run(*args):
+            self.assertIn(f"-ocf:{target}", args)
+            target.write_text(CSV_TEXT, encoding="utf-8")
+            return subprocess.CompletedProcess([], 0, "Simulation done in 0min 2sec", "")
+
+        with patch.object(self.client, "license_info", return_value={"status": "UNSPECIFIED"}):
+            with patch.object(self.client, "_run", side_effect=run) as command:
+                result = server.pvsyst_run_simulation(
+                    "Example.PRJ", "VC0", sfi_name="demo.sfi",
+                    csv_name="ans_btr_curve1")
+                self.assertEqual(result["csv"], str(target))
+                with self.assertRaisesRegex(ValueError, "Output must be a new"):
+                    server.pvsyst_run_simulation(
+                        "Example.PRJ", "VC0", sfi_name="demo.sfi",
+                        csv_name="ans_btr_curve1.csv")
+                command.assert_called_once()
+
+    def test_mcp_single_run_csv_name_validation(self):
+        server._cli = self.client
+        target = self.workspace / "Results"
+        self.assertEqual(server.simulation_csv_path("run01"), target / "run01.csv")
+        self.assertEqual(server.simulation_csv_path("run01.CSV"), target / "run01.CSV")
+        self.assertIsNone(server.simulation_csv_path(""))
+        for name in ("run01.pdf", "run01.", ".", "..", "../escape", "..\\escape",
+                     "C:\\escape", "/escape", "../escape.csv", "..\\escape.csv"):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    server.simulation_csv_path(name)
+        self.assertFalse((self.workspace / "escape.csv").exists())
 
     def test_old_cli_rejects_new_options_before_launch(self):
         with patch.object(self.client, "_run") as command:
