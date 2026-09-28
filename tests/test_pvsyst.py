@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
 import tempfile
@@ -11,7 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pvsyst_cli import (PVsystCLI, PVsystError, build_monthly_weather_csv,
-                        build_sfi, parse_result_csv, summarize)
+                        build_sfi, parse_batch_results, parse_result_csv,
+                        result_units, summarize)
 import pvsyst_mcp_server as server
 
 CSV_TEXT = """PVSYST 8.0.6
@@ -138,7 +140,8 @@ class PVsystTests(unittest.TestCase):
         server._cli = self.client
         tools = asyncio.run(server.mcp.list_tools())
         names = {tool.name for tool in tools}
-        self.assertEqual(len(names), 15)
+        self.assertEqual(len(names), 16)
+        self.assertIn("pvsyst_read_batch_results", names)
         self.assertIn("pvsyst_create_site", names)
         self.assertIn("pvsyst_read_rows", names)
         self.assertNotIn("pvsyst_raw", names)
@@ -182,14 +185,10 @@ class PVsystTests(unittest.TestCase):
         ).replace(" --", "\n --")
         site = self.workspace / "Sites" / "place.sit"
         site.write_text("site", encoding="utf-8")
-        batch = self.workspace / "UserBatch" / "variants.csv"
-        batch.parent.mkdir()
-        batch.write_text("batch", encoding="utf-8")
         target = self.workspace / "Results" / "new.csv"
 
         def run(*args):
             self.assertIn(f"-s:{site}", args)
-            self.assertIn(f"-bpf:{batch}", args)
             self.assertIn("-swg", args)
             self.assertIn("-ts:hour", args)
             self.assertIn("-rst:0", args)
@@ -202,9 +201,137 @@ class PVsystTests(unittest.TestCase):
             response = self.client.run_simulation(
                 "Example.PRJ", "VC0", sfi=self.sfi, out_csv=target,
                 site=site, synthetic_weather=True, time_step="hour",
-                batch_params=batch, recompute_shading=False,
+                recompute_shading=False,
                 start_date="1990.01.01", end_date="1990.01.02")
         self.assertEqual(response["seconds"], 2)
+
+    def test_batch_auto_outputs_and_summary_parsing(self):
+        self.client._help_cache["run-simulation"] += "\n --batch-params-file|-bpf:\n --batch-rvt-file|-brf:"
+        batch_dir = self.workspace / "UserBatch"
+        hourly_dir = self.workspace / "UserHourly"
+        batch_dir.mkdir()
+        hourly_dir.mkdir()
+        batch = batch_dir / "batch_params.CSV"
+        batch.write_text("Ident;Create hourly\nSIM_1;one.CSV\nSIM_2;two.CSV\n",
+                         encoding="utf-8")
+        rvt = batch_dir / "vars.RVT"
+        rvt.write_text("ResultVars=E_Grid;PR", encoding="utf-8")
+        summary = batch_dir / "batch_Results.CSV"
+
+        def run(*args):
+            self.assertIn(f"-bpf:{batch}", args)
+            self.assertIn(f"-brf:{rvt}", args)
+            self.assertFalse(any(arg.startswith("-ocf:") for arg in args))
+            summary.write_bytes(("Ident;Create hourly;Error;E_Grid;PR\n"
+                                 "SIM_1;one.CSV;;12;0.7\nSIM_2;two.CSV;;13;0.8\n"
+                                 "Note;Caf\xe9\n").encode("cp1252"))
+            for name in ("one.CSV", "two.CSV"):
+                (hourly_dir / name).write_text(CSV_TEXT, encoding="utf-8")
+            return subprocess.CompletedProcess([], 0, "Simulation done in 0min 2sec", "")
+
+        with patch.object(self.client, "_run", side_effect=run) as command:
+            result = self.client.run_simulation("Example.PRJ", "VC0",
+                                                batch_params=batch, batch_rvt=rvt)
+            self.assertEqual(result["batch_runs"], 2)
+            self.assertEqual(result["batch_summary"], str(summary))
+            self.assertEqual(len(result["batch_hourly"]), 2)
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch,
+                                           batch_rvt=rvt)
+            command.assert_called_once()
+        self.assertEqual(parse_batch_results(summary)["scenarios"][1]["values"]["PR"], 0.8)
+        server._cli = self.client
+        self.assertEqual(len(server.pvsyst_read_batch_results(summary.name)["scenarios"]), 2)
+
+    def test_batch_custom_result_variables_need_no_grid_or_pr(self):
+        self.client._help_cache["run-simulation"] += "\n --batch-params-file|-bpf:"
+        batch_dir = self.workspace / "UserBatch"
+        hourly_dir = self.workspace / "UserHourly"
+        batch_dir.mkdir()
+        hourly_dir.mkdir()
+        batch = batch_dir / "custom_params.CSV"
+        batch.write_text("SIM_1;custom.CSV\n", encoding="utf-8")
+        summary = batch_dir / "custom_Results.CSV"
+
+        def run(*args):
+            summary.write_text("Ident;Create hourly;Error;GlobInc\n"
+                               "SIM_1;custom.CSV;;33\n", encoding="utf-8")
+            (hourly_dir / "custom.CSV").write_text(CSV_TEXT, encoding="utf-8")
+            return subprocess.CompletedProcess([], 0, "Simulation done in 0min 2sec", "")
+
+        with patch.object(self.client, "_run", side_effect=run):
+            result = self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
+        self.assertEqual(result["batch_runs"], 1)
+        self.assertEqual(parse_batch_results(summary, ("GlobInc",))["scenarios"][0]["values"],
+                         {"GlobInc": 33.0})
+
+    def test_concurrent_runs_do_not_reuse_output(self):
+        target = self.workspace / "Results" / "same.csv"
+
+        def run(*args):
+            target.write_text(CSV_TEXT, encoding="utf-8")
+            return subprocess.CompletedProcess([], 0, "Simulation done in 0min 2sec", "")
+
+        with patch.object(self.client, "_run", side_effect=run) as command:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(self.client.run_simulation, "Example.PRJ", "VC0",
+                                           sfi=self.sfi, out_csv=target) for _ in range(2)]
+                outcomes = []
+                for future in futures:
+                    try:
+                        outcomes.append(future.result())
+                    except ValueError:
+                        outcomes.append("existing output")
+            self.assertEqual(len([value for value in outcomes if isinstance(value, dict)]), 1)
+            self.assertIn("existing output", outcomes)
+            command.assert_called_once()
+
+    def test_batch_rejects_output_traversal_before_running(self):
+        self.client._help_cache["run-simulation"] += "\n --batch-params-file|-bpf:"
+        batch = self.workspace / "Models" / "bad_params.CSV"
+        batch.write_text("SIM_1;../outside.csv\n", encoding="utf-8")
+        with patch.object(self.client, "_run") as command:
+            with self.assertRaisesRegex(ValueError, "unique CSV filename"):
+                self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
+            batch.write_text("SIM_1;One.CSV\nSIM_2;one.csv\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unique CSV filename"):
+                self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
+            command.assert_not_called()
+
+    def test_batch_rejects_zero_exit_without_success(self):
+        self.client._help_cache["run-simulation"] += "\n --batch-params-file|-bpf:"
+        batch = self.workspace / "Models" / "empty_params.CSV"
+        batch.write_text("SIM_1;hourly.csv\n", encoding="utf-8")
+        with patch.object(self.client, "_run", return_value=subprocess.CompletedProcess(
+                [], 0, "Loading workspace failed", "")):
+            with self.assertRaises(PVsystError):
+                self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
+
+    def test_comma_batch_hourly_and_minute_energy(self):
+        batch_file = self.workspace / "Results" / "batch_hourly.csv"
+        batch_file.write_text(CSV_TEXT.replace(";", ",").replace("    ,kW,ratio", "    ,W,ratio"),
+                              encoding="utf-8")
+        headers, rows = parse_result_csv(batch_file)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(headers[1], "E_Grid")
+        self.assertEqual(result_units(batch_file)["E_Grid"], "W")
+        self.assertAlmostEqual(summarize(batch_file)["energy_kwh"], 0.0045)
+
+        minute_file = self.workspace / "Results" / "minute.csv"
+        minute_file.write_text(CSV_TEXT + "01/01/90 01:01;60;0.8\n", encoding="utf-8")
+        self.assertIsNone(summarize(minute_file)["energy_kwh"])
+        minute_file.write_text(CSV_TEXT.split("01/01/90 00:00")[0] +
+                               "01/01/90 00:00;60;0.8\n"
+                               "01/01/90 00:01;60;0.8\n"
+                               "01/01/90 00:02;60;0.8\n", encoding="utf-8")
+        self.assertEqual(summarize(minute_file)["step_minutes"], 1)
+        self.assertAlmostEqual(summarize(minute_file)["energy_kwh"], 3)
+        server._cli = self.client
+        report = server.pvsyst_read_results("minute.csv")
+        self.assertEqual(report["step_minutes"], 1)
+        self.assertAlmostEqual(report["summary"]["E_Grid"]["energy_kwh"], 3)
+        with self.assertRaises(ValueError):
+            server.pvsyst_read_results("batch_hourly.csv", folder="../outside")
 
     def test_monthly_weather_and_create_site(self):
         self.client._help_cache["create-site"] = "--site-name|-sn:\n --weather-data-file|-wdf:"
