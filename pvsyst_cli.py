@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
+from pvsyst_paths import project_name, project_root, safe_filename, workspace_file, workspace_folder
+
 VERIFIED_VARIABLES = (
     "viGlobInc", "viGlobEff", "viEArray", "viE_Grid", "viPR",
     "viInvLoss", "viIL_Oper", "viIL_Pmin", "viIL_Vmin", "viIL_Pmax",
@@ -234,15 +236,13 @@ class PVsystCLI:
 
     def list_variants(self, project: str) -> list[str]:
         stem = Path(self._project_name(project)).stem
-        return sorted(p.suffix[1:] for p in (self.workspace / "Projects").glob(stem + ".VC*")
-                      if p.is_file() and re.fullmatch(r"VC[A-Za-z0-9]+", p.suffix[1:]))
+        return sorted(p.suffix[1:] for p in project_root(self.workspace).iterdir()
+                      if p.stem.casefold() == stem.casefold() and p.is_file()
+                      and re.fullmatch(r"VC[A-Za-z0-9]+", p.suffix[1:], re.I))
 
     @staticmethod
     def _project_name(project: str) -> str:
-        if (not project or Path(project).name != project or "\\" in project
-                or not project.upper().endswith(".PRJ")):
-            raise ValueError("Project must be a .PRJ filename in the workspace")
-        return project
+        return project_name(project)
 
     @staticmethod
     def _input(path: str | os.PathLike, suffix: str | None = None) -> Path:
@@ -271,25 +271,29 @@ class PVsystCLI:
         """Validate hourly output names before a batch can write workspace files."""
         if not batch_params.stem.lower().endswith("params"):
             raise ValueError("Batch parameters filename must end in Params.CSV")
-        hourly_dir = (self.workspace / "UserHourly").resolve()
+        workspace_folder(self.workspace, "UserHourly")
+        batch_dir = workspace_folder(self.workspace, "UserBatch")
         names: list[str] = []
         with batch_params.open("r", encoding="utf-8-sig", errors="replace", newline="") as stream:
             for fields in csv.reader(stream, delimiter=";"):
                 if fields and re.fullmatch(r"SIM_[A-Za-z0-9_-]+", fields[0].strip()):
                     if len(fields) > 1 and fields[1].strip():
                         name = fields[1].strip()
-                        if (Path(name).name != name or "\\" in name or "/" in name
-                                or not name.lower().endswith(".csv")
-                                or name.casefold() in (item.casefold() for item in names)):
+                        try:
+                            safe_filename(name, ".csv")
+                        except ValueError:
+                            raise ValueError("Batch hourly output must be a unique CSV filename") from None
+                        if name.casefold() in (item.casefold() for item in names):
                             raise ValueError("Batch hourly output must be a unique CSV filename")
-                        if (hourly_dir / name).exists():
+                        if workspace_file(self.workspace, "UserHourly", name, ".csv").exists():
                             raise ValueError(f"Batch hourly output already exists: {name}")
                         names.append(name)
-        summary = self.workspace / "UserBatch" / (batch_params.stem[:-6] + "Results.CSV")
+        summary = workspace_file(self.workspace, "UserBatch",
+                                 batch_params.stem[:-6] + "Results.CSV", ".csv")
         if summary.exists():
             raise ValueError(f"Batch summary already exists: {summary.name}")
         before = {p.name: (p.stat().st_size, p.stat().st_mtime_ns)
-                  for p in (self.workspace / "UserBatch").glob("*Results.CSV") if p.is_file()}
+                  for p in batch_dir.glob("*Results.CSV") if p.is_file()}
         return names, before
 
     @_serialized
@@ -392,13 +396,13 @@ class PVsystCLI:
         hourly = []
         runs = None
         if batch_params:
-            changed = [p for p in (self.workspace / "UserBatch").glob("*Results.CSV")
+            changed = [p for p in workspace_folder(self.workspace, "UserBatch").glob("*Results.CSV")
                        if p.is_file() and batch_before.get(p.name) !=
                        (p.stat().st_size, p.stat().st_mtime_ns)]
             if len(changed) != 1:
                 raise PVsystError("Batch simulation did not produce exactly one new summary CSV")
-            summary = changed[0]
-            hourly = [self.workspace / "UserHourly" / name for name in batch_names]
+            summary = workspace_file(self.workspace, "UserBatch", changed[0].name, ".csv")
+            hourly = [workspace_file(self.workspace, "UserHourly", name, ".csv") for name in batch_names]
             if any(not p.is_file() for p in hourly):
                 raise PVsystError("Batch simulation did not produce all requested hourly CSVs")
             runs = len(parse_batch_results(summary, columns=())["scenarios"])
@@ -534,12 +538,13 @@ def iter_result_csv(path: str | os.PathLike) -> Iterator[tuple[list[str], list]]
             raise ValueError("SFI result has no numeric columns")
         seen = False
         for parts in csv.reader(stream, delimiter=separator):
-            if len(parts) < len(headers):
+            if not parts:
                 continue
             try:
                 stamp = datetime.strptime(parts[0].strip(), "%d/%m/%y %H:%M")
             except ValueError:
                 continue
+            parts += [""] * max(0, len(headers) - len(parts))
             row = [stamp]
             for value in parts[1:len(headers)]:
                 try:
@@ -561,18 +566,19 @@ def parse_result_csv(path: str | os.PathLike) -> tuple[list[str], list[list]]:
     return headers, rows
 
 
-def summarize(path: str | os.PathLike, column: str = "E_Grid") -> dict:
-    """Stream numeric samples and integrate power when cadence and units permit."""
-    count, total, maximum = 0, 0.0, -math.inf
-    index = None
-    previous = None
-    step_minutes = None
+def summarize_results(path: str | os.PathLike, columns: tuple[str, ...]) -> dict:
+    """Shared streaming summaries; completeness covers timestamped rows in this file."""
+    indices = None
+    stats = {name: {"samples": 0, "sum": 0.0, "max": -math.inf} for name in columns}
+    count = 0
+    first = last = previous = step_minutes = None
     regular = True
     for headers, row in iter_result_csv(path):
-        if index is None:
-            if column not in headers[1:]:
-                raise ValueError(f"Column {column!r} not present; available: {headers[1:]}")
-            index = headers.index(column)
+        if indices is None:
+            if not columns or any(name not in headers[1:] for name in columns):
+                raise ValueError(f"Choose columns from {headers[1:]}")
+            indices = {name: headers.index(name) for name in columns}
+            first = str(row[0])
         if previous is not None:
             delta = (row[0] - previous).total_seconds() / 60
             if delta <= 0 or (step_minutes is not None and delta != step_minutes):
@@ -580,18 +586,36 @@ def summarize(path: str | os.PathLike, column: str = "E_Grid") -> dict:
             elif step_minutes is None:
                 step_minutes = delta
         previous = row[0]
-        value = row[index]
-        if math.isfinite(value):
-            count += 1
-            total += value
-            maximum = max(maximum, value)
-    if not count:
-        raise ValueError(f"Column {column!r} contains no finite values")
-    unit = result_units(path).get(column, "")
+        count += 1
+        last = str(row[0])
+        for name, index in indices.items():
+            value = row[index]
+            if math.isfinite(value):
+                stats[name]["samples"] += 1
+                stats[name]["sum"] += value
+                stats[name]["max"] = max(stats[name]["max"], value)
     step = step_minutes if regular else None
-    energy_kwh = None
-    if column in ("E_Grid", "EArray") and step is not None and unit in ("W", "kW"):
-        energy_kwh = total * step / 60 * (0.001 if unit == "W" else 1)
-    return {"column": column, "samples": count, "sum": total,
-            "mean": total / count, "max": maximum, "unit": unit,
-            "step_minutes": step, "energy_kwh": energy_kwh}
+    units = result_units(path)
+    summary = {}
+    for name, state in stats.items():
+        samples = state["samples"]
+        unit = units.get(name, "")
+        observed = None
+        if samples and name in ("E_Grid", "EArray") and step is not None and unit in ("W", "kW"):
+            observed = state["sum"] * step / 60 * (0.001 if unit == "W" else 1)
+        complete = samples == count
+        summary[name] = {**state, "max": state["max"] if samples else None,
+                         "mean": state["sum"] / samples if samples else None,
+                         "unit": unit, "missing_samples": count - samples,
+                         "coverage": samples / count, "complete": complete,
+                         "observed_energy_kwh": observed,
+                         "energy_kwh": observed if complete else None}
+    return {"columns": headers, "rows": count, "first": first, "last": last,
+            "step_minutes": step, "summary": summary}
+
+
+def summarize(path: str | os.PathLike, column: str = "E_Grid") -> dict:
+    """Summarize one column with the same missing-data contract as MCP."""
+    result = summarize_results(path, (column,))
+    return {"column": column, "rows": result["rows"], "step_minutes": result["step_minutes"],
+            **result["summary"][column]}
