@@ -5,6 +5,7 @@ Only supported CLI options discovered from the installed binary are used.
 """
 from __future__ import annotations
 
+import inspect
 import math
 import os
 from pathlib import Path
@@ -19,6 +20,46 @@ from pvsyst_variants import VariantStore
 
 mcp = MCPServer("pvsyst-cli")
 _cli: PVsystCLI | None = None
+
+TOOL_GROUPS = {
+    "Setup & License": (
+        "pvsyst_capabilities", "pvsyst_license_info", "pvsyst_license_activate",
+        "pvsyst_license_deactivate", "pvsyst_license_sync", "pvsyst_export_logs",
+    ),
+    "Projects & Variants": (
+        "pvsyst_list_projects", "pvsyst_list_variants", "pvsyst_inspect_project",
+        "pvsyst_clone_project", "pvsyst_update_project_sources",
+        "pvsyst_restore_project_sources", "pvsyst_archive_project", "pvsyst_archive_variant",
+        "pvsyst_restore_project_archive", "pvsyst_get_variant_components",
+        "pvsyst_clone_variant", "pvsyst_update_variant_components",
+        "pvsyst_get_variant_parameters", "pvsyst_update_variant_parameters",
+        "pvsyst_validate_variant_structure", "pvsyst_clone_subarray",
+        "pvsyst_remove_subarray", "pvsyst_restore_variant",
+    ),
+    "Components": (
+        "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
+        "pvsyst_create_component", "pvsyst_copy_component", "pvsyst_clone_component",
+        "pvsyst_update_component", "pvsyst_backup_component", "pvsyst_restore_component",
+        "pvsyst_archive_component", "pvsyst_restore_archived_component",
+        "pvsyst_compare_components", "pvsyst_project_components",
+    ),
+    "Sites & Weather": (
+        "pvsyst_build_monthly_weather", "pvsyst_create_site", "pvsyst_convert_meteo",
+    ),
+    "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation"),
+    "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
+}
+TOOL_CATEGORY = {name: category for category, names in TOOL_GROUPS.items() for name in names}
+if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
+    raise RuntimeError("Duplicate tool category assignment")
+
+
+def categorized_tool():
+    """Label MCP descriptions without changing established wire-level tool names."""
+    def register(func):
+        category = TOOL_CATEGORY[func.__name__]
+        return mcp.tool(description=f"[{category}] {inspect.getdoc(func)}")(func)
+    return register
 
 
 def cli() -> PVsystCLI:
@@ -96,56 +137,108 @@ def result_path(folder: str, csv_name: str) -> Path:
     return workspace_path(folder, csv_name, ".csv")
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_capabilities() -> dict:
     """List commands and option names actually available in the installed CLI."""
     return {"version": cli().version(), "commands": cli().capabilities()}
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_license_info() -> dict:
     """Read CLI license state and quota without returning keys or Host ID."""
     return cli().license_info()
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_license_activate(key: str, confirm: bool = False) -> dict:
     """Activate a CLI license using a supplied key. Requires confirm=true;
     MCP clients may retain tool arguments, so handle license keys accordingly."""
     return cli().license_activate(key, confirm=confirm)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_license_deactivate(customer_id: str, confirm: bool = False) -> dict:
     """Deactivate this computer's CLI license. Requires confirm=true."""
     return cli().license_deactivate(customer_id, confirm=confirm)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_license_sync(confirm: bool = False) -> dict:
     """Synchronize CLI license information with its server. Requires confirm=true."""
     return cli().license_sync(confirm=confirm)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_list_projects() -> list[str]:
     """List PRJ filenames in the configured workspace."""
     return cli().list_projects()
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_list_variants(project: str) -> list[str]:
     """List variant IDs belonging to an existing project."""
     return cli().list_variants(project)
 
 
-@mcp.tool()
+@categorized_tool()
+def pvsyst_inspect_project(project: str) -> dict:
+    """List PRJ/VC hashes and embedded SIT/MET references; flag missing workspace
+    files and differences between project and variant sources."""
+    return variant_call("inspect_project", project)
+
+
+@categorized_tool()
+def pvsyst_archive_project(project: str, expected_files: dict[str, str],
+                           confirm: bool = False) -> dict:
+    """Archive a full PRJ and VC set after matching every hash; confirm=true."""
+    return variant_call("archive_project", project, expected_files, confirm)
+
+
+@categorized_tool()
+def pvsyst_archive_variant(project: str, variant: str, expected_sha256: str,
+                           confirm: bool = False) -> dict:
+    """Archive a VC only if another variant remains, with SHA guard; confirm=true."""
+    return variant_call("archive_variant", project, variant, expected_sha256, confirm)
+
+
+@categorized_tool()
+def pvsyst_restore_project_archive(project: str, archive_name: str,
+                                   confirm: bool = False) -> dict:
+    """Restore a complete archived project or one archived variant; confirm=true."""
+    return variant_call("restore_archive", project, archive_name, confirm)
+
+
+@categorized_tool()
+def pvsyst_clone_project(source_project: str, new_project: str) -> dict:
+    """Create a NEW project by copying an existing PRJ and all its VC variants.
+    Embedded site/meteo snapshots and external component references are preserved."""
+    return variant_call("clone_project", source_project, new_project)
+
+
+@categorized_tool()
+def pvsyst_update_project_sources(project: str, site_name: str, met_name: str,
+                                  expected_files: dict[str, str]) -> dict:
+    """Persist a workspace SIT/MET pair across PRJ and all VC snapshots with
+    full-project SHA preconditions and byte-identical backups. Existing MET
+    origin metadata in each variant remains historical; verify via CLI output."""
+    return variant_call("update_project_sources", project, site_name, met_name, expected_files)
+
+
+@categorized_tool()
+def pvsyst_restore_project_sources(project: str, backups: dict[str, str],
+                                   expected_files: dict[str, str], confirm: bool = False) -> dict:
+    """Restore every PRJ/VC file from one source-update transaction, after
+    matching all current hashes. Requires confirm=true and backs up current bytes."""
+    return variant_call("restore_project_sources", project, backups, expected_files, confirm)
+
+
+@categorized_tool()
 def pvsyst_get_variant_components(project: str, variant: str) -> dict:
     """Read component references in a variant and its current SHA-256 for guarded edits."""
     return variant_call("inspect", project, variant)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_clone_variant(project: str, source_variant: str, new_variant: str,
                          updates: dict[str, str] | None = None, subarray_id: int = 1) -> dict:
     """Copy an existing variant as a NEW VC file. Optional PAN/OND edits target one
@@ -153,7 +246,7 @@ def pvsyst_clone_variant(project: str, source_variant: str, new_variant: str,
     return variant_call("clone", project, source_variant, new_variant, updates, subarray_id)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_update_variant_components(project: str, variant: str,
                                      updates: dict[str, str], expected_sha256: str,
                                      subarray_id: int = 1) -> dict:
@@ -162,7 +255,47 @@ def pvsyst_update_variant_components(project: str, variant: str,
     return variant_call("update", project, variant, updates, expected_sha256, subarray_id)
 
 
-@mcp.tool()
+@categorized_tool()
+def pvsyst_validate_variant_structure(project: str, variant: str) -> dict:
+    """Check known circuit branch and orientation references; report shading-table limits."""
+    return variant_call("validate_structure", project, variant)
+
+
+@categorized_tool()
+def pvsyst_clone_subarray(project: str, variant: str, source_subarray_id: int,
+                          expected_sha256: str) -> dict:
+    """Duplicate a self-contained inverter branch in an unshaded grid variant.
+    Requires the current variant hash; saves a rollback snapshot."""
+    return variant_call("clone_subarray", project, variant, source_subarray_id, expected_sha256)
+
+
+@categorized_tool()
+def pvsyst_remove_subarray(project: str, variant: str, subarray_id: int,
+                           expected_sha256: str) -> dict:
+    """Remove one isolated unshaded grid inverter branch, retaining its shared orientation.
+    Requires the current variant hash and creates a rollback snapshot."""
+    return variant_call("remove_subarray", project, variant, subarray_id, expected_sha256)
+
+
+@categorized_tool()
+def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
+    """Inspect fixed-plane orientations and subarray sizing/backup thresholds."""
+    return variant_call("inspect_parameters", project, variant)
+
+
+@categorized_tool()
+def pvsyst_update_variant_parameters(project: str, variant: str,
+                                     expected_sha256: str, subarray_id: int = 1,
+                                     orientation_id: int = 1,
+                                     subarray_updates: dict[str, float] | None = None,
+                                     orientation_updates: dict[str, float] | None = None) -> dict:
+    """Edit existing validated scalar parameters with SHA guard and rollback backup.
+    Circuit tree, field type, and system flags are preserved."""
+    return variant_call("update_parameters", project, variant, expected_sha256,
+                        subarray_id, orientation_id, subarray_updates, orientation_updates)
+
+
+@categorized_tool()
 def pvsyst_restore_variant(project: str, variant: str, backup_name: str,
                            expected_sha256: str, confirm: bool = False) -> dict:
     """Restore a variant snapshot after verifying its current hash; backs up the
@@ -170,7 +303,7 @@ def pvsyst_restore_variant(project: str, variant: str, backup_name: str,
     return variant_call("restore", project, variant, backup_name, expected_sha256, confirm)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_list_components(component_type: str, library: str = "workspace",
                            query: str = "", offset: int = 0, limit: int = 100) -> dict:
     """List PAN, OND, BTR or GEN loose files in workspace or installed DataRO.
@@ -178,7 +311,7 @@ def pvsyst_list_components(component_type: str, library: str = "workspace",
     return component_call("list", component_type, library, query, offset, limit)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_get_component(component_type: str, filename: str,
                          library: str = "workspace", offset: int = 0,
                          limit: int = 100) -> dict:
@@ -186,14 +319,14 @@ def pvsyst_get_component(component_type: str, filename: str,
     return component_call("inspect", component_type, filename, library, offset, limit)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_validate_component(component_type: str, filename: str,
                               library: str = "workspace") -> dict:
     """Check format and known fields; only a simulation verifies PVsyst model behavior."""
     return component_call("validate", component_type, filename, library)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_copy_component(component_type: str, source_name: str, new_name: str,
                           source_library: str = "workspace") -> dict:
     """Copy a PAN/OND/BTR/GEN into the workspace without overwrite. Legacy PAN
@@ -201,7 +334,7 @@ def pvsyst_copy_component(component_type: str, source_name: str, new_name: str,
     return component_call("copy", component_type, source_name, new_name, source_library)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_create_component(component_type: str, filename: str, content: str) -> dict:
     """Create a NEW PAN/OND/BTR/GEN from complete UTF-8 PVObject_ text in the
     workspace without a template. Checks structure, required fields and known
@@ -210,7 +343,7 @@ def pvsyst_create_component(component_type: str, filename: str, content: str) ->
     return component_call("create", component_type, filename, content)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_clone_component(component_type: str, source_name: str, new_name: str,
                            updates: dict[str, str], source_library: str = "workspace") -> dict:
     """Create a new text component from a complete existing template. New
@@ -219,7 +352,7 @@ def pvsyst_clone_component(component_type: str, source_name: str, new_name: str,
     return component_call("clone", component_type, source_name, new_name, updates, source_library)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_update_component(component_type: str, filename: str,
                             updates: dict[str, str]) -> dict:
     """Edit allowlisted text fields in one workspace component with automatic
@@ -227,13 +360,13 @@ def pvsyst_update_component(component_type: str, filename: str,
     return component_call("update", component_type, filename, updates)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_backup_component(component_type: str, filename: str) -> dict:
     """Save a byte-identical backup under workspace/ComposPV/.mcp-backups."""
     return component_call("backup", component_type, filename)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_restore_component(component_type: str, filename: str,
                              backup_name: str, confirm: bool = False) -> dict:
     """Restore a matching backup to a workspace component; confirm=true required.
@@ -241,7 +374,7 @@ def pvsyst_restore_component(component_type: str, filename: str,
     return component_call("restore", component_type, filename, backup_name, confirm)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_archive_component(component_type: str, filename: str,
                              confirm: bool = False) -> dict:
     """Reversibly remove an unreferenced workspace component to .mcp-archive.
@@ -249,7 +382,7 @@ def pvsyst_archive_component(component_type: str, filename: str,
     return component_call("archive", component_type, filename, confirm)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_restore_archived_component(component_type: str, filename: str,
                                       archive_name: str, confirm: bool = False) -> dict:
     """Restore an archived component as a NEW file, preserving the archived
@@ -257,21 +390,21 @@ def pvsyst_restore_archived_component(component_type: str, filename: str,
     return component_call("restore_archive", component_type, filename, archive_name, confirm)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_compare_components(component_type: str, first: str, second: str,
                               second_library: str = "workspace") -> dict:
     """Compare two same-type components: bounded text diff or binary PAN hashes."""
     return component_call("compare", component_type, first, second, second_library)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_project_components(project: str, variant: str) -> dict:
     """Inspect PRJ/VC references to PAN, OND, BTR and GEN. Unresolved loose files
     may still exist inside the encrypted built-in database."""
     return component_call("dependencies", project, variant)
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
     """Create a NEW hourly export definition in workspace/Models."""
     target = workspace_path("Models", filename, ".sfi")
@@ -281,7 +414,7 @@ def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
     return {"sfi": str(target), "variables": list(names)}
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_build_monthly_weather(filename: str, global_h: list[float],
                                  temperature: list[float],
                                  diffuse_h: list[float] | None = None,
@@ -292,7 +425,7 @@ def pvsyst_build_monthly_weather(filename: str, global_h: list[float],
     return {"weather_csv": str(target)}
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_create_site(site_name: str, latitude: float, longitude: float,
                        weather_csv_name: str, sit_name: str,
                        altitude: float | None = None, timezone: float | None = None,
@@ -310,7 +443,7 @@ def pvsyst_create_site(site_name: str, latitude: float, longitude: float,
     return {"site": str(output)}
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_run_simulation(project: str, variant: str,
                           sfi_name: str = "", csv_name: str = "", pdf_name: str = "",
                           met_name: str = "", rvt_name: str = "",
@@ -351,7 +484,7 @@ def pvsyst_run_simulation(project: str, variant: str,
     )
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_convert_meteo(csv_name: str, mef_name: str, sit_name: str,
                          met_name: str, timeshift: int = 0,
                          log_level: int | None = None) -> dict:
@@ -364,7 +497,7 @@ def pvsyst_convert_meteo(csv_name: str, mef_name: str, sit_name: str,
                                             log_level=log_level))}
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_export_logs() -> dict:
     """Export CLI diagnostic logs to a ZIP under workspace/Results.
     The archive may contain private data; only its path is returned."""
@@ -375,7 +508,7 @@ def pvsyst_export_logs() -> dict:
     return {"zip": str(cli().export_logs(folder))}
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR",
                         folder: str = "Results") -> dict:
     """Summarize hourly or subhour SFI rows in Results or UserHourly.
@@ -423,7 +556,7 @@ def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR",
             "step_minutes": step, "summary": summary}
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_read_rows(csv_name: str, columns: str = "E_Grid,PR",
                      offset: int = 0, limit: int = 100,
                      folder: str = "Results") -> dict:
@@ -450,7 +583,7 @@ def pvsyst_read_rows(csv_name: str, columns: str = "E_Grid,PR",
             "rows": page}
 
 
-@mcp.tool()
+@categorized_tool()
 def pvsyst_read_batch_results(summary_name: str,
                               columns: str = "E_Grid,PR") -> dict:
     """Read SIM_* scenario values from a UserBatch/*Results.CSV summary."""
