@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 
 from pvsyst_paths import project_name, project_path, variant_id
+from pvsyst_component_editor import curve_inventory, replace_value
 
 
 # Workspace spelling follows existing PVsyst workspaces; Windows paths are case-insensitive.
@@ -235,6 +236,8 @@ class ComponentStore:
         result = self._inspect(kind, data)
         result.update({"name": name, "library": library})
         if result["format"] == "text":
+            result["editable_fields"] = sorted(EDITABLE[kind])
+            result["curves"] = curve_inventory(kind, self._text(kind, data)[1])
             fields = result.pop("fields")
             result["field_count"] = len(fields)
             result["fields_truncated"] = (len(fields) > 80 or any(
@@ -399,9 +402,7 @@ class ComponentStore:
                 raise ValueError(f"{key} must occur exactly once in the template")
             index = matches[0]
             line = lines[index]
-            prefix = line[:line.index("=") + 1]
-            ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
-            lines[index] = f"{prefix}{value}{ending}"
+            lines[index] = replace_value(line, value)
         return "".join(lines)
 
     def clone(self, kind: str, source_name: str, new_name: str,
@@ -422,28 +423,60 @@ class ComponentStore:
             self._require_valid(self._inspect(kind, candidate), complete=True)
             return self._new(kind, new_name, candidate)
 
-    def update(self, kind: str, name: str, updates: dict[str, str]) -> dict:
+    def update(self, kind: str, name: str, updates: dict[str, str],
+               expected_sha256: str | None = None, dry_run: bool = False) -> dict:
         kind = self._kind(kind)
+        if not isinstance(dry_run, bool):
+            raise ValueError("dry_run must be a boolean")
+        if expected_sha256 is not None and (not isinstance(expected_sha256, str)
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256)):
+            raise ValueError("expected_sha256 must be a SHA-256 digest")
+        if updates is not None and not isinstance(updates, dict):
+            raise ValueError("updates must be a dictionary")
+        if not updates:
+            raise ValueError("Supply scalar updates")
         with self.lock:
             path = self._path(kind, name)
             data = self._read(path)
+            before_sha = hashlib.sha256(data).hexdigest()
+            if expected_sha256 is not None and before_sha != expected_sha256.lower():
+                raise ValueError("Component changed since inspection; read it again before editing")
             _, text = self._text(kind, data)
             if text is None:
                 raise ValueError("Legacy binary PAN cannot be edited")
-            candidate = self._replace_fields(kind, text, updates).encode("utf-8")
+            edited = self._replace_fields(kind, text, updates)
+            candidate = edited.encode("utf-8")
             if data.startswith(b"\xef\xbb\xbf"):
                 candidate = b"\xef\xbb\xbf" + candidate
-            self._require_valid(self._inspect(kind, candidate), complete=True)
+            validation = self._inspect(kind, candidate)
+            self._require_valid(validation, complete=True)
+            diff = "".join(itertools.islice(difflib.unified_diff(
+                text.splitlines(keepends=True), edited.splitlines(keepends=True),
+                fromfile=name, tofile=name + " (candidate)"), 501))
+            result = {"name": name, "before_sha256": before_sha,
+                      "sha256": hashlib.sha256(candidate).hexdigest(),
+                      "changed": candidate != data, "dry_run": dry_run,
+                      "conflict_checked": expected_sha256 is not None,
+                      "diff": diff[:32000],
+                      "diff_truncated": len(diff) > 32000 or len(diff.splitlines()) > 500,
+                      "validation": {key: validation[key] for key in (
+                          "structural_errors", "warnings", "known_value_errors")},
+                      "validation_scope": "Static structure and limited values only; simulate a referencing project"}
+            if dry_run or candidate == data:
+                return result
+            if self._read(path) != data:
+                raise ValueError("Component changed while preparing the edit")
             backup = self.backup(kind, name)
             temporary = path.with_name(f".{name}.{uuid.uuid4().hex}.tmp")
             try:
                 with temporary.open("xb") as stream:
                     stream.write(candidate)
+                if backup["sha256"] != before_sha or self._read(path) != data:
+                    raise ValueError("Component changed while preparing the edit")
                 os.replace(temporary, path)
             finally:
                 temporary.unlink(missing_ok=True)
-            return {"name": name, "backup_name": backup["backup_name"],
-                    "sha256": hashlib.sha256(candidate).hexdigest()}
+            return {**result, "backup_name": backup["backup_name"]}
 
     def restore(self, kind: str, name: str, backup_name: str, confirm: bool = False) -> dict:
         kind = self._kind(kind)
