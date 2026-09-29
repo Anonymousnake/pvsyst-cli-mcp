@@ -10,9 +10,11 @@ import os
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from pvsyst_cli import (PVsystCLI, VAR_GROUPS, build_monthly_weather_csv,
                         build_sfi, iter_result_csv, parse_batch_results, result_units)
+from pvsyst_components import ComponentStore
 
 mcp = MCPServer("pvsyst-cli")
 _cli: PVsystCLI | None = None
@@ -23,6 +25,20 @@ def cli() -> PVsystCLI:
     if _cli is None:
         _cli = PVsystCLI(os.environ.get("PVSYST_CLI"), os.environ.get("PVSYST_WORKSPACE"))
     return _cli
+
+
+def components() -> ComponentStore:
+    current = cli()
+    builtin = current.cli.parent / "DataRO" / current.workspace.name / "ComposPV"
+    return ComponentStore(current.workspace, builtin if builtin.is_dir() else None,
+                          current._lock)
+
+
+def component_call(method: str, *args, **kwargs) -> dict:
+    try:
+        return getattr(components(), method)(*args, **kwargs)
+    except (ValueError, FileNotFoundError, FileExistsError) as exc:
+        raise ToolError(str(exc)) from None
 
 
 def workspace_path(folder: str, filename: str, extension: str) -> Path:
@@ -101,6 +117,107 @@ def pvsyst_list_projects() -> list[str]:
 def pvsyst_list_variants(project: str) -> list[str]:
     """List variant IDs belonging to an existing project."""
     return cli().list_variants(project)
+
+
+@mcp.tool()
+def pvsyst_list_components(component_type: str, library: str = "workspace",
+                           query: str = "", offset: int = 0, limit: int = 100) -> dict:
+    """List PAN, OND, BTR or GEN loose files in workspace or installed DataRO.
+    The encrypted built-in component database is not enumerable."""
+    return component_call("list", component_type, library, query, offset, limit)
+
+
+@mcp.tool()
+def pvsyst_get_component(component_type: str, filename: str,
+                         library: str = "workspace", offset: int = 0,
+                         limit: int = 100) -> dict:
+    """Read paged UTF-8 component text and fields; legacy binary PAN is metadata only."""
+    return component_call("inspect", component_type, filename, library, offset, limit)
+
+
+@mcp.tool()
+def pvsyst_validate_component(component_type: str, filename: str,
+                              library: str = "workspace") -> dict:
+    """Check format and known fields; only a simulation verifies PVsyst model behavior."""
+    return component_call("validate", component_type, filename, library)
+
+
+@mcp.tool()
+def pvsyst_copy_component(component_type: str, source_name: str, new_name: str,
+                          source_library: str = "workspace") -> dict:
+    """Copy a PAN/OND/BTR/GEN into the workspace without overwrite. Legacy PAN
+    bytes are preserved. Source library is workspace or read-only builtin."""
+    return component_call("copy", component_type, source_name, new_name, source_library)
+
+
+@mcp.tool()
+def pvsyst_create_component(component_type: str, filename: str, content: str) -> dict:
+    """Create a NEW PAN/OND/BTR/GEN from complete UTF-8 PVObject_ text in the
+    workspace without a template. Checks structure, required fields and known
+    hazardous numeric values; only a referencing simulation verifies physics.
+    Legacy binary PAN must be imported with pvsyst_copy_component instead."""
+    return component_call("create", component_type, filename, content)
+
+
+@mcp.tool()
+def pvsyst_clone_component(component_type: str, source_name: str, new_name: str,
+                           updates: dict[str, str], source_library: str = "workspace") -> dict:
+    """Create a new text component from a complete existing template. New
+    Manufacturer and Model are required; only verified scalar fields are editable.
+    Run a simulation with a variant referencing the new component to verify it."""
+    return component_call("clone", component_type, source_name, new_name, updates, source_library)
+
+
+@mcp.tool()
+def pvsyst_update_component(component_type: str, filename: str,
+                            updates: dict[str, str]) -> dict:
+    """Edit allowlisted text fields in one workspace component with automatic
+    backup. Legacy PAN is read-only; BTR curve fields are not editable."""
+    return component_call("update", component_type, filename, updates)
+
+
+@mcp.tool()
+def pvsyst_backup_component(component_type: str, filename: str) -> dict:
+    """Save a byte-identical backup under workspace/ComposPV/.mcp-backups."""
+    return component_call("backup", component_type, filename)
+
+
+@mcp.tool()
+def pvsyst_restore_component(component_type: str, filename: str,
+                             backup_name: str, confirm: bool = False) -> dict:
+    """Restore a matching backup to a workspace component; confirm=true required.
+    The current file is itself backed up before replacement."""
+    return component_call("restore", component_type, filename, backup_name, confirm)
+
+
+@mcp.tool()
+def pvsyst_archive_component(component_type: str, filename: str,
+                             confirm: bool = False) -> dict:
+    """Reversibly remove an unreferenced workspace component to .mcp-archive.
+    Requires confirm=true; rejects references from workspace PRJ/VC files."""
+    return component_call("archive", component_type, filename, confirm)
+
+
+@mcp.tool()
+def pvsyst_restore_archived_component(component_type: str, filename: str,
+                                      archive_name: str, confirm: bool = False) -> dict:
+    """Restore an archived component as a NEW file, preserving the archived
+    snapshot; requires confirm=true and never overwrites existing files."""
+    return component_call("restore_archive", component_type, filename, archive_name, confirm)
+
+
+@mcp.tool()
+def pvsyst_compare_components(component_type: str, first: str, second: str,
+                              second_library: str = "workspace") -> dict:
+    """Compare two same-type components: bounded text diff or binary PAN hashes."""
+    return component_call("compare", component_type, first, second, second_library)
+
+
+@mcp.tool()
+def pvsyst_project_components(project: str, variant: str) -> dict:
+    """Inspect PRJ/VC references to PAN, OND, BTR and GEN. Unresolved loose files
+    may still exist inside the encrypted built-in database."""
+    return component_call("dependencies", project, variant)
 
 
 @mcp.tool()

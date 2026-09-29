@@ -60,6 +60,11 @@ Restart the client after editing its MCP configuration. The server requires Pyth
 | `pvsyst_license_info` | License state and trial quota; no key or Host ID |
 | `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | License management; all require `confirm=true` |
 | `pvsyst_list_projects`, `pvsyst_list_variants` | Workspace inventory |
+| `pvsyst_list_components`, `pvsyst_get_component`, `pvsyst_validate_component` | PAN/OND/BTR/GEN inventory, paged fields and static checks |
+| `pvsyst_create_component`, `pvsyst_copy_component`, `pvsyst_clone_component` | Create complete UTF-8 text, copy bytes, or clone from a complete file |
+| `pvsyst_update_component`, `pvsyst_backup_component`, `pvsyst_restore_component` | Allowlisted edits with backup and confirmed rollback |
+| `pvsyst_archive_component`, `pvsyst_restore_archived_component` | Confirmed reversible removal of unreferenced components |
+| `pvsyst_compare_components`, `pvsyst_project_components` | File comparison and PRJ/VC dependency lookup |
 | `pvsyst_build_sfi` | New hourly SFI export definition |
 | `pvsyst_build_monthly_weather` | New 14-row monthly CSV for site creation |
 | `pvsyst_create_site` | New SIT from monthly weather and coordinates (8.1+) |
@@ -80,6 +85,10 @@ All MCP file arguments are **filenames, never unrestricted paths**. Inputs must 
 | Batch parameters `.csv`, batch RVT, generated batch summary | `UserBatch` |
 | Batch per-scenario hourly CSV | `UserHourly` |
 | Single-simulation CSV/PDF, diagnostic ZIP | `Results` |
+
+Component tools support **four types only**: `.PAN` (`ComposPV/PVmodules`), `.OND` (`ComposPV/Inverters`), `.BTR` (`ComposPV/Batteries`) and `.GEN` (`ComposPV/Gensets`). `pvsyst_create_component` takes the complete UTF-8 `PVObject_` text and a new filename; it does not require an existing file. `pvsyst_clone_component` is a shortcut for a complete same-type text template and requires new `Manufacturer` and `Model` values. `pvsyst_copy_component` preserves bytes, including legacy mixed binary `.PAN` files from the installed read-only `DataRO` library. Old `.PAN` files can be listed, compared and copied, but not text-edited. Installed encrypted `*DB.csv` component databases cannot be enumerated; a project reference absent from loose files is reported as `unknown-or-builtin-db`, not as missing. A `.GEN` file reference alone does not activate a generator; dependency inspection also reports the variant's `$20` flag and `PEffBackUp` value.
+
+Component creation and edits check object structure, required fields and a limited set of numeric constraints. They do **not** certify the physical model: exercise a project variant that actually references the new component and inspect the resulting CSV. In particular, inverter curves and battery chemistry are not transformed when cloning; BTR profile curves are not editable through the scalar-update tool, and `CFuelHor` must be positive because zero was observed to crash PVsyst. Edits automatically create byte-identical backups under `ComposPV/.mcp-backups`; `pvsyst_archive_component` requires `confirm=true`, blocks references in workspace PRJ/VC files and moves the file to `ComposPV/.mcp-archive`. Both rollback tools require `confirm=true`. All writes stay in the user workspace; `DataRO` is read-only. No vendor component data is shipped in this repository.
 
 Place an existing SFI under `Models`, or call `pvsyst_build_sfi` first. A CSV with no SFI/RVT export definition may contain dates only. For a single `pvsyst_run_simulation` call, `csv_name="run01"` and `csv_name="run01.csv"` both select `Results/run01.csv`; input filenames such as `sfi_name` still require their extension. Output filenames cannot contain paths, and generated files are never overwritten. For `create-site`, supply altitude, timezone and country code to avoid its optional online location lookups. License mutation tool arguments can be retained by the MCP client; do not echo keys in logs. When `lic-info` provides no usable status or expiration, `pvsyst_license_info` reports `UNSPECIFIED` rather than assuming the license is active.
 
@@ -114,7 +123,8 @@ Batch mode differs from a regular run: set `batch_params_name` and `batch_rvt_na
 - 8.1.6: full-year simulation with 8760 rows, date-limited simulation with 48 rows and PDF report, official `create-site` generated a SIT, vendor sample CSV+MEF+SIT converted to MET, and a short simulation/results query through a real MCP stdio client.
 - Official three-scenario batch sample: generated a UserBatch summary plus three comma-separated UserHourly CSV files in 41 seconds. One scenario's hourly `E_Grid` is in W: integration gave 29624.104 kWh, consistent with the summary's rounded 29624 value.
 - A one-minute MET and `--time-step:subhour` produced 1440 semicolon-separated rows for one day; the result reader detected a one-minute cadence and integrated kW values accordingly. A file named `1min` with an hourly internal time step was correctly rejected by the CLI.
-- Offline tests mock CLI calls and use temporary files, so they do not consume license executions. An optional live protocol check is provided in `tests/smoke_stdio.py`.
+- Component tools: an isolated 29-tool MCP stdio lifecycle (`tests/smoke_components.py`) created PAN/OND/BTR/GEN, edited and rolled back GEN, rejected `CFuelHor=0`, and archived/restored files. The real 8.1.6 CLI loaded freshly created PAN/OND in a short grid simulation (48 rows, 6 columns) and freshly created BTR/GEN in a short stand-alone simulation (48 rows, 21 active generator rows). Temporary components, variants and CSVs were removed. Optional repeat scripts are `tests/smoke_live_components.py` and `tests/smoke_live_storage.py`; each consumes one CLI execution and requires the local vendor demo projects and component fixtures.
+- Offline tests mock CLI calls and use temporary files, so they do not consume license executions. Optional read-only live protocol checks are in `tests/smoke_stdio.py`.
 - License status is reported exactly as inferred from CLI output; successful simulation is not evidence of a particular licensing tier.
 
 Official reference: [PVsystCLI command reference](https://www.pvsyst.com/help-cli/reference/index.html) and [release notes](https://www.pvsyst.com/help-cli/release-notes.html). This source code is MIT licensed and is not affiliated with or endorsed by PVsyst SA.
