@@ -153,18 +153,56 @@ Rechecks also detect intervening file changes during preparation; the local
 lock and hash checks do not provide an OS-level lock against external editors.
 
 `pvsyst_get_component` returns the scalar allowlist as `editable_fields` and a
-bounded **read-only** OND `curves` inventory. Each curve has its object path
+bounded OND `curves` inventory. Each curve has its object path
 (for example `Converter/ProfilPIO`), line number and points declared effective
 by `NPtsEff`; padding after that count is excluded from the displayed points.
 Missing or duplicate count/point fields are reported as curve diagnostics.
 Inspection is limited to 16 curves and 256 allocated points per curve. These
 limits describe this reader, not PVsyst format limits. `structure_complete`
-only describes serialized count/point consistency. Every curve currently
-reports `editable=false` and `simulation_effect="unverified"`: an independent
-PVsyst 8.1.6 experiment produced identical simulation results after changing
-OND curve ordinates, so point writing is deliberately not exposed pending
-verification of the native activation/calculation path. Existing scalar edits
-do not recalculate curve data or derived parameters.
+only describes serialized count/point consistency. `curves.control` reports
+the root `Flags`, file version, `source` (`automatic`, `file` or `unknown`),
+three-voltage selection and edit restrictions. `editable` and `edit_errors`
+describe support for each profile; `simulation_effect="unverified"` means
+that the particular inspected model has not been simulated by this reader.
+
+`pvsyst_update_component` accepts `curve_updates` for **OND Version=8.1.6,
+single-voltage `Converter/ProfilPIO`, Mode=1 only**. Supply all existing active
+points as `[input_watts, output_watts]`; at least four points are required.
+The count cannot change, X must strictly increase, and each point must contain
+finite numbers with `0 <= output <= input`. Strings and booleans are rejected.
+`NPtsMax`, `NPtsEff`, inactive point rows and unrelated curves remain unchanged.
+Other file versions, curve modes and three-voltage profiles remain read-only.
+
+Curve edits require the current `expected_sha256`. For an automatic curve,
+explicitly pass `use_file_curve=true` with the supplied points to clear only
+bit 4 (`0x10`) of the **root** inverter Flags. Nested commercial Flags and all
+other bits are preserved. Without that opt-in, automatic-mode edits are
+rejected because the software can ignore the supplied points. An inverter
+already using its file curve needs no mode switch. `use_file_curve` is not a
+standalone flag editor and cannot re-enable automatic mode; restore the backup
+to undo the entire edit. `curve_control_before` and `curve_control_after` make
+the switch visible in both previews and applied results.
+
+For example, after inspecting an editable four-point synthetic inverter:
+
+```json
+{
+  "component_type": "OND",
+  "filename": "custom.OND",
+  "updates": {},
+  "expected_sha256": "<sha256 from inspection>",
+  "curve_updates": {
+    "Converter/ProfilPIO": [[100, 80], [200, 180], [500, 470], [1000, 950]]
+  },
+  "use_file_curve": true,
+  "dry_run": true
+}
+```
+
+Scalar and curve changes can share one preview, write and backup. No-op point
+edits in file mode retain the original numeric spelling and create no backup.
+Editing points does not refit efficiency scalars, thresholds, spline metadata
+or other derived parameters. Validate the resulting model with PVsyst.
 
 Optional live preview/apply verification is available in
 `tests/smoke_live_component_editor.py`. It copies an explicitly selected
@@ -175,6 +213,15 @@ CSV outputs, the preview and `evidence.json` in the specified lab directory.
 Set the environment variables documented at the top of that script. This
 test requires installed PVsyst, a compatible grid project and simulation quota;
 the ordinary unit tests and `tests/smoke_components.py` use synthetic fixtures.
+
+`tests/smoke_live_ond_curves.py` uses the same environment variables to perform
+two real MCP stdio simulations: file mode with original ordinates, then file
+mode with ordinates multiplied by 0.9. It compares rows with equal DC input and
+equal exported non-operating losses, and verifies previews, exact restoration
+and unchanged source files. PVsyst 8.1.6 produced seven matched-input rows with
+90% AC output within CSV rounding. Total energy also changed, but its direction
+is not an acceptance criterion because limiting states can change. See
+[the verification record](docs/ond-curve-verification.md) for scope and limits.
 
 Component creation and edits check object structure, required fields and a limited set of numeric constraints. They do **not** certify the physical model: exercise a project variant that actually references the new component and inspect the resulting CSV. `TypeGen` is a free-text field accepted by the tested PVsyst version, unlike the battery technology enum `BattTechnol`, which is deliberately excluded from scalar editing. Inverter curves and battery chemistry are not transformed when cloning; BTR profile curves are not editable through the scalar-update tool, and `CFuelHor` must be positive because zero was observed to crash PVsyst. Text cloning and editing retain a UTF-8 BOM when the source has one. Component inspection returns at most 200 lines per page: `page_truncated` indicates more lines after the current page, `line_truncated` indicates a displayed line exceeded 2000 characters, and `lines_truncated` is true if either occurs. Edits automatically create byte-identical backups under `ComposPV/.mcp-backups`; `pvsyst_archive_component` requires `confirm=true`, scans PRJ/VC files recursively under workspace `Projects` (without following linked directories), blocks references and moves the file to `ComposPV/.mcp-archive`. Reference checks stream project files up to 32 MB; larger files or unreadable/symlinked project paths block archiving so that it does not proceed with an incomplete check. Both rollback tools require `confirm=true`. All writes stay in the user workspace; `DataRO` is read-only. No vendor component data is shipped in this repository.
 

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import StrictBool, StrictFloat
 
 from pvsyst_cli import (PVsystCLI, VAR_GROUPS, build_monthly_weather_csv,
                         build_sfi, iter_result_csv, parse_batch_results, result_units, summarize_results)
@@ -308,8 +309,9 @@ def pvsyst_get_component(component_type: str, filename: str,
                          library: str = "workspace", offset: int = 0,
                          limit: int = 100) -> dict:
     """Read paged UTF-8 text, scalar allowlist, SHA and existing OND curve paths/
-    active points. Curve diagnostics describe file structure, not simulation
-    validity or editable capability. Legacy binary PAN is metadata only."""
+    active points. Curves report automatic/file mode, supported edits and their
+    preconditions; static inspection does not verify simulation behavior.
+    Legacy binary PAN is metadata only."""
     return component_call("inspect", component_type, filename, library, offset, limit)
 
 
@@ -349,14 +351,21 @@ def pvsyst_clone_component(component_type: str, source_name: str, new_name: str,
 @categorized_tool()
 def pvsyst_update_component(component_type: str, filename: str,
                            updates: dict[str, str],
-                           expected_sha256: str | None = None, dry_run: bool = False) -> dict:
+                           expected_sha256: str | None = None, dry_run: bool = False,
+                           curve_updates: dict[str, list[list[StrictFloat]]] | None = None,
+                           use_file_curve: StrictBool = False) -> dict:
     """Edit allowlisted text fields in one workspace component with automatic
     backup. dry_run returns a diff and candidate SHA without writes. Pass the
-    inspected expected_sha256 to reject stale edits. Legacy PAN is read-only;
-    curve editing is not supported. Physical behavior requires simulation.
+    inspected expected_sha256 to reject stale edits. curve_updates accepts only
+    OND Version=8.1.6 single-voltage Converter/ProfilPIO Mode=1 points in watts,
+    preserving the active count. Curves require expected_sha256; pass updates={}
+    for curve-only edits. Automatic curves require explicit use_file_curve=true
+    alongside points to clear the root automatic-profile bit. Other Flags are
+    preserved. Three-voltage curves and legacy PAN are read-only.
+    Physical behavior requires simulation; derived scalars are not refitted.
     A no-op returns changed=false without creating a backup."""
     return component_call("update", component_type, filename, updates,
-                          expected_sha256, dry_run)
+                          expected_sha256, dry_run, curve_updates, use_file_curve)
 
 
 @categorized_tool()
