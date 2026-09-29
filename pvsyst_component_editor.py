@@ -125,4 +125,3 @@ def curve_inventory(kind: str, text: str) -> dict:
                       "axes": ["input power (W)", "output power (W)"] if supported else None})
     return {"scope": "OND power curves only; physical behavior requires simulation",
             "items": items, "truncated": len(found) > len(items)}
-
