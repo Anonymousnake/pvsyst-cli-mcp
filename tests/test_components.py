@@ -1,11 +1,13 @@
 """Offline component fixtures; no installed PVsyst or simulation quota required."""
 import asyncio
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from pvsyst_components import ComponentStore
+from pvsyst_components import ComponentStore, MAX_PROJECT_BYTES
 from pvsyst_cli import PVsystCLI
 import pvsyst_mcp_server as server
 
@@ -120,6 +122,24 @@ class ComponentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.inspect("GEN", "sample.GEN", limit=201)
 
+    def test_inspect_reports_page_and_line_truncation_independently(self):
+        path = self.files["BTR"]
+        path.write_text(BTR + "\n".join(f"Extra_{i}=v" for i in range(130)) + "\n",
+                        encoding="utf-8")
+        first = self.store.inspect("BTR", path.name, limit=100)
+        self.assertGreater(first["total_lines"], 100)
+        self.assertTrue(first["page_truncated"])
+        self.assertFalse(first["line_truncated"])
+        self.assertTrue(first["lines_truncated"])
+        last = self.store.inspect("BTR", path.name, offset=100, limit=100)
+        self.assertFalse(last["page_truncated"])
+        self.assertFalse(last["lines_truncated"])
+        path.write_text(BTR + "Comment=" + "x" * 2100 + "\n", encoding="utf-8")
+        long_line = self.store.inspect("BTR", path.name, offset=12, limit=100)
+        self.assertTrue(long_line["line_truncated"])
+        self.assertFalse(long_line["page_truncated"])
+        self.assertTrue(long_line["lines_truncated"])
+
     def test_create_from_complete_text_without_template(self):
         for kind, text in (("PAN", PAN), ("OND", OND), ("BTR", BTR), ("GEN", GEN)):
             with self.subTest(kind=kind):
@@ -177,6 +197,15 @@ class ComponentTests(unittest.TestCase):
         self.assertFalse(self.store.compare("GEN", "sample.GEN", "fresh.GEN")["same_bytes"])
         self.assertIn("-    Manufacturer=Lab", self.store.compare("GEN", "sample.GEN", "fresh.GEN")["diff"])
 
+    def test_clone_and_update_preserve_utf8_bom(self):
+        source = self.files["OND"]
+        source.write_bytes(b"\xef\xbb\xbf" + OND.encode("utf-8"))
+        self.store.clone("OND", source.name, "with_bom.OND",
+                         {"Manufacturer": "New", "Model": "New"})
+        self.assertTrue(source.with_name("with_bom.OND").read_bytes().startswith(b"\xef\xbb\xbf"))
+        self.store.update("OND", source.name, {"Model": "Updated"})
+        self.assertTrue(source.read_bytes().startswith(b"\xef\xbb\xbf"))
+
     def test_known_value_checks_and_unsupported_fields(self):
         original = self.files["GEN"].read_bytes()
         for value in ("0", "-5", "NaN", "Infinity"):
@@ -202,6 +231,8 @@ class ComponentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Incomplete"):
             self.store.copy("GEN", invalid.name, "unsafe.GEN")
         self.assertFalse(invalid.with_name("unsafe.GEN").exists())
+        self.store.update("GEN", "sample.GEN", {"TypeGen": "CustomFuel"})
+        self.assertEqual(self.store.validate("GEN", "sample.GEN")["known_value_errors"], [])
 
     def test_paths_and_backup_restrictions(self):
         for bad in ("../sample.GEN", "..\\sample.GEN", "C:\\sample.GEN",
@@ -254,6 +285,58 @@ class ComponentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.dependencies("../fixture", "VC0")
 
+    def test_subarray_thresholds_report_values_per_array(self):
+        projects = self.workspace / "Projects"
+        projects.mkdir()
+        (projects / "fixture.PRJ").write_text("PVObject_=pvProject\n", encoding="utf-8")
+        (projects / "fixture.VC0").write_text(
+            "PVObject_=pvVariant\n"
+            "PVObject_=pvSubArray\nVBkUpEncl_syst=0.250\n"
+            "VBkUpDecl_syst=0.450\nEnd of PVObject pvSubArray\n"
+            "PVObject_=pvSubArray\nVBkUpEncl_syst=0.350\n"
+            "End of PVObject pvSubArray\n"
+            "PVObject_System=pvSystem\nFlags=$20\nPEffBackUp=40\n"
+            "GensetFile=sample.GEN\nEnd of PVObject pvSystem\n",
+            encoding="utf-8")
+        configuration = self.store.dependencies("fixture.PRJ", "VC0")["generator_configuration"]
+        self.assertTrue(configuration["enabled_flag"])
+        self.assertEqual(configuration["effective_backup_kw"], 40)
+        self.assertEqual(configuration["subarray_thresholds"], [
+            {"index": 0, "line": 2, "enclosure": "0.250", "release": "0.450"},
+            {"index": 1, "line": 6, "enclosure": "0.350", "release": None},
+        ])
+        self.assertTrue(configuration["enclosure_threshold_present"])
+        self.assertTrue(configuration["release_threshold_present"])
+
+    def test_archive_recurses_into_project_subdirectories(self):
+        projects = self.workspace / "Projects"
+        nested = projects / "SubFolder"
+        nested.mkdir(parents=True)
+        (nested / "uses.VC0").write_text("GensetFile=sample.GEN\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "SubFolder/uses.VC0"):
+            self.store.archive("GEN", "sample.GEN", True)
+        self.assertTrue(self.files["GEN"].exists())
+        (nested / "uses.VC0").write_text("GensetFile=other.GEN\n", encoding="utf-8")
+        result = self.store.archive("GEN", "sample.GEN", True)
+        self.assertIn("archive_name", result)
+
+    def test_archive_scans_large_projects_and_bounds_file_size(self):
+        projects = self.workspace / "Projects"
+        projects.mkdir()
+        large = projects / "large.VC0"
+        large.write_text("Comment=ok\n" * 200_000 + "GensetFile=sample.GEN\n",
+                         encoding="utf-8")
+        self.assertGreater(large.stat().st_size, 2_000_000)
+        with self.assertRaisesRegex(ValueError, "referenced by: large.VC0"):
+            self.store.archive("GEN", "sample.GEN", True)
+        large.write_text("Comment=ok\n" * 200_000, encoding="utf-8")
+        self.assertEqual(self.store._project_uses("GEN", "sample.GEN"), [])
+        with large.open("ab") as stream:
+            stream.truncate(MAX_PROJECT_BYTES + 1)
+        with self.assertRaisesRegex(ValueError, "oversized project file: large.VC0"):
+            self.store.archive("GEN", "sample.GEN", True)
+        self.assertTrue(self.files["GEN"].exists())
+
     def test_archive_and_restore_only_unreferenced(self):
         project = self.workspace / "Projects"
         project.mkdir()
@@ -277,6 +360,41 @@ class ComponentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Cannot safely inspect project references"):
             self.store.archive("GEN", "sample.GEN", True)
         self.assertTrue(self.files["GEN"].exists())
+
+    def test_archive_rejects_nested_symlink_directory(self):
+        projects = self.workspace / "Projects"
+        projects.mkdir()
+        external = self.workspace.parent / "external-projects"
+        external.mkdir()
+        (external / "uses.VC0").write_text("GensetFile=sample.GEN\n", encoding="utf-8")
+        try:
+            (projects / "linked").symlink_to(external, target_is_directory=True)
+        except OSError:
+            self.skipTest("Symlink creation is unavailable on this Windows host")
+        with self.assertRaisesRegex(ValueError, "symlink project path: linked"):
+            self.store.archive("GEN", "sample.GEN", True)
+        self.assertTrue(self.files["GEN"].exists())
+
+    def test_installed_library_discovery_uses_cli_not_workspace_name(self):
+        install = self.workspace.parent / "install"
+        install.mkdir()
+        executable = install / "PVsystCLI.exe"
+        executable.write_text("fixture", encoding="utf-8")
+        official = install / "DataRO" / "PVsyst8.1_Data" / "ComposPV" / "Inverters"
+        official.mkdir(parents=True)
+        (official / "official.OND").write_text(OND, encoding="utf-8")
+        server._cli = PVsystCLI(executable, self.workspace)
+        self.addCleanup(setattr, server, "_cli", None)
+        with patch.dict(os.environ, {"PVSYST_BUILTIN_COMPONENTS": ""}):
+            self.assertEqual(server.pvsyst_list_components("OND", "builtin")["total"], 1)
+            self.assertEqual(server.pvsyst_copy_component(
+                "OND", "official.OND", "imported.OND", "builtin")["type"], "OND")
+            second = install / "DataRO" / "PVsyst8.0_Data" / "ComposPV"
+            second.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, "Multiple DataRO component libraries"):
+                server.components()
+        with patch.dict(os.environ, {"PVSYST_BUILTIN_COMPONENTS": str(official.parent)}):
+            self.assertEqual(server.pvsyst_list_components("OND", "builtin")["total"], 1)
 
     def test_mcp_registration_and_component_call(self):
         client = PVsystCLI(Path(sys.executable), self.workspace)

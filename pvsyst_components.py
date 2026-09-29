@@ -47,6 +47,7 @@ REFERENCE = re.compile(r"^\s*(PVModule|GInverter|BatteryFile|GensetFile)\s*=\s*(
 REF_KIND = {"PVModule": "PAN", "GInverter": "OND", "BatteryFile": "BTR",
             "GensetFile": "GEN"}
 MAX_BYTES = 2_000_000
+MAX_PROJECT_BYTES = 32_000_000
 
 
 class ComponentStore:
@@ -238,7 +239,9 @@ class ComponentStore:
             lines = self._text(kind, data)[1].splitlines()
             page = lines[offset:offset + limit]
             result["total_lines"] = len(lines)
-            result["lines_truncated"] = any(len(line) > 2000 for line in page)
+            result["line_truncated"] = any(len(line) > 2000 for line in page)
+            result["page_truncated"] = offset + len(page) < len(lines)
+            result["lines_truncated"] = result["line_truncated"] or result["page_truncated"]
             result["lines"] = [line[:2000] for line in page]
         return result
 
@@ -355,11 +358,15 @@ class ComponentStore:
         with self.lock:
             if not {"Manufacturer", "Model"}.issubset(updates):
                 raise ValueError("Cloning requires new Manufacturer and Model")
-            _, source = self._text(kind, self._read(self._path(kind, source_name, source_library)))
+            source_data = self._read(self._path(kind, source_name, source_library))
+            has_bom = source_data.startswith(b"\xef\xbb\xbf")
+            _, source = self._text(kind, source_data)
             if source is None:
                 raise ValueError("Legacy binary PAN cannot be edited")
             self._require_valid(self._inspect(kind, source.encode("utf-8")), complete=True)
             candidate = self._replace_fields(kind, source, updates).encode("utf-8")
+            if has_bom:
+                candidate = b"\xef\xbb\xbf" + candidate
             self._require_valid(self._inspect(kind, candidate), complete=True)
             return self._new(kind, new_name, candidate)
 
@@ -434,26 +441,35 @@ class ComponentStore:
         if not root.is_dir():
             return []
         matches = []
-        for path in root.iterdir():
-            relevant = (path.suffix.upper() == ".PRJ"
-                        or re.fullmatch(r"\.VC[A-Za-z0-9]+", path.suffix, re.I))
-            if not relevant:
-                continue
-            if path.is_symlink():
-                raise ValueError(f"Cannot safely inspect symlink project file: {path.name}")
-            if not path.is_file():
-                continue
-            if path.stat().st_size > MAX_BYTES:
-                raise ValueError(f"Cannot check references in oversized project file: {path.name}")
-            try:
-                lines = path.read_text(encoding="utf-8-sig").splitlines()
-            except UnicodeDecodeError as exc:
-                raise ValueError(f"Cannot safely inspect project references: {path.name}") from exc
-            for line in lines:
-                match = REFERENCE.fullmatch(line)
-                if match and REF_KIND[match[1]] == kind and match[2].casefold() == name.casefold():
-                    matches.append(path.name)
-                    break
+        directories = [root]
+        while directories:
+            directory = directories.pop()
+            for path in directory.iterdir():
+                relative = path.relative_to(root).as_posix()
+                if path.is_symlink() or path.resolve() != path:
+                    if path.is_dir() or path.suffix.upper() == ".PRJ" or re.fullmatch(
+                            r"\.VC[A-Za-z0-9]+", path.suffix, re.I):
+                        raise ValueError(f"Cannot safely inspect symlink project path: {relative}")
+                    continue
+                if path.is_dir():
+                    directories.append(path)
+                    continue
+                relevant = (path.suffix.upper() == ".PRJ"
+                            or re.fullmatch(r"\.VC[A-Za-z0-9]+", path.suffix, re.I))
+                if not relevant or not path.is_file():
+                    continue
+                if path.stat().st_size > MAX_PROJECT_BYTES:
+                    raise ValueError(f"Cannot check references in oversized project file: {relative}")
+                try:
+                    with path.open("r", encoding="utf-8-sig") as stream:
+                        for line in stream:
+                            match = REFERENCE.fullmatch(line.rstrip("\r\n"))
+                            if (match and REF_KIND[match[1]] == kind
+                                    and match[2].casefold() == name.casefold()):
+                                matches.append(relative)
+                                break
+                except (UnicodeDecodeError, OSError) as exc:
+                    raise ValueError(f"Cannot safely inspect project references: {relative}") from exc
         return sorted(matches)
 
     def archive(self, kind: str, name: str, confirm: bool = False) -> dict:
@@ -555,10 +571,24 @@ class ComponentStore:
                     effective_power = None
             except ValueError:
                 effective_power = None
+            subarrays = []
+            for index, array in enumerate(re.finditer(
+                    r"(?ms)^[ \t]*PVObject_[A-Za-z0-9_]*=pvSubArray[ \t]*$\n"
+                    r"(?P<body>.*?)^[ \t]*End of PVObject pvSubArray[ \t]*$",
+                    variant_text)):
+                array_body = array["body"]
+                enclosure = re.search(r"(?m)^[ \t]*VBkUpEncl_syst=([^\r\n]+)", array_body)
+                release = re.search(r"(?m)^[ \t]*VBkUpDecl_syst=([^\r\n]+)", array_body)
+                subarrays.append({"index": index, "line": variant_text.count("\n", 0, array.start()) + 1,
+                                  "enclosure": enclosure[1].strip() if enclosure else None,
+                                  "release": release[1].strip() if release else None})
             generator = {"enabled_flag": bool(int(flags[1], 16) & 0x20) if flags else False,
                          "effective_backup_kw": effective_power,
-                         "enclosure_threshold_present": "VBkUpEncl_syst=" in variant_text,
-                         "release_threshold_present": "VBkUpDecl_syst=" in variant_text,
+                         "subarray_thresholds": subarrays,
+                         "enclosure_threshold_present": any(item["enclosure"] is not None
+                                                            for item in subarrays),
+                         "release_threshold_present": any(item["release"] is not None
+                                                          for item in subarrays),
                          "note": "File reference alone does not activate a generator; inspect simulation outputs"}
         return {"project": f"{base}.PRJ", "variant": variant, "references": refs,
                 "generator_configuration": generator,
