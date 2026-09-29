@@ -34,6 +34,20 @@ async def main():
                 raise RuntimeError("MCP tool reported an error")
             # Avoid printing license material or private project names.
             print("Capabilities, license, projects: OK")
+            kind = os.environ.get("PVSYST_SMOKE_COMPONENT_TYPE")
+            component_name = os.environ.get("PVSYST_SMOKE_COMPONENT_NAME")
+            if kind and component_name:
+                for name, arguments in (
+                    ("pvsyst_list_components", {"component_type": kind}),
+                    ("pvsyst_get_component", {"component_type": kind,
+                                               "filename": component_name, "limit": 5}),
+                    ("pvsyst_validate_component", {"component_type": kind,
+                                                    "filename": component_name}),
+                ):
+                    result = await session.call_tool(name, arguments)
+                    if result.is_error:
+                        raise RuntimeError(f"{name} reported an error")
+                print("Component inventory and validation: OK")
             csv_name = os.environ.get("PVSYST_SMOKE_CSV")
             if csv_name:
                 for name, arguments in (
