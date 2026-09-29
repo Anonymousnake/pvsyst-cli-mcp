@@ -12,6 +12,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_components import PAN, OND, BTR, GEN
+from test_component_editor import CURVED_OND, POINTS
 from test_variants import VARIANT
 
 
@@ -40,6 +41,32 @@ async def main():
                 async def data_call(name, args):
                     result = await call(name, args)
                     return json.loads(result.content[0].text)
+
+                await data_call("pvsyst_create_component", {
+                    "component_type": "OND", "filename": "curve.OND", "content": CURVED_OND,
+                })
+                inspected = await data_call("pvsyst_get_component", {
+                    "component_type": "OND", "filename": "curve.OND",
+                })
+                assert inspected["curves"]["items"][0]["points"] == POINTS
+                curve_args = {
+                    "component_type": "OND", "filename": "curve.OND",
+                    "expected_sha256": inspected["sha256"],
+                    "updates": {"PNomConv": "45"},
+                }
+                preview = await data_call("pvsyst_update_component", {**curve_args, "dry_run": True})
+                curve_file = root / "ComposPV" / "Inverters" / "curve.OND"
+                assert hashlib.sha256(curve_file.read_bytes()).hexdigest() == inspected["sha256"]
+                assert not (root / "ComposPV" / ".mcp-backups").exists()
+                edited = await data_call("pvsyst_update_component", curve_args)
+                assert edited["sha256"] == preview["sha256"]
+                await call("pvsyst_update_component", curve_args, expect_error=True)
+                restored = await data_call("pvsyst_restore_component", {
+                    "component_type": "OND", "filename": "curve.OND",
+                    "backup_name": edited["backup_name"], "confirm": True,
+                })
+                assert restored["sha256"] == inspected["sha256"]
+                print("MCP component edit: curve inventory, scalar preview, apply, stale rejection, exact restore: OK")
 
                 for kind, content in (("PAN", PAN), ("OND", OND),
                                       ("BTR", BTR), ("GEN", GEN)):

@@ -138,6 +138,44 @@ Component tools support **four types only**: `.PAN` (`ComposPV/PVmodules`), `.ON
 | BTR | `Manufacturer`, `Model`, `DataSource`, `CapNomC10`, `CapaRef`, `AlphaSOC` |
 | GEN | `Manufacturer`, `Model`, `DataSource`, `TypeGen`, `PNomGen`, `CFuelHor` |
 
+`pvsyst_update_component` also accepts `expected_sha256` and `dry_run`. Read the
+component first, then pass its `sha256` as `expected_sha256` to preview or apply
+an edit. `dry_run=true` validates the candidate and returns a bounded `diff`,
+`before_sha256`, candidate `sha256`, `changed` and static `validation` without
+writing a file or creating a backup. To apply the preview, repeat the same
+updates with `dry_run=false` and the **original** `before_sha256`; the candidate
+hash is not the precondition. Stale edits are rejected before writing. The
+optional hash keeps older scalar calls compatible; `conflict_checked` tells
+clients whether that precondition was supplied. No-op updates return
+`changed=false` without a `backup_name`. Real edits retain automatic recovery
+snapshots and preserve the BOM, line endings and assignment whitespace.
+Rechecks also detect intervening file changes during preparation; the local
+lock and hash checks do not provide an OS-level lock against external editors.
+
+`pvsyst_get_component` returns the scalar allowlist as `editable_fields` and a
+bounded **read-only** OND `curves` inventory. Each curve has its object path
+(for example `Converter/ProfilPIO`), line number and points declared effective
+by `NPtsEff`; padding after that count is excluded from the displayed points.
+Missing or duplicate count/point fields are reported as curve diagnostics.
+Inspection is limited to 16 curves and 256 allocated points per curve. These
+limits describe this reader, not PVsyst format limits. `structure_complete`
+only describes serialized count/point consistency. Every curve currently
+reports `editable=false` and `simulation_effect="unverified"`: an independent
+PVsyst 8.1.6 experiment produced identical simulation results after changing
+OND curve ordinates, so point writing is deliberately not exposed pending
+verification of the native activation/calculation path. Existing scalar edits
+do not recalculate curve data or derived parameters.
+
+Optional live preview/apply verification is available in
+`tests/smoke_live_component_editor.py`. It copies an explicitly selected
+workspace into separate baseline/edited directories, halves the selected
+inverter's `PNomConv`, runs two two-day simulations, restores the edited file
+byte-for-byte and verifies that the source workspace did not change. It keeps
+CSV outputs, the preview and `evidence.json` in the specified lab directory.
+Set the environment variables documented at the top of that script. This
+test requires installed PVsyst, a compatible grid project and simulation quota;
+the ordinary unit tests and `tests/smoke_components.py` use synthetic fixtures.
+
 Component creation and edits check object structure, required fields and a limited set of numeric constraints. They do **not** certify the physical model: exercise a project variant that actually references the new component and inspect the resulting CSV. `TypeGen` is a free-text field accepted by the tested PVsyst version, unlike the battery technology enum `BattTechnol`, which is deliberately excluded from scalar editing. Inverter curves and battery chemistry are not transformed when cloning; BTR profile curves are not editable through the scalar-update tool, and `CFuelHor` must be positive because zero was observed to crash PVsyst. Text cloning and editing retain a UTF-8 BOM when the source has one. Component inspection returns at most 200 lines per page: `page_truncated` indicates more lines after the current page, `line_truncated` indicates a displayed line exceeded 2000 characters, and `lines_truncated` is true if either occurs. Edits automatically create byte-identical backups under `ComposPV/.mcp-backups`; `pvsyst_archive_component` requires `confirm=true`, scans PRJ/VC files recursively under workspace `Projects` (without following linked directories), blocks references and moves the file to `ComposPV/.mcp-archive`. Reference checks stream project files up to 32 MB; larger files or unreadable/symlinked project paths block archiving so that it does not proceed with an incomplete check. Both rollback tools require `confirm=true`. All writes stay in the user workspace; `DataRO` is read-only. No vendor component data is shipped in this repository.
 
 Place an existing SFI under `Models`, or call `pvsyst_build_sfi` first. A CSV with no SFI/RVT export definition may contain dates only. For a single `pvsyst_run_simulation` call, `csv_name="run01"` and `csv_name="run01.csv"` both select `Results/run01.csv`; input filenames such as `sfi_name` still require their extension. Output filenames cannot contain paths, and generated files are never overwritten. For `create-site`, supply altitude, timezone and country code to avoid its optional online location lookups. License mutation tool arguments can be retained by the MCP client; do not echo keys in logs. When `lic-info` provides no usable status or expiration, `pvsyst_license_info` reports `UNSPECIFIED` rather than assuming the license is active.
