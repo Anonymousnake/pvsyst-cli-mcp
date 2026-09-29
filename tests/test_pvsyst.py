@@ -140,7 +140,7 @@ class PVsystTests(unittest.TestCase):
         server._cli = self.client
         tools = asyncio.run(server.mcp.list_tools())
         names = {tool.name for tool in tools}
-        self.assertEqual(len(names), 29)
+        self.assertEqual(len(names), 33)
         self.assertIn("pvsyst_read_batch_results", names)
         self.assertIn("pvsyst_create_site", names)
         self.assertIn("pvsyst_read_rows", names)
