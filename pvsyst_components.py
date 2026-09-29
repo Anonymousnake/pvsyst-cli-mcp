@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 
 from pvsyst_paths import project_name, project_path, variant_id
-from pvsyst_component_editor import curve_inventory, replace_value
+from pvsyst_component_editor import curve_inventory, replace_curves, replace_value
 
 
 # Workspace spelling follows existing PVsyst workspaces; Windows paths are case-insensitive.
@@ -424,17 +424,28 @@ class ComponentStore:
             return self._new(kind, new_name, candidate)
 
     def update(self, kind: str, name: str, updates: dict[str, str],
-               expected_sha256: str | None = None, dry_run: bool = False) -> dict:
+               expected_sha256: str | None = None, dry_run: bool = False,
+               curve_updates: dict[str, list[list[float]]] | None = None,
+               use_file_curve: bool = False) -> dict:
         kind = self._kind(kind)
         if not isinstance(dry_run, bool):
             raise ValueError("dry_run must be a boolean")
+        if not isinstance(use_file_curve, bool):
+            raise ValueError("use_file_curve must be a boolean")
         if expected_sha256 is not None and (not isinstance(expected_sha256, str)
                 or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256)):
             raise ValueError("expected_sha256 must be a SHA-256 digest")
         if updates is not None and not isinstance(updates, dict):
             raise ValueError("updates must be a dictionary")
-        if not updates:
-            raise ValueError("Supply scalar updates")
+        if curve_updates is not None:
+            if not isinstance(curve_updates, dict) or not curve_updates:
+                raise ValueError("curve_updates must be a nonempty dictionary")
+            if expected_sha256 is None:
+                raise ValueError("Curve editing requires expected_sha256 from inspection")
+        elif use_file_curve:
+            raise ValueError("use_file_curve requires explicit curve_updates")
+        if not updates and curve_updates is None:
+            raise ValueError("Supply scalar updates or curve_updates")
         with self.lock:
             path = self._path(kind, name)
             data = self._read(path)
@@ -444,7 +455,9 @@ class ComponentStore:
             _, text = self._text(kind, data)
             if text is None:
                 raise ValueError("Legacy binary PAN cannot be edited")
-            edited = self._replace_fields(kind, text, updates)
+            edited = self._replace_fields(kind, text, updates) if updates else text
+            if curve_updates is not None:
+                edited = replace_curves(kind, edited, curve_updates, use_file_curve)
             candidate = edited.encode("utf-8")
             if data.startswith(b"\xef\xbb\xbf"):
                 candidate = b"\xef\xbb\xbf" + candidate
@@ -462,6 +475,9 @@ class ComponentStore:
                       "validation": {key: validation[key] for key in (
                           "structural_errors", "warnings", "known_value_errors")},
                       "validation_scope": "Static structure and limited values only; simulate a referencing project"}
+            if curve_updates is not None:
+                result["curve_control_before"] = curve_inventory(kind, text)["control"]
+                result["curve_control_after"] = curve_inventory(kind, edited)["control"]
             if dry_run or candidate == data:
                 return result
             if self._read(path) != data:

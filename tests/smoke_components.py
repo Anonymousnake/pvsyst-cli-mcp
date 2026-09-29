@@ -49,12 +49,21 @@ async def main():
                     "component_type": "OND", "filename": "curve.OND",
                 })
                 assert inspected["curves"]["items"][0]["points"] == POINTS
+                assert inspected["curves"]["control"]["source"] == "automatic"
                 curve_args = {
                     "component_type": "OND", "filename": "curve.OND",
                     "expected_sha256": inspected["sha256"],
                     "updates": {"PNomConv": "45"},
+                    "curve_updates": {"Converter/ProfilPIO": [[x, y * 0.9] for x, y in POINTS]},
+                    "use_file_curve": True,
                 }
+                await call("pvsyst_update_component", {**curve_args, "use_file_curve": False}, expect_error=True)
+                await call("pvsyst_update_component", {**curve_args,
+                    "curve_updates": {"Converter/ProfilPIO": [[True, 0]] + POINTS[1:]}}, expect_error=True)
+                await call("pvsyst_update_component", {**curve_args,
+                    "curve_updates": {"Converter/ProfilPIO": [["100", 0]] + POINTS[1:]}}, expect_error=True)
                 preview = await data_call("pvsyst_update_component", {**curve_args, "dry_run": True})
+                assert preview["curve_control_after"]["source"] == "file"
                 curve_file = root / "ComposPV" / "Inverters" / "curve.OND"
                 assert hashlib.sha256(curve_file.read_bytes()).hexdigest() == inspected["sha256"]
                 assert not (root / "ComposPV" / ".mcp-backups").exists()
@@ -66,7 +75,7 @@ async def main():
                     "backup_name": edited["backup_name"], "confirm": True,
                 })
                 assert restored["sha256"] == inspected["sha256"]
-                print("MCP component edit: curve inventory, scalar preview, apply, stale rejection, exact restore: OK")
+                print("MCP component edit: auto guard, strict numbers, scalar + curve preview/apply, stale rejection, exact restore: OK")
 
                 for kind, content in (("PAN", PAN), ("OND", OND),
                                       ("BTR", BTR), ("GEN", GEN)):
