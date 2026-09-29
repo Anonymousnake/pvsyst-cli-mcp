@@ -29,9 +29,20 @@ def cli() -> PVsystCLI:
 
 def components() -> ComponentStore:
     current = cli()
-    builtin = current.cli.parent / "DataRO" / current.workspace.name / "ComposPV"
-    return ComponentStore(current.workspace, builtin if builtin.is_dir() else None,
-                          current._lock)
+    configured = os.environ.get("PVSYST_BUILTIN_COMPONENTS")
+    if configured:
+        builtin = Path(configured).resolve(strict=True)
+        if not builtin.is_dir() or builtin.name != "ComposPV":
+            raise ValueError("PVSYST_BUILTIN_COMPONENTS must be a ComposPV directory")
+    else:
+        data_ro = current.cli.parent / "DataRO"
+        candidates = (sorted(path / "ComposPV" for path in data_ro.iterdir()
+                             if path.is_dir() and (path / "ComposPV").is_dir())
+                      if data_ro.is_dir() else [])
+        if len(candidates) > 1:
+            raise ValueError("Multiple DataRO component libraries; set PVSYST_BUILTIN_COMPONENTS")
+        builtin = candidates[0] if candidates else None
+    return ComponentStore(current.workspace, builtin, current._lock)
 
 
 def component_call(method: str, *args, **kwargs) -> dict:
