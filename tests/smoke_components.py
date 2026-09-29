@@ -1,6 +1,7 @@
 """Real MCP stdio component lifecycle in an isolated temporary workspace."""
 import asyncio
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -29,7 +30,7 @@ async def main():
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
                 tools = await session.list_tools()
-                assert len(tools.tools) == 33
+                assert len(tools.tools) == 45
 
                 async def call(name, args, expect_error=False):
                     result = await session.call_tool(name, args)
@@ -113,6 +114,69 @@ async def main():
                 })
                 assert hashlib.sha256(target.read_bytes()).hexdigest() == before_hash
                 print("MCP variant lifecycle: inspect, scoped clone, guarded edit and restore: OK")
+
+                async def data_call(name, args):
+                    result = await call(name, args)
+                    return json.loads(result.content[0].text)
+
+                (root / "Sites").mkdir()
+                (root / "Meteo").mkdir()
+                (root / "Sites" / "New.SIT").write_text(
+                    "PVObject_=pvSite\n  NomF=New.SIT\n  Site=New Site\n"
+                    "End of PVObject pvSite\n", encoding="utf-8")
+                (root / "Meteo" / "New.MET").write_bytes(b"offline fixture")
+                (root / "Projects" / "Example.PRJ").write_text(
+                    "PVObject_=pvProject\nMeteoFileName=Old.MET\n"
+                    "PVObject_SitePrj=pvSite\n  NomF=Old.SIT\n"
+                    "End of PVObject pvSite\nEnd of PVObject pvProject\n", encoding="utf-8")
+                for path in (root / "Projects").glob("Example.VC*"):
+                    variant = path.read_text(encoding="utf-8").replace("  PVObject_=pvOrient\n",
+                        "  PVObject_SiteSimul=pvSite\n    NomF=Old.SIT\n"
+                        "  End of PVObject pvSite\n  PVObject_MeteoSimul=pvMeteo\n"
+                        "    NomF=Old.MET\n    SiteM=Old Site\n"
+                        "    PVObject_SiteMet=pvSite\n      NomF=Old.SIT\n"
+                        "    End of PVObject pvSite\n  End of PVObject pvMeteo\n"
+                        "  PVObject_=pvOrient\n")
+                    path.write_text(variant, encoding="utf-8")
+                await call("pvsyst_clone_project", {"source_project": "Example.PRJ", "new_project": "Copy.PRJ"})
+                initial = await data_call("pvsyst_inspect_project", {"project": "Copy.PRJ"})
+                changed = await data_call("pvsyst_update_project_sources", {
+                    "project": "Copy.PRJ", "site_name": "New.SIT", "met_name": "New.MET",
+                    "expected_files": initial["files"],
+                })
+                inspected = await data_call("pvsyst_inspect_project", {"project": "Copy.PRJ"})
+                assert inspected["files"] == changed["files"] and not inspected["warnings"]
+                restored = await data_call("pvsyst_restore_project_sources", {
+                    "project": "Copy.PRJ", "backups": changed["backups"],
+                    "expected_files": changed["files"], "confirm": True,
+                })
+                assert restored["files"] == initial["files"]
+                parameters = await data_call("pvsyst_get_variant_parameters", {"project": "Copy.PRJ", "variant": "VC0"})
+                edited = await data_call("pvsyst_update_variant_parameters", {
+                    "project": "Copy.PRJ", "variant": "VC0", "expected_sha256": parameters["sha256"],
+                    "subarray_updates": {"NModSerie": 15}, "orientation_updates": {"FieldTilt": 25},
+                })
+                await call("pvsyst_validate_variant_structure", {"project": "Copy.PRJ", "variant": "VC0"})
+                await call("pvsyst_restore_variant", {
+                    "project": "Copy.PRJ", "variant": "VC0", "expected_sha256": edited["sha256"],
+                    "backup_name": edited["backup_name"], "confirm": True,
+                })
+                archived = await data_call("pvsyst_archive_variant", {
+                    "project": "Copy.PRJ", "variant": "VC1", "expected_sha256": initial["files"]["Copy.VC1"],
+                    "confirm": True,
+                })
+                await call("pvsyst_restore_project_archive", {
+                    "project": "Copy.PRJ", "archive_name": archived["archive_name"], "confirm": True,
+                })
+                archived = await data_call("pvsyst_archive_project", {
+                    "project": "Copy.PRJ", "expected_files": initial["files"], "confirm": True,
+                })
+                await call("pvsyst_restore_project_archive", {
+                    "project": "Copy.PRJ", "archive_name": archived["archive_name"], "confirm": True,
+                })
+                final = await data_call("pvsyst_inspect_project", {"project": "Copy.PRJ"})
+                assert final["files"] == initial["files"]
+                print("MCP project lifecycle: copy, source update/restore, parameters, variant/project archive and restore: OK")
 
 
 if __name__ == "__main__":
