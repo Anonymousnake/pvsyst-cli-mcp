@@ -14,9 +14,10 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from pvsyst_cli import (PVsystCLI, VAR_GROUPS, build_monthly_weather_csv,
-                        build_sfi, iter_result_csv, parse_batch_results, result_units)
+                        build_sfi, iter_result_csv, parse_batch_results, result_units, summarize_results)
 from pvsyst_components import ComponentStore
 from pvsyst_variants import VariantStore
+from pvsyst_paths import workspace_file
 
 mcp = MCPServer("pvsyst-cli")
 _cli: PVsystCLI | None = None
@@ -104,18 +105,7 @@ def variant_call(method: str, *args, **kwargs) -> dict:
 
 def workspace_path(folder: str, filename: str, extension: str) -> Path:
     """Allow a filename only within a named directory of the configured workspace."""
-    if (not filename or filename in (".", "..") or Path(filename).name != filename
-            or "\\" in filename or "/" in filename
-            or not filename.lower().endswith(extension)):
-        raise ValueError(f"Expected a {extension} filename without directories")
-    root = cli().workspace.resolve(strict=True)
-    parent = (root / folder).resolve()
-    if parent != root and root not in parent.parents:
-        raise ValueError("Workspace folder resolves outside the workspace")
-    target = (parent / filename).resolve()
-    if target.parent != parent:
-        raise ValueError("File resolves outside its workspace folder")
-    return target
+    return workspace_file(cli().workspace, folder, filename, extension)
 
 
 def optional_path(folder: str, filename: str, extension: str) -> Path | None:
@@ -190,7 +180,7 @@ def pvsyst_inspect_project(project: str) -> dict:
 @categorized_tool()
 def pvsyst_archive_project(project: str, expected_files: dict[str, str],
                            confirm: bool = False) -> dict:
-    """Archive a full PRJ and VC set after matching every hash; confirm=true."""
+    """Archive up to 128 PRJ/VC members after matching every hash; confirm=true."""
     return variant_call("archive_project", project, expected_files, confirm)
 
 
@@ -228,7 +218,8 @@ def pvsyst_update_project_sources(project: str, site_name: str, met_name: str,
 def pvsyst_restore_project_sources(project: str, backups: dict[str, str],
                                    expected_files: dict[str, str], confirm: bool = False) -> dict:
     """Restore every PRJ/VC file from one source-update transaction, after
-    matching all current hashes. Requires confirm=true and backs up current bytes."""
+    matching current hashes, a complete transaction manifest and backup hashes.
+    Requires confirm=true and backs up current bytes; legacy sets need manual recovery."""
     return variant_call("restore_project_sources", project, backups, expected_files, confirm)
 
 
@@ -257,7 +248,8 @@ def pvsyst_update_variant_components(project: str, variant: str,
 
 @categorized_tool()
 def pvsyst_validate_variant_structure(project: str, variant: str) -> dict:
-    """Check known circuit branch and orientation references; report shading-table limits."""
+    """Check orientation and supported grid circuit references; disclose unchecked scope.
+    valid is false for issues, null for incomplete checks, true when scoped checks pass."""
     return variant_call("validate_structure", project, variant)
 
 
@@ -370,7 +362,8 @@ def pvsyst_backup_component(component_type: str, filename: str) -> dict:
 def pvsyst_restore_component(component_type: str, filename: str,
                              backup_name: str, confirm: bool = False) -> dict:
     """Restore a matching backup to a workspace component; confirm=true required.
-    The current file is itself backed up before replacement."""
+    Back up current bytes, verify new snapshot metadata, and restore original bytes.
+    Model diagnostics are returned separately; legacy snapshots have unverified integrity."""
     return component_call("restore", component_type, filename, backup_name, confirm)
 
 
@@ -386,7 +379,8 @@ def pvsyst_archive_component(component_type: str, filename: str,
 def pvsyst_restore_archived_component(component_type: str, filename: str,
                                       archive_name: str, confirm: bool = False) -> dict:
     """Restore an archived component as a NEW file, preserving the archived
-    snapshot; requires confirm=true and never overwrites existing files."""
+    snapshot; requires confirm=true and never overwrites existing files.
+    Verify new snapshot metadata; return model diagnostics separately from recovery."""
     return component_call("restore_archive", component_type, filename, archive_name, confirm)
 
 
@@ -512,48 +506,10 @@ def pvsyst_export_logs() -> dict:
 def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR",
                         folder: str = "Results") -> dict:
     """Summarize hourly or subhour SFI rows in Results or UserHourly.
-    Energy is integrated only for a regular cadence and E_Grid/EArray power."""
+    Complete energy requires finite samples and regular cadence; observed energy excludes missing samples."""
     path = result_path(folder, csv_name)
-    requested = [column.strip() for column in columns.split(",") if column.strip()]
-    indices = None
-    stats = {name: {"samples": 0, "sum": 0.0, "max": -math.inf} for name in requested}
-    count = 0
-    first = last = previous = step_minutes = None
-    regular = True
-    for headers, row in iter_result_csv(path):
-        if indices is None:
-            if not requested or any(name not in headers[1:] for name in requested):
-                raise ValueError(f"Choose columns from {headers[1:]}")
-            indices = {name: headers.index(name) for name in requested}
-            first = str(row[0])
-        if previous is not None:
-            delta = (row[0] - previous).total_seconds() / 60
-            if delta <= 0 or (step_minutes is not None and delta != step_minutes):
-                regular = False
-            elif step_minutes is None:
-                step_minutes = delta
-        previous = row[0]
-        count += 1
-        last = str(row[0])
-        for name, index in indices.items():
-            value = row[index]
-            if math.isfinite(value):
-                stats[name]["samples"] += 1
-                stats[name]["sum"] += value
-                stats[name]["max"] = max(stats[name]["max"], value)
-    step = step_minutes if regular else None
-    units = result_units(path)
-    summary = {}
-    for name, state in stats.items():
-        if state["samples"]:
-            unit = units.get(name, "")
-            energy = None
-            if name in ("E_Grid", "EArray") and step and unit in ("W", "kW"):
-                energy = state["sum"] * step / 60 * (0.001 if unit == "W" else 1)
-            summary[name] = {**state, "mean": state["sum"] / state["samples"],
-                             "unit": unit, "energy_kwh": energy}
-    return {"columns": headers, "rows": count, "first": first, "last": last,
-            "step_minutes": step, "summary": summary}
+    requested = tuple(column.strip() for column in columns.split(",") if column.strip())
+    return summarize_results(path, requested)
 
 
 @categorized_tool()

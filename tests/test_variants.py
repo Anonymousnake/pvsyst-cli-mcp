@@ -167,7 +167,7 @@ class VariantTests(unittest.TestCase):
             self.store.restore("Example.PRJ", "VC0", backup.name, changed["sha256"], True)
         self.assertEqual(outside.read_text(encoding="utf-8"), VARIANT)
 
-    def test_clone_subarray_updates_complete_branch_and_restores(self):
+    def _prepare_grid_variant(self):
         branch = """  PVObject_SystemCircuit=pvCircuit
     InverterNode Start;
       SubArrayId=1
@@ -191,6 +191,10 @@ class VariantTests(unittest.TestCase):
                             "  PVObject_Ombrage=pvShading\n    Flags=$00\n"
                             "  End of PVObject pvShading\nEnd of PVObject pvVCalcul\n")
         self.original.write_bytes(data.replace("\n", "\r\n").encode("utf-8"))
+        return data
+
+    def test_clone_subarray_updates_complete_branch_and_restores(self):
+        data = self._prepare_grid_variant()
         before = self.store.inspect("Example.PRJ", "VC0")
         result = self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"])
         self.assertEqual(result["subarray_id"], 3)
