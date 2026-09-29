@@ -1,4 +1,4 @@
-"""Lossless scalar replacement and read-only OND curve structure inspection.
+"""Lossless scalar replacement and guarded OND power curve editing.
 
 This module handles file structure only. It neither fits a physical model nor
 claims that every PVsyst version consumes every serialized field.
@@ -14,6 +14,9 @@ ASSIGNMENT = re.compile(r"^([ \t]*)([A-Za-z_][A-Za-z0-9_]*)([ \t]*=[ \t]*)(.*?)(
 CURVE_PATHS = frozenset(f"Converter/{name}" for name in
                         ("ProfilPIO", "ProfilPIOV1", "ProfilPIOV2", "ProfilPIOV3"))
 MAX_POINTS = 256
+MAIN_CURVE = "Converter/ProfilPIO"
+AUTO_CURVE_MASK = 0x10
+THREE_VOLTAGE_MASK = 0x1000
 
 
 def replace_value(line: str, value: str) -> str:
@@ -26,9 +29,10 @@ def replace_value(line: str, value: str) -> str:
 
 
 @dataclass
-class Profile:
+class ObjectBlock:
     path: str
     line: int
+    object_type: str
     fields: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
 
@@ -38,6 +42,9 @@ class Profile:
             raise ValueError(f"{name} must occur exactly once in {self.path}")
         return values[0]
 
+
+@dataclass
+class Profile(ObjectBlock):
     def points(self) -> list[list[float]]:
         def count(name: str) -> int:
             value = self.one(name)[1]
@@ -67,14 +74,14 @@ class Profile:
         return points
 
 
-def profiles(text: str) -> list[Profile]:
-    """Locate curves by their object path, never by flattened Point_N names."""
-    stack: list[tuple[str, str, Profile | None]] = []
+def _objects(text: str) -> list[ObjectBlock]:
+    """Keep each field in its owning object, including root and nested Flags."""
+    stack: list[tuple[str, ObjectBlock]] = []
     result = []
     for index, line in enumerate(text.splitlines()):
         end = re.fullmatch(r"\s*End of (?:PVObject )?(pv\w+|TConverter|TCubicProfile)\s*", line)
         if end:
-            if not stack or stack[-1][1] != end[1]:
+            if not stack or stack[-1][1].object_type != end[1]:
                 raise ValueError(f"Unmatched object closing tag at line {index + 1}")
             stack.pop()
             continue
@@ -84,28 +91,79 @@ def profiles(text: str) -> list[Profile]:
         name, value = match[2], match[4]
         if ((name.startswith("PVObject_") and re.fullmatch(r"pv\w+", value))
                 or value in ("TConverter", "TCubicProfile")):
-            profile = None
-            if stack and stack[-1][2] is not None:
-                stack[-1][2].problems.append("Nested objects inside curves are unsupported")
-            if value == "TCubicProfile":
-                path = "/".join([item[0] for item in stack[1:]] + [name])
-                profile = Profile(path, index + 1)
-                result.append(profile)
-            stack.append((name, value, profile))
-        elif stack and stack[-1][2] is not None:
-            stack[-1][2].fields.setdefault(name, []).append((index, value))
+            if len(stack) >= 64:
+                raise ValueError("Object nesting exceeds 64 supported levels")
+            if stack and isinstance(stack[-1][1], Profile):
+                stack[-1][1].problems.append("Nested objects inside curves are unsupported")
+            path = "/".join([item[0] for item in stack[1:]] + [name]) if stack else ""
+            cls = Profile if value == "TCubicProfile" else ObjectBlock
+            block = cls(path, index + 1, value)
+            result.append(block)
+            stack.append((name, block))
+        elif stack:
+            stack[-1][1].fields.setdefault(name, []).append((index, value))
     if stack:
         raise ValueError("Unclosed component object")
     return result
+
+
+def profiles(text: str) -> list[Profile]:
+    """Locate curves by their object path, never by flattened Point_N names."""
+    return [block for block in _objects(text) if isinstance(block, Profile)]
+
+
+def _curve_control(objects: list[ObjectBlock]) -> tuple[dict, tuple[int, str] | None]:
+    control = {"source": "unknown", "three_voltage": None, "flags": None,
+               "version": None, "errors": []}
+    flag_field = None
+    try:
+        roots = [block for block in objects if block.path == ""]
+        if len(roots) != 1 or roots[0].object_type != "pvGInverter":
+            raise ValueError("Expected exactly one root pvGInverter object")
+        root = roots[0]
+        flag_field = root.one("Flags")
+        if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", flag_field[1]):
+            raise ValueError("Root Flags must be a hexadecimal value of at most 32 bits")
+        flags = int(flag_field[1][1:], 16)
+        control.update(flags=flag_field[1], source="automatic" if flags & AUTO_CURVE_MASK else "file",
+                       three_voltage=bool(flags & THREE_VOLTAGE_MASK))
+        version = root.one("Version")[1]
+        control["version"] = version[:256]
+        if version != "8.1.6":
+            raise ValueError("Curve editing is verified only for OND Version=8.1.6")
+        if control["three_voltage"]:
+            raise ValueError("Three-voltage OND curve editing is not supported")
+        converters = [b for b in objects if b.path == "Converter"]
+        if len(converters) != 1 or converters[0].object_type != "TConverter":
+            raise ValueError("Expected exactly one root Converter=TConverter")
+    except ValueError as exc:
+        control["errors"].append(str(exc))
+    return control, flag_field
+
+
+def _edit_errors(profile: Profile, points: list[list[float]]) -> list[str]:
+    errors = []
+    if profile.path != MAIN_CURVE:
+        errors.append("Only Converter/ProfilPIO is editable")
+    if len(points) < 4:
+        errors.append("Curve editing requires at least four active points")
+    try:
+        if profile.one("Mode")[1] != "1":
+            errors.append("Only profile Mode=1 is supported for editing")
+    except ValueError as exc:
+        errors.append(str(exc))
+    return errors
 
 
 def curve_inventory(kind: str, text: str) -> dict:
     if kind != "OND":
         return {"scope": "OND power curves only", "items": [], "truncated": False}
     try:
-        found = profiles(text)
+        objects = _objects(text)
+        found = [block for block in objects if isinstance(block, Profile)]
     except ValueError as exc:
         return {"scope": "OND power curves only", "items": [], "errors": [str(exc)], "truncated": False}
+    control, _ = _curve_control(objects)
     items = []
     for profile in found[:16]:
         errors = list(profile.problems)
@@ -114,14 +172,68 @@ def curve_inventory(kind: str, text: str) -> dict:
             points = profile.points()
         except ValueError as exc:
             errors.append(str(exc))
-        if sum(other.path == profile.path for other in found) != 1:
+        if sum(other.path == profile.path for other in objects) != 1:
             errors.append("Ambiguous duplicate curve path")
         supported = profile.path in CURVE_PATHS
+        edit_errors = errors + control["errors"] + _edit_errors(profile, points)
         items.append({"path": profile.path, "line": profile.line,
-                      "editable": False, "structure_complete": not errors, "errors": errors,
+                      "editable": not edit_errors, "structure_complete": not errors, "errors": errors,
+                      "edit_errors": edit_errors,
+                      "requires_use_file_curve": control["source"] == "automatic",
+                      "requires_expected_sha256": True,
                       "points": points, "point_count": len(points),
                       "point_count_editable": False,
                       "simulation_effect": "unverified",
                       "axes": ["input power (W)", "output power (W)"] if supported else None})
     return {"scope": "OND power curves only; physical behavior requires simulation",
-            "items": items, "truncated": len(found) > len(items)}
+            "control": control, "items": items, "truncated": len(found) > len(items)}
+
+
+def replace_curves(kind: str, text: str, updates: dict[str, list[list[float]]],
+                   use_file_curve: bool = False) -> str:
+    if kind != "OND" or not isinstance(updates, dict) or set(updates) != {MAIN_CURVE}:
+        raise ValueError("Curve edits support only OND Converter/ProfilPIO")
+    objects = _objects(text)
+    control, flag_field = _curve_control(objects)
+    if control["errors"]:
+        raise ValueError("; ".join(control["errors"]))
+    if control["source"] == "automatic" and not use_file_curve:
+        raise ValueError("Automatic curve is enabled; supply use_file_curve=true to use supplied points")
+    matches = [b for b in objects if b.path == MAIN_CURVE]
+    if len(matches) != 1 or not isinstance(matches[0], Profile):
+        raise ValueError(f"{MAIN_CURVE} must identify exactly one supported curve")
+    profile = matches[0]
+    previous = profile.points()
+    errors = profile.problems + _edit_errors(profile, previous)
+    if errors:
+        raise ValueError("; ".join(errors))
+    supplied = updates[MAIN_CURVE]
+    if not isinstance(supplied, list) or len(supplied) != len(previous):
+        raise ValueError(f"Supply exactly {len(previous)} active points; point count changes are unsupported")
+    lines = text.splitlines(keepends=True)
+    last_x = -math.inf
+    for i, pair in enumerate(supplied, 1):
+        if (not isinstance(pair, list) or len(pair) != 2
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in pair)):
+            raise ValueError("Each point must contain two finite numbers")
+        try:
+            x, y = map(float, pair)
+        except (OverflowError, ValueError):
+            raise ValueError("Each point must contain two finite numbers") from None
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError("Each point must contain two finite numbers")
+        if x <= last_x:
+            raise ValueError("Active X values must be strictly increasing")
+        if not 0 <= y <= x:
+            raise ValueError("Supported power points require 0 <= output <= input")
+        last_x = x
+        index, _ = profile.one(f"Point_{i}")
+        if [x, y] != previous[i - 1]:
+            lines[index] = replace_value(lines[index], f"{x:.17g},{y:.17g}")
+    if control["source"] == "automatic":
+        index, raw = flag_field
+        # Bit 4 is the low bit of the second hex digit from the right.
+        # Replace only that digit, preserving even mixed-case surrounding hex.
+        digit = format(int(raw[-2], 16) & ~1, "x" if raw[-2].islower() else "X")
+        lines[index] = replace_value(lines[index], raw[:-2] + digit + raw[-1])
+    return "".join(lines)
