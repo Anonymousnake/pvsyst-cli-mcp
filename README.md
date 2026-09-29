@@ -153,13 +153,13 @@ Rechecks also detect intervening file changes during preparation; the local
 lock and hash checks do not provide an OS-level lock against external editors.
 
 `pvsyst_get_component` returns the scalar allowlist as `editable_fields` and a
-bounded OND `curves` inventory. Each curve has its object path
+bounded OND/BTR `curves` inventory. Each curve has its object path
 (for example `Converter/ProfilPIO`), line number and points declared effective
 by `NPtsEff`; padding after that count is excluded from the displayed points.
 Missing or duplicate count/point fields are reported as curve diagnostics.
 Inspection is limited to 16 curves and 256 allocated points per curve. These
 limits describe this reader, not PVsyst format limits. `structure_complete`
-only describes serialized count/point consistency. `curves.control` reports
+only describes serialized count/point consistency. For OND, `curves.control` reports
 the root `Flags`, file version, `source` (`automatic`, `file` or `unknown`),
 three-voltage selection and edit restrictions. `editable` and `edit_errors`
 describe support for each profile; `simulation_effect="unverified"` means
@@ -204,6 +204,58 @@ edits in file mode retain the original numeric spelling and create no backup.
 Editing points does not refit efficiency scalars, thresholds, spline metadata
 or other derived parameters. Validate the resulting model with PVsyst.
 
+For **BTR Version=8.1.6, `Pb_Sealed_AGM` or `Pb_Sealed_Gel`, Mode=1**, the same
+`curve_updates` argument edits the existing root capacity curve. Its points are
+`[discharge_duration_hours, capacity_relative_to_C10]`. Use its current path
+from inspection: either `CapaCourant` or `Capa_DischRate`. Case-insensitive
+technology names and the optional `bt` prefix are accepted; space-separated
+technology names and other chemistries are unsupported.
+
+`Capa_DischRate` is not recognized by the tested CLI. To activate it, supply
+`use_file_curve=true` **alongside a complete valid set of points**. This renames
+only that block to `CapaCourant`. A canonical `CapaCourant` needs no activation.
+Both names present, duplicate blocks, unsupported modes and point-count changes
+are rejected. No other battery curve tags, chemistry fields or Flags are changed.
+After activation, use `CapaCourant` and the new hash for subsequent edits.
+
+Battery capacity edits require the current hash and at least four active
+points. X and Y must be positive, X strictly increasing, and Y nondecreasing.
+The X range must contain 100 hours. The linear interpolation at 100 hours,
+`C100/C10`, must lie in **[1.15, 1.45]** for these supported technologies.
+Extrapolation is deliberately unsupported by this editor even though the CLI
+can extrapolate; simply renaming a short or unsuitable curve may otherwise
+make the battery invalid. These checks do not fit or certify a battery model.
+
+BTR inspection returns `cli_tag`, `cli_recognition`, `ratio_100h` and
+`value_errors` in addition to points and edit preconditions. `editable` means
+the structure can accept replacement points; current-value errors may still
+need repair. `curves.control` describes the capacity curve's current path,
+recognition, supported technology and ratio interval. Other BTR curves are
+inspection-only, including the GUI/CLI name pairs `SelfDisch_Temp`/`IAutoShape`,
+`Capa_Temperature`/`CapaTemper`, and `VMaxCharge_Rate`/`VMaxChargeRate`.
+`cli_recognition="recognized"` identifies a known tag, not proof of a valid
+model or simulation effect.
+
+For example, for an inspected battery with six active capacity points:
+
+```json
+{
+  "component_type": "BTR",
+  "filename": "custom.BTR",
+  "updates": {},
+  "expected_sha256": "<sha256 from inspection>",
+  "curve_updates": {
+    "Capa_DischRate": [[5, 0.85], [10, 1], [25, 1.1], [70, 1.25], [130, 1.35], [200, 1.4]]
+  },
+  "use_file_curve": true,
+  "dry_run": true
+}
+```
+
+This synthetic example illustrates the interface, not a recommended battery
+model. Preview first; applying the same arguments with `dry_run=false` uses
+the original hash and creates a byte-identical recovery snapshot.
+
 Optional live preview/apply verification is available in
 `tests/smoke_live_component_editor.py`. It copies an explicitly selected
 workspace into separate baseline/edited directories, halves the selected
@@ -223,7 +275,15 @@ and unchanged source files. PVsyst 8.1.6 produced seven matched-input rows with
 is not an acceptance criterion because limiting states can change. See
 [the verification record](docs/ond-curve-verification.md) for scope and limits.
 
-Component creation and edits check object structure, required fields and a limited set of numeric constraints. They do **not** certify the physical model: exercise a project variant that actually references the new component and inspect the resulting CSV. `TypeGen` is a free-text field accepted by the tested PVsyst version, unlike the battery technology enum `BattTechnol`, which is deliberately excluded from scalar editing. Inverter curves and battery chemistry are not transformed when cloning; BTR profile curves are not editable through the scalar-update tool, and `CFuelHor` must be positive because zero was observed to crash PVsyst. Text cloning and editing retain a UTF-8 BOM when the source has one. Component inspection returns at most 200 lines per page: `page_truncated` indicates more lines after the current page, `line_truncated` indicates a displayed line exceeded 2000 characters, and `lines_truncated` is true if either occurs. Edits automatically create byte-identical backups under `ComposPV/.mcp-backups`; `pvsyst_archive_component` requires `confirm=true`, scans PRJ/VC files recursively under workspace `Projects` (without following linked directories), blocks references and moves the file to `ComposPV/.mcp-archive`. Reference checks stream project files up to 32 MB; larger files or unreadable/symlinked project paths block archiving so that it does not proceed with an incomplete check. Both rollback tools require `confirm=true`. All writes stay in the user workspace; `DataRO` is read-only. No vendor component data is shipped in this repository.
+`tests/smoke_live_battery_curves.py` performs the corresponding BTR test through
+MCP in two independent workspace copies. Supply `PVSYST_EDITOR_BATTERY` and
+`PVSYST_BATTERY_POINTS` (a JSON file of all active pairs) with the other variables
+documented in the script. Both the supplied curve and its Y×0.9 version must
+pass the editor's checks. The test compares hourly effective capacity in Ah,
+checks irradiation/timestamps, restores both files and verifies source hashes.
+See [the BTR verification record](docs/btr-capacity-verification.md) for results.
+
+Component creation and edits check object structure, required fields and a limited set of numeric constraints. They do **not** certify the physical model: exercise a project variant that actually references the new component and inspect the resulting CSV. `TypeGen` is a free-text field accepted by the tested PVsyst version, unlike the battery technology enum `BattTechnol`, which is deliberately excluded from scalar editing. Inverter curves and battery chemistry are not transformed when cloning; curve edits use the separate `curve_updates` argument with the limits above, and `CFuelHor` must be positive because zero was observed to crash PVsyst. Text cloning and editing retain a UTF-8 BOM when the source has one. Component inspection returns at most 200 lines per page: `page_truncated` indicates more lines after the current page, `line_truncated` indicates a displayed line exceeded 2000 characters, and `lines_truncated` is true if either occurs. Edits automatically create byte-identical backups under `ComposPV/.mcp-backups`; `pvsyst_archive_component` requires `confirm=true`, scans PRJ/VC files recursively under workspace `Projects` (without following linked directories), blocks references and moves the file to `ComposPV/.mcp-archive`. Reference checks stream project files up to 32 MB; larger files or unreadable/symlinked project paths block archiving so that it does not proceed with an incomplete check. Both rollback tools require `confirm=true`. All writes stay in the user workspace; `DataRO` is read-only. No vendor component data is shipped in this repository.
 
 Place an existing SFI under `Models`, or call `pvsyst_build_sfi` first. A CSV with no SFI/RVT export definition may contain dates only. For a single `pvsyst_run_simulation` call, `csv_name="run01"` and `csv_name="run01.csv"` both select `Results/run01.csv`; input filenames such as `sfi_name` still require their extension. Output filenames cannot contain paths, and generated files are never overwritten. For `create-site`, supply altitude, timezone and country code to avoid its optional online location lookups. License mutation tool arguments can be retained by the MCP client; do not echo keys in logs. When `lic-info` provides no usable status or expiration, `pvsyst_license_info` reports `UNSPECIFIED` rather than assuming the license is active.
 

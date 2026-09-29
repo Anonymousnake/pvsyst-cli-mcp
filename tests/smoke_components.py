@@ -13,6 +13,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_components import PAN, OND, BTR, GEN
 from test_component_editor import CURVED_OND, POINTS
+from test_battery_editor import CURVED_BTR, CAPACITY_POINTS
 from test_variants import VARIANT
 
 
@@ -76,6 +77,30 @@ async def main():
                 })
                 assert restored["sha256"] == inspected["sha256"]
                 print("MCP component edit: auto guard, strict numbers, scalar + curve preview/apply, stale rejection, exact restore: OK")
+
+                battery_target = {"component_type": "BTR", "filename": "capacity.BTR"}
+                await data_call("pvsyst_create_component", {**battery_target, "content": CURVED_BTR})
+                battery = await data_call("pvsyst_get_component", battery_target)
+                assert battery["curves"]["control"]["source"] == "unrecognized-tag"
+                battery_args = {**battery_target, "updates": {}, "expected_sha256": battery["sha256"],
+                    "curve_updates": {"Capa_DischRate": [[x, y * 0.9] for x, y in CAPACITY_POINTS]},
+                    "use_file_curve": True}
+                await call("pvsyst_update_component", {**battery_args, "use_file_curve": False}, expect_error=True)
+                await call("pvsyst_update_component", {**battery_args,
+                    "curve_updates": {"Capa_DischRate": [[x, y * 0.8] for x, y in CAPACITY_POINTS]}}, expect_error=True)
+                battery_preview = await data_call("pvsyst_update_component", {**battery_args, "dry_run": True})
+                battery_path = root / "ComposPV" / "Batteries" / "capacity.BTR"
+                assert hashlib.sha256(battery_path.read_bytes()).hexdigest() == battery["sha256"]
+                battery_edit = await data_call("pvsyst_update_component", battery_args)
+                assert battery_edit["sha256"] == battery_preview["sha256"]
+                inspected_battery = await data_call("pvsyst_get_component", battery_target)
+                assert inspected_battery["curves"]["control"]["path"] == "CapaCourant"
+                assert abs(inspected_battery["curves"]["items"][1]["ratio_100h"] - 1.17) < 1e-10
+                await call("pvsyst_update_component", battery_args, expect_error=True)
+                battery_restore = await data_call("pvsyst_restore_component", {**battery_target,
+                    "backup_name": battery_edit["backup_name"], "confirm": True})
+                assert battery_restore["sha256"] == battery["sha256"]
+                print("MCP BTR curve: ignored-tag guard, ratio rejection, activation preview/apply, stale rejection, exact restore: OK")
 
                 for kind, content in (("PAN", PAN), ("OND", OND),
                                       ("BTR", BTR), ("GEN", GEN)):
