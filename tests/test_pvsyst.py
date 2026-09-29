@@ -140,7 +140,13 @@ class PVsystTests(unittest.TestCase):
         server._cli = self.client
         tools = asyncio.run(server.mcp.list_tools())
         names = {tool.name for tool in tools}
-        self.assertEqual(len(names), 33)
+        self.assertEqual(len(names), 45)
+        self.assertEqual(names, set(server.TOOL_CATEGORY))
+        self.assertEqual({group: len(group_names) for group, group_names in server.TOOL_GROUPS.items()},
+                         {"Setup & License": 6, "Projects & Variants": 18, "Components": 13,
+                          "Sites & Weather": 3, "Simulation": 2, "Results": 3})
+        for tool in tools:
+            self.assertTrue(tool.description.startswith(f"[{server.TOOL_CATEGORY[tool.name]}] "))
         self.assertIn("pvsyst_read_batch_results", names)
         self.assertIn("pvsyst_create_site", names)
         self.assertIn("pvsyst_read_rows", names)
