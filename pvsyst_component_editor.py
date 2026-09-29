@@ -1,4 +1,4 @@
-"""Lossless scalar replacement and guarded OND power curve editing.
+"""Scoped component parsing, lossless replacements and OND curve editing.
 
 This module handles file structure only. It neither fits a physical model nor
 claims that every PVsyst version consumes every serialized field.
@@ -26,6 +26,15 @@ def replace_value(line: str, value: str) -> str:
     if not match:
         raise ValueError("Expected a component assignment")
     return body[:match.start(4)] + value + body[match.end(4):] + line[len(body):]
+
+
+def replace_key(line: str, key: str) -> str:
+    """Rename a selected assignment without changing its value or whitespace."""
+    body = line.rstrip("\r\n")
+    match = ASSIGNMENT.fullmatch(body)
+    if not match or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        raise ValueError("Expected a component assignment and valid key")
+    return body[:match.start(2)] + key + body[match.end(2):] + line[len(body):]
 
 
 @dataclass
@@ -74,7 +83,7 @@ class Profile(ObjectBlock):
         return points
 
 
-def _objects(text: str) -> list[ObjectBlock]:
+def objects(text: str) -> list[ObjectBlock]:
     """Keep each field in its owning object, including root and nested Flags."""
     stack: list[tuple[str, ObjectBlock]] = []
     result = []
@@ -109,7 +118,36 @@ def _objects(text: str) -> list[ObjectBlock]:
 
 def profiles(text: str) -> list[Profile]:
     """Locate curves by their object path, never by flattened Point_N names."""
-    return [block for block in _objects(text) if isinstance(block, Profile)]
+    return [block for block in objects(text) if isinstance(block, Profile)]
+
+
+def checked_points(supplied: list, count: int) -> list[list[float]]:
+    if not isinstance(supplied, list) or len(supplied) != count:
+        raise ValueError(f"Supply exactly {count} active points; point count changes are unsupported")
+    result = []
+    last_x = -math.inf
+    for pair in supplied:
+        if (not isinstance(pair, list) or len(pair) != 2
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in pair)):
+            raise ValueError("Each point must contain two finite numbers")
+        try:
+            x, y = map(float, pair)
+        except (OverflowError, ValueError):
+            raise ValueError("Each point must contain two finite numbers") from None
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError("Each point must contain two finite numbers")
+        if x <= last_x:
+            raise ValueError("Active X values must be strictly increasing")
+        result.append([x, y])
+        last_x = x
+    return result
+
+
+def write_points(lines: list[str], profile: Profile, previous: list, points: list) -> None:
+    for i, pair in enumerate(points, 1):
+        if pair != previous[i - 1]:
+            index, _ = profile.one(f"Point_{i}")
+            lines[index] = replace_value(lines[index], f"{pair[0]:.17g},{pair[1]:.17g}")
 
 
 def _curve_control(objects: list[ObjectBlock]) -> tuple[dict, tuple[int, str] | None]:
@@ -159,11 +197,11 @@ def curve_inventory(kind: str, text: str) -> dict:
     if kind != "OND":
         return {"scope": "OND power curves only", "items": [], "truncated": False}
     try:
-        objects = _objects(text)
-        found = [block for block in objects if isinstance(block, Profile)]
+        blocks = objects(text)
+        found = [block for block in blocks if isinstance(block, Profile)]
     except ValueError as exc:
         return {"scope": "OND power curves only", "items": [], "errors": [str(exc)], "truncated": False}
-    control, _ = _curve_control(objects)
+    control, _ = _curve_control(blocks)
     items = []
     for profile in found[:16]:
         errors = list(profile.problems)
@@ -172,7 +210,7 @@ def curve_inventory(kind: str, text: str) -> dict:
             points = profile.points()
         except ValueError as exc:
             errors.append(str(exc))
-        if sum(other.path == profile.path for other in objects) != 1:
+        if sum(other.path == profile.path for other in blocks) != 1:
             errors.append("Ambiguous duplicate curve path")
         supported = profile.path in CURVE_PATHS
         edit_errors = errors + control["errors"] + _edit_errors(profile, points)
@@ -193,13 +231,13 @@ def replace_curves(kind: str, text: str, updates: dict[str, list[list[float]]],
                    use_file_curve: bool = False) -> str:
     if kind != "OND" or not isinstance(updates, dict) or set(updates) != {MAIN_CURVE}:
         raise ValueError("Curve edits support only OND Converter/ProfilPIO")
-    objects = _objects(text)
-    control, flag_field = _curve_control(objects)
+    blocks = objects(text)
+    control, flag_field = _curve_control(blocks)
     if control["errors"]:
         raise ValueError("; ".join(control["errors"]))
     if control["source"] == "automatic" and not use_file_curve:
         raise ValueError("Automatic curve is enabled; supply use_file_curve=true to use supplied points")
-    matches = [b for b in objects if b.path == MAIN_CURVE]
+    matches = [b for b in blocks if b.path == MAIN_CURVE]
     if len(matches) != 1 or not isinstance(matches[0], Profile):
         raise ValueError(f"{MAIN_CURVE} must identify exactly one supported curve")
     profile = matches[0]
@@ -207,29 +245,11 @@ def replace_curves(kind: str, text: str, updates: dict[str, list[list[float]]],
     errors = profile.problems + _edit_errors(profile, previous)
     if errors:
         raise ValueError("; ".join(errors))
-    supplied = updates[MAIN_CURVE]
-    if not isinstance(supplied, list) or len(supplied) != len(previous):
-        raise ValueError(f"Supply exactly {len(previous)} active points; point count changes are unsupported")
+    points = checked_points(updates[MAIN_CURVE], len(previous))
+    if any(not 0 <= y <= x for x, y in points):
+        raise ValueError("Supported power points require 0 <= output <= input")
     lines = text.splitlines(keepends=True)
-    last_x = -math.inf
-    for i, pair in enumerate(supplied, 1):
-        if (not isinstance(pair, list) or len(pair) != 2
-                or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in pair)):
-            raise ValueError("Each point must contain two finite numbers")
-        try:
-            x, y = map(float, pair)
-        except (OverflowError, ValueError):
-            raise ValueError("Each point must contain two finite numbers") from None
-        if not math.isfinite(x) or not math.isfinite(y):
-            raise ValueError("Each point must contain two finite numbers")
-        if x <= last_x:
-            raise ValueError("Active X values must be strictly increasing")
-        if not 0 <= y <= x:
-            raise ValueError("Supported power points require 0 <= output <= input")
-        last_x = x
-        index, _ = profile.one(f"Point_{i}")
-        if [x, y] != previous[i - 1]:
-            lines[index] = replace_value(lines[index], f"{x:.17g},{y:.17g}")
+    write_points(lines, profile, previous, points)
     if control["source"] == "automatic":
         index, raw = flag_field
         # Bit 4 is the low bit of the second hex digit from the right.

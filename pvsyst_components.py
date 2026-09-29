@@ -19,6 +19,7 @@ from pathlib import Path
 
 from pvsyst_paths import project_name, project_path, variant_id
 from pvsyst_component_editor import curve_inventory, replace_curves, replace_value
+from pvsyst_battery_editor import battery_curve_inventory, replace_battery_curve
 
 
 # Workspace spelling follows existing PVsyst workspaces; Windows paths are case-insensitive.
@@ -52,6 +53,10 @@ REF_KIND = {"PVModule": "PAN", "GInverter": "OND", "BatteryFile": "BTR",
             "GensetFile": "GEN"}
 MAX_BYTES = 2_000_000
 MAX_PROJECT_BYTES = 32_000_000
+
+
+def inspect_curves(kind: str, text: str) -> dict:
+    return battery_curve_inventory(text) if kind == "BTR" else curve_inventory(kind, text)
 
 
 class ComponentStore:
@@ -152,8 +157,8 @@ class ComponentStore:
             errors.append("Invalid top-level object closing tag")
         stack = []
         for line in lines:
-            start = re.fullmatch(r"PVObject_[A-Za-z0-9_]*=(pv[A-Za-z0-9_]+)", line)
-            nested = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=(TConverter|TCubicProfile)", line)
+            start = re.fullmatch(r"PVObject_[A-Za-z0-9_]*\s*=\s*(pv[A-Za-z0-9_]+)", line)
+            nested = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\s*=\s*(TConverter|TCubicProfile)", line)
             end = re.fullmatch(r"End of (?:PVObject )?(pv[A-Za-z0-9_]+|TConverter|TCubicProfile)", line)
             if start or nested:
                 stack.append((start or nested)[1])
@@ -237,7 +242,7 @@ class ComponentStore:
         result.update({"name": name, "library": library})
         if result["format"] == "text":
             result["editable_fields"] = sorted(EDITABLE[kind])
-            result["curves"] = curve_inventory(kind, self._text(kind, data)[1])
+            result["curves"] = inspect_curves(kind, self._text(kind, data)[1])
             fields = result.pop("fields")
             result["field_count"] = len(fields)
             result["fields_truncated"] = (len(fields) > 80 or any(
@@ -457,7 +462,8 @@ class ComponentStore:
                 raise ValueError("Legacy binary PAN cannot be edited")
             edited = self._replace_fields(kind, text, updates) if updates else text
             if curve_updates is not None:
-                edited = replace_curves(kind, edited, curve_updates, use_file_curve)
+                edited = (replace_battery_curve(edited, curve_updates, use_file_curve) if kind == "BTR"
+                          else replace_curves(kind, edited, curve_updates, use_file_curve))
             candidate = edited.encode("utf-8")
             if data.startswith(b"\xef\xbb\xbf"):
                 candidate = b"\xef\xbb\xbf" + candidate
@@ -476,8 +482,8 @@ class ComponentStore:
                           "structural_errors", "warnings", "known_value_errors")},
                       "validation_scope": "Static structure and limited values only; simulate a referencing project"}
             if curve_updates is not None:
-                result["curve_control_before"] = curve_inventory(kind, text)["control"]
-                result["curve_control_after"] = curve_inventory(kind, edited)["control"]
+                result["curve_control_before"] = inspect_curves(kind, text)["control"]
+                result["curve_control_after"] = inspect_curves(kind, edited)["control"]
             if dry_run or candidate == data:
                 return result
             if self._read(path) != data:
