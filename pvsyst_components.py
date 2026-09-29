@@ -1,0 +1,565 @@
+"""Workspace-scoped management of PVsyst component files.
+
+Only PAN, OND, BTR and GEN are supported. This is a file manager, not a
+replacement for PVsyst's physical model validation. Legacy binary PAN files
+are copied byte-for-byte and are never decoded or edited.
+"""
+from __future__ import annotations
+
+import difflib
+import hashlib
+import itertools
+import math
+import os
+import re
+import threading
+import uuid
+from pathlib import Path
+
+
+# Workspace spelling follows existing PVsyst workspaces; Windows paths are case-insensitive.
+KINDS = {
+    "PAN": ("PVmodules", "PVModules", "pvModule"),
+    "OND": ("Inverters", "Inverters", "pvGInverter"),
+    "BTR": ("Batteries", "Batteries", "pvBattery"),
+    "GEN": ("Gensets", "Gensets", "pvGenerator"),
+}
+COMMON_EDIT = frozenset(("Manufacturer", "Model", "DataSource"))
+EDITABLE = {
+    "PAN": COMMON_EDIT | {"PNom", "ISC", "Voc", "Imp", "Vmp", "MuISC", "muVocSpec"},
+    "OND": COMMON_EDIT | {"PNomConv", "PMaxOUT", "VMppMin", "VMPPMax", "VAbsMax", "EfficMax", "EfficEuro"},
+    "BTR": COMMON_EDIT | {"CapNomC10", "CapaRef", "AlphaSOC"},
+    "GEN": COMMON_EDIT | {"TypeGen", "PNomGen", "CFuelHor"},
+}
+NUMERIC = set().union(*(fields - COMMON_EDIT - {"BattTechnol", "TypeGen"}
+                        for fields in EDITABLE.values()))
+REQUIRED = {
+    "PAN": ("Version", "Flags", "Manufacturer", "Model", "Technol", "NCelS", "NCelP", "NDiode", "PNom",
+            "LargApp", "LongApp", "GRef", "TRef", "Absorb", "ISC", "Voc", "Imp", "Vmp",
+            "MuISC", "muVocSpec"),
+    "OND": ("Version", "Flags", "Manufacturer", "Model", "Converter", "PNomConv", "PMaxOUT",
+            "VMppMin", "VMPPMax", "VAbsMax", "EfficMax", "ProfilPIO"),
+    "BTR": ("Version", "Flags", "Manufacturer", "Model", "BattTechnol", "CapNomC10", "AlphaSOC"),
+    "GEN": ("Version", "Flags", "Manufacturer", "Model", "TypeGen", "PNomGen", "CFuelHor"),
+}
+FIELD = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+REFERENCE = re.compile(r"^\s*(PVModule|GInverter|BatteryFile|GensetFile)\s*=\s*(\S.*?)\s*$")
+REF_KIND = {"PVModule": "PAN", "GInverter": "OND", "BatteryFile": "BTR",
+            "GensetFile": "GEN"}
+MAX_BYTES = 2_000_000
+
+
+class ComponentStore:
+    def __init__(self, workspace: str | os.PathLike,
+                 builtin: str | os.PathLike | None = None,
+                 lock: threading.RLock | None = None):
+        self.workspace = Path(workspace).resolve(strict=True)
+        self.builtin = Path(builtin).resolve() if builtin else None
+        self.lock = lock or threading.RLock()
+
+    @staticmethod
+    def _kind(kind: str) -> str:
+        value = kind.upper()
+        if value not in KINDS:
+            raise ValueError("Component type must be PAN, OND, BTR or GEN")
+        return value
+
+    def _folder(self, kind: str, library: str = "workspace") -> Path:
+        if library not in ("workspace", "builtin"):
+            raise ValueError("Library must be workspace or builtin")
+        if library == "builtin" and self.builtin is None:
+            raise ValueError("Installed component library is not configured")
+        base = self.workspace / "ComposPV" if library == "workspace" else self.builtin
+        if base.is_symlink():
+            raise ValueError("Symlink component libraries are not supported")
+        root = base.resolve()
+        if library == "workspace" and root.parent != self.workspace:
+            raise ValueError("Component library resolves outside workspace")
+        name = KINDS[kind][0 if library == "workspace" else 1]
+        if (base / name).is_symlink():
+            raise ValueError("Symlink component folders are not supported")
+        folder = (base / name).resolve()
+        if folder.parent != root:
+            raise ValueError("Component folder resolves outside its library")
+        return folder
+
+    def _path(self, kind: str, name: str, library: str = "workspace") -> Path:
+        if (not isinstance(name, str) or not name or name in (".", "..")
+                or Path(name).name != name or any(c in name for c in "\\/:*?\"<>|")
+                or any(ord(c) < 32 for c in name) or name.rstrip(" .") != name
+                or len(name) > 180 or Path(name).suffix.upper() != f".{kind}"):
+            raise ValueError(f"Expected a {kind} filename without directories")
+        folder = self._folder(kind, library)
+        if (folder / name).is_symlink():
+            raise ValueError("Symlink components are not supported")
+        path = (folder / name).resolve()
+        if path.parent != folder:
+            raise ValueError("Component path resolves outside its library")
+        return path
+
+    @staticmethod
+    def _read(path: Path) -> bytes:
+        if not path.is_file():
+            raise FileNotFoundError(path.name)
+        if path.stat().st_size > MAX_BYTES:
+            raise ValueError("Component file exceeds 2 MB limit")
+        return path.read_bytes()
+
+    @staticmethod
+    def _text(kind: str, data: bytes) -> tuple[str, str | None]:
+        if kind == "PAN" and data[:9] == b"pvModule;":
+            return "legacy-binary", None
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Component is neither supported UTF-8 text nor legacy PAN") from exc
+        if "\x00" in text or not text.startswith(f"PVObject_={KINDS[kind][2]}"):
+            raise ValueError("Component object type or format does not match extension")
+        return "text", text
+
+    @staticmethod
+    def _fields(text: str) -> dict[str, list[str]]:
+        fields: dict[str, list[str]] = {}
+        for line in text.splitlines():
+            match = FIELD.fullmatch(line)
+            if match:
+                fields.setdefault(match[1], []).append(match[2])
+        return fields
+
+    def _inspect(self, kind: str, data: bytes) -> dict:
+        if len(data) > MAX_BYTES:
+            raise ValueError("Component file exceeds 2 MB limit")
+        format_name, text = self._text(kind, data)
+        result = {"type": kind, "format": format_name, "size": len(data),
+                  "sha256": hashlib.sha256(data).hexdigest()}
+        if text is None:
+            return {**result, "structural_errors": [],
+                    "warnings": ["Legacy binary PAN: inspect by filename and copy bytes only"]}
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        closing = f"End of PVObject {KINDS[kind][2]}"
+        errors = []
+        if not lines or lines[0] != f"PVObject_={KINDS[kind][2]}":
+            errors.append("Invalid top-level object header")
+        if not lines or lines[-1] != closing:
+            errors.append("Invalid top-level object closing tag")
+        stack = []
+        for line in lines:
+            start = re.fullmatch(r"PVObject_[A-Za-z0-9_]*=(pv[A-Za-z0-9_]+)", line)
+            nested = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=(TConverter|TCubicProfile)", line)
+            end = re.fullmatch(r"End of (?:PVObject )?(pv[A-Za-z0-9_]+|TConverter|TCubicProfile)", line)
+            if start or nested:
+                stack.append((start or nested)[1])
+            elif end:
+                if not stack or stack.pop() != end[1]:
+                    errors.append(f"Unmatched closing tag: {line}")
+        if stack:
+            errors.append("Unclosed nested object or curve")
+        fields = self._fields(text)
+        if fields.get("PVObject_Commercial") != ["pvCommercial"]:
+            errors.append("Expected one pvCommercial subobject")
+        if kind == "OND" and (fields.get("Converter") != ["TConverter"]
+                              or fields.get("ProfilPIO") != ["TCubicProfile"]):
+            errors.append("Expected TConverter and TCubicProfile subobjects")
+        missing = [name for name in REQUIRED[kind] if name not in fields]
+        problems = self._numeric_errors(kind, fields)
+        return {**result, "manufacturer": fields.get("Manufacturer", [None])[0],
+                "model": fields.get("Model", [None])[0], "fields": fields,
+                "structural_errors": errors, "warnings": [f"Missing verified field: {name}" for name in missing],
+                "known_value_errors": problems}
+
+    @staticmethod
+    def _numeric_errors(kind: str, fields: dict[str, list[str]]) -> list[str]:
+        errors = []
+        numeric = (NUMERIC | {"NCelS", "NCelP", "NDiode", "LargApp", "LongApp",
+                              "GRef", "Absorb", "CapaRef"}) & fields.keys()
+        values = {}
+        for field in numeric:
+            try:
+                if len(fields[field]) != 1:
+                    raise ValueError()
+                values[field] = float(fields[field][0])
+                if not math.isfinite(values[field]):
+                    raise ValueError()
+            except ValueError:
+                errors.append(f"{field} must be one finite number")
+        for field in (("PNom", "ISC", "Voc", "Imp", "Vmp", "NCelS", "NCelP",
+                       "NDiode", "LargApp", "LongApp", "GRef")
+                      if kind == "PAN" else
+                      ("PNomConv", "PMaxOUT", "VMppMin", "VMPPMax", "VAbsMax")
+                      if kind == "OND" else
+                      ("CapNomC10",) if kind == "BTR" else ("PNomGen", "CFuelHor")):
+            if field in values and values[field] <= 0:
+                errors.append(f"{field} must be greater than zero")
+        if kind == "BTR" and "AlphaSOC" in values and not 0.16 <= values["AlphaSOC"] <= 0.22:
+            errors.append("AlphaSOC must be between 0.16 and 0.22")
+        if kind == "PAN":
+            for field in ("NCelS", "NCelP", "NDiode"):
+                if field in values and not values[field].is_integer():
+                    errors.append(f"{field} must be an integer")
+            for hi, lo in (("Voc", "Vmp"), ("ISC", "Imp")):
+                if hi in values and lo in values and values[hi] < values[lo]:
+                    errors.append(f"{hi} must be >= {lo}")
+        if kind == "OND":
+            if all(key in values for key in ("VMppMin", "VMPPMax", "VAbsMax")):
+                if not values["VMppMin"] < values["VMPPMax"] <= values["VAbsMax"]:
+                    errors.append("Inverter voltage limits must be ordered")
+            for field in ("EfficMax", "EfficEuro"):
+                if field in values and not 0 < values[field] <= 100:
+                    errors.append(f"{field} must be within (0, 100]")
+        return errors
+
+    @staticmethod
+    def _require_valid(result: dict, *, complete: bool = False) -> None:
+        if result["structural_errors"] or result.get("known_value_errors"):
+            raise ValueError("Invalid component: " + "; ".join(
+                result["structural_errors"] + result.get("known_value_errors", [])))
+        if complete and result["format"] != "text":
+            raise ValueError("Legacy binary PAN cannot be used as an editable template")
+        if complete and result["warnings"]:
+            raise ValueError("Incomplete template: " + "; ".join(result["warnings"]))
+
+    def inspect(self, kind: str, name: str, library: str = "workspace",
+                offset: int = 0, limit: int = 100) -> dict:
+        kind = self._kind(kind)
+        if offset < 0 or not 1 <= limit <= 200:
+            raise ValueError("Offset must be >= 0 and limit between 1 and 200")
+        path = self._path(kind, name, library)
+        data = self._read(path)
+        result = self._inspect(kind, data)
+        result.update({"name": name, "library": library})
+        if result["format"] == "text":
+            fields = result.pop("fields")
+            result["field_count"] = len(fields)
+            result["fields_truncated"] = (len(fields) > 80 or any(
+                len(values) > 3 or any(len(value) > 256 for value in values)
+                for values in fields.values()))
+            result["fields"] = {key: [value[:256] for value in values[:3]]
+                                for key, values in list(fields.items())[:80]}
+            lines = self._text(kind, data)[1].splitlines()
+            page = lines[offset:offset + limit]
+            result["total_lines"] = len(lines)
+            result["lines_truncated"] = any(len(line) > 2000 for line in page)
+            result["lines"] = [line[:2000] for line in page]
+        return result
+
+    def list(self, kind: str, library: str = "workspace", query: str = "",
+             offset: int = 0, limit: int = 100) -> dict:
+        kind = self._kind(kind)
+        if offset < 0 or not 1 <= limit <= 200:
+            raise ValueError("Offset must be >= 0 and limit between 1 and 200")
+        folder = self._folder(kind, library)
+        files = sorted((p for p in folder.iterdir() if p.is_file() and not p.is_symlink()
+                        and p.suffix.upper() == f".{kind}"),
+                       key=lambda path: path.name.casefold()) if folder.is_dir() else []
+        matched = []
+        for path in files:
+            try:
+                info = self._inspect(kind, self._read(self._path(kind, path.name, library)))
+                if query.casefold() in " ".join((path.name, info.get("manufacturer") or "",
+                                                   info.get("model") or "")).casefold():
+                    matched.append({"name": path.name, "format": info["format"],
+                                    "manufacturer": info.get("manufacturer"), "model": info.get("model")})
+            except (ValueError, FileNotFoundError):
+                matched.append({"name": path.name, "format": "unrecognized"})
+        return {"total": len(matched), "offset": offset, "items": matched[offset:offset + limit]}
+
+    def validate(self, kind: str, name: str, library: str = "workspace") -> dict:
+        result = self.inspect(kind, name, library, limit=1)
+        result.pop("lines", None)
+        result.pop("fields", None)
+        result["scope"] = ("legacy header only; copy bytes and run a project for validation"
+                           if result["format"] == "legacy-binary" else
+                           "static structure and known fields; run a project for model validation")
+        return result
+
+    def _backup_folder(self, kind: str) -> Path:
+        components = (self.workspace / "ComposPV").resolve()
+        if components.parent != self.workspace:
+            raise ValueError("Component library resolves outside workspace")
+        base = (components / ".mcp-backups").resolve()
+        if base.parent != components:
+            raise ValueError("Backup folder resolves outside workspace")
+        folder = (base / kind).resolve()
+        if folder.parent != base:
+            raise ValueError("Backup folder resolves outside workspace")
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def backup(self, kind: str, name: str) -> dict:
+        kind = self._kind(kind)
+        with self.lock:
+            path = self._path(kind, name)
+            data = self._read(path)
+            folder = self._backup_folder(kind)
+            backup = folder / f"{name}.{uuid.uuid4().hex}.bak"
+            with backup.open("xb") as stream:
+                stream.write(data)
+            return {"name": name, "backup_name": backup.name, "sha256": hashlib.sha256(data).hexdigest()}
+
+    def _new(self, kind: str, name: str, data: bytes) -> dict:
+        path = self._path(kind, name)
+        result = self._inspect(kind, data)
+        self._require_valid(result, complete=result["format"] == "text")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Windows names are case-insensitive; enforce the same rule in tests on other OSes.
+        if any(p.name.casefold() == name.casefold() for p in path.parent.iterdir()):
+            raise FileExistsError(name)
+        with path.open("xb") as stream:
+            stream.write(data)
+        return {"name": name, "type": kind, "format": result["format"], "sha256": result["sha256"]}
+
+    def copy(self, kind: str, source_name: str, new_name: str,
+             source_library: str = "workspace") -> dict:
+        kind = self._kind(kind)
+        with self.lock:
+            source = self._path(kind, source_name, source_library)
+            return self._new(kind, new_name, self._read(source))
+
+    def create(self, kind: str, name: str, content: str) -> dict:
+        """Create from complete UTF-8 PVObject_ text, without needing a template."""
+        kind = self._kind(kind)
+        if not isinstance(content, str):
+            raise ValueError("Content must be complete UTF-8 component text")
+        with self.lock:
+            return self._new(kind, name, content.encode("utf-8"))
+
+    @staticmethod
+    def _replace_fields(kind: str, text: str, updates: dict[str, str]) -> str:
+        if not updates or any(key not in EDITABLE[kind] for key in updates):
+            raise ValueError(f"Editable {kind} fields: {', '.join(sorted(EDITABLE[kind]))}")
+        lines = text.splitlines(keepends=True)
+        for key, raw in updates.items():
+            value = str(raw)
+            if not value.strip() or any(c in value for c in "\r\n\x00"):
+                raise ValueError(f"Invalid value for {key}")
+            if key in NUMERIC:
+                try:
+                    if not math.isfinite(float(value)):
+                        raise ValueError()
+                except ValueError:
+                    raise ValueError(f"{key} must be a finite number") from None
+            matches = [index for index, line in enumerate(lines)
+                       if (match := FIELD.fullmatch(line.rstrip("\r\n"))) and match[1] == key]
+            if len(matches) != 1:
+                raise ValueError(f"{key} must occur exactly once in the template")
+            index = matches[0]
+            line = lines[index]
+            prefix = line[:line.index("=") + 1]
+            ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            lines[index] = f"{prefix}{value}{ending}"
+        return "".join(lines)
+
+    def clone(self, kind: str, source_name: str, new_name: str,
+              updates: dict[str, str], source_library: str = "workspace") -> dict:
+        kind = self._kind(kind)
+        with self.lock:
+            if not {"Manufacturer", "Model"}.issubset(updates):
+                raise ValueError("Cloning requires new Manufacturer and Model")
+            _, source = self._text(kind, self._read(self._path(kind, source_name, source_library)))
+            if source is None:
+                raise ValueError("Legacy binary PAN cannot be edited")
+            self._require_valid(self._inspect(kind, source.encode("utf-8")), complete=True)
+            candidate = self._replace_fields(kind, source, updates).encode("utf-8")
+            self._require_valid(self._inspect(kind, candidate), complete=True)
+            return self._new(kind, new_name, candidate)
+
+    def update(self, kind: str, name: str, updates: dict[str, str]) -> dict:
+        kind = self._kind(kind)
+        with self.lock:
+            path = self._path(kind, name)
+            data = self._read(path)
+            _, text = self._text(kind, data)
+            if text is None:
+                raise ValueError("Legacy binary PAN cannot be edited")
+            candidate = self._replace_fields(kind, text, updates).encode("utf-8")
+            if data.startswith(b"\xef\xbb\xbf"):
+                candidate = b"\xef\xbb\xbf" + candidate
+            self._require_valid(self._inspect(kind, candidate), complete=True)
+            backup = self.backup(kind, name)
+            temporary = path.with_name(f".{name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with temporary.open("xb") as stream:
+                    stream.write(candidate)
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            return {"name": name, "backup_name": backup["backup_name"],
+                    "sha256": hashlib.sha256(candidate).hexdigest()}
+
+    def restore(self, kind: str, name: str, backup_name: str, confirm: bool = False) -> dict:
+        kind = self._kind(kind)
+        if not confirm:
+            raise ValueError("Restore requires confirm=true")
+        if not re.fullmatch(re.escape(name) + r"\.[0-9a-f]{32}\.bak", backup_name):
+            raise ValueError("Backup name must match the component")
+        with self.lock:
+            path = self._path(kind, name)
+            backup_path = self._backup_folder(kind) / backup_name
+            if backup_path.is_symlink():
+                raise ValueError("Symlink backups are not supported")
+            source = backup_path.resolve(strict=True)
+            if source.parent != self._backup_folder(kind):
+                raise ValueError("Backup resolves outside workspace")
+            data = self._read(source)
+            result = self._inspect(kind, data)
+            self._require_valid(result, complete=result["format"] == "text")
+            previous = self.backup(kind, name) if path.exists() else None
+            temporary = path.with_name(f".{name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with temporary.open("xb") as stream:
+                    stream.write(data)
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            return {"name": name, "restored_from": backup_name,
+                    "previous_backup": previous["backup_name"] if previous else None}
+
+    def _archive_folder(self, kind: str) -> Path:
+        components = (self.workspace / "ComposPV").resolve()
+        if components.parent != self.workspace:
+            raise ValueError("Component library resolves outside workspace")
+        base = (components / ".mcp-archive").resolve()
+        if base.parent != components:
+            raise ValueError("Archive folder resolves outside workspace")
+        folder = (base / kind).resolve()
+        if folder.parent != base:
+            raise ValueError("Archive folder resolves outside workspace")
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def _project_uses(self, kind: str, name: str) -> list[str]:
+        root = (self.workspace / "Projects").resolve()
+        if root.parent != self.workspace:
+            raise ValueError("Projects folder resolves outside workspace")
+        if not root.is_dir():
+            return []
+        matches = []
+        for path in root.iterdir():
+            relevant = (path.suffix.upper() == ".PRJ"
+                        or re.fullmatch(r"\.VC[A-Za-z0-9]+", path.suffix, re.I))
+            if not relevant:
+                continue
+            if path.is_symlink():
+                raise ValueError(f"Cannot safely inspect symlink project file: {path.name}")
+            if not path.is_file():
+                continue
+            if path.stat().st_size > MAX_BYTES:
+                raise ValueError(f"Cannot check references in oversized project file: {path.name}")
+            try:
+                lines = path.read_text(encoding="utf-8-sig").splitlines()
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"Cannot safely inspect project references: {path.name}") from exc
+            for line in lines:
+                match = REFERENCE.fullmatch(line)
+                if match and REF_KIND[match[1]] == kind and match[2].casefold() == name.casefold():
+                    matches.append(path.name)
+                    break
+        return sorted(matches)
+
+    def archive(self, kind: str, name: str, confirm: bool = False) -> dict:
+        kind = self._kind(kind)
+        if not confirm:
+            raise ValueError("Archive requires confirm=true")
+        with self.lock:
+            path = self._path(kind, name)
+            data = self._read(path)
+            users = self._project_uses(kind, name)
+            if users:
+                raise ValueError("Component is still referenced by: " + ", ".join(users[:10]))
+            archived = self._archive_folder(kind) / f"{name}.{uuid.uuid4().hex}.archived"
+            os.replace(path, archived)
+            return {"name": name, "archive_name": archived.name,
+                    "sha256": hashlib.sha256(data).hexdigest()}
+
+    def restore_archive(self, kind: str, name: str, archive_name: str,
+                        confirm: bool = False) -> dict:
+        kind = self._kind(kind)
+        if not confirm:
+            raise ValueError("Archive restore requires confirm=true")
+        self._path(kind, name)
+        if not re.fullmatch(re.escape(name) + r"\.[0-9a-f]{32}\.archived", archive_name):
+            raise ValueError("Archive name must match the component")
+        with self.lock:
+            archived_path = self._archive_folder(kind) / archive_name
+            if archived_path.is_symlink():
+                raise ValueError("Symlink archives are not supported")
+            source = archived_path.resolve(strict=True)
+            if source.parent != self._archive_folder(kind):
+                raise ValueError("Archive resolves outside workspace")
+            result = self._new(kind, name, self._read(source))
+            return {**result, "restored_from": archive_name}
+
+    def compare(self, kind: str, first: str, second: str,
+                second_library: str = "workspace") -> dict:
+        kind = self._kind(kind)
+        before = self._read(self._path(kind, first))
+        after = self._read(self._path(kind, second, second_library))
+        info_a, text_a = self._text(kind, before)
+        info_b, text_b = self._text(kind, after)
+        result = {"same_bytes": before == after, "first_format": info_a,
+                  "second_format": info_b,
+                  "first_sha256": hashlib.sha256(before).hexdigest(),
+                  "second_sha256": hashlib.sha256(after).hexdigest()}
+        if text_a is not None and text_b is not None:
+            changes = difflib.unified_diff(text_a.splitlines(), text_b.splitlines(),
+                                           fromfile=first, tofile=second, lineterm="")
+            first_lines = list(itertools.islice(changes, 151))
+            result["diff_truncated"] = len(first_lines) > 150 or any(
+                len(line) > 2000 for line in first_lines)
+            result["diff"] = [line[:2000] for line in first_lines[:150]]
+        return result
+
+    def dependencies(self, project: str, variant: str) -> dict:
+        if (not re.fullmatch(r"[A-Za-z0-9_ .-]+(?:\.PRJ)?", project)
+                or project in (".", "..") or not re.fullmatch(r"VC[A-Za-z0-9]+", variant)):
+            raise ValueError("Expected project basename and variant ID")
+        base = project[:-4] if project.upper().endswith(".PRJ") else project
+        root = (self.workspace / "Projects").resolve()
+        refs = []
+        variant_text = ""
+        for filename in (f"{base}.PRJ", f"{base}.{variant}"):
+            path = (root / filename).resolve(strict=True)
+            if path.parent != root or not path.is_file():
+                raise ValueError("Project file resolves outside workspace")
+            try:
+                text = path.read_text(encoding="utf-8-sig")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"Cannot safely inspect project references: {filename}") from exc
+            if filename.upper().endswith(f".{variant}".upper()):
+                variant_text = text
+            for line_no, line in enumerate(text.splitlines(), 1):
+                match = REFERENCE.fullmatch(line)
+                if not match:
+                    continue
+                kind = REF_KIND[match[1]]
+                name = match[2]
+                try:
+                    workspace = self._path(kind, name).is_file()
+                    builtin = self._path(kind, name, "builtin").is_file() if self.builtin else False
+                    status = "workspace" if workspace else "builtin-file" if builtin else "unknown-or-builtin-db"
+                except ValueError:
+                    status = "invalid-reference"
+                refs.append({"source": filename, "line": line_no, "field": match[1],
+                             "type": kind, "name": name, "status": status})
+        section = re.search(r"(?ms)^[ \t]*PVObject_System=pvSystem[ \t]*$\n"
+                            r"(?P<body>.*?)^[ \t]*End of PVObject pvSystem[ \t]*$",
+                            variant_text)
+        generator = None
+        if any(ref["type"] == "GEN" for ref in refs):
+            body = section["body"] if section else ""
+            flags = re.search(r"(?m)^[ \t]*Flags=\$([0-9A-Fa-f]+)[ \t]*$", body)
+            power = re.search(r"(?m)^[ \t]*PEffBackUp=([^\r\n]+)", body)
+            try:
+                effective_power = float(power[1]) if power else None
+                if effective_power is not None and not math.isfinite(effective_power):
+                    effective_power = None
+            except ValueError:
+                effective_power = None
+            generator = {"enabled_flag": bool(int(flags[1], 16) & 0x20) if flags else False,
+                         "effective_backup_kw": effective_power,
+                         "enclosure_threshold_present": "VBkUpEncl_syst=" in variant_text,
+                         "release_threshold_present": "VBkUpDecl_syst=" in variant_text,
+                         "note": "File reference alone does not activate a generator; inspect simulation outputs"}
+        return {"project": f"{base}.PRJ", "variant": variant, "references": refs,
+                "generator_configuration": generator,
+                "note": "Encrypted built-in databases are not enumerable; unknown is not proof of absence"}
