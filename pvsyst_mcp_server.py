@@ -15,6 +15,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pvsyst_cli import (PVsystCLI, VAR_GROUPS, build_monthly_weather_csv,
                         build_sfi, iter_result_csv, parse_batch_results, result_units)
 from pvsyst_components import ComponentStore
+from pvsyst_variants import VariantStore
 
 mcp = MCPServer("pvsyst-cli")
 _cli: PVsystCLI | None = None
@@ -48,6 +49,14 @@ def components() -> ComponentStore:
 def component_call(method: str, *args, **kwargs) -> dict:
     try:
         return getattr(components(), method)(*args, **kwargs)
+    except (ValueError, FileNotFoundError, FileExistsError) as exc:
+        raise ToolError(str(exc)) from None
+
+
+def variant_call(method: str, *args, **kwargs) -> dict:
+    try:
+        store = components()
+        return getattr(VariantStore(store.workspace, store, store.lock), method)(*args, **kwargs)
     except (ValueError, FileNotFoundError, FileExistsError) as exc:
         raise ToolError(str(exc)) from None
 
@@ -128,6 +137,37 @@ def pvsyst_list_projects() -> list[str]:
 def pvsyst_list_variants(project: str) -> list[str]:
     """List variant IDs belonging to an existing project."""
     return cli().list_variants(project)
+
+
+@mcp.tool()
+def pvsyst_get_variant_components(project: str, variant: str) -> dict:
+    """Read component references in a variant and its current SHA-256 for guarded edits."""
+    return variant_call("inspect", project, variant)
+
+
+@mcp.tool()
+def pvsyst_clone_variant(project: str, source_variant: str, new_variant: str,
+                         updates: dict[str, str] | None = None, subarray_id: int = 1) -> dict:
+    """Copy an existing variant as a NEW VC file. Optional PAN/OND edits target one
+    SubArrayId; BTR/GEN edits target the existing pvSystem reference only."""
+    return variant_call("clone", project, source_variant, new_variant, updates, subarray_id)
+
+
+@mcp.tool()
+def pvsyst_update_variant_components(project: str, variant: str,
+                                     updates: dict[str, str], expected_sha256: str,
+                                     subarray_id: int = 1) -> dict:
+    """Replace existing PAN/OND/BTR/GEN references only, with backup and SHA guard.
+    Use pvsyst_get_variant_components to obtain the current expected_sha256."""
+    return variant_call("update", project, variant, updates, expected_sha256, subarray_id)
+
+
+@mcp.tool()
+def pvsyst_restore_variant(project: str, variant: str, backup_name: str,
+                           expected_sha256: str, confirm: bool = False) -> dict:
+    """Restore a variant snapshot after verifying its current hash; backs up the
+    pre-restore state and requires confirm=true."""
+    return variant_call("restore", project, variant, backup_name, expected_sha256, confirm)
 
 
 @mcp.tool()
