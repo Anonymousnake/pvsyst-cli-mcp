@@ -9,12 +9,15 @@ from __future__ import annotations
 import difflib
 import hashlib
 import itertools
+import json
 import math
 import os
 import re
 import threading
 import uuid
 from pathlib import Path
+
+from pvsyst_paths import project_name, project_path, variant_id
 
 
 # Workspace spelling follows existing PVsyst workspaces; Windows paths are case-insensitive.
@@ -104,7 +107,10 @@ class ComponentStore:
             raise FileNotFoundError(path.name)
         if path.stat().st_size > MAX_BYTES:
             raise ValueError("Component file exceeds 2 MB limit")
-        return path.read_bytes()
+        data = path.read_bytes()
+        if len(data) > MAX_BYTES:
+            raise ValueError("Component file exceeds 2 MB limit")
+        return data
 
     @staticmethod
     def _text(kind: str, data: bytes) -> tuple[str, str | None]:
@@ -294,22 +300,68 @@ class ComponentStore:
             path = self._path(kind, name)
             data = self._read(path)
             folder = self._backup_folder(kind)
-            backup = folder / f"{name}.{uuid.uuid4().hex}.bak"
+            backup = folder / f"{name}.v2-{uuid.uuid4().hex}.bak"
             with backup.open("xb") as stream:
                 stream.write(data)
+            try:
+                self._write_snapshot_metadata(kind, name, backup, data)
+            except BaseException:
+                backup.unlink(missing_ok=True)
+                raise
             return {"name": name, "backup_name": backup.name, "sha256": hashlib.sha256(data).hexdigest()}
 
-    def _new(self, kind: str, name: str, data: bytes) -> dict:
+    @staticmethod
+    def _write_snapshot_metadata(kind: str, name: str, snapshot: Path, data: bytes) -> None:
+        metadata = snapshot.with_name(snapshot.name + ".json")
+        created = False
+        try:
+            with metadata.open("x", encoding="utf-8") as stream:
+                created = True
+                json.dump({"version": 2, "type": kind, "name": name,
+                           "sha256": hashlib.sha256(data).hexdigest()}, stream)
+        except BaseException:
+            # Only remove a metadata file we opened, never a pre-existing one.
+            if created:
+                metadata.unlink(missing_ok=True)
+            raise
+
+    @staticmethod
+    def _verify_snapshot(kind: str, name: str, snapshot: Path, data: bytes) -> bool:
+        if not snapshot.name.startswith(name + ".v2-"):
+            return False  # Legacy snapshots have no recorded integrity hash.
+        metadata = snapshot.with_name(snapshot.name + ".json")
+        if (metadata.is_symlink() or metadata.resolve().parent != snapshot.parent
+                or not metadata.is_file() or metadata.stat().st_size > 4096):
+            raise ValueError("Missing or unsafe component snapshot metadata")
+        with metadata.open("r", encoding="utf-8") as stream:
+            recorded = json.load(stream)
+        if recorded != {"version": 2, "type": kind, "name": name,
+                        "sha256": hashlib.sha256(data).hexdigest()}:
+            raise ValueError("Component snapshot integrity check failed")
+        return True
+
+    def _recovery_info(self, kind: str, data: bytes) -> dict:
+        try:
+            info = self._inspect(kind, data)
+            return {key: info[key] for key in ("format", "structural_errors", "warnings",
+                                               "known_value_errors") if key in info}
+        except ValueError as exc:
+            return {"format": "unrecognized", "structural_errors": [str(exc)], "warnings": []}
+
+    def _new(self, kind: str, name: str, data: bytes, *, recovery: bool = False) -> dict:
         path = self._path(kind, name)
-        result = self._inspect(kind, data)
-        self._require_valid(result, complete=result["format"] == "text")
+        result = self._recovery_info(kind, data) if recovery else self._inspect(kind, data)
+        if not recovery:
+            self._require_valid(result, complete=result["format"] == "text")
         path.parent.mkdir(parents=True, exist_ok=True)
         # Windows names are case-insensitive; enforce the same rule in tests on other OSes.
         if any(p.name.casefold() == name.casefold() for p in path.parent.iterdir()):
             raise FileExistsError(name)
         with path.open("xb") as stream:
             stream.write(data)
-        return {"name": name, "type": kind, "format": result["format"], "sha256": result["sha256"]}
+        return {"name": name, "type": kind, "format": result["format"],
+                "sha256": hashlib.sha256(data).hexdigest(),
+                **({"validation": result} if recovery else {})}
 
     def copy(self, kind: str, source_name: str, new_name: str,
              source_library: str = "workspace") -> dict:
@@ -397,7 +449,7 @@ class ComponentStore:
         kind = self._kind(kind)
         if not confirm:
             raise ValueError("Restore requires confirm=true")
-        if not re.fullmatch(re.escape(name) + r"\.[0-9a-f]{32}\.bak", backup_name):
+        if not re.fullmatch(re.escape(name) + r"\.(?:v2-)?[0-9a-f]{32}\.bak", backup_name):
             raise ValueError("Backup name must match the component")
         with self.lock:
             path = self._path(kind, name)
@@ -408,8 +460,8 @@ class ComponentStore:
             if source.parent != self._backup_folder(kind):
                 raise ValueError("Backup resolves outside workspace")
             data = self._read(source)
-            result = self._inspect(kind, data)
-            self._require_valid(result, complete=result["format"] == "text")
+            verified = self._verify_snapshot(kind, name, source, data)
+            validation = self._recovery_info(kind, data)
             previous = self.backup(kind, name) if path.exists() else None
             temporary = path.with_name(f".{name}.{uuid.uuid4().hex}.tmp")
             try:
@@ -419,6 +471,8 @@ class ComponentStore:
             finally:
                 temporary.unlink(missing_ok=True)
             return {"name": name, "restored_from": backup_name,
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "integrity_verified": verified, "validation": validation,
                     "previous_backup": previous["backup_name"] if previous else None}
 
     def _archive_folder(self, kind: str) -> Path:
@@ -482,8 +536,13 @@ class ComponentStore:
             users = self._project_uses(kind, name)
             if users:
                 raise ValueError("Component is still referenced by: " + ", ".join(users[:10]))
-            archived = self._archive_folder(kind) / f"{name}.{uuid.uuid4().hex}.archived"
-            os.replace(path, archived)
+            archived = self._archive_folder(kind) / f"{name}.v2-{uuid.uuid4().hex}.archived"
+            self._write_snapshot_metadata(kind, name, archived, data)
+            try:
+                os.replace(path, archived)
+            except BaseException:
+                archived.with_name(archived.name + ".json").unlink(missing_ok=True)
+                raise
             return {"name": name, "archive_name": archived.name,
                     "sha256": hashlib.sha256(data).hexdigest()}
 
@@ -493,7 +552,7 @@ class ComponentStore:
         if not confirm:
             raise ValueError("Archive restore requires confirm=true")
         self._path(kind, name)
-        if not re.fullmatch(re.escape(name) + r"\.[0-9a-f]{32}\.archived", archive_name):
+        if not re.fullmatch(re.escape(name) + r"\.(?:v2-)?[0-9a-f]{32}\.archived", archive_name):
             raise ValueError("Archive name must match the component")
         with self.lock:
             archived_path = self._archive_folder(kind) / archive_name
@@ -502,8 +561,10 @@ class ComponentStore:
             source = archived_path.resolve(strict=True)
             if source.parent != self._archive_folder(kind):
                 raise ValueError("Archive resolves outside workspace")
-            result = self._new(kind, name, self._read(source))
-            return {**result, "restored_from": archive_name}
+            data = self._read(source)
+            verified = self._verify_snapshot(kind, name, source, data)
+            result = self._new(kind, name, data, recovery=True)
+            return {**result, "restored_from": archive_name, "integrity_verified": verified}
 
     def compare(self, kind: str, first: str, second: str,
                 second_library: str = "workspace") -> dict:
@@ -526,19 +587,24 @@ class ComponentStore:
         return result
 
     def dependencies(self, project: str, variant: str) -> dict:
-        if (not re.fullmatch(r"[A-Za-z0-9_ .-]+(?:\.PRJ)?", project)
-                or project in (".", "..") or not re.fullmatch(r"VC[A-Za-z0-9]+", variant)):
+        if (not isinstance(project, str) or project in (".", "..")
+                or project.rstrip(" .") != project):
             raise ValueError("Expected project basename and variant ID")
-        base = project[:-4] if project.upper().endswith(".PRJ") else project
-        root = (self.workspace / "Projects").resolve()
+        project = project_name(project if project.upper().endswith(".PRJ") else project + ".PRJ")
+        base = project[:-4]
+        variant = variant_id(variant)
         refs = []
         variant_text = ""
-        for filename in (f"{base}.PRJ", f"{base}.{variant}"):
-            path = (root / filename).resolve(strict=True)
-            if path.parent != root or not path.is_file():
-                raise ValueError("Project file resolves outside workspace")
+        for identifier in (None, variant):
+            path = project_path(self.workspace, project, identifier)
+            filename = path.name
+            if path.stat().st_size > MAX_PROJECT_BYTES:
+                raise ValueError("Project or variant exceeds 32 MB")
             try:
-                text = path.read_text(encoding="utf-8-sig")
+                data = path.read_bytes()
+                if len(data) > MAX_PROJECT_BYTES:
+                    raise ValueError("Project or variant exceeds 32 MB")
+                text = data.decode("utf-8-sig").replace("\r\n", "\n")
             except UnicodeDecodeError as exc:
                 raise ValueError(f"Cannot safely inspect project references: {filename}") from exc
             if filename.upper().endswith(f".{variant}".upper()):

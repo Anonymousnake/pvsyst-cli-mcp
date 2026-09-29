@@ -37,6 +37,10 @@ async def main():
                     assert result.is_error == expect_error, (name, result)
                     return result
 
+                async def data_call(name, args):
+                    result = await call(name, args)
+                    return json.loads(result.content[0].text)
+
                 for kind, content in (("PAN", PAN), ("OND", OND),
                                       ("BTR", BTR), ("GEN", GEN)):
                     await call("pvsyst_create_component", {
@@ -50,7 +54,7 @@ async def main():
                 await call("pvsyst_get_component", {
                     "component_type": "PAN", "filename": "created.PAN", "limit": 2,
                 })
-                await call("pvsyst_update_component", {
+                edited_component = await data_call("pvsyst_update_component", {
                     "component_type": "GEN", "filename": "created.GEN",
                     "updates": {"Model": "Updated generator"},
                 })
@@ -64,11 +68,11 @@ async def main():
                 await call("pvsyst_backup_component", {
                     "component_type": "GEN", "filename": "created.GEN",
                 })
-                backup_name = next((root / "ComposPV" / ".mcp-backups" / "GEN").iterdir()).name
-                await call("pvsyst_restore_component", {
+                restored_component = await data_call("pvsyst_restore_component", {
                     "component_type": "GEN", "filename": "created.GEN",
-                    "backup_name": backup_name, "confirm": True,
+                    "backup_name": edited_component["backup_name"], "confirm": True,
                 })
+                assert restored_component["integrity_verified"]
                 await call("pvsyst_clone_component", {
                     "component_type": "GEN", "source_name": "created.GEN",
                     "new_name": "clone.GEN",
@@ -77,16 +81,15 @@ async def main():
                 await call("pvsyst_compare_components", {
                     "component_type": "GEN", "first": "created.GEN", "second": "clone.GEN",
                 })
-                await call("pvsyst_archive_component", {
+                archived_component = await data_call("pvsyst_archive_component", {
                     "component_type": "GEN", "filename": "clone.GEN",
                     "confirm": True,
                 })
-                archive_dir = root / "ComposPV" / ".mcp-archive" / "GEN"
-                archive_name = next(archive_dir.iterdir()).name
-                await call("pvsyst_restore_archived_component", {
+                restored_component = await data_call("pvsyst_restore_archived_component", {
                     "component_type": "GEN", "filename": "clone.GEN",
-                    "archive_name": archive_name, "confirm": True,
+                    "archive_name": archived_component["archive_name"], "confirm": True,
                 })
+                assert restored_component["integrity_verified"]
                 await call("pvsyst_copy_component", {
                     "component_type": "OND", "source_name": "created.OND",
                     "new_name": "copy.OND",
@@ -114,10 +117,6 @@ async def main():
                 })
                 assert hashlib.sha256(target.read_bytes()).hexdigest() == before_hash
                 print("MCP variant lifecycle: inspect, scoped clone, guarded edit and restore: OK")
-
-                async def data_call(name, args):
-                    result = await call(name, args)
-                    return json.loads(result.content[0].text)
 
                 (root / "Sites").mkdir()
                 (root / "Meteo").mkdir()

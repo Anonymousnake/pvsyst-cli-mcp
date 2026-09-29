@@ -11,9 +11,11 @@ import uuid
 from pathlib import Path
 
 from pvsyst_components import ComponentStore, FIELD, MAX_PROJECT_BYTES
+from pvsyst_paths import project_path, project_root
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
+MAX_ARCHIVE_MEMBERS = 128
 
 
 class VariantStore:
@@ -24,24 +26,26 @@ class VariantStore:
         self.lock = lock or threading.RLock()
 
     def _root(self) -> Path:
-        base = self.workspace / "Projects"
-        if base.is_symlink() or base.resolve().parent != self.workspace:
-            raise ValueError("Projects directory resolves outside workspace")
-        return base.resolve()
+        return project_root(self.workspace)
 
     def _path(self, project: str, variant: str | None = None) -> Path:
-        if (not isinstance(project, str) or len(project) > 180 or project.rstrip(" .") != project
-                or not re.fullmatch(r'[^\\/:*?"<>|\x00-\x1f]+\.PRJ', project, re.I)):
-            raise ValueError("Project must be a .PRJ filename without directories")
-        if variant is not None and (not isinstance(variant, str) or len(variant) > 40
-                                    or not re.fullmatch(r"VC[A-Za-z0-9]+", variant, re.I)):
-            raise ValueError("Variant must be a VC identifier without directories")
-        root = self._root()
-        name = project if variant is None else f"{project[:-4]}.{variant.upper()}"
-        path = root / name
-        if path.is_symlink() or path.resolve().parent != root:
-            raise ValueError("Symlink or escaping project files are not supported")
-        return path
+        return project_path(self.workspace, project, variant)
+
+    @staticmethod
+    def _check_size(data: bytes) -> None:
+        if len(data) > MAX_PROJECT_BYTES:
+            raise ValueError("Project or variant exceeds 32 MB")
+
+    @staticmethod
+    def _belongs_to_project(path: Path, project: str) -> bool:
+        """Exact stems plus attached PRJ/VC sidecars, excluding other dotted projects."""
+        stem = project[:-4].casefold()
+        if path.stem.casefold() == stem:
+            return True
+        if re.fullmatch(r"\.(?:PRJ|VC[A-Za-z0-9]+)", path.suffix, re.I):
+            return False
+        return bool(path.name.casefold().startswith(stem + ".") and re.fullmatch(
+            r"(?:PRJ|VC[A-Za-z0-9]+)\..+", path.name[len(project[:-4]) + 1:], re.I))
 
     @staticmethod
     def _read(path: Path) -> bytes:
@@ -50,8 +54,7 @@ class VariantStore:
         if path.stat().st_size > MAX_PROJECT_BYTES:
             raise ValueError("Project or variant exceeds 32 MB")
         data = path.read_bytes()
-        if len(data) > MAX_PROJECT_BYTES:
-            raise ValueError("Project or variant exceeds 32 MB")
+        VariantStore._check_size(data)
         return data
 
     def _check_project(self, project: str) -> None:
@@ -67,6 +70,7 @@ class VariantStore:
 
     @staticmethod
     def _text(data: bytes) -> tuple[str, list[str]]:
+        VariantStore._check_size(data)
         try:
             text = data.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
@@ -314,8 +318,8 @@ class VariantStore:
         folder.mkdir(exist_ok=True)
         return folder
 
-    def _backup(self, path: Path, data: bytes) -> str:
-        name = f"{path.name}.{uuid.uuid4().hex}.bak"
+    def _backup(self, path: Path, data: bytes, transaction_id: str | None = None) -> str:
+        name = f"{path.name}.{transaction_id or uuid.uuid4().hex}.bak"
         with (self._backup_folder() / name).open("xb") as stream:
             stream.write(data)
         return name
@@ -326,14 +330,12 @@ class VariantStore:
             self._check_project(source_project)
             source_root = self._root()
             target_prj = self._path(new_project)
-            source_stem = source_project[:-4]
-            target_stem = new_project[:-4]
             sources = [self._path(source_project)]
             source_paths = list(source_root.iterdir())
             for path in source_paths:
                 if path.name.casefold() == source_project.casefold():
                     continue
-                if path.name.casefold().startswith((source_stem + ".").casefold()):
+                if self._belongs_to_project(path, source_project):
                     extension = path.suffix[1:]
                     if not re.fullmatch(r"VC[A-Za-z0-9]+", extension, re.I):
                         raise ValueError(f"Unrecognized project sidecar: {path.name}")
@@ -350,8 +352,7 @@ class VariantStore:
                     self._sections(lines)
                 target = target_prj if source == sources[0] else self._path(new_project, source.suffix[1:])
                 snapshots.append((target, data))
-            names = {p.name.casefold() for p in source_paths}
-            if any(name.startswith((target_stem + ".").casefold()) for name in names):
+            if any(self._belongs_to_project(path, new_project) for path in source_paths):
                 raise FileExistsError("Destination project or variant already exists")
             created = []
             try:
@@ -459,9 +460,24 @@ class VariantStore:
                 raw = FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]
                 if not raw.isdigit() or int(raw) not in orientation_ids:
                     issues.append(f"Subarray {identifier} references unknown orientation {raw}")
-            if system is not None:
+            system_type = None
+            unchecked = []
+            if system is None:
+                issues.append("Missing pvSystem section")
+                unchecked.append("system circuit references")
+            else:
                 kinds = self._field_indices(lines, system, "SystemType")
-                if len(kinds) == 1 and FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] == "Grid":
+                if len(kinds) != 1:
+                    issues.append("System needs exactly one SystemType")
+                    unchecked.append("system circuit references")
+                else:
+                    system_type = FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2]
+                    if not system_type:
+                        issues.append("SystemType must not be empty")
+                    if system_type != "Grid":
+                        unchecked.append("system circuit references")
+                        warnings.append(f"Circuit checks are not implemented for SystemType={system_type!r}")
+                if system_type == "Grid":
                     branches = {}
                     for start, end in self._inverter_nodes(lines):
                         ids = [field[2] for i in range(start + 1, end)
@@ -489,7 +505,11 @@ class VariantStore:
             if any("PVObject_ShdTable" in line or "ListeObjets, list of=" in line for line in lines):
                 warnings.append("Shading geometry and derived factor tables require simulation verification")
             return {"project": project, "variant": variant.upper(),
-                    "sha256": hashlib.sha256(data).hexdigest(), "valid": not issues,
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "valid": False if issues else None if unchecked else True,
+                    "checks_complete": not unchecked, "unchecked_checks": unchecked,
+                    "system_type": system_type,
+                    "scope": "orientation and supported grid circuit references; not physical validation",
                     "issues": issues, "warnings": warnings,
                     "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids)}
 
@@ -569,7 +589,8 @@ class VariantStore:
                 raise ValueError("Source subarray is referenced outside its inverter branch")
             current_ids = set(arrays)
             for item in self._root().iterdir():
-                if item.name.casefold().startswith((project[:-4] + ".vc").casefold()):
+                if (item.stem.casefold() == project[:-4].casefold()
+                        and re.fullmatch(r"\.VC[A-Za-z0-9]+", item.suffix, re.I)):
                     other_path = self._path(project, item.suffix[1:])
                     _, other_lines = self._text(self._read(other_path))
                     other_arrays, _ = self._sections(other_lines)
@@ -739,7 +760,7 @@ class VariantStore:
             for path in self._root().iterdir():
                 if path.name.casefold() == project.casefold():
                     continue
-                if path.name.casefold().startswith((project[:-4] + ".").casefold()):
+                if self._belongs_to_project(path, project):
                     if not re.fullmatch(r"VC[A-Za-z0-9]+", path.suffix[1:], re.I):
                         raise ValueError(f"Unrecognized project sidecar: {path.name}")
                     members.append(self._path(project, path.suffix[1:]))
@@ -822,14 +843,25 @@ class VariantStore:
             raise ValueError(f"Unclosed {header} section")
         return starts[0], end
 
-    def _commit_project_files(self, originals: dict[Path, bytes],
+    def _commit_project_files(self, project: str, originals: dict[Path, bytes],
                               candidates: dict[Path, bytes]) -> dict:
+        if not originals or originals.keys() != candidates.keys():
+            raise ValueError("Project transaction must contain the same complete file set")
+        for data in (*originals.values(), *candidates.values()):
+            self._check_size(data)
+        transaction_id = uuid.uuid4().hex
+        manifest_name = f"transaction.{transaction_id}.json"
         backups = {}
         staged = {}
         written = []
         try:
             for path, data in originals.items():
-                backups[path.name] = self._backup(path, data)
+                backups[path.name] = self._backup(path, data, transaction_id)
+            with (self._backup_folder() / manifest_name).open("x", encoding="utf-8") as stream:
+                json.dump({"version": 1, "transaction_id": transaction_id, "project": project,
+                           "backups": backups, "original_files": {
+                               path.name: hashlib.sha256(data).hexdigest()
+                               for path, data in originals.items()}}, stream)
             for path, data in candidates.items():
                 temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
                 staged[path] = temporary
@@ -848,7 +880,8 @@ class VariantStore:
         finally:
             for temporary in staged.values():
                 temporary.unlink(missing_ok=True)
-        return {"backups": backups,
+        return {"backups": backups, "transaction_id": transaction_id,
+                "transaction_manifest": manifest_name,
                 "files": {path.name: hashlib.sha256(data).hexdigest()
                           for path, data in candidates.items()}}
 
@@ -907,14 +940,13 @@ class VariantStore:
                     self._replace_unique_field(lines, "NomF", met_name, (start + 1, child))
                     self._replace_unique_field(lines, "SiteM", site_identity, (start + 1, child))
                 candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
-                if len(candidate) > MAX_PROJECT_BYTES:
-                    raise ValueError("Project or variant exceeds 32 MB")
+                self._check_size(candidate)
                 if name != project:
                     self._text(candidate)
                     self._sections(self._text(candidate)[1])
                 originals[path] = data
                 candidates[path] = candidate
-            transaction = self._commit_project_files(originals, candidates)
+            transaction = self._commit_project_files(project, originals, candidates)
             return {"project": project, "site": site_name, "meteo": met_name,
                     "note": "Historical weather origin fields remain from the source variant",
                     **transaction}
@@ -928,6 +960,31 @@ class VariantStore:
             inventory = self.inspect_project(project)["files"]
             if inventory != expected_files or set(backups) != set(expected_files):
                 raise ValueError("Project files changed since inspection or backup set is incomplete")
+            transaction_ids = set()
+            for name, backup_name in backups.items():
+                match = (re.fullmatch(re.escape(name) + r"\.([0-9a-f]{32})\.bak", backup_name)
+                         if isinstance(backup_name, str) else None)
+                if match is None:
+                    raise ValueError("Backup name must match each project file")
+                transaction_ids.add(match[1])
+            if len(transaction_ids) != 1:
+                raise ValueError("Backups must belong to one complete source transaction")
+            transaction_id = transaction_ids.pop()
+            folder = self._backup_folder()
+            manifest_path = folder / f"transaction.{transaction_id}.json"
+            if (manifest_path.is_symlink() or manifest_path.resolve().parent != folder
+                    or not manifest_path.is_file()):
+                raise ValueError("Missing or unsafe source transaction manifest; legacy sets require manual recovery")
+            manifest = json.loads(self._read(manifest_path).decode("utf-8"))
+            if (not isinstance(manifest, dict) or manifest.get("version") != 1
+                    or manifest.get("project") != project
+                    or manifest.get("transaction_id") != transaction_id
+                    or manifest.get("backups") != backups
+                    or not isinstance(manifest.get("original_files"), dict)
+                    or set(manifest["original_files"]) != set(backups)
+                    or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                           for value in manifest["original_files"].values())):
+                raise ValueError("Backups must match one complete source transaction manifest")
             originals = {}
             candidates = {}
             for name, digest in expected_files.items():
@@ -942,6 +999,8 @@ class VariantStore:
                 if snapshot.is_symlink() or snapshot.resolve().parent != self._backup_folder():
                     raise ValueError("Linked project backup is not supported")
                 previous = self._read(snapshot)
+                if hashlib.sha256(previous).hexdigest() != manifest["original_files"][name]:
+                    raise ValueError(f"Project backup integrity check failed: {name}")
                 if name == project:
                     lines = previous.decode("utf-8-sig").splitlines()
                     if (not lines or lines[0].strip() != "PVObject_=pvProject"
@@ -952,7 +1011,7 @@ class VariantStore:
                     self._sections(lines)
                 originals[path] = data
                 candidates[path] = previous
-            return {"project": project, **self._commit_project_files(originals, candidates)}
+            return {"project": project, **self._commit_project_files(project, originals, candidates)}
 
     def archive_project(self, project: str, expected_files: dict[str, str],
                         confirm: bool = False) -> dict:
@@ -962,6 +1021,8 @@ class VariantStore:
             actual = self.inspect_project(project)["files"]
             if actual != expected_files or len(actual) < 2:
                 raise ValueError("Project files changed since inspection or has no variants")
+            if len(actual) > MAX_ARCHIVE_MEMBERS:
+                raise ValueError(f"Project archive exceeds {MAX_ARCHIVE_MEMBERS} members")
             folder = self._archive_folder() / uuid.uuid4().hex
             folder.mkdir()
             moved = []
@@ -1025,7 +1086,7 @@ class VariantStore:
             if manifest.get("project") != project or not isinstance(manifest.get("files"), dict):
                 raise ValueError("Archive belongs to another project")
             files = manifest["files"]
-            if not files or len(files) > 128 or any(not isinstance(name, str) or not isinstance(digest, str)
+            if not files or len(files) > MAX_ARCHIVE_MEMBERS or any(not isinstance(name, str) or not isinstance(digest, str)
                     or not re.fullmatch(r"[0-9a-f]{64}", digest) for name, digest in files.items()):
                 raise ValueError("Invalid archive manifest")
             sources = []

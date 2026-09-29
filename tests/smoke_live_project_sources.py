@@ -36,6 +36,7 @@ def main():
         changed = store.update_project_sources(project, sit, met, initial["files"])
         backups.extend(root / "Projects" / ".mcp-variant-backups" / name
                        for name in changed["backups"].values())
+        backups.append(root / "Projects" / ".mcp-variant-backups" / changed["transaction_manifest"])
         inspected = store.inspect_project(project)
         if inspected["warnings"] or inspected["files"] != changed["files"]:
             raise RuntimeError("Persisted source references failed inspection")
@@ -52,6 +53,7 @@ def main():
         restored = store.restore_project_sources(project, changed["backups"], changed["files"], True)
         backups.extend(root / "Projects" / ".mcp-variant-backups" / name
                        for name in restored["backups"].values())
+        backups.append(root / "Projects" / ".mcp-variant-backups" / restored["transaction_manifest"])
         if restored["files"] != initial["files"]:
             raise RuntimeError("Source restore did not recover the exact original bytes")
         print(f"Guarded source update, CLI and byte-identical restore: site={sit}, met={met}, rows={len(rows)}: OK")
