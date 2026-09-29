@@ -401,6 +401,6 @@ class ComponentTests(unittest.TestCase):
         server._cli = client
         self.addCleanup(setattr, server, "_cli", None)
         tools = asyncio.run(server.mcp.list_tools())
-        self.assertEqual(len(tools), 29)
+        self.assertEqual(len(tools), 33)
         self.assertEqual(server.pvsyst_validate_component("GEN", "sample.GEN")["model"], "50kVA")
         self.assertEqual(server.pvsyst_list_components("BTR")["total"], 1)
