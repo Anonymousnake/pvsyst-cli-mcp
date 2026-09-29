@@ -308,8 +308,8 @@ def pvsyst_list_components(component_type: str, library: str = "workspace",
 def pvsyst_get_component(component_type: str, filename: str,
                          library: str = "workspace", offset: int = 0,
                          limit: int = 100) -> dict:
-    """Read paged UTF-8 text, scalar allowlist, SHA and existing OND curve paths/
-    active points. Curves report automatic/file mode, supported edits and their
+    """Read paged UTF-8 text, scalar allowlist, SHA and OND/BTR curve paths/
+    active points. Curves report mode or CLI tag recognition, supported edits and their
     preconditions; static inspection does not verify simulation behavior.
     Legacy binary PAN is metadata only."""
     return component_call("inspect", component_type, filename, library, offset, limit)
@@ -356,12 +356,17 @@ def pvsyst_update_component(component_type: str, filename: str,
                            use_file_curve: StrictBool = False) -> dict:
     """Edit allowlisted text fields in one workspace component with automatic
     backup. dry_run returns a diff and candidate SHA without writes. Pass the
-    inspected expected_sha256 to reject stale edits. curve_updates accepts only
+    inspected expected_sha256 to reject stale edits. curve_updates accepts
     OND Version=8.1.6 single-voltage Converter/ProfilPIO Mode=1 points in watts,
-    preserving the active count. Curves require expected_sha256; pass updates={}
+    or BTR Version=8.1.6 AGM/Gel CapaCourant/Capa_DischRate Mode=1 points as
+    [discharge hours, capacity relative to C10]. BTR requires positive points,
+    increasing X, nondecreasing Y, coverage of 100h and C100/C10 in [1.15,1.45].
+    Both preserve the active count. Curves require expected_sha256; pass updates={}
     for curve-only edits. Automatic curves require explicit use_file_curve=true
-    alongside points to clear the root automatic-profile bit. Other Flags are
-    preserved. Three-voltage curves and legacy PAN are read-only.
+    alongside points to clear the root automatic-profile bit. For BTR, this
+    opt-in renames the supplied Capa_DischRate block to CLI's CapaCourant; all
+    other tags and Flags are preserved. Use the current path from inspection.
+    Three-voltage OND, other BTR curves and legacy PAN are read-only.
     Physical behavior requires simulation; derived scalars are not refitted.
     A no-op returns changed=false without creating a backup."""
     return component_call("update", component_type, filename, updates,
