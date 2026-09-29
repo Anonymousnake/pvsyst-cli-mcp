@@ -307,7 +307,9 @@ def pvsyst_list_components(component_type: str, library: str = "workspace",
 def pvsyst_get_component(component_type: str, filename: str,
                          library: str = "workspace", offset: int = 0,
                          limit: int = 100) -> dict:
-    """Read paged UTF-8 component text and fields; legacy binary PAN is metadata only."""
+    """Read paged UTF-8 text, scalar allowlist, SHA and existing OND curve paths/
+    active points. Curve diagnostics describe file structure, not simulation
+    validity or editable capability. Legacy binary PAN is metadata only."""
     return component_call("inspect", component_type, filename, library, offset, limit)
 
 
@@ -346,10 +348,15 @@ def pvsyst_clone_component(component_type: str, source_name: str, new_name: str,
 
 @categorized_tool()
 def pvsyst_update_component(component_type: str, filename: str,
-                            updates: dict[str, str]) -> dict:
+                           updates: dict[str, str],
+                           expected_sha256: str | None = None, dry_run: bool = False) -> dict:
     """Edit allowlisted text fields in one workspace component with automatic
-    backup. Legacy PAN is read-only; BTR curve fields are not editable."""
-    return component_call("update", component_type, filename, updates)
+    backup. dry_run returns a diff and candidate SHA without writes. Pass the
+    inspected expected_sha256 to reject stale edits. Legacy PAN is read-only;
+    curve editing is not supported. Physical behavior requires simulation.
+    A no-op returns changed=false without creating a backup."""
+    return component_call("update", component_type, filename, updates,
+                          expected_sha256, dry_run)
 
 
 @categorized_tool()
