@@ -309,7 +309,8 @@ def pvsyst_get_component(component_type: str, filename: str,
                          library: str = "workspace", offset: int = 0,
                          limit: int = 100) -> dict:
     """Read paged UTF-8 text, scalar allowlist, SHA and OND/BTR curve paths/
-    active points. Curves report mode or CLI tag recognition, supported edits and their
+    active points, plus commercial field types/units and remarks. Curves report
+    mode or CLI tag recognition, supported edits and their
     preconditions; static inspection does not verify simulation behavior.
     Legacy binary PAN is metadata only."""
     return component_call("inspect", component_type, filename, library, offset, limit)
@@ -353,7 +354,9 @@ def pvsyst_update_component(component_type: str, filename: str,
                            updates: dict[str, str],
                            expected_sha256: str | None = None, dry_run: bool = False,
                            curve_updates: dict[str, list[list[StrictFloat]]] | None = None,
-                           use_file_curve: StrictBool = False) -> dict:
+                           use_file_curve: StrictBool = False,
+                           commercial_updates: dict[str, str] | None = None,
+                           remarks: list[str] | None = None) -> dict:
     """Edit allowlisted text fields in one workspace component with automatic
     backup. dry_run returns a diff and candidate SHA without writes. Pass the
     inspected expected_sha256 to reject stale edits. curve_updates accepts
@@ -367,10 +370,18 @@ def pvsyst_update_component(component_type: str, filename: str,
     opt-in renames the supplied Capa_DischRate block to CLI's CapaCourant; all
     other tags and Flags are preserved. Use the current path from inspection.
     Three-voltage OND, other BTR curves and legacy PAN are read-only.
+    commercial_updates edits/adds the Version=8.1.6 commercial form fields
+    returned by inspection, including dimensions in metres and weight in kg.
+    PAN Width/Height also update existing LargApp/LongApp; identity changes
+    synchronize a tab-separated root Comment. remarks replaces up to five
+    lines ([] clears); PAN's fifth line may encode functional options.
+    These operations require expected_sha256 and share the preview/backup.
+    Seller prices, flags and model fitting are separate from this form.
     Physical behavior requires simulation; derived scalars are not refitted.
     A no-op returns changed=false without creating a backup."""
     return component_call("update", component_type, filename, updates,
-                          expected_sha256, dry_run, curve_updates, use_file_curve)
+                          expected_sha256, dry_run, curve_updates, use_file_curve,
+                          commercial_updates, remarks)
 
 
 @categorized_tool()

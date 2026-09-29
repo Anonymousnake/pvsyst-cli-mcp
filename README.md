@@ -152,6 +152,50 @@ snapshots and preserve the BOM, line endings and assignment whitespace.
 Rechecks also detect intervening file changes during preparation; the local
 lock and hash checks do not provide an OS-level lock against external editors.
 
+For text **Version=8.1.6** components of all four types, inspection also returns
+`commercial`: existing values, form field types/units, per-field editability,
+and up to five remark lines. `pvsyst_update_component` accepts a
+`commercial_updates` dictionary and a `remarks` string array. These require
+`expected_sha256` and use the same preview, atomic file replacement and backup
+as scalar/curve changes. Supply `updates={}` for a form-only edit.
+
+```json
+{
+  "component_type": "PAN",
+  "filename": "custom.PAN",
+  "updates": {},
+  "commercial_updates": {
+    "Manufacturer": "Example", "Model": "New model", "DataSource": "Datasheet",
+    "Width": "1.134", "Height": "2.278", "Depth": "0.035", "Weight": "28.6",
+    "YearBeg": "2026", "NPieces": "1", "PriceDate": "30/09/26 09:00"
+  },
+  "remarks": ["User-defined component", "Verified datasheet revision"],
+  "expected_sha256": "<sha256 from inspection>",
+  "dry_run": true
+}
+```
+
+Dimensions are in metres and weight is in kilograms. These form fields may
+be added when absent; unknown fields and nested commercial objects are refused.
+PAN `Width` and `Height` must be positive and also update the existing root
+`LargApp` and `LongApp` respectively; other dimensions and weight allow zero
+for unspecified values. `YearBeg` is 0–9999, `NPieces` is a positive 32-bit
+integer, and nonempty `PriceDate` must be a valid `dd/mm/yy HH:MM` timestamp.
+Strings have a 2048-character limit and cannot contain line breaks or controls.
+Empty `DataSource` and `PriceDate` are permitted. Identity edits synchronize
+the first two fields of a tab-separated root `Comment`, preserving its remaining
+status text. A free-form root comment is retained.
+
+Omitting `remarks` preserves it; `[]` removes its block. A supplied list replaces
+the array, count, consecutive row names and closing value together. Same-value
+arrays retain original formatting. PAN's fifth remark can encode a model
+association or functional option, so this is not always merely descriptive text.
+Use `commercial_updates` for identity fields when combining form and other
+edits; do not repeat a field in both dictionaries. Seller-specific prices,
+currencies, model fitting and GUI round-trip equivalence are outside this form.
+See [commercial verification](docs/commercial-verification.md) and the
+[GUI capability gap and reverse-engineering inventory](docs/gui-capability-roadmap.md).
+
 `pvsyst_get_component` returns the scalar allowlist as `editable_fields` and a
 bounded OND/BTR `curves` inventory. Each curve has its object path
 (for example `Converter/ProfilPIO`), line number and points declared effective
