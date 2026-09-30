@@ -497,8 +497,13 @@ class ComponentStore:
                           "structural_errors", "warnings", "known_value_errors")},
                       "validation_scope": "Static structure and limited values only; simulate a referencing project"}
             if curve_updates is not None:
-                result["curve_control_before"] = inspect_curves(kind, text)["control"]
-                result["curve_control_after"] = inspect_curves(kind, edited)["control"]
+                before_curves, after_curves = inspect_curves(kind, text), inspect_curves(kind, edited)
+                result["curve_control_before"] = before_curves["control"]
+                result["curve_control_after"] = after_curves["control"]
+                result["curve_counts_before"] = [{key: item[key] for key in
+                    ("path", "point_count", "allocated_point_count")} for item in before_curves["items"]]
+                result["curve_counts_after"] = [{key: item[key] for key in
+                    ("path", "point_count", "allocated_point_count")} for item in after_curves["items"]]
             if commercial_updates is not None or remarks is not None:
                 result["commercial_before"] = commercial_inventory(kind, text)
                 result["commercial_after"] = commercial_inventory(kind, edited)

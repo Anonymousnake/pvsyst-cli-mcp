@@ -385,7 +385,9 @@ def pvsyst_update_component(component_type: str, filename: str,
     or BTR Version=8.1.6 AGM/Gel CapaCourant/Capa_DischRate Mode=1 points as
     [discharge hours, capacity relative to C10]. BTR requires positive points,
     increasing X, nondecreasing Y, coverage of 100h and C100/C10 in [1.15,1.45].
-    Both preserve the active count. Curves require expected_sha256; pass updates={}
+    Supply the complete table of 4..256 points; X >= 1e-9 and X gaps >= 1e-8.
+    Count changes require point_count_editable from inspection and synchronize
+    NPtsMax/NPtsEff/Point_N rows. Curves require expected_sha256; pass updates={}
     for curve-only edits. Automatic curves require explicit use_file_curve=true
     alongside points to clear the root automatic-profile bit. For BTR, this
     opt-in renames the supplied Capa_DischRate block to CLI's CapaCourant; all

@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 
 from pvsyst_component_editor import (ObjectBlock, Profile, checked_points, objects,
-                                     replace_key, write_points)
+                                     replace_key, write_points, point_count_errors, MAX_POINTS)
 
 
 CAPACITY_TAG = "CapaCourant"
@@ -104,7 +104,11 @@ def battery_curve_inventory(text: str) -> dict:
                                    "recognized" if native_tag else "unverified",
                 "editable": not edit_errors, "edit_errors": edit_errors,
                 "structure_complete": not errors, "errors": errors,
-                "points": points, "point_count": len(points), "point_count_editable": False,
+                "points": points, "point_count": len(points),
+                "allocated_point_count": int(profile.one("NPtsMax")[1]) if not errors else None,
+                "point_count_editable": not edit_errors and not point_count_errors(profile),
+                "point_count_errors": point_count_errors(profile) if not errors else errors,
+                "point_count_range": [4, MAX_POINTS],
                 "requires_expected_sha256": True,
                 "requires_use_file_curve": profile.path == CAPACITY_ALIAS,
                 "simulation_effect": "unverified",
@@ -143,7 +147,7 @@ def replace_battery_curve(text: str, updates: dict[str, list[list[float]]],
     errors = profile.problems + _profile_errors(profile, previous)
     if errors:
         raise ValueError("; ".join(errors))
-    points = checked_points(updates[path], len(previous))
+    points = checked_points(updates[path])
     capacity_ratio(points)
     lines = text.splitlines(keepends=True)
     write_points(lines, profile, previous, points)
