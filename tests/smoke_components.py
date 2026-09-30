@@ -127,6 +127,38 @@ async def main():
                 assert battery_restore["sha256"] == battery["sha256"]
                 print("MCP BTR curve: ignored-tag guard, ratio rejection, activation preview/apply, stale rejection, exact restore: OK")
 
+                for kind, filename, points, curve in (
+                    ("OND", "curve.OND", POINTS, "Converter/ProfilPIO"),
+                    ("BTR", "capacity.BTR", CAPACITY_POINTS, "Capa_DischRate")):
+                    target = {"component_type": kind, "filename": filename}
+                    original = await data_call("pvsyst_get_component", target)
+                    current_hash = original["sha256"]
+                    more = points + ([[1500, 1425]] if kind == "OND" else [[300, 1.44]])
+                    fewer = [more[0], more[1], more[3], more[-1]]
+                    first_backup = None
+                    for supplied in (more, fewer):
+                        args = {**target, "updates": {}, "expected_sha256": current_hash,
+                                "use_file_curve": True, "curve_updates": {curve: supplied}}
+                        preview = await data_call("pvsyst_update_component", {**args, "dry_run": True})
+                        assert (await data_call("pvsyst_get_component", target))["sha256"] == current_hash
+                        edit = await data_call("pvsyst_update_component", args)
+                        first_backup = first_backup or edit["backup_name"]
+                        assert edit["sha256"] == preview["sha256"]
+                        await call("pvsyst_update_component", args, expect_error=True)
+                        current_hash = edit["sha256"]
+                        curve = "CapaCourant" if kind == "BTR" else curve
+                        item = next(c for c in (await data_call("pvsyst_get_component", target))["curves"]["items"]
+                                    if c["path"] == curve)
+                        assert item["point_count_editable"] and item["points"] == supplied
+                        assert item["point_count"] == item["allocated_point_count"] == len(supplied)
+                        noop = await data_call("pvsyst_update_component", {**args,
+                            "expected_sha256": current_hash, "curve_updates": {curve: supplied}})
+                        assert not noop["changed"] and not noop.get("backup_name")
+                    restored = await data_call("pvsyst_restore_component", {**target,
+                        "backup_name": first_backup, "confirm": True})
+                    assert restored["sha256"] == original["sha256"]
+                print("MCP OND/BTR point tables: grow/shrink, synchronized counts, previews, stale guard, no-op and exact restore: OK")
+
                 for kind, content in (("PAN", PAN), ("OND", OND),
                                       ("BTR", BTR), ("GEN", GEN)):
                     await call("pvsyst_create_component", {

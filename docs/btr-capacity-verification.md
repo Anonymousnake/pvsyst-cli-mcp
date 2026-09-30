@@ -11,7 +11,9 @@ The editor supports one existing root capacity curve in a BTR file declaring
 `CapaCourant` is the CLI tag. The GUI-style `Capa_DischRate` alias is not loaded
 by the tested CLI; activating it requires explicit `use_file_curve=true` with
 replacement points. This changes only the selected tag and active points.
-Other curves, chemistry, Flags, point counts and inactive rows are preserved.
+Other curves, chemistry and Flags are preserved. Point counts and inactive
+rows are preserved for same-count edits. A later [point-table test](curve-table-verification.md)
+covers adding/removing points with synchronized counts and a complete table.
 
 Independent reverse-engineering experiments established that Mode 1 is linear,
 X is discharge duration in hours, and Y is a capacity multiplier relative to

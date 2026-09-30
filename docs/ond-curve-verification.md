@@ -7,7 +7,9 @@ Vendor component files and project data are not distributed with this repository
 ## Supported operation
 
 Edit the existing main `Converter/ProfilPIO` in an OND file declaring
-`Version=8.1.6`, with `Mode=1` and unchanged effective point count. Its axes
+`Version=8.1.6`, with `Mode=1`. The ordinate-scaling experiment below kept
+the effective point count unchanged; a later [point-table test](curve-table-verification.md)
+covers adding and removing points. Its axes
 are input power and output power in watts; display-unit settings do not
 change the serialized point units in the tested file.
 
@@ -19,8 +21,9 @@ when that bit is cleared. The three-voltage selection uses bit 12 (`0x1000`)
 and is explicitly excluded from the editor pending separate validation.
 
 Only the main curve and explicit automatic-to-file switch are exposed. The
-editor preserves other flag bits, nested Flags, counts, padding and unrelated
-fields. It does not infer or recompute a complete physical model.
+editor preserves other flag bits, nested Flags and unrelated fields. Counts
+and padding are preserved for same-count edits; resizing synchronizes the
+counts and complete table. It does not infer or recompute a complete physical model.
 
 ## Reproducible integration test
 
@@ -64,6 +67,6 @@ not evidence of better efficiency or engineering validity. The matched-input
 rows demonstrate consumption of edited ordinates in this native path.
 
 This does not verify every OND parameter, other PVsyst versions, three-voltage
-interpolation, point-count changes or consistency between curves and derived
+interpolation or consistency between curves and derived
 scalars. The reader therefore leaves each inspected model's
 `simulation_effect` as `unverified`; callers must simulate their own changes.

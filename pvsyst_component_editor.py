@@ -71,16 +71,16 @@ class Profile(ObjectBlock):
         points = []
         for i in range(1, capacity + 1):
             raw = self.one(f"Point_{i}")[1].split(",")
-            if len(raw) != 2:
+            if len(raw) not in (2, 5):
                 raise ValueError(f"{self.path}: invalid Point_{i}")
             try:
-                pair = [float(value) for value in raw]
+                values = [float(value) for value in raw]
             except ValueError:
                 raise ValueError(f"{self.path}: invalid Point_{i}") from None
-            if not all(math.isfinite(value) for value in pair):
+            if not all(math.isfinite(value) for value in values):
                 raise ValueError(f"{self.path}: Point_{i} must be finite")
             if i <= effective:
-                points.append(pair)
+                points.append(values[:2])
         return points
 
 
@@ -123,9 +123,13 @@ def profiles(text: str) -> list[Profile]:
     return [block for block in objects(text) if isinstance(block, Profile)]
 
 
-def checked_points(supplied: list, count: int) -> list[list[float]]:
-    if not isinstance(supplied, list) or len(supplied) != count:
-        raise ValueError(f"Supply exactly {count} active points; point count changes are unsupported")
+def checked_points(supplied: list, count: int | None = None) -> list[list[float]]:
+    if not isinstance(supplied, list):
+        raise ValueError("Supply a list of active points")
+    if count is not None and len(supplied) != count:
+        raise ValueError(f"Supply exactly {count} active points")
+    if not 4 <= len(supplied) <= MAX_POINTS:
+        raise ValueError(f"Supply 4..{MAX_POINTS} active points")
     result = []
     last_x = -math.inf
     for pair in supplied:
@@ -140,12 +144,53 @@ def checked_points(supplied: list, count: int) -> list[list[float]]:
             raise ValueError("Each point must contain two finite numbers")
         if x <= last_x:
             raise ValueError("Active X values must be strictly increasing")
+        if x < 1e-9 or x - last_x < 1e-8:
+            raise ValueError("Native compilation can remove points: require X >= 1e-9 and gaps >= 1e-8")
         result.append([x, y])
         last_x = x
     return result
 
 
+def point_count_errors(profile: Profile) -> list[str]:
+    """Requirements for replacing a complete, ordered Mode 1 point table."""
+    errors = []
+    try:
+        compile_fields = profile.fields.get("LastCompile", [])
+        if len(compile_fields) > 1:
+            raise ValueError("LastCompile must occur at most once")
+        if compile_fields:
+            raw = compile_fields[0][1]
+            if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw) or int(raw[1:], 16) not in (0, 0x19, 0x8d, 0x8089):
+                raise ValueError("Point-count editing supports LastCompile absent, $0, $19, $008D or $8089")
+        capacity = int(profile.one("NPtsMax")[1])
+        rows = [profile.one(f"Point_{i}")[0] for i in range(1, capacity + 1)]
+        if rows != list(range(rows[0], rows[0] + capacity)):
+            raise ValueError("Point-count editing requires consecutive Point_N rows in numeric order")
+        if any(index >= rows[0] for key in ("NPtsMax", "NPtsEff", "Mode", "LastCompile")
+               for index, _ in profile.fields.get(key, [])):
+            raise ValueError("Curve count/mode/compile fields must precede the point table")
+    except (ValueError, IndexError) as exc:
+        errors.append(str(exc))
+    return errors
+
+
 def write_points(lines: list[str], profile: Profile, previous: list, points: list) -> None:
+    if len(points) != len(previous):
+        errors = point_count_errors(profile)
+        if errors:
+            raise ValueError("; ".join(errors))
+        capacity_index, capacity = profile.one("NPtsMax")
+        effective_index, _ = profile.one("NPtsEff")
+        start, _ = profile.one("Point_1")
+        template = lines[start]
+        # Canonical resized table: every allocated point is active. Preserve
+        # Mode/LastCompile; native Mode 1 compilation derives a/b/c from X/Y.
+        table = [replace_value(replace_key(template, f"Point_{i}"), f"{x:.17g},{y:.17g}")
+                 for i, (x, y) in enumerate(points, 1)]
+        lines[capacity_index] = replace_value(lines[capacity_index], str(len(points)))
+        lines[effective_index] = replace_value(lines[effective_index], str(len(points)))
+        lines[start:start + int(capacity)] = table
+        return
     for i, pair in enumerate(points, 1):
         if pair != previous[i - 1]:
             index, _ = profile.one(f"Point_{i}")
@@ -222,7 +267,10 @@ def curve_inventory(kind: str, text: str) -> dict:
                       "requires_use_file_curve": control["source"] == "automatic",
                       "requires_expected_sha256": True,
                       "points": points, "point_count": len(points),
-                      "point_count_editable": False,
+                      "allocated_point_count": int(profile.one("NPtsMax")[1]) if not errors else None,
+                      "point_count_editable": not edit_errors and not point_count_errors(profile),
+                      "point_count_errors": point_count_errors(profile) if not errors else errors,
+                      "point_count_range": [4, MAX_POINTS],
                       "simulation_effect": "unverified",
                       "axes": ["input power (W)", "output power (W)"] if supported else None})
     return {"scope": "OND power curves only; physical behavior requires simulation",
@@ -247,15 +295,15 @@ def replace_curves(kind: str, text: str, updates: dict[str, list[list[float]]],
     errors = profile.problems + _edit_errors(profile, previous)
     if errors:
         raise ValueError("; ".join(errors))
-    points = checked_points(updates[MAIN_CURVE], len(previous))
+    points = checked_points(updates[MAIN_CURVE])
     if any(not 0 <= y <= x for x, y in points):
         raise ValueError("Supported power points require 0 <= output <= input")
     lines = text.splitlines(keepends=True)
-    write_points(lines, profile, previous, points)
     if control["source"] == "automatic":
         index, raw = flag_field
         # Bit 4 is the low bit of the second hex digit from the right.
         # Replace only that digit, preserving even mixed-case surrounding hex.
         digit = format(int(raw[-2], 16) & ~1, "x" if raw[-2].islower() else "X")
         lines[index] = replace_value(lines[index], raw[:-2] + digit + raw[-1])
+    write_points(lines, profile, previous, points)
     return "".join(lines)
