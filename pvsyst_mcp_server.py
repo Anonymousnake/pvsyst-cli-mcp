@@ -19,6 +19,7 @@ from pvsyst_cli import (PVsystCLI, VAR_GROUPS, build_monthly_weather_csv,
 from pvsyst_components import ComponentStore
 from pvsyst_variants import VariantStore
 from pvsyst_paths import workspace_file
+from pvsyst_results import compare_results
 
 mcp = MCPServer("pvsyst-cli")
 _cli: PVsystCLI | None = None
@@ -556,12 +557,30 @@ def pvsyst_export_logs() -> dict:
 
 @categorized_tool()
 def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR",
-                        folder: str = "Results") -> dict:
+                        folder: str = "Results", compare_to: str = "",
+                        compare_folder: str | None = None) -> dict:
     """Summarize hourly or subhour SFI rows in Results or UserHourly.
-    Complete energy requires finite samples and regular cadence; observed energy excludes missing samples."""
-    path = result_path(folder, csv_name)
+    Complete energy requires finite samples and regular cadence; observed energy excludes missing samples.
+    With compare_to, return target (csv_name) minus baseline (compare_to), using
+    1..64 distinct columns, identical explicit units and identical increasing
+    timestamps. compare_folder defaults to folder. No resampling/conversion.
+    Statistics use finite pairs only; missing pairs and coverage are explicit.
+    Power differences in W/kW integrate to kWh only at a regular cadence.
+    Comparison verifies both file hashes before/after reading; it runs no simulation."""
     requested = tuple(column.strip() for column in columns.split(",") if column.strip())
-    return summarize_results(path, requested)
+    if compare_to:
+        baseline_folder = folder if compare_folder is None else compare_folder
+        try:
+            result = compare_results(result_path(baseline_folder, compare_to),
+                                     result_path(folder, csv_name), requested)
+        except (ValueError, OSError) as exc:
+            raise ToolError(str(exc)) from None
+        result["baseline"]["folder"] = baseline_folder
+        result["target"]["folder"] = folder
+        return result
+    if compare_folder is not None:
+        raise ValueError("compare_folder requires compare_to")
+    return summarize_results(result_path(folder, csv_name), requested)
 
 
 @categorized_tool()

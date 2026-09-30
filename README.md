@@ -339,6 +339,44 @@ Component recovery restores original bytes even if they fail the current model c
 
 Structure validation reports missing `pvSystem` sections and missing, empty or duplicate `SystemType` fields as issues. Its `scope` covers orientation and supported grid circuit references only. `checks_complete` and `unchecked_checks` disclose skipped circuit checks; `valid` is `false` when an issue is found, `null` when checks are incomplete without a known issue, and `true` only when the checks within that scope pass. Shading geometry and physical model verification remain separate.
 
+### Comparing result files
+
+The existing `pvsyst_read_results` tool compares two saved SFI CSVs when
+`compare_to` is supplied. The difference is always **target minus baseline**:
+
+```json
+{
+  "csv_name": "new-design.csv",
+  "folder": "Results",
+  "compare_to": "reference.csv",
+  "compare_folder": "UserHourly",
+  "columns": "E_Grid,PR"
+}
+```
+
+`compare_folder` defaults to `folder`. Both paths remain workspace-scoped.
+Select 1–64 distinct numeric columns. Both files must have identical explicit
+units, identical timestamps in increasing order and the same row count. Column
+order may differ. Units are not converted and timestamps are not resampled.
+Malformed timestamps, duplicate column names and extra row values are rejected.
+
+Comparison mode returns `mode="comparison"`, both file hashes, date range,
+cadence, and per-column statistics. `paired_*` sums and relative change use only
+timestamps where **both** values are finite. Separate baseline/target sample
+counts, `missing_pairs` and `paired_coverage` expose missing data. Relative change
+is 100 × paired delta sum / paired baseline sum, or null when that denominator
+is zero. With no pairs, sums and extrema are null. `max_abs_delta_at` identifies
+the first timestamp with the largest absolute difference.
+
+For W/kW columns at a regular cadence, `observed_delta_energy_kwh` integrates
+finite pairs; `delta_energy_kwh` is null unless every row has a finite pair.
+Irregular or single-row files have no energy integral. Completeness refers to
+rows present, not proof of an uninterrupted intended simulation period or
+equivalent weather/model inputs. Comparison rechecks source hashes after
+reading. It starts no simulation and writes no files. Existing calls without
+`compare_to` retain the original summary response. See the
+[verification record](docs/result-comparison-verification.md).
+
 ### Standalone generator configuration
 
 `pvsyst_get_variant_parameters` returns a `generator` form with supported scope,
