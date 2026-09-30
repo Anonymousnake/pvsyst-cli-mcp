@@ -220,7 +220,7 @@ class ComponentEditorTests(unittest.TestCase):
         self.assert_rejected_without_write()
 
     def test_rejects_invalid_point_values_and_count_before_scalar_or_curve_write(self):
-        cases = [POINTS[:3], POINTS + [[2000, 1900]], "points", None]
+        cases = [POINTS[:3], [[i + 1, i] for i in range(257)], "points", None]
         for pair in ([True, 80], ["100", 80], [100, float("nan")], [float("inf"), 80],
                      [100, -1], [100, 101], [-100, 0], [200, 180], [100], [10 ** 400, 1]):
             cases.append([pair] + POINTS[1:])

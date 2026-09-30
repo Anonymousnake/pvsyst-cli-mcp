@@ -210,12 +210,27 @@ describe support for each profile; `simulation_effect="unverified"` means
 that the particular inspected model has not been simulated by this reader.
 
 `pvsyst_update_component` accepts `curve_updates` for **OND Version=8.1.6,
-single-voltage `Converter/ProfilPIO`, Mode=1 only**. Supply all existing active
-points as `[input_watts, output_watts]`; at least four points are required.
-The count cannot change, X must strictly increase, and each point must contain
+single-voltage `Converter/ProfilPIO`, Mode=1 only**. Supply the complete new table
+of 4–256 active points as `[input_watts, output_watts]`.
+X must strictly increase, and each point must contain
 finite numbers with `0 <= output <= input`. Strings and booleans are rejected.
-`NPtsMax`, `NPtsEff`, inactive point rows and unrelated curves remain unchanged.
+X must be at least `1e-9` and consecutive X values at least `1e-8` apart to
+avoid native point elimination. Unrelated curves remain unchanged.
 Other file versions, curve modes and three-voltage profiles remain read-only.
+
+When `point_count_editable=true`, the new table can add or remove points.
+Changing the active count synchronizes `NPtsMax`, `NPtsEff` and exactly that
+many `Point_N` rows, removes the old inactive padding and serialized coefficients,
+and preserves `Mode`/`LastCompile`. Native Mode 1 compilation derives the
+segment coefficients from the new X/Y table. This requires consecutive,
+numerically ordered rows, count/mode/compile fields before the table, and
+`LastCompile` absent or hexadecimal `0`, `19`, `008D` or `8089`.
+Inspection reports `allocated_point_count`, `point_count_range` and
+`point_count_errors`. Previews and writes report `curve_counts_before/after`.
+When the active count stays the same, count fields and inactive rows retain
+their bytes, and only changed active rows are replaced. Two-value X/Y and
+five-value X/Y/a/b/c serialized rows can be inspected; the editor accepts X/Y
+input only. See [point-table verification](docs/curve-table-verification.md).
 
 Curve edits require the current `expected_sha256`. For an automatic curve,
 explicitly pass `use_file_curve=true` with the supplied points to clear only
@@ -258,12 +273,13 @@ technology names and other chemistries are unsupported.
 `Capa_DischRate` is not recognized by the tested CLI. To activate it, supply
 `use_file_curve=true` **alongside a complete valid set of points**. This renames
 only that block to `CapaCourant`. A canonical `CapaCourant` needs no activation.
-Both names present, duplicate blocks, unsupported modes and point-count changes
+Both names present, duplicate blocks and unsupported modes
 are rejected. No other battery curve tags, chemistry fields or Flags are changed.
 After activation, use `CapaCourant` and the new hash for subsequent edits.
 
-Battery capacity edits require the current hash and at least four active
-points. X and Y must be positive, X strictly increasing, and Y nondecreasing.
+Battery capacity edits require the current hash and 4–256 active points.
+The same count-change and X-spacing rules above apply. X and Y must be positive,
+X strictly increasing, and Y nondecreasing.
 The X range must contain 100 hours. The linear interpolation at 100 hours,
 `C100/C10`, must lie in **[1.15, 1.45]** for these supported technologies.
 Extrapolation is deliberately unsupported by this editor even though the CLI
@@ -472,7 +488,8 @@ Batch automatic output directories and predicted CSV targets use the same resolv
 - Project copy and parameter edits: `tests/smoke_live_project_copy.py` copies `_Demo_PVsystCLI.PRJ` to a disposable new project, edits one fixed-plane tilt and `NModSerie`, and simulates 48 hourly rows including `E_Grid` on the installed 8.1.6 CLI. It cleans up its PRJ, VC, backup and CSV; repeating it consumes one CLI execution. Restart an existing MCP client/server process to load the 45-tool set and category labels.
 - Project sources: `tests/smoke_live_project_sources.py` uses the guarded update API on a disposable demo copy, then runs the real 8.1.6 CLI without source overrides. The CSV identifies the supplied SIT/MET and contains 48 hourly rows. Restoring through the API recovers the complete original PRJ/VC hashes. The optional script requires the local `Wanaluwawa.SIT`, `Wanaluwawa_Nasa_SYN.MET` and `mcp_audit_energy.sfi` fixtures, consumes one execution, and cleans up its project, result and backups. No private weather or vendor fixtures are distributed.
 - Structural grid subarray A/B: `tests/smoke_live_structure.py` copied the demo project and ran two 48-hour CLI simulations. Duplicating one full inverter branch raised `EArray` from 98.5016 to 197.0049 and `E_Grid` from 94.4309 to 188.8619; removing it restored the exact original variant SHA-256. The real CLI preserved the edited bytes. The script removes its temporary PRJ, VC, CSVs, and backups; repeating it consumes two executions.
-- 79 offline tests mock CLI calls and use temporary files, so they do not consume license executions. They cover candidate growth rejection, byte-preserving component recovery, snapshot integrity, archive member limits, dotted/Unicode names, incomplete system checks, source transaction mixing/tampering, automatic output path confinement and missing-result coverage, alongside existing lifecycle, partial-write rollback and CLI tests. Optional read-only live protocol checks are in `tests/smoke_stdio.py`.
+- Curve point tables: `tests/smoke_live_curve_tables.py` used six independent MCP/CLI runs (OND 8/9/7 points and BTR 6/7/5 points), each with 48 hourly rows. Added and removed points measurably changed E_Grid or CapaEff; all components restored exactly and 85 source files were unchanged. See [verification and limits](docs/curve-table-verification.md).
+- 147 offline tests mock CLI calls and use temporary files, so they do not consume license executions. They cover candidate growth rejection, byte-preserving component recovery, snapshot integrity, archive member limits, dotted/Unicode names, incomplete system checks, source transaction mixing/tampering, automatic output path confinement, missing-result coverage, curve point tables, generator configuration and result comparison, alongside lifecycle, partial-write rollback and CLI tests. Optional read-only live protocol checks are in `tests/smoke_stdio.py`.
 - License status is reported exactly as inferred from CLI output; successful simulation is not evidence of a particular licensing tier.
 
 Official reference: [PVsystCLI command reference](https://www.pvsyst.com/help-cli/reference/index.html) and [release notes](https://www.pvsyst.com/help-cli/release-notes.html). This source code is MIT licensed and is not affiliated with or endorsed by PVsyst SA.

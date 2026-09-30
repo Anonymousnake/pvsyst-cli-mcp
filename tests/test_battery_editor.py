@@ -137,7 +137,7 @@ class BatteryEditorTests(unittest.TestCase):
             self.rejected()
 
     def test_bad_point_values_counts_and_ratio_rejected_before_scalar_write(self):
-        cases = [CAPACITY_POINTS[:3], CAPACITY_POINTS + [[250, 1.5]], "points", None,
+        cases = [CAPACITY_POINTS[:3], [[i + 1, 1.3] for i in range(257)], "points", None,
                  [[x, y * 0.8] for x, y in CAPACITY_POINTS],
                  [[x, y * 1.2] for x, y in CAPACITY_POINTS],
                  [[x / 10, y] for x, y in CAPACITY_POINTS],
