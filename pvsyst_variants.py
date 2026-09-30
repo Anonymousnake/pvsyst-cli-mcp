@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import difflib
+import itertools
 import json
 import math
 import os
@@ -12,6 +14,7 @@ from pathlib import Path
 
 from pvsyst_components import ComponentStore, FIELD, MAX_PROJECT_BYTES
 from pvsyst_paths import project_path, project_root
+from pvsyst_generator import state as generator_state, replace_generator
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -205,7 +208,7 @@ class VariantStore:
             self._check_project(project)
             data = self._read(self._path(project, variant))
             _, lines = self._text(data)
-            arrays, _ = self._sections(lines)
+            arrays, system = self._sections(lines)
             def fields(bounds, names):
                 return {name: values[0] for name in names
                         if len(values := [FIELD.fullmatch(lines[i].rstrip("\r\n"))[2]
@@ -229,6 +232,7 @@ class VariantStore:
                                      ("FieldType", "FieldTilt", "FieldAzim"))})
             return {"project": project, "variant": variant.upper(),
                     "sha256": hashlib.sha256(data).hexdigest(), "orientations": orientations,
+                    "generator": generator_state(lines, arrays, system),
                     "subarrays": [{"id": identifier, "values": fields(bounds, (
                         "NModSerie", "NStringCh", "NStrOrient1", "NoOrientation",
                         "VBkUpEncl_syst", "VBkUpDecl_syst"))}
@@ -237,23 +241,31 @@ class VariantStore:
     def update_parameters(self, project: str, variant: str, expected_sha256: str,
                           subarray_id: int, orientation_id: int,
                           subarray_updates: dict[str, float] | None = None,
-                          orientation_updates: dict[str, float] | None = None) -> dict:
+                          orientation_updates: dict[str, float] | None = None,
+                          generator_updates: dict | None = None,
+                          dry_run: bool = False) -> dict:
         allowed_subarray = {"NModSerie": (1, 100), "VBkUpEncl_syst": (0, 1),
                             "VBkUpDecl_syst": (0, 1)}
         allowed_orientation = {"FieldTilt": (0, 90), "FieldAzim": (-180, 180)}
         requested = ((subarray_updates, allowed_subarray), (orientation_updates, allowed_orientation))
-        if not any(changes for changes, _ in requested) or any(
+        if not isinstance(dry_run, bool):
+            raise ValueError("dry_run must be a boolean")
+        if (not any(changes for changes, _ in requested) and not generator_updates) or any(
                 changes is not None and (not isinstance(changes, dict) or
                                          any(key not in allowed for key in changes))
                 for changes, allowed in requested):
-            raise ValueError("Provide supported subarray or orientation parameter updates")
+            raise ValueError("Provide supported subarray, orientation or generator parameter updates")
+        if generator_updates is not None and (not isinstance(generator_updates, dict) or not generator_updates):
+            raise ValueError("generator_updates must be a nonempty dictionary")
+        if generator_updates is not None and set(subarray_updates or {}) & {"VBkUpEncl_syst", "VBkUpDecl_syst"}:
+            raise ValueError("Use generator_updates.thresholds for thresholds in a generator transaction")
         with self.lock:
             self._check_project(project)
             path = self._path(project, variant)
             data = self._read(path)
             self._check_hash(data, expected_sha256)
-            _, lines = self._text(data)
-            arrays, _ = self._sections(lines)
+            text, lines = self._text(data)
+            arrays, system = self._sections(lines)
             if subarray_updates:
                 if not isinstance(subarray_id, int) or isinstance(subarray_id, bool) or subarray_id not in arrays:
                     raise ValueError("Subarray ID does not exist")
@@ -297,18 +309,48 @@ class VariantStore:
                     ending = "\r\n" if old.endswith("\r\n") else "\n" if old.endswith("\n") else ""
                     rendered = str(int(value)) if name == "NModSerie" else f"{value:.3f}"
                     lines[index] = f"{prefix}{rendered}{ending}"
-            candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
+            generator = None
+            if generator_updates is not None:
+                generator = replace_generator(lines, arrays, system, generator_updates, self.components)
+            edited_text = "".join(lines)
+            candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + edited_text.encode("utf-8")
             self._text(candidate)
+            diff = "".join(itertools.islice(difflib.unified_diff(
+                text.splitlines(keepends=True), lines, fromfile=path.name,
+                tofile=path.name + " (candidate)"), 501))
+            result = {"project": project, "variant": variant.upper(),
+                "before_sha256": hashlib.sha256(data).hexdigest(),
+                "sha256": hashlib.sha256(candidate).hexdigest(), "changed": candidate != data,
+                "dry_run": dry_run, "diff": diff[:32000],
+                "diff_truncated": len(diff) > 32000 or len(diff.splitlines()) > 500}
+            if generator is not None:
+                new_arrays, new_system = self._sections(lines)
+                result.update(generator_before=generator["before"],
+                    generator_after=generator_state(lines, new_arrays, new_system),
+                    generator_component=generator["component"], warnings=generator["warnings"])
+            if dry_run or candidate == data:
+                return result
+            if self._read(path) != data:
+                raise ValueError("Variant changed while preparing the edit")
             backup = self._backup(path, data)
             temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
             try:
                 with temporary.open("xb") as stream:
                     stream.write(candidate)
+                if self._read(path) != data:
+                    raise ValueError("Variant changed while preparing the edit")
+                if generator is not None and generator["component"] is not None:
+                    component = generator["component"]
+                    if (component["library"] == "builtin" and
+                            self.components._path("GEN", component["filename"]).exists()):
+                        raise ValueError("Generator component changed: workspace now shadows builtin")
+                    target = self.components._path("GEN", component["filename"], component["library"])
+                    if hashlib.sha256(self.components._read(target)).hexdigest() != component["sha256"]:
+                        raise ValueError("Generator component changed while preparing the edit")
                 os.replace(temporary, path)
             finally:
                 temporary.unlink(missing_ok=True)
-            return {"project": project, "variant": variant.upper(), "backup_name": backup,
-                    "sha256": hashlib.sha256(candidate).hexdigest()}
+            return {**result, "backup_name": backup}
 
     def _backup_folder(self) -> Path:
         root = self._root()
