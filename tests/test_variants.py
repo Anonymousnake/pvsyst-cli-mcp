@@ -184,7 +184,7 @@ class VariantTests(unittest.TestCase):
         data = VARIANT.replace("  PVObject_PVMainArray=pvMainArray\n",
                                "  PVObject_PVMainArray=pvMainArray\n" + branch)
         data = data.replace("PVObject_=pvSubArray\n        SubArrayId=1\n",
-                            "PVObject_=pvSubArray\n        Comment=PV Array\n        SubArrayId=1\n", 1)
+                            "PVObject_=pvSubArray\n        Comment=PV Array\n        NInverter=1\n        NStringCh=1\n        SubArrayId=1\n", 1)
         data = data.replace("        GInverter=original.OND\n", "        GInverter=original.OND\n        NoOrientation=1\n", 1)
         data = data.replace("    SystemType=Battery", "    SystemType=Grid")
         data = data.replace("End of PVObject pvVCalcul\n",

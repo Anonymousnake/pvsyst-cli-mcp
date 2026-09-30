@@ -15,6 +15,7 @@ from pathlib import Path
 from pvsyst_components import ComponentStore, FIELD, MAX_PROJECT_BYTES
 from pvsyst_paths import project_path, project_root
 from pvsyst_generator import state as generator_state, replace_generator
+from pvsyst_grid import inventory as grid_inventory
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -504,6 +505,7 @@ class VariantStore:
                     issues.append(f"Subarray {identifier} references unknown orientation {raw}")
             system_type = None
             unchecked = []
+            circuit = None
             if system is None:
                 issues.append("Missing pvSystem section")
                 unchecked.append("system circuit references")
@@ -520,30 +522,9 @@ class VariantStore:
                         unchecked.append("system circuit references")
                         warnings.append(f"Circuit checks are not implemented for SystemType={system_type!r}")
                 if system_type == "Grid":
-                    branches = {}
-                    for start, end in self._inverter_nodes(lines):
-                        ids = [field[2] for i in range(start + 1, end)
-                               if (field := FIELD.fullmatch(lines[i].rstrip("\r\n")))
-                               and field[1] == "SubArrayId"]
-                        if len(ids) not in (2, 3) or len(set(ids)) != 1 or not ids[0].isdigit():
-                            issues.append(f"Inverter branch at line {start + 1} has mixed or missing IDs")
-                            continue
-                        identifier = int(ids[0])
-                        branches[identifier] = branches.get(identifier, 0) + 1
-                        if identifier not in arrays:
-                            issues.append(f"Inverter branch references unknown subarray {identifier}")
-                            continue
-                        names = [field[2] for line in lines[start:end + 1]
-                                 if (field := FIELD.fullmatch(line.rstrip("\r\n")))
-                                 and field[1] == "SubArrayName"]
-                        comments = self._field_indices(lines, arrays[identifier], "Comment")
-                        if (len(comments) != 1 or len(names) != len(ids)
-                                or any(name != FIELD.fullmatch(lines[comments[0]].rstrip("\r\n"))[2]
-                                       for name in names)):
-                            issues.append(f"Subarray {identifier} circuit name differs from Comment")
-                    for identifier in arrays:
-                        if branches.get(identifier) != 1:
-                            issues.append(f"Subarray {identifier} requires one isolated inverter branch")
+                    circuit = grid_inventory(lines, arrays)
+                    issues.extend(circuit["issues"])
+                    unchecked.extend(circuit["unchecked_checks"])
             if any("PVObject_ShdTable" in line or "ListeObjets, list of=" in line for line in lines):
                 warnings.append("Shading geometry and derived factor tables require simulation verification")
             return {"project": project, "variant": variant.upper(),
@@ -551,7 +532,8 @@ class VariantStore:
                     "valid": False if issues else None if unchecked else True,
                     "checks_complete": not unchecked, "unchecked_checks": unchecked,
                     "system_type": system_type,
-                    "scope": "orientation and supported grid circuit references; not physical validation",
+                    "scope": "orientation, grid circuit references and serialized inverter/string counts; not physical validation",
+                    "grid_circuit": circuit,
                     "issues": issues, "warnings": warnings,
                     "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids)}
 
