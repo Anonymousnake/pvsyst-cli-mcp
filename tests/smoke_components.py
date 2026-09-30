@@ -159,6 +159,39 @@ async def main():
                     assert restored["sha256"] == original["sha256"]
                 print("MCP OND/BTR point tables: grow/shrink, synchronized counts, previews, stale guard, no-op and exact restore: OK")
 
+                for kind, filename, points, curve in (
+                    ("OND", "curve.OND", POINTS, "Converter/ProfilPIO"),
+                    ("BTR", "capacity.BTR", CAPACITY_POINTS, "Capa_DischRate")):
+                    target = {"component_type": kind, "filename": filename}
+                    original = await data_call("pvsyst_get_component", {**target, "include_curve_csv": True})
+                    await call("pvsyst_get_component", {**target, "include_curve_csv": "true"}, expect_error=True)
+                    exported = original["curve_csv"][curve]
+                    header = exported.splitlines()[0]
+                    more = points + ([[1500, 1425]] if kind == "OND" else [[300, 1.44]])
+                    text = header + "\r\n" + "".join(f"{x},{y}\r\n" for x, y in more)
+                    args = {**target, "updates": {}, "expected_sha256": original["sha256"],
+                            "use_file_curve": True}
+                    await call("pvsyst_update_component", {**args, "curve_csv": {curve: 123}}, expect_error=True)
+                    await call("pvsyst_update_component", {**args, "curve_csv": {curve: text},
+                        "curve_updates": {curve: more}}, expect_error=True)
+                    array_preview = await data_call("pvsyst_update_component", {**args,
+                        "curve_updates": {curve: more}, "dry_run": True})
+                    preview = await data_call("pvsyst_update_component", {**args,
+                        "curve_csv": {curve: text}, "dry_run": True})
+                    assert preview == array_preview
+                    assert (await data_call("pvsyst_get_component", target))["sha256"] == original["sha256"]
+                    changed = await data_call("pvsyst_update_component", {**args, "curve_csv": {curve: text}})
+                    assert changed["sha256"] == preview["sha256"]
+                    await call("pvsyst_update_component", {**args, "curve_csv": {curve: text}}, expect_error=True)
+                    current = await data_call("pvsyst_get_component", {**target, "include_curve_csv": True})
+                    noop = await data_call("pvsyst_update_component", {**args,
+                        "expected_sha256": current["sha256"], "curve_csv": current["curve_csv"]})
+                    assert not noop["changed"] and not noop.get("backup_name")
+                    restored = await data_call("pvsyst_restore_component", {**target,
+                        "backup_name": changed["backup_name"], "confirm": True})
+                    assert restored["sha256"] == original["sha256"]
+                print("MCP OND/BTR CSV: export, strict input, equivalent preview, growth, stale guard, round-trip no-op and exact restore: OK")
+
                 for kind, content in (("PAN", PAN), ("OND", OND),
                                       ("BTR", BTR), ("GEN", GEN)):
                     await call("pvsyst_create_component", {

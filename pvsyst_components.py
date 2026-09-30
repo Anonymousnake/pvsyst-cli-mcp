@@ -21,6 +21,7 @@ from pvsyst_paths import project_name, project_path, variant_id
 from pvsyst_component_editor import curve_inventory, replace_curves, replace_value
 from pvsyst_battery_editor import battery_curve_inventory, replace_battery_curve
 from pvsyst_commercial import commercial_inventory, replace_commercial
+from pvsyst_curve_csv import export_curve_csv, import_curve_csv
 
 
 # Workspace spelling follows existing PVsyst workspaces; Windows paths are case-insensitive.
@@ -233,8 +234,12 @@ class ComponentStore:
             raise ValueError("Incomplete template: " + "; ".join(result["warnings"]))
 
     def inspect(self, kind: str, name: str, library: str = "workspace",
-                offset: int = 0, limit: int = 100) -> dict:
+                offset: int = 0, limit: int = 100, include_curve_csv: bool = False) -> dict:
         kind = self._kind(kind)
+        if not isinstance(include_curve_csv, bool):
+            raise ValueError("include_curve_csv must be a boolean")
+        if include_curve_csv and kind not in ("OND", "BTR"):
+            raise ValueError("CSV curve export supports OND and BTR only")
         if offset < 0 or not 1 <= limit <= 200:
             raise ValueError("Offset must be >= 0 and limit between 1 and 200")
         path = self._path(kind, name, library)
@@ -244,6 +249,8 @@ class ComponentStore:
         if result["format"] == "text":
             result["editable_fields"] = sorted(EDITABLE[kind])
             result["curves"] = inspect_curves(kind, self._text(kind, data)[1])
+            if include_curve_csv:
+                result.update(export_curve_csv(kind, result["curves"]))
             result["commercial"] = commercial_inventory(kind, self._text(kind, data)[1])
             fields = result.pop("fields")
             result["field_count"] = len(fields)
@@ -435,8 +442,13 @@ class ComponentStore:
                curve_updates: dict[str, list[list[float]]] | None = None,
                use_file_curve: bool = False,
                commercial_updates: dict[str, str] | None = None,
-               remarks: list[str] | None = None) -> dict:
+               remarks: list[str] | None = None,
+               curve_csv: dict[str, str] | None = None) -> dict:
         kind = self._kind(kind)
+        if curve_csv is not None:
+            if curve_updates is not None:
+                raise ValueError("Supply curve_csv or curve_updates, not both")
+            curve_updates = import_curve_csv(kind, curve_csv)
         if not isinstance(dry_run, bool):
             raise ValueError("dry_run must be a boolean")
         if not isinstance(use_file_curve, bool):
