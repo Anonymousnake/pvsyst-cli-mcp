@@ -78,6 +78,31 @@ async def main():
                 assert restored["sha256"] == inspected["sha256"]
                 print("MCP component edit: auto guard, strict numbers, scalar + curve preview/apply, stale rejection, exact restore: OK")
 
+                for kind, content in (("PAN", PAN), ("OND", OND), ("BTR", BTR), ("GEN", GEN)):
+                    target = {"component_type": kind, "filename": f"commercial.{kind}"}
+                    created = await data_call("pvsyst_create_component", {**target, "content": content})
+                    info = await data_call("pvsyst_get_component", target)
+                    assert info["commercial"]["editable"]
+                    args = {**target, "updates": {}, "expected_sha256": info["sha256"],
+                        "commercial_updates": {"Model": "Commercial edit", "Width": "1.2",
+                            "Height": "2.1", "Weight": "26", "YearBeg": "2026"},
+                        "remarks": ["Editable form", "Second line"]}
+                    await call("pvsyst_update_component", {**args, "expected_sha256": None}, expect_error=True)
+                    preview = await data_call("pvsyst_update_component", {**args, "dry_run": True})
+                    assert (await data_call("pvsyst_get_component", target))["sha256"] == info["sha256"]
+                    edited = await data_call("pvsyst_update_component", args)
+                    assert edited["sha256"] == preview["sha256"]
+                    assert edited["commercial_after"]["remarks"] == args["remarks"]
+                    if kind == "PAN":
+                        inspected = await data_call("pvsyst_get_component", target)
+                        assert inspected["fields"]["LargApp"] == ["1.2"]
+                        assert inspected["fields"]["LongApp"] == ["2.1"]
+                    await call("pvsyst_update_component", args, expect_error=True)
+                    restored = await data_call("pvsyst_restore_component", {
+                        **target, "backup_name": edited["backup_name"], "confirm": True})
+                    assert restored["sha256"] == created["sha256"]
+                print("MCP commercial forms: four types, field insertion, remarks, PAN dimensions, preview/apply, stale guard and exact restore: OK")
+
                 battery_target = {"component_type": "BTR", "filename": "capacity.BTR"}
                 await data_call("pvsyst_create_component", {**battery_target, "content": CURVED_BTR})
                 battery = await data_call("pvsyst_get_component", battery_target)

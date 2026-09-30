@@ -20,6 +20,7 @@ from pathlib import Path
 from pvsyst_paths import project_name, project_path, variant_id
 from pvsyst_component_editor import curve_inventory, replace_curves, replace_value
 from pvsyst_battery_editor import battery_curve_inventory, replace_battery_curve
+from pvsyst_commercial import commercial_inventory, replace_commercial
 
 
 # Workspace spelling follows existing PVsyst workspaces; Windows paths are case-insensitive.
@@ -243,6 +244,7 @@ class ComponentStore:
         if result["format"] == "text":
             result["editable_fields"] = sorted(EDITABLE[kind])
             result["curves"] = inspect_curves(kind, self._text(kind, data)[1])
+            result["commercial"] = commercial_inventory(kind, self._text(kind, data)[1])
             fields = result.pop("fields")
             result["field_count"] = len(fields)
             result["fields_truncated"] = (len(fields) > 80 or any(
@@ -431,7 +433,9 @@ class ComponentStore:
     def update(self, kind: str, name: str, updates: dict[str, str],
                expected_sha256: str | None = None, dry_run: bool = False,
                curve_updates: dict[str, list[list[float]]] | None = None,
-               use_file_curve: bool = False) -> dict:
+               use_file_curve: bool = False,
+               commercial_updates: dict[str, str] | None = None,
+               remarks: list[str] | None = None) -> dict:
         kind = self._kind(kind)
         if not isinstance(dry_run, bool):
             raise ValueError("dry_run must be a boolean")
@@ -442,6 +446,15 @@ class ComponentStore:
             raise ValueError("expected_sha256 must be a SHA-256 digest")
         if updates is not None and not isinstance(updates, dict):
             raise ValueError("updates must be a dictionary")
+        if commercial_updates is not None or remarks is not None:
+            if expected_sha256 is None:
+                raise ValueError("Commercial editing requires expected_sha256 from inspection")
+            if commercial_updates is not None and not isinstance(commercial_updates, dict):
+                raise ValueError("commercial_updates must be a dictionary")
+            if set(updates or {}) & set(commercial_updates or {}):
+                raise ValueError("Supply each field in updates or commercial_updates, not both")
+            if set(updates or {}) & COMMON_EDIT:
+                raise ValueError("Use commercial_updates for identity fields when editing the commercial form")
         if curve_updates is not None:
             if not isinstance(curve_updates, dict) or not curve_updates:
                 raise ValueError("curve_updates must be a nonempty dictionary")
@@ -449,8 +462,8 @@ class ComponentStore:
                 raise ValueError("Curve editing requires expected_sha256 from inspection")
         elif use_file_curve:
             raise ValueError("use_file_curve requires explicit curve_updates")
-        if not updates and curve_updates is None:
-            raise ValueError("Supply scalar updates or curve_updates")
+        if not updates and curve_updates is None and not commercial_updates and remarks is None:
+            raise ValueError("Supply scalar updates, curve_updates, commercial_updates or remarks")
         with self.lock:
             path = self._path(kind, name)
             data = self._read(path)
@@ -461,6 +474,8 @@ class ComponentStore:
             if text is None:
                 raise ValueError("Legacy binary PAN cannot be edited")
             edited = self._replace_fields(kind, text, updates) if updates else text
+            if commercial_updates is not None or remarks is not None:
+                edited = replace_commercial(kind, edited, commercial_updates or {}, remarks)
             if curve_updates is not None:
                 edited = (replace_battery_curve(edited, curve_updates, use_file_curve) if kind == "BTR"
                           else replace_curves(kind, edited, curve_updates, use_file_curve))
@@ -484,6 +499,9 @@ class ComponentStore:
             if curve_updates is not None:
                 result["curve_control_before"] = inspect_curves(kind, text)["control"]
                 result["curve_control_after"] = inspect_curves(kind, edited)["control"]
+            if commercial_updates is not None or remarks is not None:
+                result["commercial_before"] = commercial_inventory(kind, text)
+                result["commercial_after"] = commercial_inventory(kind, edited)
             if dry_run or candidate == data:
                 return result
             if self._read(path) != data:
