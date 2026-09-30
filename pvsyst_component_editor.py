@@ -44,6 +44,7 @@ class ObjectBlock:
     object_type: str
     fields: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
+    end_line: int = 0
 
     def one(self, name: str) -> tuple[int, str]:
         values = self.fields.get(name, [])
@@ -92,6 +93,7 @@ def objects(text: str) -> list[ObjectBlock]:
         if end:
             if not stack or stack[-1][1].object_type != end[1]:
                 raise ValueError(f"Unmatched object closing tag at line {index + 1}")
+            stack[-1][1].end_line = index + 1
             stack.pop()
             continue
         match = ASSIGNMENT.fullmatch(line)
