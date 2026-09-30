@@ -147,9 +147,14 @@ class CommercialTests(unittest.TestCase):
                     self.edit(remarks=["Repair?"])
                 self.assertEqual(path.read_text(encoding="utf-8"), text)
 
-    def test_pan_dimensions_require_unique_root_counterpart(self):
+    def test_pan_dimensions_allow_absent_but_reject_duplicate_root_counterpart(self):
         path = self.paths["PAN"]
         data = path.read_text(encoding="utf-8").replace("  LargApp=1.032", "  Other=1.032")
+        path.write_text(data, encoding="utf-8")
+        self.edit(commercial_updates={"Width": "1.1"})
+        self.assertNotIn("LargApp", path.read_text(encoding="utf-8"))
+        self.assertIn("Width = 1.1", path.read_text(encoding="utf-8"))
+        data = data.replace("  Other=1.032", "  LargApp=1.032\n  LargApp=1.032")
         path.write_text(data, encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "LargApp must occur exactly once"):
             self.edit(commercial_updates={"Width": "1.1"})
