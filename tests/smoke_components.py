@@ -262,6 +262,27 @@ async def main():
                 final = await data_call("pvsyst_inspect_project", {"project": "Copy.PRJ"})
                 assert final["files"] == initial["files"]
                 print("MCP project lifecycle: copy, source update/restore, parameters, variant/project archive and restore: OK")
+                target = {"project": "Copy.PRJ", "variant": "VC0"}
+                inspected = await data_call("pvsyst_get_variant_parameters", target)
+                args = {**target, "expected_sha256": inspected["sha256"], "generator_updates": {
+                    "enabled": True, "filename": "created.GEN", "operating_power_kw": 40,
+                    "thresholds": {"1": {"VBkUpEncl_syst": 0.9, "VBkUpDecl_syst": 0.95},
+                                   "2": {"VBkUpEncl_syst": 0.3, "VBkUpDecl_syst": 0.5}}}}
+                await call("pvsyst_update_variant_parameters", {**args, "generator_updates": {"enabled": "yes"}}, expect_error=True)
+                await call("pvsyst_update_variant_parameters", {**args, "generator_updates": {"operating_power_kw": "40"}}, expect_error=True)
+                preview = await data_call("pvsyst_update_variant_parameters", {**args, "dry_run": True})
+                assert (await data_call("pvsyst_get_variant_parameters", target))["sha256"] == inspected["sha256"]
+                changed = await data_call("pvsyst_update_variant_parameters", args)
+                assert changed["sha256"] == preview["sha256"]
+                assert changed["generator_after"]["enabled"] and changed["generator_after"]["operating_power_kw"] == 40
+                await call("pvsyst_update_variant_parameters", args, expect_error=True)
+                disabled = await data_call("pvsyst_update_variant_parameters", {
+                    **target, "expected_sha256": changed["sha256"], "generator_updates": {"enabled": False}})
+                assert not disabled["generator_after"]["enabled"]
+                restored = await data_call("pvsyst_restore_variant", {**target, "expected_sha256": disabled["sha256"],
+                    "backup_name": changed["backup_name"], "confirm": True})
+                assert restored["sha256"] == inspected["sha256"]
+                print("MCP generator: typed settings, multi-subarray thresholds, preview, enable/disable, stale guard, exact restore: OK")
 
 
 if __name__ == "__main__":
