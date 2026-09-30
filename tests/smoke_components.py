@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_components import PAN, OND, BTR, GEN
 from test_component_editor import CURVED_OND, POINTS
 from test_battery_editor import CURVED_BTR, CAPACITY_POINTS
+from test_pan_gui_format import GUI_PAN
 from test_variants import VARIANT
 
 
@@ -102,6 +103,27 @@ async def main():
                         **target, "backup_name": edited["backup_name"], "confirm": True})
                     assert restored["sha256"] == created["sha256"]
                 print("MCP commercial forms: four types, field insertion, remarks, PAN dimensions, preview/apply, stale guard and exact restore: OK")
+
+                gui_target = {"component_type": "PAN", "filename": "gui.PAN"}
+                gui_created = await data_call("pvsyst_create_component", {**gui_target, "content": GUI_PAN})
+                gui_info = await data_call("pvsyst_get_component", gui_target)
+                assert not gui_info["warnings"] and "Isc" in gui_info["editable_fields"]
+                assert gui_info["commercial"]["fields"]["Width"]["editable"]
+                assert not gui_info["commercial"]["fields"]["Width"]["paired_root_present"]
+                gui_args = {**gui_target, "expected_sha256": gui_info["sha256"],
+                            "updates": {"ISC": "11.2", "MuISC": "0.006"},
+                            "commercial_updates": {"Width": "1.05", "Height": "2.0"}}
+                gui_preview = await data_call("pvsyst_update_component", {**gui_args, "dry_run": True})
+                gui_edited = await data_call("pvsyst_update_component", gui_args)
+                assert gui_preview["sha256"] == gui_edited["sha256"]
+                gui_fields = (await data_call("pvsyst_get_component", gui_target))["fields"]
+                assert gui_fields["Isc"] == ["11.2"] and gui_fields["muISC"] == ["0.006"]
+                assert "LargApp" not in gui_fields and "LongApp" not in gui_fields
+                await call("pvsyst_update_component", gui_args, expect_error=True)
+                gui_restored = await data_call("pvsyst_restore_component", {**gui_target,
+                    "backup_name": gui_edited["backup_name"], "confirm": True})
+                assert gui_restored["sha256"] == gui_created["sha256"]
+                print("MCP GUI PAN: create/inspect, scoped aliases, commercial-only dimensions, preview, stale guard and exact restore: OK")
 
                 battery_target = {"component_type": "BTR", "filename": "capacity.BTR"}
                 await data_call("pvsyst_create_component", {**battery_target, "content": CURVED_BTR})

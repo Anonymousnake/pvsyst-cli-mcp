@@ -22,6 +22,8 @@ from pvsyst_component_editor import curve_inventory, replace_curves, replace_val
 from pvsyst_battery_editor import battery_curve_inventory, replace_battery_curve
 from pvsyst_commercial import commercial_inventory, replace_commercial
 from pvsyst_curve_csv import export_curve_csv, import_curve_csv
+from pvsyst_pan import ALIASES as PAN_ALIASES, CANONICAL as PAN_CANONICAL, DIMENSIONS as PAN_DIMENSIONS
+from pvsyst_pan import pan_blocks, validation_fields as pan_validation_fields
 
 
 # Workspace spelling follows existing PVsyst workspaces; Windows paths are case-insensitive.
@@ -33,16 +35,16 @@ KINDS = {
 }
 COMMON_EDIT = frozenset(("Manufacturer", "Model", "DataSource"))
 EDITABLE = {
-    "PAN": COMMON_EDIT | {"PNom", "ISC", "Voc", "Imp", "Vmp", "MuISC", "muVocSpec"},
+    "PAN": COMMON_EDIT | {"PNom", "ISC", "Isc", "Voc", "Imp", "Vmp", "MuISC", "muISC", "muVocSpec"},
     "OND": COMMON_EDIT | {"PNomConv", "PMaxOUT", "VMppMin", "VMPPMax", "VAbsMax", "EfficMax", "EfficEuro"},
     "BTR": COMMON_EDIT | {"CapNomC10", "CapaRef", "AlphaSOC"},
     "GEN": COMMON_EDIT | {"TypeGen", "PNomGen", "CFuelHor"},
 }
 NUMERIC = set().union(*(fields - COMMON_EDIT - {"BattTechnol", "TypeGen"}
-                        for fields in EDITABLE.values()))
+                        for fields in EDITABLE.values())) - {"Isc", "muISC"}
 REQUIRED = {
     "PAN": ("Version", "Flags", "Manufacturer", "Model", "Technol", "NCelS", "NCelP", "NDiode", "PNom",
-            "LargApp", "LongApp", "GRef", "TRef", "Absorb", "ISC", "Voc", "Imp", "Vmp",
+            "GRef", "TRef", "Absorb", "ISC", "Voc", "Imp", "Vmp",
             "MuISC", "muVocSpec"),
     "OND": ("Version", "Flags", "Manufacturer", "Model", "Converter", "PNomConv", "PMaxOUT",
             "VMppMin", "VMPPMax", "VAbsMax", "EfficMax", "ProfilPIO"),
@@ -175,10 +177,19 @@ class ComponentStore:
         if kind == "OND" and (fields.get("Converter") != ["TConverter"]
                               or fields.get("ProfilPIO") != ["TCubicProfile"]):
             errors.append("Expected TConverter and TCubicProfile subobjects")
-        missing = [name for name in REQUIRED[kind] if name not in fields]
-        problems = self._numeric_errors(kind, fields)
-        return {**result, "manufacturer": fields.get("Manufacturer", [None])[0],
-                "model": fields.get("Model", [None])[0], "fields": fields,
+        checked_fields = fields
+        if kind == "PAN" and not errors:
+            try:
+                checked_fields = pan_validation_fields(text)
+            except ValueError as exc:
+                errors.append(str(exc))
+        missing = [name for name in REQUIRED[kind] if name not in checked_fields]
+        if kind == "PAN":
+            missing.extend(f"{root} or PVObject_Commercial/{form}" for form, root in PAN_DIMENSIONS.items()
+                           if root not in checked_fields and form not in checked_fields)
+        problems = self._numeric_errors(kind, checked_fields)
+        return {**result, "manufacturer": checked_fields.get("Manufacturer", [None])[0],
+                "model": checked_fields.get("Model", [None])[0], "fields": fields,
                 "structural_errors": errors, "warnings": [f"Missing verified field: {name}" for name in missing],
                 "known_value_errors": problems}
 
@@ -187,6 +198,8 @@ class ComponentStore:
         errors = []
         numeric = (NUMERIC | {"NCelS", "NCelP", "NDiode", "LargApp", "LongApp",
                               "GRef", "Absorb", "CapaRef"}) & fields.keys()
+        if kind == "PAN":
+            numeric |= {"Width", "Height"} & fields.keys()
         values = {}
         for field in numeric:
             try:
@@ -198,7 +211,7 @@ class ComponentStore:
             except ValueError:
                 errors.append(f"{field} must be one finite number")
         for field in (("PNom", "ISC", "Voc", "Imp", "Vmp", "NCelS", "NCelP",
-                       "NDiode", "LargApp", "LongApp", "GRef")
+                       "NDiode", "LargApp", "LongApp", "Width", "Height", "GRef")
                       if kind == "PAN" else
                       ("PNomConv", "PMaxOUT", "VMppMin", "VMPPMax", "VAbsMax")
                       if kind == "OND" else
@@ -248,6 +261,8 @@ class ComponentStore:
         result.update({"name": name, "library": library})
         if result["format"] == "text":
             result["editable_fields"] = sorted(EDITABLE[kind])
+            if kind == "PAN":
+                result["scalar_aliases"] = PAN_ALIASES
             result["curves"] = inspect_curves(kind, self._text(kind, data)[1])
             if include_curve_csv:
                 result.update(export_curve_csv(kind, result["curves"]))
@@ -400,18 +415,27 @@ class ComponentStore:
         if not updates or any(key not in EDITABLE[kind] for key in updates):
             raise ValueError(f"Editable {kind} fields: {', '.join(sorted(EDITABLE[kind]))}")
         lines = text.splitlines(keepends=True)
+        pan_root = pan_blocks(text)[0] if kind == "PAN" else None
+        canonical_keys = [PAN_CANONICAL.get(key, key) for key in updates] if kind == "PAN" else list(updates)
+        if len(canonical_keys) != len(set(canonical_keys)):
+            raise ValueError("Supply each PAN physical field once, not multiple spellings")
         for key, raw in updates.items():
             value = str(raw)
             if not value.strip() or any(c in value for c in "\r\n\x00"):
                 raise ValueError(f"Invalid value for {key}")
-            if key in NUMERIC:
+            numeric_key = PAN_CANONICAL.get(key, key) if kind == "PAN" else key
+            if numeric_key in NUMERIC:
                 try:
                     if not math.isfinite(float(value)):
                         raise ValueError()
                 except ValueError:
                     raise ValueError(f"{key} must be a finite number") from None
-            matches = [index for index, line in enumerate(lines)
-                       if (match := FIELD.fullmatch(line.rstrip("\r\n"))) and match[1] == key]
+            if pan_root is not None and key not in COMMON_EDIT:
+                aliases = PAN_ALIASES.get(PAN_CANONICAL.get(key, key), (key,))
+                matches = [index for alias in aliases for index, _ in pan_root.fields.get(alias, [])]
+            else:
+                matches = [index for index, line in enumerate(lines)
+                           if (match := FIELD.fullmatch(line.rstrip("\r\n"))) and match[1] == key]
             if len(matches) != 1:
                 raise ValueError(f"{key} must occur exactly once in the template")
             index = matches[0]
