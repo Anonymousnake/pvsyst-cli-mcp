@@ -250,8 +250,12 @@ def pvsyst_update_variant_components(project: str, variant: str,
 
 @categorized_tool()
 def pvsyst_validate_variant_structure(project: str, variant: str) -> dict:
-    """Check orientation and supported grid circuit references; disclose unchecked scope.
-    valid is false for issues, null for incomplete checks, true when scoped checks pass."""
+    """Check orientations, grid circuit references and serialized inverter/string counts.
+    grid_circuit lists grouped branches, declared counts and circuit counts separately;
+    multiple inverter groups can belong to one subarray. Explicit MPPT-node counts
+    do not establish independent-MPPT simulation mode. Shared/unknown allocation
+    reports incomplete checks. valid is false for issues, null for incomplete checks,
+    true when scoped checks pass. This is not voltage/current or physical validation."""
     return variant_call("validate_structure", project, variant)
 
 
