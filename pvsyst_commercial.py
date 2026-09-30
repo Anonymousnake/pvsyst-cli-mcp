@@ -123,7 +123,8 @@ def commercial_inventory(kind, text):
                 result["fields"][key]["exclusive_minimum"] = 0
                 paired = "LargApp" if key == "Width" else "LongApp"
                 result["fields"][key].update(paired_root_field=paired,
-                    editable=len(root.fields.get(paired, [])) == 1)
+                    paired_root_present=bool(root.fields.get(paired)),
+                    editable=len(root.fields.get(paired, [])) <= 1)
         _, remarks = _remarks(text.splitlines(keepends=True), block)
         result.update(remarks=[v[:MAX_TEXT] for v in remarks[:MAX_REMARKS]],
                       remarks_count=len(remarks), remarks_truncated=(len(remarks) > MAX_REMARKS
@@ -165,9 +166,12 @@ def replace_commercial(kind, text, updates, remarks=None):
             target = "LargApp" if key == "Width" else "LongApp"
             if float(value) <= 0:
                 raise ValueError("PAN Width and Height must be positive")
-            index, old = root.one(target)
-            if float(old) != float(value):
-                lines[index] = replace_value(lines[index], value)
+            # GUI 8.1.6 writes commercial dimensions without these legacy root
+            # fields. Preserve that representation; synchronize only if present.
+            if target in root.fields:
+                index, old = root.one(target)
+                if float(old) != float(value):
+                    lines[index] = replace_value(lines[index], value)
     # Keep the display synopsis consistent without replacing its source/status text.
     if values.keys() & {"Manufacturer", "Model"} and "Comment" in root.fields:
         index, comment = root.one("Comment")

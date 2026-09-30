@@ -133,7 +133,7 @@ Component tools support **four types only**: `.PAN` (`ComposPV/PVmodules`), `.ON
 
 | Type | Editable fields |
 |---|---|
-| PAN | `Manufacturer`, `Model`, `DataSource`, `PNom`, `ISC`, `Voc`, `Imp`, `Vmp`, `MuISC`, `muVocSpec` |
+| PAN | `Manufacturer`, `Model`, `DataSource`, `PNom`, `ISC`/`Isc`, `Voc`, `Imp`, `Vmp`, `MuISC`/`muISC`, `muVocSpec` |
 | OND | `Manufacturer`, `Model`, `DataSource`, `PNomConv`, `PMaxOUT`, `VMppMin`, `VMPPMax`, `VAbsMax`, `EfficMax`, `EfficEuro` |
 | BTR | `Manufacturer`, `Model`, `DataSource`, `CapNomC10`, `CapaRef`, `AlphaSOC` |
 | GEN | `Manufacturer`, `Model`, `DataSource`, `TypeGen`, `PNomGen`, `CFuelHor` |
@@ -177,14 +177,26 @@ as scalar/curve changes. Supply `updates={}` for a form-only edit.
 
 Dimensions are in metres and weight is in kilograms. These form fields may
 be added when absent; unknown fields and nested commercial objects are refused.
-PAN `Width` and `Height` must be positive and also update the existing root
-`LargApp` and `LongApp` respectively; other dimensions and weight allow zero
+PAN `Width` and `Height` must be positive and also update root `LargApp` and
+`LongApp` when those fields exist. GUI 8.1.6 exports may contain only commercial
+dimensions; the editor accepts that form and does not add the absent legacy
+fields. Inspection reports `paired_root_present`. Other dimensions and weight allow zero
 for unspecified values. `YearBeg` is 0–9999, `NPieces` is a positive 32-bit
 integer, and nonempty `PriceDate` must be a valid `dd/mm/yy HH:MM` timestamp.
 Strings have a 2048-character limit and cannot contain line breaks or controls.
 Empty `DataSource` and `PriceDate` are permitted. Identity edits synchronize
 the first two fields of a tab-separated root `Comment`, preserving its remaining
 status text. A free-form root comment is retained.
+
+PAN `ISC`/`Isc` and `MuISC`/`muISC` are explicit aliases. Either input spelling
+updates the existing root field while preserving its serialized key. Inspection
+keeps raw field names and also returns `scalar_aliases`. Both spellings in one
+file/request are rejected as ambiguous. Physical values are checked in the root
+object; manufacturer/model and form dimensions are checked in the commercial
+object. Missing or invalid dimensions and duplicate physical aliases still fail
+validation. These changes allow create/copy/clone/edit of the observed GUI 8.1.6
+PAN format; they do not reproduce GUI fitting, rounding or derived-field updates.
+See [GUI PAN compatibility verification](docs/gui-pan-verification.md).
 
 Omitting `remarks` preserves it; `[]` removes its block. A supplied list replaces
 the array, count, consecutive row names and closing value together. Same-value
@@ -533,7 +545,8 @@ Batch automatic output directories and predicted CSV targets use the same resolv
 - Structural grid subarray A/B: `tests/smoke_live_structure.py` copied the demo project and ran two 48-hour CLI simulations. Duplicating one full inverter branch raised `EArray` from 98.5016 to 197.0049 and `E_Grid` from 94.4309 to 188.8619; removing it restored the exact original variant SHA-256. The real CLI preserved the edited bytes. The script removes its temporary PRJ, VC, CSVs, and backups; repeating it consumes two executions.
 - Curve point tables: `tests/smoke_live_curve_tables.py` used six independent MCP/CLI runs (OND 8/9/7 points and BTR 6/7/5 points), each with 48 hourly rows. Added and removed points measurably changed E_Grid or CapaEff; all components restored exactly and 85 source files were unchanged. See [verification and limits](docs/curve-table-verification.md).
 - Curve CSV transport: MCP export/import checks cover strict input, identical array/CSV previews, growth, stale hashes, no-op round-trip and restoration. `tests/smoke_curve_csv_previews.py` reproduced all six native-tested candidate hashes from the retained point-table evidence without new simulations.
-- 155 offline tests mock CLI calls and use temporary files, so they do not consume license executions. They cover candidate growth rejection, byte-preserving component recovery, snapshot integrity, archive member limits, dotted/Unicode names, incomplete system checks, source transaction mixing/tampering, automatic output path confinement, missing-result coverage, curve point tables/CSV, generator configuration and result comparison, alongside lifecycle, partial-write rollback and CLI tests. Optional read-only live protocol checks are in `tests/smoke_stdio.py`.
+- GUI PAN compatibility: the observed 8.1.6 GUI export passed MCP scalar/commercial editing and a 48-row native simulation. Existing aliases and file spelling were preserved; the edited copy restored exactly. See [evidence and boundaries](docs/gui-pan-verification.md).
+- 161 offline tests mock CLI calls and use temporary files, so they do not consume license executions. They cover candidate growth rejection, byte-preserving component recovery, snapshot integrity, archive member limits, dotted/Unicode names, incomplete system checks, source transaction mixing/tampering, automatic output path confinement, missing-result coverage, curve point tables/CSV, GUI PAN aliases/dimensions, generator configuration and result comparison, alongside lifecycle, partial-write rollback and CLI tests. Optional read-only live protocol checks are in `tests/smoke_stdio.py`.
 - License status is reported exactly as inferred from CLI output; successful simulation is not evidence of a particular licensing tier.
 
 Official reference: [PVsystCLI command reference](https://www.pvsyst.com/help-cli/reference/index.html) and [release notes](https://www.pvsyst.com/help-cli/release-notes.html). This source code is MIT licensed and is not affiliated with or endorsed by PVsyst SA.

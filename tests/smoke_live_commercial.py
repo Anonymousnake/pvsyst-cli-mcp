@@ -3,6 +3,7 @@
 PVSYST_CLI, PVSYST_WORKSPACE, PVSYST_EDITOR_LAB and PVSYST_COMMERCIAL_CASES
 are required. CASES names a local JSON file containing objects with project,
 variant, start_date/end_date (two days), and components {type: filename}.
+Optional scalar_updates maps component types to scalar field dictionaries.
 Each case runs once in an independent copy through real MCP. Source data is
 read-only; all edited copies restore in finally. This verifies native loading,
 not GUI round-trip fidelity, seller pricing or physical model equivalence.
@@ -77,7 +78,7 @@ async def main():
                                 "Weight": "30", "NPieces": "2", "PriceDate": "30/09/26 01:00"}
                             for field in ("Width", "Height", "Depth"):
                                 changes[field] = str(float(form["fields"][field]["value"]) * 1.01)
-                            args = {**target, "updates": {}, "expected_sha256": info["sha256"],
+                            args = {**target, "updates": case.get("scalar_updates", {}).get(kind, {}), "expected_sha256": info["sha256"],
                                     "commercial_updates": changes,
                                     "remarks": ["Local smoke test", "Edited through MCP", "Reversible form edit"]}
                             preview = await call("pvsyst_update_component", **args, dry_run=True)

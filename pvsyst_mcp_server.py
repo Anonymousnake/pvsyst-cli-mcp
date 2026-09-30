@@ -335,7 +335,8 @@ def pvsyst_get_component(component_type: str, filename: str,
     preconditions; static inspection does not verify simulation behavior.
     include_curve_csv adds a path-to-CSV-text map for OND main/BTR capacity
     curves with explicit-unit headers, plus curve_csv_errors for omissions.
-    CSV export does not expand edit support. Legacy PAN is metadata only."""
+    CSV export does not expand edit support. PAN scalar_aliases lists supported
+    ISC/Isc and MuISC/muISC spellings. Legacy PAN is metadata only."""
     return component_call("inspect", component_type, filename, library, offset, limit, include_curve_csv)
 
 
@@ -383,7 +384,9 @@ def pvsyst_update_component(component_type: str, filename: str,
                            curve_csv: dict[str, str] | None = None) -> dict:
     """Edit allowlisted text fields in one workspace component with automatic
     backup. dry_run returns a diff and candidate SHA without writes. Pass the
-    inspected expected_sha256 to reject stale edits. curve_updates accepts
+    inspected expected_sha256 to reject stale edits. PAN ISC/Isc and MuISC/muISC
+    are aliases for root physical fields; edits retain the file's spelling and
+    reject duplicate aliases. curve_updates accepts
     OND Version=8.1.6 single-voltage Converter/ProfilPIO Mode=1 points in watts,
     or BTR Version=8.1.6 AGM/Gel CapaCourant/Capa_DischRate Mode=1 points as
     [discharge hours, capacity relative to C10]. BTR requires positive points,
@@ -398,7 +401,8 @@ def pvsyst_update_component(component_type: str, filename: str,
     Three-voltage OND, other BTR curves and legacy PAN are read-only.
     commercial_updates edits/adds the Version=8.1.6 commercial form fields
     returned by inspection, including dimensions in metres and weight in kg.
-    PAN Width/Height also update existing LargApp/LongApp; identity changes
+    PAN Width/Height also update LargApp/LongApp when present; absent legacy
+    root dimensions are not added to GUI-format files. Identity changes
     synchronize a tab-separated root Comment. remarks replaces up to five
     lines ([] clears); PAN's fifth line may encode functional options.
     These operations require expected_sha256 and share the preview/backup.

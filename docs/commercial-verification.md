@@ -2,7 +2,9 @@
 
 Verified with text component Version 8.1.6 and PVsystCLI 8.1.6 on 2026-09-30.
 Implementation uses exported text structure and installed official help; no
-decompilation is needed for this form. This does not certify GUI round trips.
+decompilation is needed for this form. Later GUI PAN evidence and compatibility
+checks are in [gui-pan-verification.md](gui-pan-verification.md); the original
+four-type native checks below do not certify all GUI round trips.
 
 ## Contract
 
@@ -19,8 +21,9 @@ electrical scalar or supported curve edits. Identity fields must go in the
 commercial dictionary when using the form. The 45 tool names remain unchanged.
 
 PAN dimensions update both the commercial value and the existing root
-LargApp/LongApp value. A missing/ambiguous root counterpart refuses that
-dimension edit. Other object scopes, flags, curves and derived physical
+LargApp/LongApp value when present. GUI exports with only commercial dimensions
+are supported without adding those legacy fields; ambiguous root counterparts
+still refuse the edit. Other object scopes, flags, curves and derived physical
 parameters are preserved. Identity changes update a tab-separated root
 Comment's manufacturer/model slots, retaining its status/source slots.
 
@@ -68,7 +71,8 @@ simulation outputs are committed here.
 Set `PVSYST_CLI`, `PVSYST_WORKSPACE`, `PVSYST_EDITOR_LAB` (outside the source
 workspace), and `PVSYST_COMMERCIAL_CASES` to a local JSON file. Each case supplies
 project, variant, two-day start_date/end_date, and a components dictionary
-mapping type to existing referenced filename. Choose dates from that project's
+mapping type to existing referenced filename. Optional `scalar_updates` maps
+types to scalar dictionaries for mixed edits. Choose dates from that project's
 MET, and use text 8.1.6 components with the dimension fields present for this
 particular smoke script. Then run:
 
@@ -86,7 +90,8 @@ and keeps diagnostic evidence even if a run fails.
 
 Native acceptance does not prove that every commercial field is used by the
 GUI or economic calculation, nor that a field changes simulation physics.
-There is no GUI reopen/save verification yet. PriceDate/NPieces do not implement
+PAN width/remarks and OND file-curve GUI evidence now cover specific cases,
+but BTR/GEN and the complete form round trip remain unverified. PriceDate/NPieces do not implement
 seller-specific prices, currencies or project economics. Other file versions,
 legacy binary PAN and nested commercial object schemas need separate evidence.
 See [the capability roadmap](gui-capability-roadmap.md) for the remaining
