@@ -328,13 +328,15 @@ def pvsyst_list_components(component_type: str, library: str = "workspace",
 @categorized_tool()
 def pvsyst_get_component(component_type: str, filename: str,
                          library: str = "workspace", offset: int = 0,
-                         limit: int = 100) -> dict:
+                         limit: int = 100, include_curve_csv: StrictBool = False) -> dict:
     """Read paged UTF-8 text, scalar allowlist, SHA and OND/BTR curve paths/
     active points, plus commercial field types/units and remarks. Curves report
     mode or CLI tag recognition, supported edits and their
     preconditions; static inspection does not verify simulation behavior.
-    Legacy binary PAN is metadata only."""
-    return component_call("inspect", component_type, filename, library, offset, limit)
+    include_curve_csv adds a path-to-CSV-text map for OND main/BTR capacity
+    curves with explicit-unit headers, plus curve_csv_errors for omissions.
+    CSV export does not expand edit support. Legacy PAN is metadata only."""
+    return component_call("inspect", component_type, filename, library, offset, limit, include_curve_csv)
 
 
 @categorized_tool()
@@ -377,7 +379,8 @@ def pvsyst_update_component(component_type: str, filename: str,
                            curve_updates: dict[str, list[list[StrictFloat]]] | None = None,
                            use_file_curve: StrictBool = False,
                            commercial_updates: dict[str, str] | None = None,
-                           remarks: list[str] | None = None) -> dict:
+                           remarks: list[str] | None = None,
+                           curve_csv: dict[str, str] | None = None) -> dict:
     """Edit allowlisted text fields in one workspace component with automatic
     backup. dry_run returns a diff and candidate SHA without writes. Pass the
     inspected expected_sha256 to reject stale edits. curve_updates accepts
@@ -400,11 +403,17 @@ def pvsyst_update_component(component_type: str, filename: str,
     lines ([] clears); PAN's fifth line may encode functional options.
     These operations require expected_sha256 and share the preview/backup.
     Seller prices, flags and model fitting are separate from this form.
+    curve_csv alternatively accepts one path-to-CSV-text entry; never combine
+    it with curve_updates. Header: input_watts,output_watts for OND or
+    discharge_hours,relative_capacity for BTR. Use comma-separated decimal
+    numbers with decimal dots, 4..256 point rows and at most 64 KiB of UTF-8
+    text. The same curve guards, preview and backup apply. No file is read
+    from a caller-supplied path; supply the CSV contents.
     Physical behavior requires simulation; derived scalars are not refitted.
     A no-op returns changed=false without creating a backup."""
     return component_call("update", component_type, filename, updates,
                           expected_sha256, dry_run, curve_updates, use_file_curve,
-                          commercial_updates, remarks)
+                          commercial_updates, remarks, curve_csv)
 
 
 @categorized_tool()

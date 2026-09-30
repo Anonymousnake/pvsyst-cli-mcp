@@ -88,4 +88,26 @@ This verifies native consumption in those cases. It does not certify physical
 accuracy, every count/compile-option combination, other versions, three-voltage
 OND, other battery chemistry/curves, cubic modes, general caches or GUI
 save/reopen behavior. Inspection retains `simulation_effect="unverified"` for
-the user's particular model. CSV table import/export remains a separate task.
+the user's particular model.
+
+## CSV transport follow-up
+
+`pvsyst_get_component(include_curve_csv=true)` now exports CSV text for complete
+OND main/BTR capacity profiles with known axes. `pvsyst_update_component` accepts
+one such table through `curve_csv`, mutually exclusive with `curve_updates`.
+The parser requires explicit-unit headers, comma-separated decimal numbers,
+4–256 points and at most 64 KiB of UTF-8 text. Parsed points enter the same
+guarded edit path. Export is read-only and does not expand edit support.
+
+Eight new tests bring the offline suite to 155 passing tests. The MCP lifecycle
+checks exports, strict booleans/text, ambiguous-input rejection, equal array/CSV
+previews, growth, stale hashes, file-mode no-op round-trip and exact restoration.
+`tests/smoke_curve_csv_previews.py` reproduced the exact component SHA-256 for
+all six native runs above from CSV inputs and their retained, restored copies.
+It checked CSV output hashes too, performed no writes and ran no simulations.
+Set `PVSYST_CURVE_TABLE_EVIDENCE` to that run's `evidence.json` to repeat the
+read-only comparison. Local result: `curve-csv-previews.json.txt`.
+
+These tools exchange CSV contents. Filesystem file selection/saving is the
+client's responsibility. Unknown curve axes are omitted with reasons instead
+of exporting columns whose units cannot be established.

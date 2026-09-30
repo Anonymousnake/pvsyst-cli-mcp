@@ -263,6 +263,49 @@ edits in file mode retain the original numeric spelling and create no backup.
 Editing points does not refit efficiency scalars, thresholds, spline metadata
 or other derived parameters. Validate the resulting model with PVsyst.
 
+### Curve CSV import and export
+
+For OND/BTR, call `pvsyst_get_component` with `include_curve_csv=true` to add
+`curve_csv`, a map from supported curve paths to CSV text. It contains active
+X/Y points only. `curve_csv_errors` explains omitted curves with unknown axes
+or incomplete structure; the usual inspection still reports their details.
+Exporting a readable curve does not make unsupported models/modes editable.
+
+Pass one entry of that map to `pvsyst_update_component(curve_csv=...)` as an
+alternative to `curve_updates`. It shares the same hash, activation, point-count,
+model-value, preview and backup checks and can accompany scalar/commercial edits.
+Supplying both curve input arguments is rejected. After BTR activation, use the
+canonical `CapaCourant` path from the latest inspection/export.
+
+| Curve | Required CSV header |
+|---|---|
+| OND main power curve | `input_watts,output_watts` |
+| BTR capacity curve | `discharge_hours,relative_capacity` |
+
+BTR relative capacity is relative to C10. CSV must contain the exact two-column
+header and 4–256 data rows, using comma separators and decimal dots. Finite
+decimal/scientific notation, standard CSV quoting, LF/CRLF and an initial UTF-8
+BOM are supported. Blank rows/cells, formulas, extra columns, guessed units and
+locale-specific separators are rejected. Each table is limited to 64 KiB of
+UTF-8 text. These arguments transport CSV **contents**, not a filesystem path;
+clients may save/read the text with their file tools.
+
+For example, use this argument with the previous OND target/hash/activation:
+
+```json
+{
+  "curve_csv": {
+    "Converter/ProfilPIO": "input_watts,output_watts\r\n100,80\r\n200,180\r\n500,470\r\n1000,950\r\n"
+  }
+}
+```
+
+An export immediately re-imported in file mode is a byte-identical no-op when
+the existing points satisfy the edit restrictions. The CSV form does not bypass
+errors in existing points or certify their physical meaning.
+
+### Battery capacity curves
+
 For **BTR Version=8.1.6, `Pb_Sealed_AGM` or `Pb_Sealed_Gel`, Mode=1**, the same
 `curve_updates` argument edits the existing root capacity curve. Its points are
 `[discharge_duration_hours, capacity_relative_to_C10]`. Use its current path
@@ -489,7 +532,8 @@ Batch automatic output directories and predicted CSV targets use the same resolv
 - Project sources: `tests/smoke_live_project_sources.py` uses the guarded update API on a disposable demo copy, then runs the real 8.1.6 CLI without source overrides. The CSV identifies the supplied SIT/MET and contains 48 hourly rows. Restoring through the API recovers the complete original PRJ/VC hashes. The optional script requires the local `Wanaluwawa.SIT`, `Wanaluwawa_Nasa_SYN.MET` and `mcp_audit_energy.sfi` fixtures, consumes one execution, and cleans up its project, result and backups. No private weather or vendor fixtures are distributed.
 - Structural grid subarray A/B: `tests/smoke_live_structure.py` copied the demo project and ran two 48-hour CLI simulations. Duplicating one full inverter branch raised `EArray` from 98.5016 to 197.0049 and `E_Grid` from 94.4309 to 188.8619; removing it restored the exact original variant SHA-256. The real CLI preserved the edited bytes. The script removes its temporary PRJ, VC, CSVs, and backups; repeating it consumes two executions.
 - Curve point tables: `tests/smoke_live_curve_tables.py` used six independent MCP/CLI runs (OND 8/9/7 points and BTR 6/7/5 points), each with 48 hourly rows. Added and removed points measurably changed E_Grid or CapaEff; all components restored exactly and 85 source files were unchanged. See [verification and limits](docs/curve-table-verification.md).
-- 147 offline tests mock CLI calls and use temporary files, so they do not consume license executions. They cover candidate growth rejection, byte-preserving component recovery, snapshot integrity, archive member limits, dotted/Unicode names, incomplete system checks, source transaction mixing/tampering, automatic output path confinement, missing-result coverage, curve point tables, generator configuration and result comparison, alongside lifecycle, partial-write rollback and CLI tests. Optional read-only live protocol checks are in `tests/smoke_stdio.py`.
+- Curve CSV transport: MCP export/import checks cover strict input, identical array/CSV previews, growth, stale hashes, no-op round-trip and restoration. `tests/smoke_curve_csv_previews.py` reproduced all six native-tested candidate hashes from the retained point-table evidence without new simulations.
+- 155 offline tests mock CLI calls and use temporary files, so they do not consume license executions. They cover candidate growth rejection, byte-preserving component recovery, snapshot integrity, archive member limits, dotted/Unicode names, incomplete system checks, source transaction mixing/tampering, automatic output path confinement, missing-result coverage, curve point tables/CSV, generator configuration and result comparison, alongside lifecycle, partial-write rollback and CLI tests. Optional read-only live protocol checks are in `tests/smoke_stdio.py`.
 - License status is reported exactly as inferred from CLI output; successful simulation is not evidence of a particular licensing tier.
 
 Official reference: [PVsystCLI command reference](https://www.pvsyst.com/help-cli/reference/index.html) and [release notes](https://www.pvsyst.com/help-cli/release-notes.html). This source code is MIT licensed and is not affiliated with or endorsed by PVsyst SA.
