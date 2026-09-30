@@ -510,7 +510,7 @@ def parse_batch_results(path: str | os.PathLike,
     return {"columns": list(columns), "scenarios": scenarios}
 
 
-def result_units(path: str | os.PathLike) -> dict[str, str]:
+def result_units(path: str | os.PathLike, *, strict: bool = False) -> dict[str, str]:
     """Read variable units from the row following a date header."""
     with open(path, "r", encoding="utf-8-sig", errors="replace", newline="") as stream:
         for line in stream:
@@ -519,11 +519,13 @@ def result_units(path: str | os.PathLike) -> dict[str, str]:
                 headers = [h.strip() for h in next(csv.reader([line], delimiter=separator))]
                 unit_line = next(stream, "")
                 units = [u.strip() for u in next(csv.reader([unit_line], delimiter=separator))]
+                if strict and (len(units) != len(headers) or units[0]):
+                    raise ValueError("Comparison requires a complete units row after the SFI header")
                 return dict(zip(headers[1:], units[1:]))
     raise ValueError("Missing SFI result header")
 
 
-def iter_result_csv(path: str | os.PathLike) -> Iterator[tuple[list[str], list]]:
+def iter_result_csv(path: str | os.PathLike, *, strict: bool = False) -> Iterator[tuple[list[str], list]]:
     """Yield SFI rows (semicolon or comma) without loading the full file."""
     with open(path, "r", encoding="utf-8-sig", errors="replace", newline="") as stream:
         for line in stream:
@@ -538,12 +540,16 @@ def iter_result_csv(path: str | os.PathLike) -> Iterator[tuple[list[str], list]]
             raise ValueError("SFI result has no numeric columns")
         seen = False
         for parts in csv.reader(stream, delimiter=separator):
-            if not parts:
+            if not parts or not any(part.strip() for part in parts):
                 continue
             try:
                 stamp = datetime.strptime(parts[0].strip(), "%d/%m/%y %H:%M")
             except ValueError:
+                if strict:
+                    raise ValueError("Invalid timestamp or unexpected row after SFI header") from None
                 continue
+            if strict and len(parts) > len(headers):
+                raise ValueError("Result row contains more values than its header")
             parts += [""] * max(0, len(headers) - len(parts))
             row = [stamp]
             for value in parts[1:len(headers)]:
