@@ -12,7 +12,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import StrictBool, StrictFloat
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictFloat
 
 from pvsyst_cli import (PVsystCLI, VAR_GROUPS, build_monthly_weather_csv,
                         build_sfi, iter_result_csv, parse_batch_results, result_units, summarize_results)
@@ -272,8 +272,16 @@ def pvsyst_remove_subarray(project: str, variant: str, subarray_id: int,
 
 @categorized_tool()
 def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
-    """Inspect fixed-plane orientations and subarray sizing/backup thresholds."""
+    """Inspect orientations, subarrays and standalone generator settings/thresholds."""
     return variant_call("inspect_parameters", project, variant)
+
+
+class GeneratorUpdates(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: StrictBool | None = None
+    filename: str | None = None
+    operating_power_kw: StrictFloat | None = None
+    thresholds: dict[str, dict[str, StrictFloat]] | None = None
 
 
 @categorized_tool()
@@ -281,11 +289,23 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      expected_sha256: str, subarray_id: int = 1,
                                      orientation_id: int = 1,
                                      subarray_updates: dict[str, float] | None = None,
-                                     orientation_updates: dict[str, float] | None = None) -> dict:
+                                     orientation_updates: dict[str, float] | None = None,
+                                     generator_updates: GeneratorUpdates | None = None,
+                                     dry_run: StrictBool = False) -> dict:
     """Edit existing validated scalar parameters with SHA guard and rollback backup.
-    Circuit tree, field type, and system flags are preserved."""
+    dry_run returns a candidate hash/diff without writing. generator_updates
+    supports text 8.1.0/8.1.6 SystemType=Battery: enabled (only system Flags bit 0x20),
+    filename (existing GEN), operating_power_kw (>0), and thresholds mapping
+    string subarray IDs to VBkUpEncl_syst/VBkUpDecl_syst values in [0,1].
+    These are native normalized voltage thresholds, not SOC. Missing generator
+    fields can be added. Enabling requires a valid GEN, positive power and both
+    thresholds in every subarray. Disabling preserves its saved configuration.
+    Nominal power/fuel consumption remain component fields. Other system bits,
+    circuit tree and field type are preserved. No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
-                        subarray_id, orientation_id, subarray_updates, orientation_updates)
+                        subarray_id, orientation_id, subarray_updates, orientation_updates,
+                        generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
+                        dry_run)
 
 
 @categorized_tool()

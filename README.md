@@ -73,7 +73,7 @@ The 45 tools are organized into six groups. Existing tool names and arguments re
 | `pvsyst_clone_project`, `pvsyst_clone_variant` | Copy existing project or create a variant from an existing one |
 | `pvsyst_update_project_sources`, `pvsyst_restore_project_sources` | Persist a workspace SIT/MET pair across a project and every variant; restore the saved file set |
 | `pvsyst_get_variant_components`, `pvsyst_update_variant_components` | Inspect and replace scoped PAN/OND/BTR/GEN references |
-| `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Inspect and edit supported scalar parameters |
+| `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Inspect, preview and edit scalar parameters and standalone generator configuration |
 | `pvsyst_validate_variant_structure`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray` | Check references and edit isolated unshaded grid branches |
 | `pvsyst_restore_variant` | Restore a SHA-guarded variant backup |
 | `pvsyst_archive_project`, `pvsyst_archive_variant`, `pvsyst_restore_project_archive` | Confirmed PRJ/VC archive and recovery |
@@ -338,6 +338,61 @@ Source-update and source-restore results include `transaction_id` and `transacti
 Component recovery restores original bytes even if they fail the current model checks; the returned `validation` contains format, structural, missing-field and known-value diagnostics. Creation, import and edits retain their existing model checks. New component snapshots use `filename.v2-<id>.bak` or `.archived` plus a `.json` metadata file recording type, original filename and SHA-256. Keep both files together; recovery verifies them and returns `integrity_verified=true`. Legacy component snapshots remain recoverable with `integrity_verified=false` because no original hash was recorded. A successful byte restore does not certify that the restored model is suitable for simulation.
 
 Structure validation reports missing `pvSystem` sections and missing, empty or duplicate `SystemType` fields as issues. Its `scope` covers orientation and supported grid circuit references only. `checks_complete` and `unchecked_checks` disclose skipped circuit checks; `valid` is `false` when an issue is found, `null` when checks are incomplete without a known issue, and `true` only when the checks within that scope pass. Shading geometry and physical model verification remain separate.
+
+### Standalone generator configuration
+
+`pvsyst_get_variant_parameters` returns a `generator` form with supported scope,
+current flags, enable state, GEN filename, operating power and per-subarray
+thresholds. `pvsyst_update_variant_parameters` accepts `generator_updates` for
+text variants with **Version 8.1.0 or 8.1.6 and SystemType=Battery**. File versions
+are preserved. The 45 MCP tool names remain unchanged.
+
+For example, after inspecting a one-subarray variant:
+
+```json
+{
+  "project": "Example.PRJ",
+  "variant": "VC0",
+  "expected_sha256": "<sha256 from inspection>",
+  "generator_updates": {
+    "enabled": true,
+    "filename": "custom.GEN",
+    "operating_power_kw": 40,
+    "thresholds": {
+      "1": {"VBkUpEncl_syst": 0.9, "VBkUpDecl_syst": 0.95}
+    }
+  },
+  "dry_run": true
+}
+```
+
+These are example test values, not recommended system settings. The thresholds
+are PVsyst's **normalized voltage thresholds (0..1), not SOC**. Threshold keys
+must identify existing subarrays. Enabling requires a valid loose GEN file,
+positive finite operating power, and both thresholds in every subarray;
+previously stored values can satisfy these requirements. Numbers must be JSON
+numbers and `enabled` must be a boolean. Unsupported keys are rejected.
+
+The transaction adds missing generator fields when needed and changes only
+bit `0x20` of the owning system Flags. Disabling with `{"enabled": false}` keeps
+the saved filename, power and thresholds. GEN nominal power (`PNomGen`) and fuel
+consumption (`CFuelHor`) remain editable through `pvsyst_update_component`.
+Operating power above nominal power returns a sizing warning. Component and
+variant edits are separate transactions; cross-file atomic editing is not provided.
+
+Preview returns a bounded diff, before/candidate SHA-256, before/after generator
+state and the selected GEN dependency hash. Applying with the same original
+hash creates a recovery backup; no-op generator edits preserve numeric spelling
+and make no backup. The variant and GEN dependency are rechecked immediately
+before replacement, including a new workspace file shadowing a builtin GEN.
+These checks detect observed changes; they do not lock out external editors.
+Use `pvsyst_restore_variant` with the backup name and current variant hash to undo.
+
+`dry_run` also previews existing orientation/subarray parameter edits. These can
+share a transaction with generator settings; in that case put backup thresholds
+under `generator_updates.thresholds`, not `subarray_updates`. Existing fixed-plane
+and shading restrictions still apply. See [the generator verification record](docs/generator-verification.md)
+for native enabled/disabled controls, restoration evidence and remaining limits.
 
 ## Python example
 
