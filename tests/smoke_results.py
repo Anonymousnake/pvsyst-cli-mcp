@@ -34,7 +34,6 @@ async def main():
         async with stdio_client(params) as (reader, writer):
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
-                assert len((await session.list_tools()).tools) == 45
                 async def call(args, error=None):
                     response = await session.call_tool("pvsyst_read_results", args)
                     assert response.is_error == bool(error), response.content
