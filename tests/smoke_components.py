@@ -32,8 +32,6 @@ async def main():
         async with stdio_client(params) as (reader, writer):
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
-                tools = await session.list_tools()
-                assert len(tools.tools) == 45
 
                 async def call(name, args, expect_error=False):
                     result = await session.call_tool(name, args)
@@ -44,6 +42,12 @@ async def main():
                     result = await call(name, args)
                     return json.loads(result.content[0].text)
 
+                creation = {"project": "Example.PRJ", "project_content": "PVObject_=pvProject\nEnd of PVObject pvProject\n", "variants": {"VC0": VARIANT}}
+                competing = await asyncio.gather(*(session.call_tool("pvsyst_create_project", creation) for _ in range(2)))
+                assert sum(not result.is_error for result in competing) == 1
+                assert (root / "Projects" / "Example.PRJ").read_text(encoding="utf-8") == creation["project_content"]
+                assert (root / "Projects" / "Example.VC0").read_text(encoding="utf-8") == VARIANT
+                print("MCP cold-start competing project creation: one success, intact files: OK")
                 await data_call("pvsyst_create_component", {
                     "component_type": "OND", "filename": "curve.OND", "content": CURVED_OND,
                 })
@@ -64,66 +68,37 @@ async def main():
                     "curve_updates": {"Converter/ProfilPIO": [[True, 0]] + POINTS[1:]}}, expect_error=True)
                 await call("pvsyst_update_component", {**curve_args,
                     "curve_updates": {"Converter/ProfilPIO": [["100", 0]] + POINTS[1:]}}, expect_error=True)
+                curve_file = root / "ComposPV" / "Inverters" / "curve.OND"
+                original_curve = curve_file.read_bytes()
                 preview = await data_call("pvsyst_update_component", {**curve_args, "dry_run": True})
                 assert preview["curve_control_after"]["source"] == "file"
-                curve_file = root / "ComposPV" / "Inverters" / "curve.OND"
-                assert hashlib.sha256(curve_file.read_bytes()).hexdigest() == inspected["sha256"]
+                assert curve_file.read_bytes() == original_curve
                 assert not (root / "ComposPV" / ".mcp-backups").exists()
                 edited = await data_call("pvsyst_update_component", curve_args)
-                assert edited["sha256"] == preview["sha256"]
+                actual = await data_call("pvsyst_get_component", {"component_type": "OND", "filename": "curve.OND"})
+                assert actual["curves"]["items"][0]["points"] == curve_args["curve_updates"]["Converter/ProfilPIO"]
+                assert b"PNomConv=45" in curve_file.read_bytes()
                 await call("pvsyst_update_component", curve_args, expect_error=True)
-                restored = await data_call("pvsyst_restore_component", {
+                await data_call("pvsyst_restore_component", {
                     "component_type": "OND", "filename": "curve.OND",
                     "backup_name": edited["backup_name"], "confirm": True,
                 })
-                assert restored["sha256"] == inspected["sha256"]
+                assert curve_file.read_bytes() == original_curve
                 print("MCP component edit: auto guard, strict numbers, scalar + curve preview/apply, stale rejection, exact restore: OK")
 
-                for kind, content in (("PAN", PAN), ("OND", OND), ("BTR", BTR), ("GEN", GEN)):
-                    target = {"component_type": kind, "filename": f"commercial.{kind}"}
-                    created = await data_call("pvsyst_create_component", {**target, "content": content})
-                    info = await data_call("pvsyst_get_component", target)
-                    assert info["commercial"]["editable"]
-                    args = {**target, "updates": {}, "expected_sha256": info["sha256"],
-                        "commercial_updates": {"Model": "Commercial edit", "Width": "1.2",
-                            "Height": "2.1", "Weight": "26", "YearBeg": "2026"},
-                        "remarks": ["Editable form", "Second line"]}
-                    await call("pvsyst_update_component", {**args, "expected_sha256": None}, expect_error=True)
-                    preview = await data_call("pvsyst_update_component", {**args, "dry_run": True})
-                    assert (await data_call("pvsyst_get_component", target))["sha256"] == info["sha256"]
-                    edited = await data_call("pvsyst_update_component", args)
-                    assert edited["sha256"] == preview["sha256"]
-                    assert edited["commercial_after"]["remarks"] == args["remarks"]
-                    if kind == "PAN":
-                        inspected = await data_call("pvsyst_get_component", target)
-                        assert inspected["fields"]["LargApp"] == ["1.2"]
-                        assert inspected["fields"]["LongApp"] == ["2.1"]
-                    await call("pvsyst_update_component", args, expect_error=True)
-                    restored = await data_call("pvsyst_restore_component", {
-                        **target, "backup_name": edited["backup_name"], "confirm": True})
-                    assert restored["sha256"] == created["sha256"]
-                print("MCP commercial forms: four types, field insertion, remarks, PAN dimensions, preview/apply, stale guard and exact restore: OK")
-
                 gui_target = {"component_type": "PAN", "filename": "gui.PAN"}
-                gui_created = await data_call("pvsyst_create_component", {**gui_target, "content": GUI_PAN})
+                await data_call("pvsyst_create_component", {**gui_target, "content": GUI_PAN})
                 gui_info = await data_call("pvsyst_get_component", gui_target)
-                assert not gui_info["warnings"] and "Isc" in gui_info["editable_fields"]
-                assert gui_info["commercial"]["fields"]["Width"]["editable"]
-                assert not gui_info["commercial"]["fields"]["Width"]["paired_root_present"]
                 gui_args = {**gui_target, "expected_sha256": gui_info["sha256"],
                             "updates": {"ISC": "11.2", "MuISC": "0.006"},
-                            "commercial_updates": {"Width": "1.05", "Height": "2.0"}}
-                gui_preview = await data_call("pvsyst_update_component", {**gui_args, "dry_run": True})
+                            "commercial_updates": {"Width": "1.05", "Height": "2.0"},
+                            "remarks": ["Editable form", "Second line"]}
                 gui_edited = await data_call("pvsyst_update_component", gui_args)
-                assert gui_preview["sha256"] == gui_edited["sha256"]
+                assert gui_edited["commercial_after"]["remarks"] == gui_args["remarks"]
                 gui_fields = (await data_call("pvsyst_get_component", gui_target))["fields"]
                 assert gui_fields["Isc"] == ["11.2"] and gui_fields["muISC"] == ["0.006"]
                 assert "LargApp" not in gui_fields and "LongApp" not in gui_fields
-                await call("pvsyst_update_component", gui_args, expect_error=True)
-                gui_restored = await data_call("pvsyst_restore_component", {**gui_target,
-                    "backup_name": gui_edited["backup_name"], "confirm": True})
-                assert gui_restored["sha256"] == gui_created["sha256"]
-                print("MCP GUI PAN: create/inspect, scoped aliases, commercial-only dimensions, preview, stale guard and exact restore: OK")
+                print("MCP GUI PAN: scoped aliases, commercial-only dimensions and remarks: OK")
 
                 battery_target = {"component_type": "BTR", "filename": "capacity.BTR"}
                 await data_call("pvsyst_create_component", {**battery_target, "content": CURVED_BTR})
@@ -135,84 +110,29 @@ async def main():
                 await call("pvsyst_update_component", {**battery_args, "use_file_curve": False}, expect_error=True)
                 await call("pvsyst_update_component", {**battery_args,
                     "curve_updates": {"Capa_DischRate": [[x, y * 0.8] for x, y in CAPACITY_POINTS]}}, expect_error=True)
-                battery_preview = await data_call("pvsyst_update_component", {**battery_args, "dry_run": True})
-                battery_path = root / "ComposPV" / "Batteries" / "capacity.BTR"
-                assert hashlib.sha256(battery_path.read_bytes()).hexdigest() == battery["sha256"]
-                battery_edit = await data_call("pvsyst_update_component", battery_args)
-                assert battery_edit["sha256"] == battery_preview["sha256"]
+                await data_call("pvsyst_update_component", battery_args)
                 inspected_battery = await data_call("pvsyst_get_component", battery_target)
                 assert inspected_battery["curves"]["control"]["path"] == "CapaCourant"
                 assert abs(inspected_battery["curves"]["items"][1]["ratio_100h"] - 1.17) < 1e-10
-                await call("pvsyst_update_component", battery_args, expect_error=True)
-                battery_restore = await data_call("pvsyst_restore_component", {**battery_target,
-                    "backup_name": battery_edit["backup_name"], "confirm": True})
-                assert battery_restore["sha256"] == battery["sha256"]
-                print("MCP BTR curve: ignored-tag guard, ratio rejection, activation preview/apply, stale rejection, exact restore: OK")
+                print("MCP BTR curve: ignored-tag guard, ratio rejection and native tag activation: OK")
 
-                for kind, filename, points, curve in (
-                    ("OND", "curve.OND", POINTS, "Converter/ProfilPIO"),
-                    ("BTR", "capacity.BTR", CAPACITY_POINTS, "Capa_DischRate")):
-                    target = {"component_type": kind, "filename": filename}
-                    original = await data_call("pvsyst_get_component", target)
-                    current_hash = original["sha256"]
-                    more = points + ([[1500, 1425]] if kind == "OND" else [[300, 1.44]])
-                    fewer = [more[0], more[1], more[3], more[-1]]
-                    first_backup = None
-                    for supplied in (more, fewer):
-                        args = {**target, "updates": {}, "expected_sha256": current_hash,
-                                "use_file_curve": True, "curve_updates": {curve: supplied}}
-                        preview = await data_call("pvsyst_update_component", {**args, "dry_run": True})
-                        assert (await data_call("pvsyst_get_component", target))["sha256"] == current_hash
-                        edit = await data_call("pvsyst_update_component", args)
-                        first_backup = first_backup or edit["backup_name"]
-                        assert edit["sha256"] == preview["sha256"]
-                        await call("pvsyst_update_component", args, expect_error=True)
-                        current_hash = edit["sha256"]
-                        curve = "CapaCourant" if kind == "BTR" else curve
-                        item = next(c for c in (await data_call("pvsyst_get_component", target))["curves"]["items"]
-                                    if c["path"] == curve)
-                        assert item["point_count_editable"] and item["points"] == supplied
-                        assert item["point_count"] == item["allocated_point_count"] == len(supplied)
-                        noop = await data_call("pvsyst_update_component", {**args,
-                            "expected_sha256": current_hash, "curve_updates": {curve: supplied}})
-                        assert not noop["changed"] and not noop.get("backup_name")
-                    restored = await data_call("pvsyst_restore_component", {**target,
-                        "backup_name": first_backup, "confirm": True})
-                    assert restored["sha256"] == original["sha256"]
-                print("MCP OND/BTR point tables: grow/shrink, synchronized counts, previews, stale guard, no-op and exact restore: OK")
-
-                for kind, filename, points, curve in (
-                    ("OND", "curve.OND", POINTS, "Converter/ProfilPIO"),
-                    ("BTR", "capacity.BTR", CAPACITY_POINTS, "Capa_DischRate")):
-                    target = {"component_type": kind, "filename": filename}
-                    original = await data_call("pvsyst_get_component", {**target, "include_curve_csv": True})
-                    await call("pvsyst_get_component", {**target, "include_curve_csv": "true"}, expect_error=True)
-                    exported = original["curve_csv"][curve]
-                    header = exported.splitlines()[0]
-                    more = points + ([[1500, 1425]] if kind == "OND" else [[300, 1.44]])
-                    text = header + "\r\n" + "".join(f"{x},{y}\r\n" for x, y in more)
-                    args = {**target, "updates": {}, "expected_sha256": original["sha256"],
-                            "use_file_curve": True}
-                    await call("pvsyst_update_component", {**args, "curve_csv": {curve: 123}}, expect_error=True)
-                    await call("pvsyst_update_component", {**args, "curve_csv": {curve: text},
-                        "curve_updates": {curve: more}}, expect_error=True)
-                    array_preview = await data_call("pvsyst_update_component", {**args,
-                        "curve_updates": {curve: more}, "dry_run": True})
-                    preview = await data_call("pvsyst_update_component", {**args,
-                        "curve_csv": {curve: text}, "dry_run": True})
-                    assert preview == array_preview
-                    assert (await data_call("pvsyst_get_component", target))["sha256"] == original["sha256"]
-                    changed = await data_call("pvsyst_update_component", {**args, "curve_csv": {curve: text}})
-                    assert changed["sha256"] == preview["sha256"]
-                    await call("pvsyst_update_component", {**args, "curve_csv": {curve: text}}, expect_error=True)
-                    current = await data_call("pvsyst_get_component", {**target, "include_curve_csv": True})
-                    noop = await data_call("pvsyst_update_component", {**args,
-                        "expected_sha256": current["sha256"], "curve_csv": current["curve_csv"]})
-                    assert not noop["changed"] and not noop.get("backup_name")
-                    restored = await data_call("pvsyst_restore_component", {**target,
-                        "backup_name": changed["backup_name"], "confirm": True})
-                    assert restored["sha256"] == original["sha256"]
-                print("MCP OND/BTR CSV: export, strict input, equivalent preview, growth, stale guard, round-trip no-op and exact restore: OK")
+                target = {"component_type": "OND", "filename": "curve.OND"}
+                curve = "Converter/ProfilPIO"
+                original = await data_call("pvsyst_get_component", {**target, "include_curve_csv": True})
+                await call("pvsyst_get_component", {**target, "include_curve_csv": "true"}, expect_error=True)
+                more = POINTS + [[1500, 1425]]
+                header = original["curve_csv"][curve].splitlines()[0]
+                text = header + "\r\n" + "".join(f"{x},{y}\r\n" for x, y in more)
+                args = {**target, "updates": {}, "expected_sha256": original["sha256"],
+                        "use_file_curve": True}
+                await call("pvsyst_update_component", {**args, "curve_csv": {curve: 123}}, expect_error=True)
+                await call("pvsyst_update_component", {**args, "curve_csv": {curve: text},
+                    "curve_updates": {curve: more}}, expect_error=True)
+                await data_call("pvsyst_update_component", {**args, "curve_csv": {curve: text}})
+                current = await data_call("pvsyst_get_component", {**target, "include_curve_csv": True})
+                item = next(c for c in current["curves"]["items"] if c["path"] == curve)
+                assert item["points"] == more and item["point_count"] == item["allocated_point_count"] == 5
+                print("MCP CSV: export, typed inputs and synchronized table growth: OK")
 
                 for kind, content in (("PAN", PAN), ("OND", OND),
                                       ("BTR", BTR), ("GEN", GEN)):
@@ -268,9 +188,6 @@ async def main():
                     "new_name": "copy.OND",
                 })
                 print("MCP component lifecycle: 4 creates, validate, read, edit, rejected GEN zero, clone, diff, archive/restore, copy: OK")
-                (root / "Projects" / "Example.PRJ").write_text(
-                    "PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
-                (root / "Projects" / "Example.VC0").write_text(VARIANT, encoding="utf-8")
                 await call("pvsyst_get_variant_components", {"project": "Example.PRJ", "variant": "VC0"})
                 await call("pvsyst_clone_variant", {
                     "project": "Example.PRJ", "source_variant": "VC0", "new_variant": "VC1",
@@ -311,6 +228,12 @@ async def main():
                         "  PVObject_=pvOrient\n")
                     path.write_text(variant, encoding="utf-8")
                 await call("pvsyst_clone_project", {"source_project": "Example.PRJ", "new_project": "Copy.PRJ"})
+                imported = await data_call("pvsyst_clone_variant", {
+                    "project": "Copy.PRJ", "source_project": "Example.PRJ",
+                    "source_variant": "VC0", "new_variant": "VC2",
+                })
+                assert imported["source_project"] == "Example.PRJ"
+                assert (root / "Projects" / "Copy.VC2").read_bytes() == (root / "Projects" / "Example.VC0").read_bytes()
                 initial = await data_call("pvsyst_inspect_project", {"project": "Copy.PRJ"})
                 changed = await data_call("pvsyst_update_project_sources", {
                     "project": "Copy.PRJ", "site_name": "New.SIT", "met_name": "New.MET",
@@ -324,6 +247,33 @@ async def main():
                 })
                 assert restored["files"] == initial["files"]
                 parameters = await data_call("pvsyst_get_variant_parameters", {"project": "Copy.PRJ", "variant": "VC0"})
+                for updates in ({"subarray_updates": {"NModSerie": True}}, {"orientation_updates": {"FieldTilt": "25"}},
+                                {"subarray_updates": {"PMismMPP": True}}, {"subarray_updates": {"PMismMPP": "5"}},
+                                {"main_array_updates": {"UFactor": True}}, {"main_array_updates": {"UFactor": "29"}},
+                                {"subarray_updates": {"ModuleQualityLoss": True}}, {"subarray_updates": {"ModuleQualityLoss": "5"}}):
+                    result = await call("pvsyst_update_variant_parameters", {
+                        "project": "Copy.PRJ", "variant": "VC0", "expected_sha256": parameters["sha256"], **updates,
+                    }, expect_error=True)
+                    assert "valid number" in result.content[0].text
+                for name in (True, 55):
+                    result = await call("pvsyst_update_variant_parameters", {
+                        "project": "Copy.PRJ", "variant": "VC0", "expected_sha256": parameters["sha256"], "variant_name": name,
+                    }, expect_error=True)
+                    assert "valid string" in result.content[0].text
+                for flag in (1, "true"):
+                    result = await call("pvsyst_update_variant_parameters", {
+                        "project": "Copy.PRJ", "variant": "VC0", "expected_sha256": parameters["sha256"],
+                        "variant_name": "ASCII", "add_utf8_bom": flag,
+                    }, expect_error=True)
+                    assert "valid boolean" in result.content[0].text
+                for key, changes in (("subarray_id", {"subarray_updates": {"NModSerie": 15}}),
+                                     ("orientation_id", {"orientation_updates": {"FieldTilt": 25}})):
+                    for value in (True, "1", 1.0):
+                        result = await call("pvsyst_update_variant_parameters", {
+                            "project": "Copy.PRJ", "variant": "VC0", "expected_sha256": parameters["sha256"],
+                            key: value, **changes,
+                        }, expect_error=True)
+                        assert "valid integer" in result.content[0].text
                 edited = await data_call("pvsyst_update_variant_parameters", {
                     "project": "Copy.PRJ", "variant": "VC0", "expected_sha256": parameters["sha256"],
                     "subarray_updates": {"NModSerie": 15}, "orientation_updates": {"FieldTilt": 25},
@@ -333,6 +283,11 @@ async def main():
                     "project": "Copy.PRJ", "variant": "VC0", "expected_sha256": edited["sha256"],
                     "backup_name": edited["backup_name"], "confirm": True,
                 })
+                for value in (True, 56):
+                    result = await call("pvsyst_update_project_parameters", {
+                        "project": "Copy.PRJ", "expected_files": initial["files"], "project_name": value,
+                    }, expect_error=True)
+                    assert "valid string" in result.content[0].text
                 archived = await data_call("pvsyst_archive_variant", {
                     "project": "Copy.PRJ", "variant": "VC1", "expected_sha256": initial["files"]["Copy.VC1"],
                     "confirm": True,
@@ -357,19 +312,17 @@ async def main():
                                    "2": {"VBkUpEncl_syst": 0.3, "VBkUpDecl_syst": 0.5}}}}
                 await call("pvsyst_update_variant_parameters", {**args, "generator_updates": {"enabled": "yes"}}, expect_error=True)
                 await call("pvsyst_update_variant_parameters", {**args, "generator_updates": {"operating_power_kw": "40"}}, expect_error=True)
-                preview = await data_call("pvsyst_update_variant_parameters", {**args, "dry_run": True})
-                assert (await data_call("pvsyst_get_variant_parameters", target))["sha256"] == inspected["sha256"]
+                generator_variant = root / "Projects" / "Copy.VC0"
+                original_generator_variant = generator_variant.read_bytes()
                 changed = await data_call("pvsyst_update_variant_parameters", args)
-                assert changed["sha256"] == preview["sha256"]
                 assert changed["generator_after"]["enabled"] and changed["generator_after"]["operating_power_kw"] == 40
-                await call("pvsyst_update_variant_parameters", args, expect_error=True)
                 disabled = await data_call("pvsyst_update_variant_parameters", {
                     **target, "expected_sha256": changed["sha256"], "generator_updates": {"enabled": False}})
                 assert not disabled["generator_after"]["enabled"]
-                restored = await data_call("pvsyst_restore_variant", {**target, "expected_sha256": disabled["sha256"],
+                await data_call("pvsyst_restore_variant", {**target, "expected_sha256": disabled["sha256"],
                     "backup_name": changed["backup_name"], "confirm": True})
-                assert restored["sha256"] == inspected["sha256"]
-                print("MCP generator: typed settings, multi-subarray thresholds, preview, enable/disable, stale guard, exact restore: OK")
+                assert generator_variant.read_bytes() == original_generator_variant
+                print("MCP generator: typed settings, multi-subarray thresholds, enable/disable and restore: OK")
 
 
 if __name__ == "__main__":

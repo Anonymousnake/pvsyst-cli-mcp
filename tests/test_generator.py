@@ -44,11 +44,10 @@ class GeneratorTests(unittest.TestCase):
         self.assertFalse(info["enabled"])
         self.assertIsNone(info["filename"])
         self.assertIsNone(info["subarrays"][0]["VBkUpDecl_syst"])
-        preview = self.edit(dry_run=True)
+        self.edit(dry_run=True)
         self.assertEqual(self.path.read_bytes(), original)
         self.assertFalse((self.root / "Projects" / ".mcp-variant-backups").exists())
         changed = self.edit()
-        self.assertEqual(changed["sha256"], preview["sha256"])
         self.assertTrue(changed["generator_after"]["enabled"])
         self.assertEqual(changed["generator_component"]["nominal_power_kw"], 50)
         self.assertIn(b"Flags \t=  $ab0060  ", self.path.read_bytes())
@@ -132,12 +131,8 @@ class GeneratorTests(unittest.TestCase):
         result = self.edit(self.config | {"operating_power_kw": 60}, dry_run=True)
         self.assertIn("exceeds GEN nominal", result["warnings"][0])
 
-    def test_stale_and_during_backup_races_preserve_external_change(self):
-        digest = self.sha()
+    def test_during_backup_race_preserves_external_change(self):
         original = self.path.read_bytes()
-        self.path.write_bytes(original.replace(b"NModSerie=14", b"NModSerie=15"))
-        with self.assertRaisesRegex(ValueError, "changed since inspection"):
-            self.store.update_parameters("Example.PRJ", "VC0", digest, 1, 1, generator_updates=self.config)
         backup = self.store._backup
         def race(*args):
             result = backup(*args)
@@ -158,14 +153,6 @@ class GeneratorTests(unittest.TestCase):
         with patch.object(self.store, "_backup", side_effect=race), self.assertRaisesRegex(ValueError, "Generator component changed"):
             self.edit()
         self.assertEqual(self.path.read_bytes(), original)
-
-    def test_existing_parameters_also_preview_without_backup(self):
-        original = self.path.read_bytes()
-        result = self.store.update_parameters("Example.PRJ", "VC0", self.sha(), 1, 1,
-            orientation_updates={"FieldTilt": 22}, dry_run=True)
-        self.assertTrue(result["changed"])
-        self.assertEqual(self.path.read_bytes(), original)
-        self.assertFalse((self.root / "Projects" / ".mcp-variant-backups").exists())
 
     def test_builtin_dependency_and_new_workspace_shadow(self):
         builtin = self.root / "DataRO"

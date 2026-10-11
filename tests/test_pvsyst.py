@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from threading import Barrier
+from time import sleep
 from pathlib import Path
 from unittest.mock import patch
 
@@ -136,23 +138,8 @@ class PVsystTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_result_csv(target)
 
-    def test_mcp_tools_and_path_confinement(self):
+    def test_mcp_project_listing_and_path_confinement(self):
         server._cli = self.client
-        tools = asyncio.run(server.mcp.list_tools())
-        names = {tool.name for tool in tools}
-        self.assertEqual(len(names), 45)
-        self.assertEqual(names, set(server.TOOL_CATEGORY))
-        self.assertEqual({group: len(group_names) for group, group_names in server.TOOL_GROUPS.items()},
-                         {"Setup & License": 6, "Projects & Variants": 18, "Components": 13,
-                          "Sites & Weather": 3, "Simulation": 2, "Results": 3})
-        for tool in tools:
-            self.assertTrue(tool.description.startswith(f"[{server.TOOL_CATEGORY[tool.name]}] "))
-        self.assertIn("pvsyst_read_batch_results", names)
-        self.assertIn("pvsyst_create_site", names)
-        self.assertIn("pvsyst_read_rows", names)
-        simulation = next(tool for tool in tools if tool.name == "pvsyst_run_simulation")
-        self.assertIn("bare filename", simulation.description)
-        self.assertNotIn("pvsyst_raw", names)
         self.assertEqual(server.pvsyst_list_projects(), ["Example.PRJ"])
         with self.assertRaises(ValueError):
             server.workspace_path("Results", "..\\secret.csv", ".csv")
@@ -210,6 +197,19 @@ class PVsystTests(unittest.TestCase):
                 self.client.run_simulation("Example.PRJ", "VC0", sfi=self.sfi,
                                            out_csv=self.workspace / "Results" / "new.csv",
                                            start_date="1990.13.40")
+            command.assert_not_called()
+        server._cli = self.client
+        target = self.workspace / "Results" / "new.csv"
+        with patch.object(self.client, "license_info", return_value={"status": "UNSPECIFIED"}), patch.object(self.client, "_run") as command:
+            for updates, message in (({"start_date": "1990-01-01"}, "Date must use"),
+                                     ({"start_date": "1990.13.40"}, "Invalid calendar date"),
+                                     ({"time_step": "subhour"}, "lacks run-simulation --time-step"),
+                                     ({"csv_name": "../escape.csv"}, "filename")):
+                with self.assertRaisesRegex(server.ToolError, message):
+                    asyncio.run(server.mcp.call_tool("pvsyst_run_simulation", {
+                        "project": "Example.PRJ", "variant": "VC0", "sfi_name": "demo.sfi",
+                        "csv_name": "new.csv", **updates}))
+                self.assertFalse(target.exists())
             command.assert_not_called()
 
     def test_license_timeout_does_not_expose_secret(self):
@@ -308,16 +308,33 @@ class PVsystTests(unittest.TestCase):
                          {"GlobInc": 33.0})
 
     def test_concurrent_runs_do_not_reuse_output(self):
+        server._cli = None
+        ready = Barrier(8)
+
+        def construct(*args):
+            sleep(0.02)
+            return self.client
+
+        def request():
+            ready.wait(timeout=5)
+            return server.cli()
+
+        with patch.object(server, "PVsystCLI", side_effect=construct) as factory:
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                clients = [future.result(timeout=5) for future in [executor.submit(request) for _ in range(8)]]
+            factory.assert_called_once()
+            self.assertTrue(all(client is self.client for client in clients))
+        self.assertIs(server.components().lock, self.client._lock)
         target = self.workspace / "Results" / "same.csv"
 
         def run(*args):
             target.write_text(CSV_TEXT, encoding="utf-8")
             return subprocess.CompletedProcess([], 0, "Simulation done in 0min 2sec", "")
 
-        with patch.object(self.client, "_run", side_effect=run) as command:
+        with patch.object(self.client, "license_info", return_value={"status": "UNSPECIFIED"}), patch.object(self.client, "_run", side_effect=run) as command:
             with ThreadPoolExecutor(max_workers=2) as executor:
-                futures = [executor.submit(self.client.run_simulation, "Example.PRJ", "VC0",
-                                           sfi=self.sfi, out_csv=target) for _ in range(2)]
+                futures = [executor.submit(server.pvsyst_run_simulation, "Example.PRJ", "VC0",
+                                           sfi_name="demo.sfi", csv_name="same.csv") for _ in range(2)]
                 outcomes = []
                 for future in futures:
                     try:

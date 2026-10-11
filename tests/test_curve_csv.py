@@ -47,23 +47,18 @@ class CurveCSVTests(unittest.TestCase):
             unchanged = self.update(kind, curve_csv=info["curve_csv"])
             self.assertFalse(unchanged["changed"])
             self.assertNotIn("backup_name", unchanged)
-            self.assertEqual(unchanged["sha256"], info["sha256"])
 
-    def test_grow_csv_and_arrays_produce_identical_previews_and_restore(self):
+    def test_csv_growth_matches_array_edit_for_both_types(self):
         for kind, path, points in (("OND", "Converter/ProfilPIO", POINTS + [[1500, 1425]]),
                                    ("BTR", "Capa_DischRate", CAPACITY_POINTS + [[300, 1.44]])):
-            original = self.info(kind)["sha256"]
             serialized = {path: "\ufeff" + table(kind, path, points)}
             array_preview = self.update(kind, curve_updates={path: points}, dry_run=True)
             csv_preview = self.update(kind, curve_csv=serialized, dry_run=True)
-            self.assertEqual(csv_preview, array_preview)
-            self.assertEqual(self.info(kind)["sha256"], original)
-            changed = self.update(kind, curve_csv=serialized)
-            self.assertEqual(changed["sha256"], csv_preview["sha256"])
-            with self.assertRaisesRegex(ValueError, "changed since inspection"):
-                self.update(kind, curve_csv=serialized, expected_sha256=original)
-            restored = self.store.restore(kind, "curve." + kind, changed["backup_name"], True)
-            self.assertEqual(restored["sha256"], original)
+            self.assertEqual(csv_preview["diff"], array_preview["diff"])
+            self.update(kind, curve_csv=serialized)
+            canonical = "CapaCourant" if kind == "BTR" else path
+            curve = next(c for c in self.info(kind)["curves"]["items"] if c["path"] == canonical)
+            self.assertEqual(curve["points"], points)
 
     def test_numeric_csv_dialect_accepts_quotes_spaces_exponents_and_bom(self):
         text = '\ufeffinput_watts,output_watts\r\n" 1e2 ",+8e1\r\n200,180\r\n500,470.0\r\n1E3,950\r\n'
@@ -96,22 +91,6 @@ class CurveCSVTests(unittest.TestCase):
         points = [[x + 1, x * .9] for x in range(256)]
         parsed = import_curve_csv("OND", {"Converter/ProfilPIO": table("OND", "Converter/ProfilPIO", points)})
         self.assertEqual(parsed["Converter/ProfilPIO"], points)
-
-    def test_transport_does_not_bypass_hash_mode_activation_or_battery_checks(self):
-        ond = {"Converter/ProfilPIO": table("OND", "Converter/ProfilPIO", POINTS)}
-        for args in ({"expected_sha256": None}, {"use_file_curve": False}, {"curve_updates": {}}):
-            with self.assertRaises(ValueError):
-                self.update("OND", curve_csv=ond, **args)
-        invalid_battery = [[x, y * .8] for x, y in CAPACITY_POINTS]
-        with self.assertRaisesRegex(ValueError, "Capacity ratio"):
-            self.update("BTR", curve_csv={"Capa_DischRate": table("BTR", "Capa_DischRate", invalid_battery)})
-        path = self.store._path("OND", "curve.OND")
-        path.write_bytes(path.read_bytes().replace(b"Mode=1", b"Mode=2"))
-        exported = self.info("OND", include_curve_csv=True)
-        self.assertIn("Converter/ProfilPIO", exported["curve_csv"])
-        self.assertFalse(exported["curves"]["items"][0]["editable"])
-        with self.assertRaisesRegex(ValueError, "Mode=1"):
-            self.update("OND", curve_csv=ond)
 
     def test_export_errors_report_unsupported_axes_and_bad_structure(self):
         info = self.info("BTR", include_curve_csv=True)

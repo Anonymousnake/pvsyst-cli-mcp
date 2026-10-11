@@ -8,21 +8,25 @@ from __future__ import annotations
 import inspect
 import math
 import os
+from threading import Lock
+from functools import wraps
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictFloat
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictFloat, StrictInt, StrictStr
 
-from pvsyst_cli import (PVsystCLI, VAR_GROUPS, build_monthly_weather_csv,
+from pvsyst_cli import (PVsystCLI, PVsystError, VAR_GROUPS, build_monthly_weather_csv,
                         build_sfi, iter_result_csv, parse_batch_results, result_units, summarize_results)
 from pvsyst_components import ComponentStore
 from pvsyst_variants import VariantStore
 from pvsyst_paths import workspace_file
 from pvsyst_results import compare_results
+from pvsyst_weather import inspect_weather_csv
 
 mcp = MCPServer("pvsyst-cli")
 _cli: PVsystCLI | None = None
+_cli_init_lock = Lock()
 
 TOOL_GROUPS = {
     "Setup & License": (
@@ -31,7 +35,7 @@ TOOL_GROUPS = {
     ),
     "Projects & Variants": (
         "pvsyst_list_projects", "pvsyst_list_variants", "pvsyst_inspect_project",
-        "pvsyst_clone_project", "pvsyst_update_project_sources",
+        "pvsyst_create_project", "pvsyst_clone_project", "pvsyst_update_project_parameters", "pvsyst_update_project_sources",
         "pvsyst_restore_project_sources", "pvsyst_archive_project", "pvsyst_archive_variant",
         "pvsyst_restore_project_archive", "pvsyst_get_variant_components",
         "pvsyst_clone_variant", "pvsyst_update_variant_components",
@@ -48,6 +52,7 @@ TOOL_GROUPS = {
     ),
     "Sites & Weather": (
         "pvsyst_build_monthly_weather", "pvsyst_create_site", "pvsyst_convert_meteo",
+        "pvsyst_inspect_weather_csv",
     ),
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
@@ -61,15 +66,23 @@ def categorized_tool():
     """Label MCP descriptions without changing established wire-level tool names."""
     def register(func):
         category = TOOL_CATEGORY[func.__name__]
-        return mcp.tool(description=f"[{category}] {inspect.getdoc(func)}")(func)
+        @wraps(func)
+        def guarded(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except (ValueError, FileNotFoundError, FileExistsError, PVsystError) as exc:
+                raise ToolError(str(exc)) from None
+        mcp.tool(description=f"[{category}] {inspect.getdoc(func)}")(guarded)
+        return func
     return register
 
 
 def cli() -> PVsystCLI:
     global _cli
-    if _cli is None:
-        _cli = PVsystCLI(os.environ.get("PVSYST_CLI"), os.environ.get("PVSYST_WORKSPACE"))
-    return _cli
+    with _cli_init_lock:
+        if _cli is None:
+            _cli = PVsystCLI(os.environ.get("PVSYST_CLI"), os.environ.get("PVSYST_WORKSPACE"))
+        return _cli
 
 
 def components() -> ComponentStore:
@@ -175,7 +188,9 @@ def pvsyst_list_variants(project: str) -> list[str]:
 @categorized_tool()
 def pvsyst_inspect_project(project: str) -> dict:
     """List PRJ/VC hashes and embedded SIT/MET references; flag missing workspace
-    files and differences between project and variant sources."""
+    files and differences between project and variant sources. project_name reads
+    only the UTF-8 root header (null if absent/duplicate there), not effective
+    native decoding of a BOM-less non-ASCII file. utf8_bom reports the PRJ marker."""
     return variant_call("inspect_project", project)
 
 
@@ -201,10 +216,43 @@ def pvsyst_restore_project_archive(project: str, archive_name: str,
 
 
 @categorized_tool()
+def pvsyst_create_project(project: str, project_content: str, variants: dict[str, str]) -> dict:
+    """Create a NEW PRJ/VC set from complete UTF-8 text without an existing project.
+    variants maps VC identifiers to their full text; 1..127 variants. Preserves
+    supplied BOM/newlines and references, rejects existing same-prefix members
+    and duplicate normalized IDs; handled write errors remove only created files.
+    Checks envelopes and subarray sections, not full schema or physical validity.
+    Site/meteo/components remain external; inspect, validate and simulate the new
+    project. No invented blank design/defaults. Returns the member hash map."""
+    return variant_call("create_project", project, project_content, variants)
+
+
+@categorized_tool()
 def pvsyst_clone_project(source_project: str, new_project: str) -> dict:
     """Create a NEW project by copying an existing PRJ and all its VC variants.
     Embedded site/meteo snapshots and external component references are preserved."""
     return variant_call("clone_project", source_project, new_project)
+
+
+@categorized_tool()
+def pvsyst_update_project_parameters(project: str, expected_files: dict[str, str],
+                                     project_name: StrictStr, dry_run: StrictBool = False,
+                                     add_utf8_bom: StrictBool = False) -> dict:
+    """Edit an existing project's display title only, preserving its PRJ/VC filenames.
+    project_name requires a strict string of 1..80 printable UTF-8 bytes without
+    controls/surrounding whitespace. Requires one existing owning header Comment,
+    complete recognized PRJ object syntax and the full hash map from inspect_project.
+    No blank name field/default is invented. dry_run returns the full candidate
+    file map and diff without backups/writes; repeated names are no-ops.
+    Non-ASCII names require UTF-8 BOM: existing BOM is preserved, adding one needs
+    explicit add_utf8_bom=true. This changes UTF-8 decoding for the whole PRJ,
+    not merely the title; bom_added is explicit even in a BOM-only transaction.
+    Only changed PRJ bytes are replaced; unchanged VC bytes/timestamps/file IDs
+    stay intact. Full-project snapshots and final file-set guards are reused.
+    Restore using restore_project_sources with the returned backups/files map.
+    Does not rename IDs, change sources, nested names, physical settings or VC names.
+    This is optimistic conflict checking, not cross-process locking/crash atomicity."""
+    return variant_call("update_project_parameters", project, expected_files, project_name, dry_run, add_utf8_bom)
 
 
 @categorized_tool()
@@ -219,7 +267,7 @@ def pvsyst_update_project_sources(project: str, site_name: str, met_name: str,
 @categorized_tool()
 def pvsyst_restore_project_sources(project: str, backups: dict[str, str],
                                    expected_files: dict[str, str], confirm: bool = False) -> dict:
-    """Restore every PRJ/VC file from one source-update transaction, after
+    """Restore every PRJ/VC file from one source/name project transaction, after
     matching current hashes, a complete transaction manifest and backup hashes.
     Requires confirm=true and backs up current bytes; legacy sets need manual recovery."""
     return variant_call("restore_project_sources", project, backups, expected_files, confirm)
@@ -233,51 +281,121 @@ def pvsyst_get_variant_components(project: str, variant: str) -> dict:
 
 @categorized_tool()
 def pvsyst_clone_variant(project: str, source_variant: str, new_variant: str,
-                         updates: dict[str, str] | None = None, subarray_id: int = 1) -> dict:
-    """Copy an existing variant as a NEW VC file. Optional PAN/OND edits target one
-    SubArrayId; BTR/GEN edits target the existing pvSystem reference only."""
-    return variant_call("clone", project, source_variant, new_variant, updates, subarray_id)
+                         updates: dict[str, str] | None = None, subarray_id: StrictInt = 1,
+                         source_project: str | None = None) -> dict:
+    """Copy a variant as a NEW VC in project. source_project defaults to project;
+    supply another workspace PRJ to import its variant under the target prefix.
+    Embedded site/meteo and external references are preserved, not synchronized
+    with the destination PRJ; inspect_project reports source differences.
+    Optional PAN/OND edits target one SubArrayId; BTR/GEN target pvSystem only.
+    subarray_id requires a strict JSON integer, not a boolean, string or float."""
+    return variant_call("clone", project, source_variant, new_variant, updates, subarray_id, source_project)
 
 
 @categorized_tool()
 def pvsyst_update_variant_components(project: str, variant: str,
                                      updates: dict[str, str], expected_sha256: str,
-                                     subarray_id: int = 1) -> dict:
+                                     subarray_id: StrictInt = 1) -> dict:
     """Replace existing PAN/OND/BTR/GEN references only, with backup and SHA guard.
-    Use pvsyst_get_variant_components to obtain the current expected_sha256."""
+    Use pvsyst_get_variant_components to obtain the current expected_sha256.
+    subarray_id requires a strict JSON integer, not a boolean, string or float."""
     return variant_call("update", project, variant, updates, expected_sha256, subarray_id)
 
 
 @categorized_tool()
 def pvsyst_validate_variant_structure(project: str, variant: str) -> dict:
-    """Check orientations, grid circuit references and serialized inverter/string counts.
-    grid_circuit lists grouped branches, declared counts and circuit counts separately;
+    """Check orientation IDs/references and counted TOrientGroup lists (including
+    planes without an assigned subarray), grid circuit
+    references and serialized inverter/string counts. Dome/unknown list quantities
+    are reported as unchecked. grid_circuit lists grouped branches and counts;
     multiple inverter groups can belong to one subarray. Explicit MPPT-node counts
-    do not establish independent-MPPT simulation mode. Shared/unknown allocation
-    reports incomplete checks. valid is false for issues, null for incomplete checks,
+    do not establish independent-MPPT simulation mode. Verified Version=8.1.0/8.1.6
+    subarrays with $0400 compare explicit inputs against NInvMPPT directly;
+    diagnostics leave this comparison unset for other modes/implicit layouts.
+    Bounded shared parents return ordered subarray_ids and power_sharing_id;
+    member shared_inverter_lines mark overlapping references, and totals count
+    each parent once. Requires explicit owned MPPT/string children, matching
+    Version=8.1.0/8.1.6 independent members with matching declared versions and
+    inverter references, and common group 0 or all -1.
+    Other shared/unknown allocation reports incomplete checks.
+    valid is false for issues, null for incomplete checks,
     true when scoped checks pass. This is not voltage/current or physical validation."""
     return variant_call("validate_structure", project, variant)
 
 
 @categorized_tool()
-def pvsyst_clone_subarray(project: str, variant: str, source_subarray_id: int,
-                          expected_sha256: str) -> dict:
-    """Duplicate a self-contained inverter branch in an unshaded grid variant.
-    Requires the current variant hash; saves a rollback snapshot."""
-    return variant_call("clone_subarray", project, variant, source_subarray_id, expected_sha256)
+def pvsyst_clone_subarray(project: str, variant: str, source_subarray_id: StrictInt,
+                          expected_sha256: str, clone_orientation: StrictBool = False,
+                          share_inverter: StrictBool = False) -> dict:
+    """Duplicate a grid subarray and all its exclusively owned inverter groups.
+    source_subarray_id requires a strict JSON integer, not a boolean, string or float.
+    By default keep the shared fixed-plane orientation and serialized MPPT layout.
+    Complete exclusive MPPT branches are preserved, not switched to independent
+    mode. Empty shading Flags=$00/$00020000/$00080000 still require geometry/table
+    exclusion. clone_orientation=true appends an independent fixed plane and updates its
+    NoOrientation reference/list count: requires complete grid counts, all strings
+    in one orientation, a flat Flags=$00 non-averaged source, and sequential
+    ordered TOrientGroup IDs. Supports ordinary branches without explicit MPPT,
+    or verified Version=8.1.0/8.1.6 independent $0400 layouts with disabled sharing -1,
+    exclusive direct MPPT children and complete declared input counts. It preserves
+    mode, input/leaf multiplicities and copied loss/model fields; no MPPT pairing,
+    shared parent construction or electrical fitting. Returns orientation_id
+    and orientation_cloned. Independent plane copying rejects circuit-level
+    orientation references instead of retaining stale allocation.
+    Multiple groups require fully checked counts. Shared power, external target-ID
+    references and shading geometry/tables are not supported. Requires the current
+    variant hash; saves a rollback snapshot. share_inverter=true instead copies
+    the one owned MPPT subtree under the same inverter, creating a bounded
+    shared parent with aggregate name and owner 0. Requires Version=8.1.0/8.1.6,
+    independent $0400, explicit disabled sharing -1, complete counts, one
+    inverter/input (multiplicity 1), and all strings in the existing plane.
+    New member keeps disabled sharing and its copied parameters; topology
+    grouping is separate from enabling power sharing and hardware sizing.
+    Do not combine with clone_orientation. Returns shared_parent_created."""
+    return variant_call("clone_subarray", project, variant, source_subarray_id, expected_sha256, clone_orientation, share_inverter)
 
 
 @categorized_tool()
-def pvsyst_remove_subarray(project: str, variant: str, subarray_id: int,
-                           expected_sha256: str) -> dict:
-    """Remove one isolated unshaded grid inverter branch, retaining its shared orientation.
-    Requires the current variant hash and creates a rollback snapshot."""
-    return variant_call("remove_subarray", project, variant, subarray_id, expected_sha256)
+def pvsyst_remove_subarray(project: str, variant: str, subarray_id: StrictInt,
+                           expected_sha256: str, remove_orientation: StrictBool = False,
+                           shared_member: StrictBool = False) -> dict:
+    """Remove a grid subarray and all its exclusively owned inverter groups.
+    subarray_id requires a strict JSON integer, not a boolean, string or float.
+    By default another subarray must retain the orientation. remove_orientation=true
+    also removes its now-unused fixed plane in a sequential TOrientGroup list,
+    leaving another orientation. Non-final removal renumbers higher plane IDs and
+    all owning NoOrientation references; requires all planes flat Flags=$00 and
+    non-averaged, single-orientation subarrays with completely owned branches,
+    ordinary NInvMPPT=1 without explicit MPPT or verified Version=8.1.0/8.1.6 independent
+    $0400/direct-MPPT allocations with disabled sharing -1 and consistent counts.
+    Every orientation reference must be an owned plane/root field; external or
+    circuit-level references stop before writes. Returns removed_orientation_id (null by
+    default) and orientation_id_map for changed surviving IDs. This opt-in
+    and multiple groups require complete consistent grid counts. Shared power
+    and shading geometry/tables are not supported. Requires the current hash
+    and creates a rollback snapshot. shared_member=true instead deletes one
+    member/owned MPPT subtree from a complete disabled two-member parent with
+    explicit owner 0, one inverter/input per member and a common unshaded fixed
+    plane. Preserves other member fields, restores its exclusive parent owner/name
+    and reports remaining_member_id. All power sharing must be disabled; do not
+    combine with remove_orientation. This is a bounded construction inverse,
+    not general merge/split, active-group reallocation or hardware refitting.
+    An active bounded group uses an explicit prior power_sharing_enabled=false
+    parameter transaction; direct active deletion still stops. Restore deletion
+    then the toggle snapshot to recover the active parent. These are separate
+    guarded transactions, not an atomic implicit-disable operation."""
+    return variant_call("remove_subarray", project, variant, subarray_id, expected_sha256, remove_orientation, shared_member)
 
 
 @categorized_tool()
 def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
-    """Inspect orientations, subarrays and standalone generator settings/thresholds."""
+    """Inspect orientations, owning subarray scalars including LIDLoss/PMismMPP
+    percent, raw PQualityModU/I/P and Flags, variant_name from the header only (null if absent/
+    duplicate there; this does not validate late-root name ambiguity),
+    utf8_bom for the VC (raw UTF-8 names do not prove BOM-less native decoding),
+    main_array.values UFactor (W/m2/K)/Flags/Flags2,
+    and standalone generator settings/thresholds. Nested owning object fields
+    are excluded."""
     return variant_call("inspect_parameters", project, variant)
 
 
@@ -291,26 +409,136 @@ class GeneratorUpdates(BaseModel):
 
 @categorized_tool()
 def pvsyst_update_variant_parameters(project: str, variant: str,
-                                     expected_sha256: str, subarray_id: int = 1,
-                                     orientation_id: int = 1,
-                                     subarray_updates: dict[str, float] | None = None,
-                                     orientation_updates: dict[str, float] | None = None,
+                                     expected_sha256: str, subarray_id: StrictInt = 1,
+                                     orientation_id: StrictInt = 1,
+                                     subarray_updates: dict[str, StrictFloat] | None = None,
+                                     orientation_updates: dict[str, StrictFloat] | None = None,
                                      generator_updates: GeneratorUpdates | None = None,
-                                     dry_run: StrictBool = False) -> dict:
-    """Edit existing validated scalar parameters with SHA guard and rollback backup.
-    dry_run returns a candidate hash/diff without writing. generator_updates
+                                     dry_run: StrictBool = False,
+                                     power_sharing_enabled: StrictBool | None = None,
+                                     independent_mppt_enabled: StrictBool | None = None,
+                                     main_array_updates: dict[str, StrictFloat] | None = None,
+                                     variant_name: StrictStr | None = None,
+                                     add_utf8_bom: StrictBool = False) -> dict:
+    """Edit existing validated parameters or display name with SHA guard and rollback backup.
+    variant_name changes only one owning header Comment, not the VC identifier,
+    filename, project or nested names. Requires printable single-line text of
+    1..80 UTF-8 bytes, no surrounding whitespace; bool/numeric values stop at SDK.
+    Missing/duplicate/late root names stop rather than inventing a field. Returns
+    name_change before/after. Existing preview/no-op/restore apply; display-only
+    names need no shading remapping and may accompany ordinary scalar updates.
+    Mode/sharing toggles stay separate. This is not file/variant-ID renaming.
+    Non-ASCII names require an existing UTF-8 BOM or explicit add_utf8_bom=true;
+    that option requires variant_name and changes decoding of the entire VC.
+    bom_added is returned for name transactions, including a marker-only change
+    with unchanged name/text diff. Existing BOM/newline style and formal recovery
+    are retained; no implicit marker insertion or ANSI transcoding. Strict JSON
+    booleans only, not strings/numbers. Raw inspected names do not prove correct
+    native decoding of a BOM-less file. Ordinary non-name edits preserve encoding.
+    dry_run returns a candidate hash/diff without writing. Subarray/orientation/
+    main-array dictionaries require strict numbers, not booleans or numeric strings.
+    main_array_updates supports existing owning UFactor (constant Uc, W/m2/K)
+    in adapter range [15,100]. Requires one Grid main array with Flags=$00100400,
+    Flags2=$082A, all subarrays declared 8.1.0/8.1.6, no active geometry/layout.
+    This changes the whole main array, not the selected subarray. Flags, wind
+    terms, absorptance and efficiency fields are preserved; no fitting, inferred
+    defaults or transient/wind model edits. Low-value behavior is unverified.
+    Target subarray_id/orientation_id require strict JSON integers, not booleans,
+    strings or floats; numeric dictionary values retain their separate rules.
+    subarray_updates
+    also supports existing root LIDLoss in percent [0,100], text 8.1.0/8.1.6
+    Grid subarrays without active geometry/layout. It does not infer module
+    technology, change flags, recompute defaults or fit losses. Existing root
+    PMismMPP in percent [0,100] is supported for declared 8.1.0/8.1.6 Grid subarrays
+    without active geometry/layout and with one hexadecimal owning Flags.
+    Setting PMismMPP also clears only default-mismatch bit 0x00040000 so the
+    saved value is consumed; other flags/losses stay intact. Returns mismatch
+    default_before/default_after. Restore the snapshot to recover default mode;
+    this does not fit losses or recalculate the native default.
+    ModuleQualityLoss is a semantic subarray_updates key in adapter percent range
+    [-5,20], negative means gain. Requires verified declared 8.1.0/8.1.6 Grid,
+    no active geometry/layout, unique existing owning PQualityModU/I and hexadecimal
+    Flags. It synchronizes both U/I saved values and clears only quality default
+    bit 0x00100000; PQualityModP, other flags/losses/fields remain unchanged.
+    Raw U/I/P are read-only inspection fields, not independent quality setters.
+    Returns module_quality default_before/default_after; restore recovers default
+    mode. No native-default calculation, tolerance inference or model fitting;
+    this bounded paired mapping is verified on an unshaded generic mono grid case.
+    generator_updates
     supports text 8.1.0/8.1.6 SystemType=Battery: enabled (only system Flags bit 0x20),
     filename (existing GEN), operating_power_kw (>0), and thresholds mapping
     string subarray IDs to VBkUpEncl_syst/VBkUpDecl_syst values in [0,1].
     These are native normalized voltage thresholds, not SOC. Missing generator
     fields can be added. Enabling requires a valid GEN, positive power and both
     thresholds in every subarray. Disabling preserves its saved configuration.
-    Nominal power/fuel consumption remain component fields. Other system bits,
-    circuit tree and field type are preserved. No-op edits create no backup."""
+    Nominal power/fuel consumption remain component fields. NModSerie edits
+    integer series-module count directly, preserving parallel strings, input
+    grouping and mode. Native model derives module count/operating voltage;
+    hardware voltage/current sizing, shading remapping and loss fitting are
+    not performed. Series edits, angle edits and structural/count/mode edits
+    stop before writes for active scenes/tables or any module-layout block;
+    cached module/string mapping is not remapped. Angle edits additionally
+    require a flat non-averaged FixedPlane, explicit Flags=$00 if present, and
+    absent/unique False UsesTiltAver/UsesAzimAver/UsesSlopeAver. Legacy angle
+    scalars may omit Flags; topology edits still require explicit Flags=$00. subarray_updates NInverter (integer 1..10000) scales ordinary grid inverter groups; NStringCh
+    (positive 32-bit integer) proportionally scales parallel StringNode counts.
+    They may be combined. NInverter alone preserves strings per inverter;
+    NStringCh alone preserves inverter count. All group/leaf allocations must
+    remain integral; declarations and NElements are synchronized together.
+    Requires consistent unshaded fixed-plane counts,
+    NInvMPPT=1 without the independent $0400 subarray flag, no shared power and
+    no explicit MPPT branches. NInvMPPT (integer 1..10000) separately scales
+    existing explicit MPPT groups for verified Version=8.1.0/8.1.6 independent $0400
+    subarrays with PowerSharingInverterId=-1 and complete exclusive allocation.
+    It preserves inverter/leaf counts and mode, synchronizes total input/string
+    declarations, and requires integral groups and explicit edited NElements.
+    NInverter alone also scales verified Version=8.1.0/8.1.6 independent exclusive inverter groups,
+    synchronizing NInverter, total NInvMPPT and strings while preserving MPPT/leaf
+    multiplicities and mode. Changed inverter NElements must be explicit; all
+    resulting group/input/string counts must be integral. Do not combine this
+    independent-mode operation with NInvMPPT/NStringCh; shared parents stay closed.
+    NStringCh alone also scales explicit parallel leaves in verified
+    Version=8.1.0/8.1.6 unshared independent mode while preserving MPPT/inverter
+    multiplicities; integral explicit leaf counts are required. NStringCh alone also supports a member
+    of one bounded Version=8.1.0/8.1.6 shared parent (matching member versions,
+    common fixed plane, complete allocation, group 0/-1); only its owned
+    leaves/root strings change, not peer members,
+    inputs, sharing or nominal tags. Group 0 must have no outside references.
+    Returns capacity.shared_parent_line; native automatic budgets may change.
+    Do not combine NInvMPPT with
+    NInverter/NStringCh/NoOrientation. No hardware limits
+    or loss/nominal-power refitting is performed. Other system bits
+    and field type are preserved. NoOrientation (positive integer) reassigns the
+    selected subarray to an existing ordinary fixed plane: sequential counted
+    TOrientGroup IDs, flat Flags=$00 non-averaged source/target, fully checked
+    exclusive ordinary branches without explicit MPPT, or verified Version=8.1.0/8.1.6
+    independent $0400/direct-MPPT branches with disabled sharing -1 and complete
+    declared input counts, and all strings in one orientation are required.
+    Circuit-level orientation references remain unsupported.
+    Every defined plane must retain an assigned subarray. Leaves planes/list
+    counts and circuit quantities unchanged; no automatic pruning or shading
+    remap. Returns orientation_assignment before/after.
+    power_sharing_enabled separately toggles all members of the existing
+    bounded shared parent containing subarray_id. Requires complete counts,
+    Version=8.1.0/8.1.6 independent $0400 members with matching declared versions,
+    the same inverter and fixed
+    plane, all member strings in that plane, and exclusive use of group 0.
+    Synchronizes member PowerSharingInverterId=0/-1 and only Flags bit $0100;
+    preserves topology, quantities, mode, nominal tags and loss parameters.
+    No topology creation, arbitrary group IDs or manual allocation. Do not
+    combine with other parameter updates. Returns power_sharing before/after.
+    independent_mppt_enabled separately switches verified Version=8.1.0/8.1.6
+    exclusive explicit MPPT layouts with PowerSharingInverterId=-1, complete
+    unshaded fixed-plane counts and all strings in one orientation. It changes
+    only $0400 and NInvMPPT (explicit input total when enabled, 1 when disabled).
+    Requires all owned inverter children explicit MPPT; preserves circuit and
+    other flags/counts, components/nominal/loss tags. Model power interpretation
+    changes; hardware allocations are not redesigned. Returns mppt_mode.
+    No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
                         generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
-                        dry_run)
+                        dry_run, power_sharing_enabled, independent_mppt_enabled, main_array_updates, variant_name, add_utf8_bom)
 
 
 @categorized_tool()
@@ -478,6 +706,21 @@ def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
              else [part.strip() for part in variables.split(",")])
     build_sfi(target, list(names))
     return {"sfi": str(target), "variables": list(names)}
+
+
+@categorized_tool()
+def pvsyst_inspect_weather_csv(csv_name: str, expected_year: StrictInt | None = None) -> dict:
+    """Check a PVsyst standard hourly CSV in Meteo before preparing a full-year run.
+    Read-only: reports metadata/units, gaps, duplicates, bad numbers and observed
+    monthly irradiation/temperature with input SHA-256. GHI/Tamb required; optional
+    DHI/DNI and weather columns supported. Raw timestamps must cover one whole year
+    at 00:00..23:00 (including leap day); no silent filling or time conversion.
+    Nonzero shifts, explicit time references and POA need separate review. valid
+    covers this CSV profile only, not MEF/SIT matching or native MET correctness."""
+    try:
+        return inspect_weather_csv(workspace_path("Meteo", csv_name, ".csv"), expected_year)
+    except (ValueError, OSError) as exc:
+        raise ToolError(str(exc)) from None
 
 
 @categorized_tool()
