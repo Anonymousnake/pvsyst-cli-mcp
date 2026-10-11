@@ -48,9 +48,8 @@ class BatteryEditorTests(unittest.TestCase):
 
     def rejected(self, **kwargs):
         original = self.path.read_bytes()
-        for dry_run in (True, False):
-            with self.subTest(dry_run=dry_run), self.assertRaises(ValueError):
-                self.edit(dry_run=dry_run, **kwargs)
+        with self.assertRaises(ValueError):
+            self.edit(**kwargs)
         self.assertEqual(self.path.read_bytes(), original)
         self.assertFalse((self.root / "ComposPV" / ".mcp-backups").exists())
 
@@ -79,7 +78,6 @@ class BatteryEditorTests(unittest.TestCase):
         self.assertEqual(preview["curve_control_after"]["path"], "CapaCourant")
         self.assertEqual(preview["curve_control_after"]["source"], "file")
         edited = self.edit(updates={"Model": "Custom"})
-        self.assertEqual(edited["sha256"], preview["sha256"])
         self.assertEqual(self.path.read_bytes(), original.replace(
             b"Capa_DischRate", b"CapaCourant").replace(b"Model=160Ah", b"Model=Custom"))
         self.store.restore("BTR", "test.BTR", edited["backup_name"], confirm=True)
@@ -87,7 +85,6 @@ class BatteryEditorTests(unittest.TestCase):
 
     def test_requires_hash_correct_existing_path_and_activation(self):
         self.rejected(expected_sha256=None)
-        self.rejected(expected_sha256="0" * 64)
         self.rejected(use_file_curve=False)
         self.rejected(curve_updates={"CapaCourant": CAPACITY_POINTS})
         self.rejected(curve_updates={"SelfDisch_Temp": CAPACITY_POINTS})

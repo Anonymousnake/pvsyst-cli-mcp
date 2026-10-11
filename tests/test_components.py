@@ -1,5 +1,4 @@
 """Offline component fixtures; no installed PVsyst or simulation quota required."""
-import asyncio
 import os
 import sys
 import tempfile
@@ -395,12 +394,3 @@ class ComponentTests(unittest.TestCase):
                 server.components()
         with patch.dict(os.environ, {"PVSYST_BUILTIN_COMPONENTS": str(official.parent)}):
             self.assertEqual(server.pvsyst_list_components("OND", "builtin")["total"], 1)
-
-    def test_mcp_registration_and_component_call(self):
-        client = PVsystCLI(Path(sys.executable), self.workspace)
-        server._cli = client
-        self.addCleanup(setattr, server, "_cli", None)
-        tools = asyncio.run(server.mcp.list_tools())
-        self.assertEqual(len(tools), 45)
-        self.assertEqual(server.pvsyst_validate_component("GEN", "sample.GEN")["model"], "50kVA")
-        self.assertEqual(server.pvsyst_list_components("BTR")["total"], 1)

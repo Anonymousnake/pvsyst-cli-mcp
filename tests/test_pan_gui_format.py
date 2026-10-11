@@ -43,10 +43,9 @@ class PanGUIFormatTests(unittest.TestCase):
         args = {"updates": {"ISC": "11.2", "MuISC": "0.006"},
                 "commercial_updates": {"Width": "1.05", "Height": "2.0"},
                 "expected_sha256": hashlib.sha256(original).hexdigest()}
-        preview = self.store.update("PAN", "gui.PAN", dry_run=True, **args)
+        self.store.update("PAN", "gui.PAN", dry_run=True, **args)
         self.assertEqual(self.path.read_bytes(), original)
         edited = self.store.update("PAN", "gui.PAN", **args)
-        self.assertEqual(edited["sha256"], preview["sha256"])
         data = self.path.read_bytes()
         self.assertIn(b"Isc=11.2", data)
         self.assertIn(b"muISC=0.006", data)

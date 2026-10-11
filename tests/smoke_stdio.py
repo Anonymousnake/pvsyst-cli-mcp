@@ -6,6 +6,7 @@ Set PVSYST_CLI and PVSYST_WORKSPACE first, then:
 import asyncio
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from mcp import ClientSession
@@ -62,6 +63,15 @@ async def main():
             variant = os.environ.get("PVSYST_SMOKE_RUN_VARIANT")
             sfi = os.environ.get("PVSYST_SMOKE_RUN_SFI")
             output = os.environ.get("PVSYST_SMOKE_RUN_CSV")
+            if project and variant:
+                guard_name = f"preflight-{uuid.uuid4().hex}.csv"
+                invalid = await session.call_tool("pvsyst_run_simulation", {
+                    "project": project, "variant": variant, "csv_name": guard_name,
+                    "start_date": "1990-01-01", "end_date": "1990.01.02",
+                })
+                assert invalid.is_error and "Date must use MM.DD" in invalid.content[0].text
+                assert not (Path(os.environ["PVSYST_WORKSPACE"]) / "Results" / guard_name).exists()
+                print("MCP preflight: specific dotted-date error, no output: OK")
             if all((project, variant, sfi, output)):
                 result = await session.call_tool("pvsyst_run_simulation", {
                     "project": project, "variant": variant,

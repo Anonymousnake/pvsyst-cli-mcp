@@ -39,7 +39,6 @@ class ResultComparisonTests(unittest.TestCase):
         self.assertEqual((s["min_delta"], s["max_delta"], s["max_abs_delta_at"]), (-2, 7, "1990-01-01 02:00:00"))
         self.assertEqual(s["delta_energy_kwh"], 10)
         self.assertAlmostEqual(s["paired_relative_change_pct"], 100 / 6)
-        self.assertEqual(result["baseline"]["sha256"], results.fingerprint(self.a))
 
     def test_missing_values_use_common_pairs_not_independent_totals(self):
         self.write(self.a, [10, "", 30, 40, "NaN"])

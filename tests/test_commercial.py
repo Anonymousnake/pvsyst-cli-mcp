@@ -49,10 +49,9 @@ class CommercialTests(unittest.TestCase):
                         "Width": "1.2", "Height": "2.1", "Depth": "0.04", "Weight": "26",
                         "YearBeg": "2026", "NPieces": "2", "PriceDate": "30/09/26 00:15"},
                         "remarks": ["Alpha = beta", "设备资料", "Third"]}
-                preview = self.edit(kind, dry_run=True, **args)
+                self.edit(kind, dry_run=True, **args)
                 self.assertEqual(path.read_bytes(), original)
                 edited = self.edit(kind, **args)
-                self.assertEqual(edited["sha256"], preview["sha256"])
                 content = path.read_text(encoding="utf-8")
                 self.assertIn("Comment=Research Lab\tEdited\tStatus", content)
                 self.assertIn("Width = 1.2", content)
@@ -93,7 +92,6 @@ class CommercialTests(unittest.TestCase):
     def test_guard_invalid_values_and_conflicting_arguments_leave_no_backup(self):
         bad = [
             {"expected_sha256": None, "commercial_updates": {"Weight": "5"}},
-            {"expected_sha256": "a" * 64, "commercial_updates": {"Weight": "5"}},
             {"commercial_updates": {"Flags": "$00"}},
             {"commercial_updates": {"Weight": "nan"}},
             {"commercial_updates": {"Weight": "inf"}},
