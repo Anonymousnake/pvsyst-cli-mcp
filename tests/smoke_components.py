@@ -44,7 +44,10 @@ async def main():
 
                 missing = await data_call("pvsyst_simulate_template", {})
                 assert missing["status"] == "blocked" and len(missing["issues"]) == 9
-                for arguments in ({"year": "1990"}, {"tilt": True}, {"dry_run": 1}):
+                for arguments in ({"year": "1990"}, {"tilt": True}, {"dry_run": 1},
+                                  {"capacity": {"target_dc_kw": True}},
+                                  {"capacity": {"target_dc_kw": "20"}},
+                                  {"capacity": {"unexpected": 1}}):
                     await call("pvsyst_simulate_template", arguments, expect_error=True)
                 assert not (root / "Results").exists()
                 print("MCP annual template preflight: missing fields, strict types, no writes: OK")
@@ -62,6 +65,8 @@ async def main():
                 })
                 assert inspected["curves"]["items"][0]["points"] == POINTS
                 assert inspected["curves"]["control"]["source"] == "automatic"
+                assert inspected["electrical"]["fields"]["PNomConv"]["unit"] == "kW"
+                assert inspected["electrical"]["fields"]["VAbsMax"]["path"] == "Converter"
                 curve_args = {
                     "component_type": "OND", "filename": "curve.OND",
                     "expected_sha256": inspected["sha256"],

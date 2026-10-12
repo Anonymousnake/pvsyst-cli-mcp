@@ -114,6 +114,12 @@ class PanGUIFormatTests(unittest.TestCase):
         self.store.update("PAN", "gui.PAN", {"ISC": "11.2"})
         self.assertIn("    Isc=99", self.path.read_text(encoding="utf-8"))
         self.assertIn("  Isc=11.2", self.path.read_text(encoding="utf-8"))
+        electrical = self.store.inspect("PAN", "gui.PAN")["electrical"]
+        self.assertEqual(electrical["fields"]["ISC"]["value"], 11.2)
+        self.assertEqual(electrical["fields"]["ISC"]["source_key"], "Isc")
+        self.assertEqual(electrical["fields"]["PNom"]["unit"], "W")
+        self.assertEqual(electrical["fields"]["VMaxIEC"]["status"], "missing")
+        self.assertTrue(electrical["unverified"])
         source = GUI_PAN.replace("  Version=", "  Manufacturer=Root metadata\n  Version=")
         self.path.write_text(source, encoding="utf-8")
         self.assertEqual(self.store.inspect("PAN", "gui.PAN")["manufacturer"], "Lab")

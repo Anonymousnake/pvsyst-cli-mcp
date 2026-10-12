@@ -573,7 +573,10 @@ def pvsyst_get_component(component_type: str, filename: str,
     include_curve_csv adds a path-to-CSV-text map for OND main/BTR capacity
     curves with explicit-unit headers, plus curve_csv_errors for omissions.
     CSV export does not expand edit support. PAN scalar_aliases lists supported
-    ISC/Isc and MuISC/muISC spellings. Legacy PAN is metadata only."""
+    ISC/Isc and MuISC/muISC spellings. PAN/OND electrical exposes owning-object
+    reference-point values/units and missing/ambiguous/invalid declarations;
+    serialized temperature coefficients and per-MPPT limits remain unverified.
+    IDCMax=0 is not a positive declared ceiling. Legacy PAN is metadata only."""
     return component_call("inspect", component_type, filename, library, offset, limit, include_curve_csv)
 
 
@@ -757,18 +760,43 @@ def pvsyst_create_site(site_name: str, latitude: float, longitude: float,
     return {"site": str(output)}
 
 
+class CapacityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_dc_kw: StrictInt | StrictFloat | None = None
+    max_dc_ac_ratio: StrictInt | StrictFloat | None = None
+    capacity_tolerance_pct: StrictInt | StrictFloat = 5
+    voltage_standard: StrictStr | None = None
+    cold_voc_v: StrictInt | StrictFloat | None = None
+    hot_vmp_v: StrictInt | StrictFloat | None = None
+    cold_vmp_v: StrictInt | StrictFloat | None = None
+    module_max_operating_current_a: StrictInt | StrictFloat | None = None
+    module_max_short_circuit_current_a: StrictInt | StrictFloat | None = None
+    mppt_max_operating_current_a: StrictInt | StrictFloat | None = None
+    mppt_max_short_circuit_current_a: StrictInt | StrictFloat | None = None
+    design_min_temperature_c: StrictInt | StrictFloat | None = None
+    design_min_operating_temperature_c: StrictInt | StrictFloat | None = None
+    design_max_operating_temperature_c: StrictInt | StrictFloat | None = None
+    design_basis: StrictStr | None = None
+
+
 @categorized_tool()
 def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictStr = "",
                              new_project: StrictStr = "", pan_name: StrictStr = "",
                              ond_name: StrictStr = "", site_name: StrictStr = "",
                              met_name: StrictStr = "", tilt: StrictInt | StrictFloat | None = None,
-                             year: StrictInt | None = None, dry_run: StrictBool = True) -> dict:
+                             year: StrictInt | None = None, dry_run: StrictBool = True,
+                             capacity: CapacityRequest | None = None) -> dict:
     """Preflight or execute one template-to-full-year grid simulation without GUI.
     Supply an existing valid PRJ/VC, loose text PAN/OND, workspace SIT/MET, tilt,
     year and a NEW project filename. Missing inputs return field-specific issues.
     Scope: completely checked single subarray/fixed plane, no active shading/layout,
-    PRCorrTemp=False; retain template counts, MPPT layout, azimuth and losses.
-    This does not select hardware, redesign strings or certify voltage/current sizing.
+    PRCorrTemp=False; retain template counts unless capacity is explicitly supplied.
+    capacity plans integer series/strings/inverters against declared design voltages,
+    currents, temperatures, IEC/UL module voltage rating and maximum DC:AC ratio.
+    Require independent unshared 8.1.0/8.1.6, one repeatable inverter/MPPT/string branch,
+    full hardware MPPT population and crystalline PAN at STC; mode/topology stays intact.
+    Design envelope/source are required, not guessed from raw temperature coefficients.
+    No native temperature-model reproduction, hardware selection or design certification.
     dry_run=true (default) writes nothing and consumes no simulation execution.
     dry_run=false copies/configures the project, runs Jan 1 through Dec 31 hourly,
     validates native context/complete year, and returns energy, standard PR, IL_Pmax,
@@ -784,7 +812,8 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
     return simulate_template(current, store, template_project=template_project, variant=variant,
         new_project=new_project, pan_name=pan_name, ond_name=ond_name, site_name=site_name,
-        met_name=met_name, tilt=tilt, year=year, dry_run=dry_run)
+        met_name=met_name, tilt=tilt, year=year, dry_run=dry_run,
+        capacity=capacity.model_dump(exclude_none=True) if capacity is not None else None)
 
 
 @categorized_tool()

@@ -116,6 +116,18 @@ class ComponentTests(unittest.TestCase):
                 self.assertEqual(self.store.list(kind, query="Lab")["total"], 1)
                 self.assertEqual(len(self.store.inspect(kind, f"sample.{kind}", limit=1)["lines"]), 1)
         self.assertEqual(self.store.list("OND", "builtin")["items"][0]["name"], "official.OND")
+        converter = self.files["OND"]
+        original = converter.read_bytes()
+        for raw, status in (("0", "not_declared"), ("25", "declared"), ("nan", "invalid")):
+            converter.write_text(OND.replace("    PNomConv=50", "    PNomConv=50\n    IDCMax=" + raw)
+                                 .replace("    Model=50kW", "    Model=50kW\n    PNomConv=999"), encoding="utf-8")
+            electrical = self.store.inspect("OND", "sample.OND")["electrical"]
+            self.assertEqual(electrical["fields"]["PNomConv"]["value"], 50)
+            self.assertEqual(electrical["fields"]["PNomConv"]["unit"], "kW")
+            self.assertEqual(electrical["fields"]["PNomConv"]["path"], "Converter")
+            self.assertEqual(electrical["fields"]["IDCMax"]["status"], status)
+            self.assertEqual(electrical["fields"]["NbMPPT"]["status"], "missing")
+        converter.write_bytes(original)
         with self.assertRaises(ValueError):
             self.store.list("RLT")
         with self.assertRaises(ValueError):

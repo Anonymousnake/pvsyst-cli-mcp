@@ -139,6 +139,66 @@ class SimulationTests(unittest.TestCase):
             json.dumps(blocked, allow_nan=False)
             self.assertFalse((self.root / "Projects/Unused.PRJ").exists())
 
+    def test_capacity_envelope_plan_configuration_and_recovery(self):
+        projects = self.root / "Projects"
+        original = (projects / "Template.VC0").read_text()
+        mppt = ("MPPTNode Start;\nNElements=1\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n"
+                "StringNode Start;\nNElements=3\nSubArrayId=1\nSubArrayName=Array A\n"
+                "StringNode End;\nChildren=End\nMPPTNode End;")
+        begin = original.index("    StringNode Start;")
+        end = original.index("    StringNode End;", begin) + len("    StringNode End;")
+        text = original[:begin] + mppt + original[end:]
+        text = text.replace("  FieldType=FixedPlane", "  Flags=$00\n  FieldType=FixedPlane")
+        text = text.replace("NInvMPPT=1", "NInvMPPT=2\nFlags=$0400\nVersion=8.1.6\nPowerSharingInverterId=-1")
+        text = text.replace("End of PVObject pvVCalcul", "PVObject_Ombrage=pvShading\nFlags=$00\nEnd of PVObject pvShading\nEnd of PVObject pvVCalcul")
+        (projects / "Template.VC0").write_text(text)
+        module = self.root / "ComposPV/PVmodules/module.PAN"
+        module.write_text(module.read_text().replace("  TRef=25", "  VMaxIEC=1000\n  VMaxUL=600\n  TRef=25"))
+        inverter = self.root / "ComposPV/Inverters/inverter.OND"
+        inverter.write_text(inverter.read_text().replace("  Converter=TConverter", "  NbMPPT=1\n  Converter=TConverter")
+                            .replace("    PNomConv=50", "    ModeOper=MPPT\n    CompPMax=Lim\n    CompVMax=Lim\n    PNomConv=50"))
+        originals = {p.name: p.read_bytes() for p in projects.iterdir()}
+        constraints = dict(target_dc_kw=28.16, max_dc_ac_ratio=1.3, voltage_standard="IEC",
+            cold_voc_v=60, hot_vmp_v=36, cold_vmp_v=46, module_max_operating_current_a=12,
+            module_max_short_circuit_current_a=14, mppt_max_operating_current_a=50,
+            mppt_max_short_circuit_current_a=60, design_min_temperature_c=-10,
+            design_min_operating_temperature_c=20, design_max_operating_temperature_c=60,
+            design_basis="Synthetic declared envelope for contract regression; not manufacturer certification")
+        request = {**self.request, "capacity": constraints}
+        preview = simulate_template(self.cli, self.store, **request)
+        self.assertEqual(preview["status"], "ready", preview)
+        plan = preview["capacity_plan"]
+        self.assertEqual((plan["series_modules"], plan["string_count"], plan["inverter_count"]), (16, 4, 1))
+        self.assertEqual(plan["checks"]["mppt_operating_current_a"], 48)
+        self.assertEqual(list((self.root / "Results").iterdir()), [])
+        self.nominal = plan["installed_dc_kw"]
+        with patch.object(self.cli, "_run", side_effect=self.native_run):
+            result = simulate_template(self.cli, self.store, **request, dry_run=False)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertAlmostEqual(result["metrics"]["nominal_dc_power_kw"], 28.16)
+        self.assertEqual(len(result["capacity_plan"]["steps"]), 3)
+        values = self.store.inspect_parameters("Work.PRJ", "VC0")["subarrays"][0]["values"]
+        self.assertEqual((values["NModSerie"], values["NStringCh"], values["NInverter"]), ("16", "4", "1"))
+        for step in result["recovery"]:
+            method = self.store.restore if step["tool"] == "pvsyst_restore_variant" else self.store.restore_project_sources
+            method(**step["arguments"])
+        for name, data in originals.items():
+            self.assertEqual((projects / name).read_bytes(), data)
+            self.assertEqual((projects / name.replace("Template", "Work")).read_bytes(), data)
+        for capacity in ({}, {**constraints, "target_dc_kw": True}, {**constraints, "cold_voc_v": 1e8},
+                         {**constraints, "voltage_standard": "guess"}, {**constraints, "hot_vmp_v": 1000},
+                         {**constraints, "mppt_max_operating_current_a": 1}, {**constraints, "unknown": 1},
+                         {**constraints, "capacity_tolerance_pct": None}, {**constraints, "target_dc_kw": float("nan")}):
+            blocked = simulate_template(self.cli, self.store, **{**request, "new_project": "Blocked.PRJ", "capacity": capacity})
+            self.assertEqual(blocked["status"], "blocked", blocked)
+            self.assertTrue(blocked["issues"])
+            self.assertFalse((projects / "Blocked.PRJ").exists())
+        with patch.object(self.cli, "_run", side_effect=PVsystError("Native failure")):
+            failed = simulate_template(self.cli, self.store, **{**request, "new_project": "SizedFailure.PRJ"}, dry_run=False)
+        self.assertEqual(failed["status"], "failed", failed)
+        self.assertTrue(failed["template_preserved"])
+        self.assertTrue(failed["recovery"])
+
     def test_annual_acceptance_calendar_units_coverage_and_nonfinite_values(self):
         path = self.root / "Results/annual.csv"
         for year, hours in ((1990, 8760), (2020, 8784)):
