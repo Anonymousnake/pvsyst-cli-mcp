@@ -22,6 +22,7 @@ from pvsyst_components import ComponentStore
 from pvsyst_variants import VariantStore
 from pvsyst_paths import workspace_file
 from pvsyst_results import compare_results
+from pvsyst_simulation import simulate_template
 from pvsyst_weather import inspect_weather_csv
 
 mcp = MCPServer("pvsyst-cli")
@@ -54,7 +55,7 @@ TOOL_GROUPS = {
         "pvsyst_build_monthly_weather", "pvsyst_create_site", "pvsyst_convert_meteo",
         "pvsyst_inspect_weather_csv",
     ),
-    "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation"),
+    "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
 }
 TOOL_CATEGORY = {name: category for category, names in TOOL_GROUPS.items() for name in names}
@@ -754,6 +755,36 @@ def pvsyst_create_site(site_name: str, latitude: float, longitude: float,
                                country_code=country_code, region=region, source=source,
                                albedo=albedo, log_level=log_level)
     return {"site": str(output)}
+
+
+@categorized_tool()
+def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictStr = "",
+                             new_project: StrictStr = "", pan_name: StrictStr = "",
+                             ond_name: StrictStr = "", site_name: StrictStr = "",
+                             met_name: StrictStr = "", tilt: StrictInt | StrictFloat | None = None,
+                             year: StrictInt | None = None, dry_run: StrictBool = True) -> dict:
+    """Preflight or execute one template-to-full-year grid simulation without GUI.
+    Supply an existing valid PRJ/VC, loose text PAN/OND, workspace SIT/MET, tilt,
+    year and a NEW project filename. Missing inputs return field-specific issues.
+    Scope: completely checked single subarray/fixed plane, no active shading/layout,
+    PRCorrTemp=False; retain template counts, MPPT layout, azimuth and losses.
+    This does not select hardware, redesign strings or certify voltage/current sizing.
+    dry_run=true (default) writes nothing and consumes no simulation execution.
+    dry_run=false copies/configures the project, runs Jan 1 through Dec 31 hourly,
+    validates native context/complete year, and returns energy, standard PR, IL_Pmax,
+    warnings, CSV/PDF/SFI and a persisted JSON manifest with reverse recovery steps.
+    Existing project/output files are never overwritten. Failure retains the original
+    template and working files/backups/manifest; no automatic retry or destructive cleanup.
+    status is blocked/ready/completed/needs_review/failed; inspect it, not just MCP is_error.
+    Extreme IL_Pmax versus STC reference energy triggers a disclosed review heuristic,
+    not a claim of native physical validation or an automatic model repair.
+    Year is 1969..2068 due to two-digit native CSV dates. Restart host for this tool."""
+    current = cli()
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return simulate_template(current, store, template_project=template_project, variant=variant,
+        new_project=new_project, pan_name=pan_name, ond_name=ond_name, site_name=site_name,
+        met_name=met_name, tilt=tilt, year=year, dry_run=dry_run)
 
 
 @categorized_tool()

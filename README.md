@@ -54,7 +54,7 @@ Restart the client after editing its MCP configuration. The server requires Pyth
 
 ## MCP tools by workflow
 
-The 48 tools are organized into six groups. Existing tool names and arguments remain compatible. Each MCP description begins with a category label matching the groups below; clients that display a flat tool list can still show these labels without a grouping extension.
+The 49 tools are organized into six groups. Existing tool names and arguments remain compatible. Each MCP description begins with a category label matching the groups below; clients that display a flat tool list can still show these labels without a grouping extension.
 
 First CLI initialization is serialized inside the MCP process, so concurrent initial requests share one client and the same workspace `RLock` used by CLI, component and variant operations. This is process-local coordination, not an OS/cross-process lock; SHA checks remain optimistic and external editors still require coordination. See [concurrent initialization verification](docs/grid-capacity-verification.md#single-client-concurrent-initialization).
 
@@ -103,12 +103,15 @@ The core project/variant block has passed a fresh-stdio integrated acceptance ex
 | `pvsyst_convert_meteo` | Convert CSV + MEF + SIT to MET |
 | `pvsyst_inspect_weather_csv` | Inspect standard hourly CSV metadata, units, full-year coverage and monthly observations |
 
-### Simulation (2)
+### Simulation (3)
 
 | Tools | Purpose |
 |---|---|
 | `pvsyst_build_sfi` | Create an hourly export definition |
-| `pvsyst_run_simulation` | Single or batch CLI simulation with CSV/PDF outputs |
+| `pvsyst_run_simulation` | Single or batch CLI simulation with CSV/PDF outputs; redacted diagnostics and warning lines |
+| `pvsyst_simulate_template` | Read-only preflight or guarded template copy/configuration, complete-year run and metric/report acceptance |
+
+For AI-driven annual runs, start with `pvsyst_simulate_template(..., dry_run=True)` and inspect its `status`/`issues`. Supply a valid single-subarray/fixed-plane grid PRJ/VC template, complete loose text PAN/OND, workspace SIT/MET, tilt, simulation year and a new project filename. Explicit `dry_run=False` creates/configures a working copy, exports CSV/PDF and returns full-year energy, standard PR, `IL_Pmax`, warnings and a persistent reverse-recovery manifest. `needs_review` is not a normally accepted job; native completion alone does not certify physical inputs. Template topology/counts are retained, not automatically sized. See [automatic simulation, status handling and verification](docs/automatic-simulation.md). Restart an existing MCP server for this new tool.
 
 ### Results (3)
 
