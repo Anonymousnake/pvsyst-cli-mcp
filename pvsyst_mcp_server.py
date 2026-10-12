@@ -8,12 +8,16 @@ from __future__ import annotations
 import inspect
 import math
 import os
+from collections.abc import Mapping
 from threading import Lock
+from typing import Any
 from functools import wraps
 from pathlib import Path
 
+from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictFloat, StrictInt, StrictStr
 
 from pvsyst_cli import (PVsystCLI, PVsystError, VAR_GROUPS, build_monthly_weather_csv,
@@ -24,6 +28,7 @@ from pvsyst_paths import workspace_file
 from pvsyst_results import compare_results
 from pvsyst_simulation import simulate_template
 from pvsyst_weather import inspect_weather_csv
+from pvsyst_weather_flow import prepare_weather
 
 mcp = MCPServer("pvsyst-cli")
 _cli: PVsystCLI | None = None
@@ -53,7 +58,7 @@ TOOL_GROUPS = {
     ),
     "Sites & Weather": (
         "pvsyst_build_monthly_weather", "pvsyst_create_site", "pvsyst_convert_meteo",
-        "pvsyst_inspect_weather_csv",
+        "pvsyst_inspect_weather_csv", "pvsyst_prepare_weather",
     ),
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
@@ -62,11 +67,39 @@ TOOL_CATEGORY = {name: category for category, names in TOOL_GROUPS.items() for n
 if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
     raise RuntimeError("Duplicate tool category assignment")
 
+# MCP 2.2 middleware sees raw arguments before its default extra=ignore model.
+# Limit strict top-level keys to these entry points and derive keys from signatures.
+STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_simulate_template")
+_strict_arguments: dict[str, frozenset[str]] = {}
+
+
+async def reject_unknown_tool_arguments(ctx: ServerRequestContext[Any, Any],
+                                        call_next: CallNext) -> HandlerResult:
+    """Refuse unknown top-level arguments for the two strict entry points only."""
+    if ctx.method == "tools/call" and isinstance(ctx.params, Mapping):
+        name = ctx.params.get("name")
+        arguments = ctx.params.get("arguments")
+        # A malformed name/arguments value is left to the SDK's own params validation.
+        accepted = _strict_arguments.get(name) if isinstance(name, str) else None
+        if accepted is not None and isinstance(arguments, Mapping):
+            unknown = sorted(set(arguments) - accepted, key=str)
+            if unknown:
+                text = (f"Unknown argument(s) for {name}: {', '.join(map(str, unknown))}. "
+                        f"Accepted arguments: {', '.join(sorted(accepted))}")
+                return CallToolResult(content=[TextContent(type="text", text=text)], is_error=True)
+    return await call_next(ctx)
+
+
+mcp.middleware.append(reject_unknown_tool_arguments)
+
 
 def categorized_tool():
     """Label MCP descriptions without changing established wire-level tool names."""
     def register(func):
         category = TOOL_CATEGORY[func.__name__]
+        if func.__name__ in STRICT_ARGUMENT_TOOLS:
+            # Typos are rejected against the published signature, so the whitelist cannot drift.
+            _strict_arguments[func.__name__] = frozenset(inspect.signature(func).parameters)
         @wraps(func)
         def guarded(*args, **kwargs):
             try:
@@ -732,6 +765,27 @@ def pvsyst_inspect_weather_csv(csv_name: str, expected_year: StrictInt | None = 
 
 
 @categorized_tool()
+def pvsyst_prepare_weather(csv_name: StrictStr = "", year: StrictInt | None = None,
+                            sit_name: StrictStr = "", met_name: StrictStr = "",
+                            country_code: StrictStr = "", time_basis: StrictStr = "",
+                            dry_run: StrictBool = True) -> dict:
+    """Prepare NEW native SIT/MET and a provenance manifest from one full hourly CSV.
+    GHI, DHI, Tamb only; explicit uppercase ISO country code and time_basis
+    local_standard_interval_start are required (fixed winter timezone, no DST).
+    Coordinates, altitude, timezone, site and source come from verified CSV metadata.
+    dry_run=true writes nothing. Execution preserves raw bytes, normalizes only
+    columns/units, creates monthly CSV/MEF, runs create-site and convert-meteo.
+    Conversion warnings are retained as needs_review; prepared is not native
+    MET certification. Pass artifacts.manifest filename as weather_manifest_name
+    to simulate_template for explicit SIT/MET loading and hourly weather comparison.
+    No UTC/DST shifts, missing-data filling, ignored columns or binary parsing.
+    Existing outputs are never overwritten; failure artifacts/manifest are retained."""
+    return prepare_weather(cli(), csv_name=csv_name, year=year, sit_name=sit_name,
+                           met_name=met_name, country_code=country_code,
+                           time_basis=time_basis, dry_run=dry_run)
+
+
+@categorized_tool()
 def pvsyst_build_monthly_weather(filename: str, global_h: list[float],
                                  temperature: list[float],
                                  diffuse_h: list[float] | None = None,
@@ -785,7 +839,8 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
                              ond_name: StrictStr = "", site_name: StrictStr = "",
                              met_name: StrictStr = "", tilt: StrictInt | StrictFloat | None = None,
                              year: StrictInt | None = None, dry_run: StrictBool = True,
-                             capacity: CapacityRequest | None = None) -> dict:
+                             capacity: CapacityRequest | None = None,
+                             weather_manifest_name: StrictStr = "") -> dict:
     """Preflight or execute one template-to-full-year grid simulation without GUI.
     Supply an existing valid PRJ/VC, loose text PAN/OND, workspace SIT/MET, tilt,
     year and a NEW project filename. Missing inputs return field-specific issues.
@@ -797,6 +852,9 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
     full hardware MPPT population and crystalline PAN at STC; mode/topology stays intact.
     Design envelope/source are required, not guessed from raw temperature coefficients.
     No native temperature-model reproduction, hardware selection or design certification.
+    Optional weather_manifest_name binds prepare_weather provenance to the requested
+    year/SIT/MET, explicitly loads native weather, and compares hourly GHI/DHI/Tamb;
+    changed files stop before writes. Conversion/rounding concerns remain needs_review.
     dry_run=true (default) writes nothing and consumes no simulation execution.
     dry_run=false copies/configures the project, runs Jan 1 through Dec 31 hourly,
     validates native context/complete year, and returns energy, standard PR, IL_Pmax,
@@ -813,7 +871,8 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
     return simulate_template(current, store, template_project=template_project, variant=variant,
         new_project=new_project, pan_name=pan_name, ond_name=ond_name, site_name=site_name,
         met_name=met_name, tilt=tilt, year=year, dry_run=dry_run,
-        capacity=capacity.model_dump(exclude_none=True) if capacity is not None else None)
+        capacity=capacity.model_dump(exclude_none=True) if capacity is not None else None,
+        weather_manifest_name=weather_manifest_name)
 
 
 @categorized_tool()
@@ -947,6 +1006,11 @@ def pvsyst_read_batch_results(summary_name: str,
     if not requested:
         raise ValueError("Select at least one batch result column")
     return parse_batch_results(target, requested)
+
+
+if set(_strict_arguments) != set(STRICT_ARGUMENT_TOOLS):
+    # A renamed entry point must not silently lose its unknown-argument contract.
+    raise RuntimeError(f"Unregistered strict entry points: {sorted(set(STRICT_ARGUMENT_TOOLS) - set(_strict_arguments))}")
 
 
 if __name__ == "__main__":

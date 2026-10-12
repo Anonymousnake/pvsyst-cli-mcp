@@ -1,4 +1,6 @@
 """Bounded template workflow and annual acceptance; no native CLI execution."""
+import csv
+import hashlib
 import json
 import subprocess
 import sys
@@ -13,8 +15,11 @@ from pvsyst_components import ComponentStore
 from pvsyst_results import annual_summary
 from pvsyst_simulation import simulate_template
 from pvsyst_variants import VariantStore
+from pvsyst_weather_flow import prepare_weather
 from test_components import PAN, OND
 from test_grid import grid_text, ARRAY
+from test_weather import native_weather_commands, weather_text
+import pvsyst_simulation
 
 
 class SimulationTests(unittest.TestCase):
@@ -85,6 +90,97 @@ class SimulationTests(unittest.TestCase):
         self.csv(target, project=project)
         pdf.write_bytes(b"%PDF-1.4\nfixture")
         return subprocess.CompletedProcess([], 0, "Warning: fixture sizing warning\nSimulation done in 0min 1sec", "Host ID: fixture-secret")
+
+    def weather_source(self, year=2020):
+        path = self.root / "Meteo" / f"station_{year}.csv"
+        path.write_text(weather_text(year).replace("#Country;Test", "#Country;China"), encoding="utf-8-sig")
+        return path
+
+    def weather_results(self, path, source, *, project, site, met, variant, delta=0.0):
+        """Native-shaped annual CSV whose weather columns come from the prepared import CSV."""
+        with source.open(newline="") as stream:
+            rows = list(csv.reader(stream))[1:]
+        lines = [f"Project;{project}\n", f"Geographical Site;{site}\n", f"Weather data;{met}\n",
+                 f"Simulation variant;{Path(project).stem}.{variant}\n",
+                 "date;E_Grid;EArray;IL_Pmax;GlobInc;PR;GlobHor;DiffHor;T_Amb\n",
+                 ";kW;kW;kW;W/m2;ratio;W/m2;W/m2;degC\n"]
+        for index, (date, ghi, dhi, temp) in enumerate(rows):
+            stamp = datetime.strptime(date, "%Y-%m-%d %H:%M")
+            light = 500 if index % 2 else 0
+            grid = self.nominal * light / 1000 * 0.8
+            observed = float(ghi) + (delta if index == 100 else 0.0)
+            lines.append(f"{stamp.strftime('%d/%m/%y %H:%M')};{grid};{grid + 1 if light else 0};"
+                         f"{1 if light else 0};{light};{0.8 if light else ''};{observed};{dhi};{temp}\n")
+        path.write_text("".join(lines), encoding="utf-8")
+
+    def weather_native(self, *, delta=0.0, failure=None):
+        """Protocol-boundary fake for create-site, convert-meteo and the native annual run."""
+        weather = native_weather_commands(
+            country="China",
+            conversion="The imported weather data are shifted by 25 minutes\nConversion ended successfully...")
+
+        def run(*args):
+            if args[0] != "run-simulation":
+                return weather(*args)
+            if failure is not None:
+                raise failure
+
+            def argument(flag):
+                return next(value[len(flag) + 2:] for value in args if value.startswith("-" + flag + ":"))
+
+            self.assertIn("-sd:2020.01.01", args)
+            self.assertIn("-ed:2020.12.31", args)
+            sfi = Path(argument("isf")).read_text()
+            self.assertIn("viGlobHor,viDiffHor,viT_Amb", sfi)
+            met = Path(argument("imf"))
+            self.weather_results(Path(argument("ocf")), met.parent / (met.stem + "_import.csv"),
+                                 project=Path(argument("p")).name, site=Path(argument("s")).name,
+                                 met=met.name, variant="VC0", delta=delta)
+            Path(argument("rpf")).write_bytes(b"%PDF-1.4\nfixture")
+            return subprocess.CompletedProcess(
+                [], 0, "Warning: fixture sizing warning\nSimulation done in 0min 1sec", "")
+        return run
+
+    def prepare_station_weather(self, native, year=2020):
+        self.cli._help_cache["convert-meteo"] = "--input-csv-file"
+        source = self.weather_source(year)
+        with patch.object(self.cli, "_run", side_effect=native):
+            prepared = prepare_weather(self.cli, csv_name=source.name, year=year, sit_name="station.SIT",
+                                       met_name="station.MET", country_code="CN",
+                                       time_basis="local_standard_interval_start", dry_run=False)
+        self.assertEqual(prepared["status"], "needs_review", prepared)
+        self.assertTrue(prepared["source_preserved"])
+        return source, prepared
+
+    def test_weather_manifest_field_errors_block_before_any_write(self):
+        """Non-object JSON, a missing conversion record and non-string warnings are field-level blocks."""
+        cases = {
+            "list_weather.json": [1, 2],
+            "text_weather.json": "not an object",
+            "noconversion_weather.json": {"status": "prepared", "year": 1990,
+                                          "time_basis": "local_standard_interval_start", "source_preserved": True},
+            "warnings_weather.json": {"status": "prepared", "year": 1990, "source_preserved": True,
+                                      "time_basis": "local_standard_interval_start",
+                                      "conversion": {"diagnostics": "text", "warnings": [1]}},
+            "diagnostics_weather.json": {"status": "prepared", "year": 1990, "source_preserved": True,
+                                         "time_basis": "local_standard_interval_start",
+                                         "conversion": {"diagnostics": None, "warnings": []}},
+            "year_weather.json": {"status": "prepared", "year": 2019, "source_preserved": True,
+                                  "time_basis": "local_standard_interval_start",
+                                  "conversion": {"diagnostics": "text", "warnings": []}},
+        }
+        for name, data in cases.items():
+            (self.root / "Results" / name).write_text(json.dumps(data), encoding="utf-8")
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        for name in (*cases, "absent_weather.json", "../escape.json"):
+            request = {**self.request, "new_project": "Blocked.PRJ", "weather_manifest_name": name}
+            blocked = simulate_template(self.cli, self.store, **request)
+            self.assertEqual(blocked["status"], "blocked", blocked)
+            self.assertEqual([item["field"] for item in blocked["issues"]], ["weather_manifest_name"], blocked)
+            self.assertTrue(blocked["issues"][0]["message"], blocked)
+            json.dumps(blocked, allow_nan=False)
+            self.assertFalse((self.root / "Projects/Blocked.PRJ").exists())
+            self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
 
     def test_template_preview_execution_failure_and_reverse_recovery(self):
         preview = simulate_template(self.cli, self.store, **self.request)
@@ -219,3 +315,93 @@ class SimulationTests(unittest.TestCase):
         path.write_text(text.replace(";W/m2;ratio", ";unknown;ratio"))
         with self.assertRaises(ValueError):
             annual_summary(path, 1990, self.nominal)
+
+    def test_weather_bound_run_inherits_review_and_compares_hourly_weather(self):
+        """Manifest review state, native weather binding and disclosed hourly comparison thresholds."""
+        native = self.weather_native()
+        source, prepared = self.prepare_station_weather(native)
+        manifest = Path(prepared["artifacts"]["manifest"])
+        # 清空 conversion.warnings 后，needs_review 仍须由清单状态继承
+        data = json.loads(manifest.read_text())
+        self.assertEqual(data["status"], "needs_review")
+        data["conversion"]["warnings"] = []
+        manifest.write_text(json.dumps(data), encoding="utf-8")
+        source_hash = data["source"]["sha256"]
+        request = {**self.request, "year": 2020, "site_name": "station.SIT", "met_name": "station.MET",
+                   "weather_manifest_name": manifest.name}
+        with patch.object(self.cli, "_run", side_effect=native):
+            preview = simulate_template(self.cli, self.store, **{**request, "new_project": "Wx.PRJ"})
+            self.assertEqual(preview["status"], "ready", preview)
+            # 清单 conversion.warnings 已为空，复核状态仍由 status 继承
+            self.assertIn("Weather preparation remains needs_review; original review state is retained",
+                          preview["warnings"])
+            self.assertEqual([line for line in preview["warnings"] if line.startswith("The imported weather")], [])
+            self.assertEqual([asset for asset in preview["inputs"] if asset.startswith("weather_")],
+                             ["weather_manifest", "weather_sit", "weather_met", "weather_mef",
+                              "weather_normalized_csv", "weather_monthly_csv", "weather_source"])
+            self.assertEqual(list((self.root / "Results").glob("Wx_annual_*")), [])
+            result = simulate_template(self.cli, self.store, **{**request, "new_project": "Wx.PRJ"}, dry_run=False)
+            self.assertEqual(result["status"], "needs_review", result)
+            self.assertEqual(result["metrics"]["rows"], 8784)
+            self.assertEqual(result["native_context"]["Weather data"], "station.MET")
+            self.assertEqual(result["native_context"]["Geographical Site"], "station.SIT")
+            self.assertFalse(result["weather_comparison"]["needs_review"])
+            self.assertTrue(result["weather_comparison"]["timestamps_match"])
+            self.assertEqual(result["weather_comparison"]["rows"], 8784)
+            self.assertEqual(result["weather_comparison"]["columns"]["GlobHor"]["max_abs_delta"], 0.0)
+            self.assertEqual(result["weather_comparison"]["columns"]["T_Amb"]["outside_review_threshold"], 0)
+            self.assertEqual(result["weather_comparison"]["review_thresholds"],
+                             {"irradiance_w_m2": 0.1, "temperature_degC": 0.01})
+        # 单小时辐照偏离 0.5 W/m2：差异必须进入复核状态而不是被阈值掩盖
+        with patch.object(self.cli, "_run", side_effect=self.weather_native(delta=0.5)):
+            shifted = simulate_template(
+                self.cli, self.store, **{**request, "new_project": "WxShift.PRJ"}, dry_run=False)
+        self.assertEqual(shifted["status"], "needs_review", shifted)
+        self.assertTrue(shifted["weather_comparison"]["needs_review"])
+        globhor = shifted["weather_comparison"]["columns"]["GlobHor"]
+        self.assertEqual((globhor["max_abs_delta"], globhor["outside_review_threshold"]), (0.5, 1))
+        self.assertEqual(json.loads(Path(shifted["artifacts"]["manifest"]).read_text()), shifted)
+        # 对照只读取来源与结果；来源 CSV 保持字节不变
+        self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), source_hash)
+
+    def test_weather_bound_failure_recovers_in_reverse_and_detects_late_output_change(self):
+        source, prepared = self.prepare_station_weather(self.weather_native())
+        manifest = Path(prepared["artifacts"]["manifest"])
+        request = {**self.request, "year": 2020, "site_name": "station.SIT", "met_name": "station.MET",
+                   "weather_manifest_name": manifest.name}
+        failing = self.weather_native(failure=PVsystError("Native weather-bound failure"))
+        with patch.object(self.cli, "_run", side_effect=failing):
+            failed = simulate_template(self.cli, self.store, **{**request, "new_project": "WxFail.PRJ"}, dry_run=False)
+        self.assertEqual((failed["status"], failed["stage"]), ("failed", "simulation"), failed)
+        self.assertIn("Native weather-bound failure", failed["error"])
+        self.assertTrue(failed["template_preserved"])
+        self.assertTrue(failed["recovery"])
+        self.assertIn("Weather preparation remains needs_review", " ".join(failed["warnings"]))
+        for step in failed["recovery"]:
+            method = self.store.restore if step["tool"] == "pvsyst_restore_variant" else self.store.restore_project_sources
+            method(**step["arguments"])
+        for name, data in self.originals.items():
+            self.assertEqual((self.root / "Projects" / name).read_bytes(), data)
+            self.assertEqual((self.root / "Projects" / name.replace("Template", "WxFail")).read_bytes(), data)
+        self.assertEqual(json.loads(Path(failed["artifacts"]["manifest"]).read_text()), failed)
+        # 年度指标完成之后原生结果 CSV 被外部改动，必须失败而不是被接受
+        real = pvsyst_simulation.fingerprint
+        seen = []
+
+        def racy(path):
+            name = Path(path).name
+            if name.startswith("WxRace_annual_") and name.endswith(".csv"):
+                seen.append(name)
+                if len(seen) > 1:
+                    with Path(path).open("a", encoding="utf-8") as stream:
+                        stream.write("\n")
+            return real(path)
+
+        with patch.object(self.cli, "_run", side_effect=self.weather_native()), \
+                patch.object(pvsyst_simulation, "fingerprint", side_effect=racy):
+            changed = simulate_template(self.cli, self.store, **{**request, "new_project": "WxRace.PRJ"}, dry_run=False)
+        self.assertEqual(changed["status"], "failed", changed)
+        self.assertEqual(changed["metrics"]["rows"], 8784)
+        # 年度指标已算完，改动由结果校验阶段的哈希守卫发现
+        self.assertIn("across result validation stages", changed["error"])
+        self.assertTrue(changed["template_preserved"])
