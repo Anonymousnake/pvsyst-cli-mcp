@@ -590,7 +590,8 @@ class VariantTests(unittest.TestCase):
                 self.store.update_project_parameters("Example.PRJ", before["files"], value)
         with self.assertRaisesRegex(ValueError, "require UTF-8 BOM"):
             self.store.update_project_parameters("Example.PRJ", before["files"], "\u5c4b\u9876")
-        for title, add_bom in (("Revised project", False), ("\u5c4b\u9876", True), ("Old project", True)):
+        for title, add_bom in (("Revised project", False), ("\u5c4b\u9876", True), ("Old project", True),
+                               ("X", False), ("A" * 80, False), ("\u540d" * 26 + "AB", True)):
             preview = self.store.update_project_parameters("Example.PRJ", before["files"], title, True, add_bom)
             self.assertEqual(project.read_bytes(), originals[project.name])
             edited = self.store.update_project_parameters("Example.PRJ", before["files"], title, False, add_bom)
