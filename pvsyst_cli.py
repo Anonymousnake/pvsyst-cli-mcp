@@ -6,6 +6,7 @@ No PVsyst binaries, licenses, or proprietary project data are included.
 from __future__ import annotations
 
 import csv
+import locale
 import math
 import os
 import re
@@ -51,10 +52,22 @@ REPORT_PAGES = frozenset(
 REGIONS = frozenset(
     "africa antarctica australia asia europe north_america south_america pacific".split()
 )
+# Weather operations report shifts, clamped values and validation errors as plain lines.
+WEATHER_WARNING_RE = re.compile(
+    r"\b(warn(?:ing)?s?|caution|shifted|too low|too high|invalid|error)\b", re.I)
 
 
 class PVsystError(RuntimeError):
     """The installed CLI rejected a request or failed to create an artifact."""
+
+    def __init__(self, message: str, diagnostics: str | None = None):
+        """`diagnostics` is the complete redacted stdout+stderr transcript of the
+        failing native command: always a `str` when a weather operation captured it
+        (never truncated, stdout first then stderr, same shape as the `diagnostics`
+        string of that operation's successful details dict), otherwise `None`.
+        """
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 def build_sfi(path: str | os.PathLike, variables: list[str] | str,
@@ -105,6 +118,11 @@ def build_monthly_weather_csv(path: str | os.PathLike, global_h: list[float],
     return target
 
 
+def _weather_warnings(text: str) -> list[str]:
+    """Select the review-worthy lines of an already redacted weather transcript."""
+    return [line.strip() for line in text.splitlines() if WEATHER_WARNING_RE.search(line)]
+
+
 def _serialized(method):
     @wraps(method)
     def call(self, *args, **kwargs):
@@ -146,6 +164,38 @@ class PVsystCLI:
         return "\n".join("[redacted]" if re.search(
             r"(?i)(license key|host id|customer.id|activation key)", line) else line
                          for line in text.splitlines())
+
+    @staticmethod
+    def _captured_text(value: str | bytes | None) -> str:
+        """Normalize one captured stream of a TimeoutExpired.
+
+        `run()` decodes normal results, but the timeout path can still hand back raw
+        bytes (POSIX keeps the undecoded capture), so decode with the same encoding and
+        error handling the CLI itself is read with.
+        """
+        if isinstance(value, bytes):
+            return value.decode(locale.getpreferredencoding(False), errors="replace")
+        return value or ""
+
+    def _weather_command(self, label: str, args: list[str]) -> str:
+        """Run one weather command and return its complete redacted output.
+
+        A timeout or non-zero exit raises PVsystError with that same output attached as
+        `diagnostics`, so the exception message stays short.
+        """
+        try:
+            result = self._run(*args)
+        except subprocess.TimeoutExpired as exc:
+            # subprocess.run fills TimeoutExpired stdout/stderr with the partial capture.
+            captured = (self._captured_text(exc.stdout) + "\n"
+                        + self._captured_text(exc.stderr))
+            raise PVsystError(f"{label} timed out after {self.timeout}s",
+                              diagnostics=self._redact(captured)) from None
+        text = self._redact(self._output(result))
+        if result.returncode != 0:
+            raise PVsystError(f"{label} failed with exit code {result.returncode}",
+                              diagnostics=text)
+        return text
 
     def command_help(self, command: str = "") -> str:
         if command not in self._help_cache:
@@ -418,10 +468,15 @@ class PVsystCLI:
                              if re.search(r"\b(warn(?:ing)?s?|caution)\b", line, re.I)],
                 "diagnostics": self._redact(text)[-12000:]}
 
-    @_serialized
     def convert_meteo(self, input_csv: str | os.PathLike, mef: str | os.PathLike,
                       sit: str | os.PathLike, out_met: str | os.PathLike,
                       timeshift: int = 0, log_level: int | None = None) -> Path:
+        return Path(self.convert_meteo_details(input_csv, mef, sit, out_met, timeshift, log_level)["met"])
+
+    @_serialized
+    def convert_meteo_details(self, input_csv: str | os.PathLike, mef: str | os.PathLike,
+                              sit: str | os.PathLike, out_met: str | os.PathLike,
+                              timeshift: int = 0, log_level: int | None = None) -> dict:
         if not -30 <= timeshift <= 30:
             raise ValueError("MEF timeshift must be between -30 and 30")
         sources = [self._input(path, ext) for path, ext in
@@ -432,19 +487,31 @@ class PVsystCLI:
         level = self._log_level(log_level)
         if level:
             args.append(level)
-        result = self._run(*args)
-        if result.returncode != 0 or not target.is_file():
-            raise PVsystError("Conversion did not produce the expected MET: " +
-                              self._redact(self._output(result))[-3000:])
-        return target
+        text = self._weather_command("Weather conversion", args)
+        if "Conversion ended successfully" not in text or not target.is_file():
+            raise PVsystError("Conversion did not produce the expected MET",
+                              diagnostics=text)
+        return {"met": str(target), "diagnostics": text,
+                "warnings": _weather_warnings(text)}
 
-    @_serialized
     def create_site(self, name: str, latitude: float, longitude: float,
                     weather_csv: str | os.PathLike, out_sit: str | os.PathLike,
                     *, altitude: float | None = None,
                     timezone: float | None = None, country_code: str = "",
                     region: str = "", source: str = "", albedo: float | None = None,
                     log_level: int | None = None) -> Path:
+        return Path(self.create_site_details(
+            name, latitude, longitude, weather_csv, out_sit, altitude=altitude,
+            timezone=timezone, country_code=country_code, region=region,
+            source=source, albedo=albedo, log_level=log_level)["sit"])
+
+    @_serialized
+    def create_site_details(self, name: str, latitude: float, longitude: float,
+                            weather_csv: str | os.PathLike, out_sit: str | os.PathLike,
+                            *, altitude: float | None = None,
+                            timezone: float | None = None, country_code: str = "",
+                            region: str = "", source: str = "", albedo: float | None = None,
+                            log_level: int | None = None) -> dict:
         self._require("create-site", "site-name")
         if not name.strip() or "\n" in name or "\r" in name:
             raise ValueError("Site name must be one nonempty line")
@@ -473,11 +540,10 @@ class PVsystCLI:
         level = self._log_level(log_level)
         if level:
             args.append(level)
-        result = self._run(*args)
-        if result.returncode != 0 or not target.is_file():
-            raise PVsystError("Site creation did not produce a SIT file: " +
-                              self._redact(self._output(result))[-3000:])
-        return target
+        text = self._weather_command("Site creation", args)
+        if not target.is_file():
+            raise PVsystError("Site creation did not produce a SIT file", diagnostics=text)
+        return {"sit": str(target), "diagnostics": text, "warnings": _weather_warnings(text)}
 
 
 def parse_batch_results(path: str | os.PathLike,
