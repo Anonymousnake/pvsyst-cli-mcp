@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 
 from pvsyst_cli import PVsystError, build_sfi
+from pvsyst_components import electrical_inventory
+from pvsyst_sizing import plan_capacity
 from pvsyst_paths import project_path, variant_id, workspace_file
 from pvsyst_pan import validation_fields as pan_validation_fields
 from pvsyst_results import annual_summary, fingerprint
@@ -15,18 +17,21 @@ from pvsyst_results import annual_summary, fingerprint
 
 def simulate_template(cli, store, *, template_project="", variant="", new_project="",
                       pan_name="", ond_name="", site_name="", met_name="",
-                      tilt=None, year=None, dry_run=True):
+                      tilt=None, year=None, dry_run=True, capacity=None):
     # ponytail: one workspace lock; separate workspaces for parallel native runs.
     with store.lock:
         return _simulate_template(cli, store, template_project, variant, new_project,
-                                  pan_name, ond_name, site_name, met_name, tilt, year, dry_run)
+                                  pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity)
 
 
 def _simulate_template(cli, store, template_project, variant, new_project,
-                       pan_name, ond_name, site_name, met_name, tilt, year, dry_run):
+                       pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity):
     request = dict(template_project=template_project, variant=variant, new_project=new_project,
                    pan_name=pan_name, ond_name=ond_name, site_name=site_name, met_name=met_name,
                    tilt=tilt, year=year)
+    if capacity is not None:
+        request["capacity"] = ({k: str(v) if isinstance(v, float) and not math.isfinite(v) else v
+                                for k, v in capacity.items()} if isinstance(capacity, dict) else capacity)
     if isinstance(tilt, float) and not math.isfinite(tilt):
         request["tilt"] = str(tilt)
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
@@ -96,6 +101,7 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             info = store.components._inspect(kind, raw)
             store.components._require_valid(info, complete=True)
             components[kind] = info
+            components[kind]["electrical"] = electrical_inventory(kind, raw.decode("utf-8-sig"))
             if kind == "PAN":
                 components[kind]["physical_fields"] = pan_validation_fields(raw.decode("utf-8-sig"))
             assets[kind] = {"path": str(path), "sha256": info["sha256"], "library": library}
@@ -128,6 +134,14 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             if float(pan["GRef"][0]) != 1000:
                 raise ValueError("Standard annual PR requires PAN GRef=1000 W/m2")
             count = structure["grid_circuit"]["subarrays"][0]["declared_module_count"]
+            if capacity is not None:
+                plan = plan_capacity(store, lines, array_id, pan, components["OND"]["electrical"], capacity)
+                result["capacity_plan"] = plan
+                if plan["status"] != "ready":
+                    result["issues"].extend(plan["issues"])
+                    result["inputs"] = assets
+                    return result
+                count = plan["module_count"]
             nominal = count * float(pan["PNom"][0]) / 1000
             if not math.isfinite(nominal) or nominal <= 0:
                 raise ValueError("Template/module combination has invalid nominal DC power")
@@ -143,7 +157,8 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             issue("simulation", cli._redact(str(exc)))
     result["inputs"] = assets
     result["warnings"].extend([
-        "Template string/inverter counts and azimuth are retained; voltage/current sizing and optimal design are not verified.",
+        ("Template string/inverter counts and azimuth are retained; voltage/current sizing and optimal design are not verified."
+         if capacity is None else "Counts satisfy the supplied design envelope; MPPT topology/mode and azimuth are retained. Envelope accuracy, native model sizing and energy/cost optimality are not certified."),
         "Requested SIT/MET filenames and simulation year are checked in native output; geographic/time-reference compatibility is not certified.",
         "PAN/OND checks cover static fields, not internal model fitting; native results retain a conservative anomaly screen.",
         "Recovery is reverse-order whole-file restoration with fresh-state guards; not a cross-process lock or crash-atomic job.",
@@ -203,6 +218,20 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             "tool": "pvsyst_restore_variant", "arguments": {
                 "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
                 "expected_sha256": edited["sha256"], "confirm": True}})
+        if capacity is not None:
+            stage("capacity")
+            for updates in result["capacity_plan"]["steps"]:
+                edited = store.update_parameters(new_project, variant, edited["sha256"], array_id, orientation_id,
+                                                 subarray_updates=updates)
+                transaction("pvsyst_update_variant_parameters", edited, {
+                    "tool": "pvsyst_restore_variant", "arguments": {
+                        "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
+                        "expected_sha256": edited["sha256"], "confirm": True}} if edited.get("backup_name") else None)
+            actual = store.inspect_parameters(new_project, variant)["subarrays"][0]["values"]
+            planned = result["capacity_plan"]
+            if any(int(actual[key]) != planned[value] for key, value in (
+                    ("NModSerie", "series_modules"), ("NStringCh", "string_count"), ("NInverter", "inverter_count"))):
+                raise ValueError("Configured counts do not match the accepted capacity plan")
         stage("parameters")
         edited = store.update_parameters(new_project, variant, edited["sha256"], array_id, orientation_id,
                                          orientation_updates={"FieldTilt": tilt})
