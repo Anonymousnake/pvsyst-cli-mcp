@@ -371,3 +371,157 @@ generator lifecycle passes, and compile/diff checks pass. Fresh installed-CLI
 inventory/capability/license/project checks also pass. Tool inventory stays 48
 in six categories, including 20 Projects & Variants; no binary/DLL analysis
 was performed.
+
+## Project title GUI save and reload
+
+Follow-up after merged PR #19 (`ef98fa239772fd794ecce07678bab7f973176845`),
+using the isolated GUI 8.1.6 workspace and fresh MCP stdio from branch
+`feat/project-title-roundtrip`. No new tool, parser, dependency or regression
+method was needed: the project title transaction was already implemented and
+native report encoding verified; this closes its previously missing GUI layer.
+
+Fresh MCP created NEW MCP_PROJECT_TITLE61.PRJ with two identical GUI-exported
+VC0/VC1 copies, then applied the Chinese roof-project display title through
+`pvsyst_update_project_parameters`. Inspection returned the requested root name
+and existing UTF-8 BOM; both VCs retained original bytes. The GUI project chooser
+showed the Chinese project-name column while keeping the PRJ filename separate.
+After selecting the actual data row, the project page's project-name edit showed
+the same requested title. The window caption still uses the PRJ filename: this
+is not a request to rename that file or the native application's window caption.
+
+The project toolbar Save opened the project save form with the correct filename
+and Chinese title. Actual Save wrote the existing isolated PRJ. Exiting the
+project to the enabled homepage, then opening the grid project again created a
+new project form with the same Chinese project-name text. Captures
+`title_project_selection_confirmed.png`, `title_loaded.png` and
+`title_reloaded.png` record those distinct stages; the save form alone is not
+reload evidence.
+
+Fresh MCP read the saved PRJ with exact title and UTF-8 BOM. Its bytes differ
+from the MCP-written candidate: GUI normalized root Version from 8.1.0 to 8.1.6,
+omitted the embedded pvSite Version and removed DiscrOrientDiff=6.00. Both VCs
+remain byte-identical. One CLI 8.1.6 run of VC1 pins Wanaluwawa SIT/MET and
+1990.01.01-1990.01.02, producing 48 finite rows. Every exported row equals the
+prior original baseline; EArray/E_Grid/IL_Pmax totals are
+73.4057/72.0554/39.0835 kWh. CSV and PDF contain the exact Chinese project title
+and unchanged First simulation variant name. This is sampled native equivalence,
+not a claim that GUI formatting changes are universally irrelevant.
+
+With the GUI project closed, formal `pvsyst_restore_project_sources` used the
+fresh saved-project inventory and original title transaction's complete backups.
+All PRJ/VC bytes returned to their original snapshots. Original GUI input PRJ/VC
+hashes also remain unchanged. GUI workspace was switched back to the recorded
+original ISS workspace, verified by the success/home captures, and the
+task-started GUI process exited normally.
+
+Local scripts `prepare_project_title61.py`, `gui_title.ps1` and
+`verify_project_title61.py` plus `project-title-prepared61.json` and
+`project-title-roundtrip61.json` retain the transaction, observed GUI rewrite,
+native report, row comparison and exact recovery. Helpers use public Windows
+window/accessibility APIs, not proprietary binary/DLL analysis. Native fixtures,
+license material, screenshots and result files are not committed.
+
+Automation preconditions were checked against live process/control ownership.
+The virtual tree header is non-client area: a first click below its first row
+did not select the project and is not load evidence; confirmed highlight and
+new project filename resolved it. Root/custom Delphi controls did not expose
+keyboard focus, so keyboard attempts were not treated as selection. A toolbar
+misidentification opened a variant-save form, which was cancelled before writes.
+A malformed output-filter command failed after Save; a separate fresh inspection
+verified the actual saved/reopened form, rather than trusting that command.
+
+Scope is this existing BOM-marked template, Chinese title and GUI/CLI 8.1.6.
+Additional encodings/locales/versions, BOM-less GUI titles and variant-name GUI
+round trips remain separate work. Existing 179 regressions and SDK lifecycle
+passed immediately before PR submission; this follow-up changes documentation
+only and does not present those pre-submit runs as new post-GUI tests.
+
+## Project title complete bounded acceptance
+
+The project display-title block is accepted for its existing UTF-8, unique
+root-header Comment, 1..80-byte contract. This follow-up closes the missing
+BOM-less GUI counterexample, marker-only native consumption, boundary names,
+GUI-to-MCP-to-GUI continuation and reverse-order recovery; it does not extend
+the title operation into filename changes or arbitrary encoding conversion.
+See [the complete title guide](project-title.md) for the supported workflow.
+
+Three NEW independently authored PRJ/VC projects share the same source design:
+ASCII80 is BOM-less, RAW contains a BOM-less 80-byte Chinese title, and BOM has
+the identical Chinese PRJ body preceded only by EF BB BF. Each retains two
+unchanged source VCs. The ASCII title includes equals, slash and semicolon;
+the Chinese title has 26 Han characters plus AB, exactly 80 UTF-8 bytes.
+Six 81-byte SDK requests stop before edits. The native CSV preserves complete
+names, including ASCII punctuation; its context line is vendor output, not an
+escaped CSV title transport invented by this adapter.
+
+GUI 8.1.6 chooser and loaded project-name fields preserve ASCII80 and marked
+Chinese80. RAW displays the same cp1252-like reinterpretation independently
+observed in its native CSV. Inspection still reports the correct raw UTF-8
+Chinese text, intentionally not an effective native decoding claim. Public
+EM_GETLIMITTEXT returns 2147483646 for the edit: that is not a proven native
+serialized title limit. The adapter's 80-byte contract is explicit rather
+than described as a GUI hardware/form limit.
+
+The RAW same-name request without opt-in stops. Its explicit add_utf8_bom=true
+preview has changed=true, bom_added=true and an empty text diff; applying adds
+only the marker, matching the independently authored BOM PRJ exactly. Native
+CSV/PDF and a freshly loaded GUI field then display the intended Chinese title.
+
+The GUI next changes the project title to its Chinese GUI-continuation name,
+actually saves the PRJ and closes the project. Fresh MCP inspection confirms
+the saved title/BOM and unchanged VCs. A native run consumes the GUI name;
+reusing the pre-GUI files map stops before writing. A preview/applied MCP
+transaction with the new complete map writes its Chinese MCP-continuation
+name, which another native run consumes and GUI subsequently reloads correctly.
+The project is closed again before recovery. GUI's own cached historical
+simulation-summary warning was already visible in the initial controls; it is
+not presented as a title regression or as fixed by the hourly title experiment.
+
+| Native case | Marker | Expected title |
+|---|---|---|
+| ascii80 | absent | Complete 80-byte ASCII, punctuation retained |
+| raw80 | absent | Captured cp1252-like mojibake, not requested Chinese |
+| bom80 | present | Complete requested 80-byte Chinese title |
+| marker_only | explicitly added | Same requested Chinese title, text diff empty |
+| gui_edit | present | GUI-saved Chinese title |
+| mcp_after_gui | preserved | MCP-continuation Chinese title |
+| raw_restored | absent again | Original observed mojibake and exact original bytes |
+
+Seven actual CLI 8.1.6 executions, each 48 finite hourly samples, match every
+exported row of the independent original baseline. SFI units here are kW;
+with a regular one-hour step, integrated EArray/E_Grid/IL_Pmax energies are
+73.4057/72.0554/39.0835 kWh throughout. PDF wraps a long title and can normalize
+NBSP in text extraction: validation follows the bounded Project/Variant text
+region and checks CSV's exact name separately, rather than requiring one line.
+The first ASCII PDF assertion and then the RAW-label layout assertion failed
+after otherwise successful runs; those completed outputs were retained and
+verified explicitly without consuming duplicate executions. The CLI experiment
+is not the source of the GUI title evidence; public accessibility values and
+stage-specific chooser/page captures independently record each display.
+
+Formal restoration first restores the exact GUI-saved complete file set from
+the MCP title transaction, then the original BOM-less complete set from the
+marker transaction. Both comparisons pass, including exact backup byte checks;
+the final native run restores the original decoding counterexample. Protected
+GUI source PRJ/VC files remain unchanged. Workspace switch success and enabled
+home captures confirm return to the original ISS workspace before normal exit
+of the task-started process. A stale window-handle attempt was stopped by its
+process-ownership check; fresh controls resolved it. A reserved PowerShell HOME
+variable in the lab helper was renamed without changing production behavior.
+The initial black home capture is not workspace-restoration evidence.
+
+Local verify_title62.py stage JSONs (prepare, marker, after_gui, recover) and
+gui_title62.ps1 GUI JSONs/captures retain all seven runs, eight input/conflict
+counterexamples, three GUI control displays, marker-only correction, GUI/MCP
+reload and two exact recovery stages. No proprietary binary/DLL analysis.
+
+Existing source/title transaction coverage now includes the valid 1-byte,
+80-byte ASCII and 80-byte Chinese limits; SDK lifecycle additionally checks
+strict dry_run/add_utf8_bom booleans for project titles. There are still 179
+regression methods and no new test module/dependency/tool. The full suite passes
+in 33.285s and the SDK lifecycle passes. Production title behavior required no
+new parser or workaround; tool documentation now makes GUI-name/window-caption,
+raw inspection, adapter limit and GUI-close/reinspection semantics explicit.
+The feature contract is complete; other historical versions/locales/encodings,
+missing-title defaults, file renaming and variant GUI names remain separate
+features rather than unverified promises under this acceptance.

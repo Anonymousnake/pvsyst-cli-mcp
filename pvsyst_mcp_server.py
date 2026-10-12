@@ -251,6 +251,10 @@ def pvsyst_update_project_parameters(project: str, expected_files: dict[str, str
     stay intact. Full-project snapshots and final file-set guards are reused.
     Restore using restore_project_sources with the returned backups/files map.
     Does not rename IDs, change sources, nested names, physical settings or VC names.
+    This is the GUI project-name field, not its filename-based window caption.
+    Close a loaded GUI project before editing its file; inspect again after GUI saves.
+    The 1..80-byte limit is the verified adapter contract, not a native GUI limit.
+    BOM-less UTF-8 inspection reads raw text, not effective GUI/CLI decoding.
     This is optimistic conflict checking, not cross-process locking/crash atomicity."""
     return variant_call("update_project_parameters", project, expected_files, project_name, dry_run, add_utf8_bom)
 

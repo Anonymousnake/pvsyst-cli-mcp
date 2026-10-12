@@ -288,6 +288,13 @@ async def main():
                         "project": "Copy.PRJ", "expected_files": initial["files"], "project_name": value,
                     }, expect_error=True)
                     assert "valid string" in result.content[0].text
+                for key in ("dry_run", "add_utf8_bom"):
+                    for value in (1, "true"):
+                        result = await call("pvsyst_update_project_parameters", {
+                            "project": "Copy.PRJ", "expected_files": initial["files"],
+                            "project_name": "Preview only", key: value,
+                        }, expect_error=True)
+                        assert "valid boolean" in result.content[0].text
                 archived = await data_call("pvsyst_archive_variant", {
                     "project": "Copy.PRJ", "variant": "VC1", "expected_sha256": initial["files"]["Copy.VC1"],
                     "confirm": True,
