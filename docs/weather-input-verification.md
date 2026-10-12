@@ -58,7 +58,7 @@ not real meteorology or a validated project design.
 `tests/smoke_weather.py` invokes the actual MCP stdio server for complete,
 missing-hour and explicit-UTC cases; it also checks strict integer years,
 workspace filenames and unchanged bytes. The existing component/project MCP
-lifecycle remains compatible with the 46-tool registration.
+lifecycle remains compatible with the 50-tool registration.
 
 The installed official example `METEO_PVsyst_Standard_Geneva_GHI.csv` has
 SHA-256 `e82c982441a2deb7394e2dbe0f02df9a1d63b0e16509a9d90b51c9bc56e8f214`.
@@ -90,5 +90,20 @@ MEF-column/unit mapping, compare a SIT with CSV coordinates/timezone, adjust
 UTC/DST/interval-end labels, fill missing observations, derive TMYs or perform
 clear-sky/horizon quality tests. It does not certify native conversion or a
 full-year PV simulation. Existing `pvsyst_convert_meteo` still requires a
-prepared, verified MEF and SIT. Linking those inputs to project templates and
-native full-year results remains part of the active grid workflow goal.
+prepared, verified MEF and SIT.
+
+`pvsyst_prepare_weather` now builds those SIT/MEF/MET inputs from one inspected
+CSV and keeps its provenance, still without parsing the binary MET. It also
+trims the reader's tolerance: that profile accepts `GHI`, `DHI` and `Tamb`
+only, requires an explicit uppercase ISO alpha-2 country code and
+`local_standard_interval_start`, and stops on UTC, explicit time references,
+nonzero shifts, POA, missing measurements or unmapped columns. See
+[site, weather and year closure](weather-preparation.md) for the conversion
+contract, its preflight/`needs_review` states and the evidence that is still
+missing. A labelled synthetic 2020 leap-calendar fixture there completes a full
+8784-row prepare/simulate cycle, and that path also records an independent
+2022 comparison with zero paired difference across seven variables over 8760
+rows, a native `failed` case recovered to the byte-identical template copy, and
+the offline/smoke regression state; UTC/DST conversion, extra columns and
+native climate certification stay open. Linking those inputs to project templates and native full-year results
+remains part of the active grid workflow goal.

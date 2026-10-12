@@ -7,28 +7,31 @@ import math
 import subprocess
 from pathlib import Path
 
-from pvsyst_cli import PVsystError, build_sfi
+from pvsyst_cli import PVsystError, VAR_GROUPS, build_sfi
 from pvsyst_components import electrical_inventory
 from pvsyst_sizing import plan_capacity
 from pvsyst_paths import project_path, variant_id, workspace_file
 from pvsyst_pan import validation_fields as pan_validation_fields
+from pvsyst_weather_flow import load_weather_manifest, compare_native_weather
 from pvsyst_results import annual_summary, fingerprint
 
 
 def simulate_template(cli, store, *, template_project="", variant="", new_project="",
                       pan_name="", ond_name="", site_name="", met_name="",
-                      tilt=None, year=None, dry_run=True, capacity=None):
+                      tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name=""):
     # ponytail: one workspace lock; separate workspaces for parallel native runs.
     with store.lock:
         return _simulate_template(cli, store, template_project, variant, new_project,
-                                  pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity)
+                                  pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name)
 
 
 def _simulate_template(cli, store, template_project, variant, new_project,
-                       pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity):
+                       pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name):
     request = dict(template_project=template_project, variant=variant, new_project=new_project,
                    pan_name=pan_name, ond_name=ond_name, site_name=site_name, met_name=met_name,
                    tilt=tilt, year=year)
+    if weather_manifest_name:
+        request["weather_manifest_name"] = weather_manifest_name
     if capacity is not None:
         request["capacity"] = ({k: str(v) if isinstance(v, float) and not math.isfinite(v) else v
                                 for k, v in capacity.items()} if isinstance(capacity, dict) else capacity)
@@ -116,6 +119,16 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             assets[field] = {"path": str(path), "sha256": fingerprint(path)}
         except (ValueError, OSError) as exc:
             issue(field, exc)
+    weather_report = None
+    weather_warnings = []
+    if weather_manifest_name:
+        try:
+            weather_assets, weather_report, weather_warnings = load_weather_manifest(
+                cli.workspace, weather_manifest_name, year, site_name, met_name)
+            assets.update(weather_assets)
+            result["warnings"].extend(weather_warnings)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            issue("weather_manifest_name", exc)
     try:
         prefix = f"{Path(new_project).stem}_annual_{year}"
         paths = {"csv": workspace_file(cli.workspace, "Results", prefix + ".csv", ".csv"),
@@ -244,13 +257,19 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             raise ValueError("Configured working variant failed structural validation")
         stage("simulation")
         check_inputs()
-        build_sfi(paths["sfi"], "all_common")
+        variables = list(VAR_GROUPS["all_common"])
+        if weather_report is not None:
+            variables.extend(["viGlobHor", "viDiffHor", "viT_Amb"])
+        build_sfi(paths["sfi"], variables)
+        native_inputs = ({"site": Path(assets["site_name"]["path"]), "met": Path(assets["met_name"]["path"])}
+                         if weather_report is not None else {})
         run = cli.run_simulation(new_project, variant, sfi=paths["sfi"], out_csv=paths["csv"],
                                  report_pdf=paths["pdf"], time_step="hour", start_date=f"{year}.01.01",
-                                 end_date=f"{year}.12.31", report_language="en", log_level=3)
+                                 end_date=f"{year}.12.31", report_language="en", log_level=3, **native_inputs)
         result["run"] = run
         result["warnings"].extend(run.get("warnings", []))
         stage("results")
+        output_snapshot = fingerprint(paths["csv"])
         expected_context = {"Project": new_project, "Geographical Site": site_name, "Weather data": met_name,
                             "Simulation variant": f"{Path(new_project).stem}.{variant}"}
         context = {}
@@ -267,15 +286,23 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             raise ValueError("Native CSV did not consume the requested project/variant/site/weather: " + str(context))
         result["native_context"] = context
         result["metrics"] = annual_summary(paths["csv"], year, nominal)
+        if result["metrics"]["sha256"] != output_snapshot:
+            raise ValueError("Native output changed between context and annual validation")
+        if weather_report is not None:
+            result["weather_comparison"] = compare_native_weather(
+                paths["csv"], Path(assets["weather_source"]["path"]), weather_report)
         with paths["pdf"].open("rb") as stream:
             if stream.read(5) != b"%PDF-":
                 raise ValueError("Native report is not a PDF")
         if store.inspect_project(new_project)["files"] != result["working_files"]:
             raise ValueError("Working files changed during native simulation")
         check_inputs()
+        if fingerprint(paths["csv"]) != output_snapshot:
+            raise ValueError("Native output changed across result validation stages")
         flags = result["metrics"]["diagnostic_flags"]
         result["warnings"].extend(flags)
-        result.update(status="needs_review" if flags else "completed", stage="completed")
+        review = flags or weather_warnings or result.get("weather_comparison", {}).get("needs_review", False)
+        result.update(status="needs_review" if review else "completed", stage="completed")
     except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
         result.update(status="failed", error=cli._redact(str(exc))[-12000:])
     try:
