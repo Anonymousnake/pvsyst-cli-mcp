@@ -42,6 +42,12 @@ async def main():
                     result = await call(name, args)
                     return json.loads(result.content[0].text)
 
+                missing = await data_call("pvsyst_simulate_template", {})
+                assert missing["status"] == "blocked" and len(missing["issues"]) == 9
+                for arguments in ({"year": "1990"}, {"tilt": True}, {"dry_run": 1}):
+                    await call("pvsyst_simulate_template", arguments, expect_error=True)
+                assert not (root / "Results").exists()
+                print("MCP annual template preflight: missing fields, strict types, no writes: OK")
                 creation = {"project": "Example.PRJ", "project_content": "PVObject_=pvProject\nEnd of PVObject pvProject\n", "variants": {"VC0": VARIANT}}
                 competing = await asyncio.gather(*(session.call_tool("pvsyst_create_project", creation) for _ in range(2)))
                 assert sum(not result.is_error for result in competing) == 1

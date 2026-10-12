@@ -413,7 +413,10 @@ class PVsystCLI:
                 "pdf": str(pdf_target) if pdf_target else None,
                 "seconds": int(timing[1]) * 60 + int(timing[2]) if timing else None,
                 "batch_summary": str(summary) if summary else None,
-                "batch_hourly": [str(p) for p in hourly], "batch_runs": runs}
+                "batch_hourly": [str(p) for p in hourly], "batch_runs": runs,
+                "warnings": [line.strip() for line in self._redact(text).splitlines()
+                             if re.search(r"\b(warn(?:ing)?s?|caution)\b", line, re.I)],
+                "diagnostics": self._redact(text)[-12000:]}
 
     @_serialized
     def convert_meteo(self, input_csv: str | os.PathLike, mef: str | os.PathLike,
