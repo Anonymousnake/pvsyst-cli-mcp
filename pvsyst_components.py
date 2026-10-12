@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 
 from pvsyst_paths import project_name, project_path, variant_id
-from pvsyst_component_editor import curve_inventory, replace_curves, replace_value
+from pvsyst_component_editor import curve_inventory, replace_curves, replace_value, objects
 from pvsyst_battery_editor import battery_curve_inventory, replace_battery_curve
 from pvsyst_commercial import commercial_inventory, replace_commercial
 from pvsyst_curve_csv import export_curve_csv, import_curve_csv
@@ -61,6 +61,59 @@ MAX_PROJECT_BYTES = 32_000_000
 
 def inspect_curves(kind: str, text: str) -> dict:
     return battery_curve_inventory(text) if kind == "BTR" else curve_inventory(kind, text)
+
+
+def electrical_inventory(kind: str, text: str) -> dict:
+    """Read declared reference-point parameters in their owning PAN/OND objects."""
+    result = {"fields": {}, "issues": [], "unverified": [],
+              "scope": "Reference-point nameplate/input fields only; not model fitting, temperature sizing or MPPT allocation"}
+    try:
+        blocks = objects(text)
+        root, = [block for block in blocks if not block.path]
+        if kind == "PAN":
+            root, _ = pan_blocks(text)
+            specifications = {"PNom": ("W", root), "GRef": ("W/m2", root), "TRef": ("degC", root),
+                              "Voc": ("V", root), "Vmp": ("V", root), "Imp": ("A", root),
+                              "ISC": ("A", root), "VMaxIEC": ("V", root), "VMaxUL": ("V", root)}
+            for name in ("muVocSpec", "MuISC", "muISC", "muPmpReq"):
+                if name in root.fields:
+                    result["unverified"].append({"field": name, "raw": [v[:256] for _, v in root.fields[name]],
+                        "unit": None, "reason": "Serialized coefficient units/model use require separate verification; no conversion assumed"})
+        else:
+            converter, = [block for block in blocks if block.path == "Converter" and block.object_type == "TConverter"]
+            result["modes"] = {name: converter.fields[name][0][1] if len(converter.fields.get(name, [])) == 1 else None
+                               for name in ("ModeOper", "CompPMax", "CompVMax")}
+            specifications = {"PNomConv": ("kW", converter), "PMaxOUT": ("kW", converter),
+                              "VMppMin": ("V", converter), "VMPPMax": ("V", converter),
+                              "VAbsMax": ("V", converter), "IDCMax": ("A", converter),
+                              "NbInputs": ("count", root), "NbMPPT": ("count", root)}
+        for name, (unit, owner) in specifications.items():
+            aliases = PAN_ALIASES.get(name, (name,)) if kind == "PAN" else (name,)
+            values = [(alias, raw) for alias in aliases for _, raw in owner.fields.get(alias, [])]
+            value, status = None, "missing" if not values else "ambiguous"
+            if len(values) == 1:
+                try:
+                    value = float(values[0][1])
+                    if not math.isfinite(value) or (name != "TRef" and value <= 0) or (unit == "count" and not value.is_integer()):
+                        status = "not_declared" if name == "IDCMax" and value == 0 else "invalid"
+                        value = 0 if status == "not_declared" else None
+                    else:
+                        status = "declared"
+                        if unit == "count":
+                            value = int(value)
+                except ValueError:
+                    status = "invalid"
+            result["fields"][name] = {"value": value, "unit": unit, "status": status,
+                                      "path": owner.path or "root", "source_key": values[0][0] if len(values) == 1 else None}
+            if status != "declared":
+                result["issues"].append(f"{name}: {status}; not a verified design constraint")
+        if kind == "OND":
+            result["unverified"].append({"field": "per_MPPT_limits", "unit": None,
+                "reason": "Converter current and hardware MPPT counts do not establish per-input limits, short-circuit ratings or string allocation"})
+        result["status"] = "readable" if result["fields"] else "unreadable"
+    except ValueError as exc:
+        result.update(status="unreadable", issues=[str(exc)])
+    return result
 
 
 class ComponentStore:
@@ -267,6 +320,8 @@ class ComponentStore:
             if include_curve_csv:
                 result.update(export_curve_csv(kind, result["curves"]))
             result["commercial"] = commercial_inventory(kind, self._text(kind, data)[1])
+            if kind in ("PAN", "OND"):
+                result["electrical"] = electrical_inventory(kind, self._text(kind, data)[1])
             fields = result.pop("fields")
             result["field_count"] = len(fields)
             result["fields_truncated"] = (len(fields) > 80 or any(
