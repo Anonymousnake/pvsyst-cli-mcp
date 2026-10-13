@@ -29,6 +29,10 @@ VAR_GROUPS = {
     "inverter_losses": ("viInvLoss", "viIL_Oper", "viIL_Pmin", "viIL_Vmin",
                         "viIL_Pmax", "viILPmxSH", "viIL_Vmax", "viIL_Imax"),
     "all_common": VERIFIED_VARIABLES,
+    "grid_storage": (*VERIFIED_VARIABLES, "viE_User", "viEUseful", "viE_Miss", "viE_Avail",
+                     "viEBatCh", "viEBatDis", "viEFrGrid", "viSOC_Beg", "viSOC_End",
+                     "viEArrMPP", "viEDirUse", "viCL_Chrg", "viCL_InvB", "viCL_Over",
+                     "viEUnused", "viEBatLss", "viE_Solar", "viSolFrac"),
 }
 SFI_TEMPLATE = """PVObject_=pvSimulFile
   Comment={comment}

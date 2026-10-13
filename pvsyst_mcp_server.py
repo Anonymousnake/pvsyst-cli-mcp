@@ -764,7 +764,11 @@ def pvsyst_project_components(project: str, variant: str) -> dict:
 
 @categorized_tool()
 def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
-    """Create a NEW hourly export definition in workspace/Models."""
+    """Create a NEW hourly export definition in workspace/Models.
+    variables=grid_storage includes common PV outputs plus native load, SOC,
+    battery/grid flows, EUnused and all three converter losses CL_Chrg, CL_InvB,
+    CL_Over. Include CL_Over when reviewing native grid-storage energy balance;
+    this exports PVsyst values, not a separate storage calculation."""
     target = workspace_path("Models", filename, ".sfi")
     names = (VAR_GROUPS[variables] if variables in VAR_GROUPS
              else [part.strip() for part in variables.split(",")])
@@ -1019,7 +1023,7 @@ class BatteryPackDesign(BaseModel):
 
 class GridStorageDesign(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    strategy: Literal["self_consumption"]
+    strategy: Literal["self_consumption", "weak_grid"]
     soc_min: StrictNum
     soc_max: StrictNum
     initial_soc: StrictNum
@@ -1036,7 +1040,8 @@ class GridStorageDesign(BaseModel):
 def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: StrictStr,
                                      new_variant: StrictStr, battery: BatteryPackDesign,
                                      storage: GridStorageDesign, load_manifest_name: StrictStr,
-                                     dry_run: StrictBool = True) -> dict:
+                                     dry_run: StrictBool = True,
+                                     availability: GridAvailabilityProfile | None = None) -> dict:
     """Preview or create a NEW native AC-coupled storage VC from an existing PV-only Grid design.
     Require explicit workspace loose BTR, series/parallel counts, twelve monthly
     battery temperatures, cycle/static initial SOW, complete SOC fractions,
@@ -1045,9 +1050,13 @@ def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: Strict
     record and both current source/normalized CSVs into an explicit MJ snapshot.
     Enable root self-consumption bit19 and existing native Grid/battery system bits;
     retain other flags and PV/component/site/weather/geometry fields. Creates only
-    one new VC, never edits the source or replaces files. Only SelfConsumption /
-    PVAvailable / Immediate is verified; SOCDischSelf is saved but unused as a
-    self-consumption backup reserve. Backend is pvsyst_native_ac_coupled, not hybrid
+    one new VC, never edits the source or replaces files. SelfConsumption and
+    WeakGrid use PVAvailable/Immediate. WeakGrid requires a complete explicit
+    availability CSV declaration matching the prepared load year and standard
+    UTC offset, with at least one outage. Bind native pvUnavail/HourlyVal ratio
+    snapshots; SOCDischSelf preserves reserve with grid available and allows
+    discharge toward SOCDischDecl during outages. It is unused as a backup
+    reserve in SelfConsumption. Backend is pvsyst_native_ac_coupled, not hybrid
     DC battery-port modelling, a new BMS model or a grid-charge tariff controller.
     Creation does not simulate or certify sizing; verify native E_User, SOC and
     energy in the matching year/timezone before treating configuration as consumed.
@@ -1057,7 +1066,8 @@ def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: Strict
     return create_grid_storage_system(store, project=project, source_variant=source_variant,
                                       new_variant=new_variant, battery=battery.model_dump(),
                                       storage=storage.model_dump(), load_manifest_name=load_manifest_name,
-                                      dry_run=dry_run)
+                                      dry_run=dry_run,
+                                      availability=availability.model_dump() if availability else None)
 
 
 class CapacityRequest(BaseModel):
