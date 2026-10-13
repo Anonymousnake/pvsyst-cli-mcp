@@ -64,7 +64,7 @@ UNIT_FORMS = {
     "degc": "degC", "°c": "degC",
     "v": "V",
     "a": "A",
-    "w": "W",
+    "w": "W", "wp": "W",
     "w/m2": "W/m2",
     "kw": "kW",
     "ratio": "ratio",
@@ -271,17 +271,9 @@ def _source_label(source_id, source, page, excerpt):
     return " ".join(parts)[:LABEL_LIMIT]
 
 
-def prepare_sourced_design(module_electrical, inverter_electrical, *, manufacturer_model,
-                           sources, declarations, design=None):
-    """Bind declared excerpts to source text, then build and validate the request.
-
-    Returns ``status`` (ready/needs_review/blocked), ``scope``, the assembled
-    ``electrical_design`` draft, the reused ``envelope`` result and its
-    ``capacity``, ``issues``, ``missing_fields``, ``warnings`` and a
-    ``provenance`` list of citation records.
-    """
-    result = {"status": "blocked", "scope": SCOPE, "electrical_design": None, "capacity": None,
-              "envelope": None, "issues": [], "missing_fields": [], "warnings": [],
+def bind_source_values(*, manufacturer_model, sources, declarations, field_specs=FIELD_SPECS):
+    """Bind numeric excerpts for a caller-owned field allowlist; never infer or fit values."""
+    result = {"status": "blocked", "issues": [], "warnings": [], "values": {},
               "needs_review": False, "provenance": []}
     records = []
     reasons = []
@@ -340,29 +332,13 @@ def prepare_sourced_design(module_electrical, inverter_electrical, *, manufactur
             if usable:
                 clean_sources[source_id] = entry
 
-    # ---- 2. explicit engineering goals (never a hidden envelope or coefficient) ----
-    design = {} if design is None else design
-    if not isinstance(design, dict):
-        _issue(result, "design", "Provide design as an object")
-        design = {}
-    else:
-        _report_unknown_keys(design, set(DESIGN_KEYS), "design", result,
-                             label="A design input may not inject an envelope, coefficient or limit "
-                                   "without a citation")
-    for name in DESIGN_TARGETS:
-        if name in design and not _is_number(design[name]):
-            _issue(result, "design." + name, "Use a finite strict numeric value")
-    if design.get("voltage_standard") is not None and design.get("voltage_standard") not in ("IEC", "UL"):
-        _issue(result, "design.voltage_standard", "Explicitly choose IEC or UL")
-    if design.get("design_basis_extra") is not None and not _is_text(design.get("design_basis_extra")):
-        _issue(result, "design.design_basis_extra", "Use printable text")
-
     # ---- 3. declarations: structure, then citation binding ----
     if not isinstance(declarations, list):
         _issue(result, "declarations", "Provide declarations as a list")
         declarations = []
     elif len(declarations) > MAX_DECLARATIONS:
         _issue(result, "declarations", "Declare at most " + str(MAX_DECLARATIONS) + " records")
+        return result
 
     accepted = {}
     for index, declaration in enumerate(declarations):
@@ -373,14 +349,14 @@ def prepare_sourced_design(module_electrical, inverter_electrical, *, manufactur
         _report_unknown_keys(declaration, set(DECLARATION_KEYS), prefix, result,
                              label="Unknown declaration key")
         field = declaration.get("field")
-        if not isinstance(field, str) or field not in FIELD_SPECS:
-            _issue(result, prefix + ".field", "Use one of the supported dotted numeric design fields")
+        if not isinstance(field, str) or field not in field_specs:
+            _issue(result, prefix + ".field", "Use one of the supported numeric fields for this entry point")
             continue
         value = declaration.get("value")
         if not _is_number(value):
             _issue(result, field, "Use a finite strict numeric value")
             continue
-        allowed_units, target = FIELD_SPECS[field]
+        allowed_units, target = field_specs[field]
         unit = _normalize_unit(declaration.get("unit"))
         if unit not in allowed_units:
             _issue(result, field, "Declare the unit explicitly as " + " or ".join(allowed_units))
@@ -473,13 +449,56 @@ def prepare_sourced_design(module_electrical, inverter_electrical, *, manufactur
             _issue(result, field, "Duplicate declarations for this field ("
                    + ", ".join(entry["label"][:80] for entry in entries) + "); resolve the conflict explicitly")
             del accepted[field]
-    for field in DESIGN_TARGETS:
-        if field in accepted and field in design:
-            _issue(result, field, "The value is declared both as an engineering goal and as a cited declaration; keep one")
-
     result["provenance"] = records
+    result["values"] = accepted
+    assumptions = sorted(field for field, entries in accepted.items()
+                         if entries[0]["source_kind"] == "assumption")
+    if assumptions:
+        reasons.append("Values rely on declared assumptions, not on manufacturer sources: " + ", ".join(assumptions))
+    if uncertain_fields:
+        reasons.append("Source applicability is not established (no applicable model declared) for: "
+                       + ", ".join(sorted(uncertain_fields)))
+    if review_fields:
+        reasons.append("Site-extreme validity is not established by the quote for: "
+                       + ", ".join(sorted(review_fields)))
+    result["needs_review"] = bool(reasons)
+    result["status"] = "blocked" if result["issues"] else "needs_review" if reasons else "ready"
+    if reasons:
+        result["warnings"].append({"field": "review", "message": " | ".join(reasons)})
+    return result
 
-    # ---- 5. assemble the draft request (always returned, even when incomplete) ----
+
+def prepare_sourced_design(module_electrical, inverter_electrical, *, manufacturer_model,
+                           sources, declarations, design=None):
+    """Bind declared excerpts, assemble an engineering draft and reuse the design envelope."""
+    binding = bind_source_values(manufacturer_model=manufacturer_model, sources=sources,
+                                 declarations=declarations)
+    result = {"status": "blocked", "scope": SCOPE, "electrical_design": None, "capacity": None,
+              "envelope": None, "issues": binding["issues"], "missing_fields": [],
+              "warnings": binding["warnings"], "needs_review": binding["needs_review"],
+              "provenance": binding["provenance"]}
+    if not _is_text(manufacturer_model, MAX_IDENTITY_CHARS):
+        return result
+    accepted = binding["values"]
+    design = {} if design is None else design
+    if not isinstance(design, dict):
+        _issue(result, "design", "Provide design as an object")
+        design = {}
+    else:
+        _report_unknown_keys(design, set(DESIGN_KEYS), "design", result,
+                             label="A design input may not inject an envelope, coefficient or limit "
+                                   "without a citation")
+    for name in DESIGN_TARGETS:
+        if name in design and not _is_number(design[name]):
+            _issue(result, "design." + name, "Use a finite strict numeric value")
+        if name in accepted and name in design:
+            _issue(result, name, "The value is declared both as an engineering goal and as a cited declaration; keep one")
+    if design.get("voltage_standard") is not None and design.get("voltage_standard") not in ("IEC", "UL"):
+        _issue(result, "design.voltage_standard", "Explicitly choose IEC or UL")
+    if design.get("design_basis_extra") is not None and not _is_text(design.get("design_basis_extra")):
+        _issue(result, "design.design_basis_extra", "Use printable text")
+
+    # Assemble the draft even when inputs are incomplete; no value is inferred.
     draft = {"manufacturer_model": manufacturer_model}
     if design.get("voltage_standard") is not None:
         draft["voltage_standard"] = design["voltage_standard"]
@@ -532,24 +551,8 @@ def prepare_sourced_design(module_electrical, inverter_electrical, *, manufactur
     result["capacity"] = envelope.get("capacity") if envelope.get("status") == "ready" else None
     result["missing_fields"] = sorted({str(issue["field"]) for issue in envelope["issues"]})
 
-    assumptions = sorted(field for field, entries in accepted.items()
-                         if entries[0]["source_kind"] == "assumption")
-    if assumptions:
-        reasons.append("Values rely on declared assumptions, not on manufacturer sources: " + ", ".join(assumptions))
-    if uncertain_fields:
-        reasons.append("Source applicability is not established (no applicable model declared) for: "
-                       + ", ".join(sorted(uncertain_fields)))
-    if review_fields:
-        reasons.append("Site-extreme validity is not established by the quote for: "
-                       + ", ".join(sorted(review_fields)))
-
     if result["issues"] or envelope.get("status") != "ready":
         result["status"] = "blocked"
-    elif reasons:
-        result["status"] = "needs_review"
     else:
-        result["status"] = "ready"
-    result["needs_review"] = bool(reasons)
-    if reasons:
-        result["warnings"].append({"field": "review", "message": " | ".join(reasons)})
+        result["status"] = "needs_review" if result["needs_review"] else "ready"
     return result

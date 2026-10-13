@@ -55,7 +55,7 @@ Restart the client after editing its MCP configuration. The server requires Pyth
 
 ## MCP tools by workflow
 
-The server's tool set is now 55 entries across six groups, verified in a real MCP session (pwsh 362). The 53 earlier entries keep their published names, arguments and recorded verification history (the Sites & Weather group gained `pvsyst_resolve_location` and `pvsyst_acquire_weather`, the Simulation group gained `pvsyst_simulate_design`); the two newest entries are `pvsyst_review_weather` (Sites & Weather) and `pvsyst_prepare_sourced_design` (Simulation). The source entry has passed SDK acceptance (120 passed / 0 failed, exit 0) plus a real Jinko/Solis case, while the weather-review entry is implemented but still awaiting acceptance because its agent is finishing work. A host that has not reloaded still serves the previous set, so do not assume a running instance is already at 55. Contracts, boundaries and the outstanding weather/source gaps are in [weather engineering review](docs/weather-engineering-review.md). Each MCP description begins with a category label matching the groups below; clients that display a flat tool list can still show these labels without a grouping extension.
+The server exposes 56 tools across six groups. Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The new Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
 
 First CLI initialization is serialized inside the MCP process, so concurrent initial requests share one client and the same workspace `RLock` used by CLI, component and variant operations. This is process-local coordination, not an OS/cross-process lock; SHA checks remain optimistic and external editors still require coordination. See [concurrent initialization verification](docs/grid-capacity-verification.md#single-client-concurrent-initialization).
 
@@ -86,12 +86,13 @@ The core project/variant block has passed a fresh-stdio integrated acceptance ex
 | `pvsyst_restore_variant` | Restore a SHA-guarded variant backup |
 | `pvsyst_archive_project`, `pvsyst_archive_variant`, `pvsyst_restore_project_archive` | Confirmed PRJ/VC archive and recovery |
 
-### Components (13)
+### Components (14)
 
 | Tools | Purpose |
 |---|---|
 | `pvsyst_list_components`, `pvsyst_get_component`, `pvsyst_validate_component` | PAN/OND/BTR/GEN inventory, inspection and static checks |
 | `pvsyst_create_component`, `pvsyst_copy_component`, `pvsyst_clone_component` | Create, import or clone a component |
+| `pvsyst_build_sourced_component` | Preview/create a NEW template-derived PAN/OND with exact numeric/unit citations, inherited model/curve disclosure and a candidate source record; explicit acknowledgement required; always `needs_review`, not a physics fitter |
 | `pvsyst_update_component`, `pvsyst_backup_component`, `pvsyst_restore_component` | Allowlisted edit, byte-identical backup and recovery |
 | `pvsyst_archive_component`, `pvsyst_restore_archived_component` | Archive an unreferenced component and restore it |
 | `pvsyst_compare_components`, `pvsyst_project_components` | File comparison and PRJ/VC reference lookup |
@@ -106,7 +107,7 @@ The core project/variant block has passed a fresh-stdio integrated acceptance ex
 | `pvsyst_prepare_weather` | Convert one verified hourly CSV into new SIT/MET files plus a provenance manifest |
 | `pvsyst_resolve_location` | Read-only place-name lookup: every candidate with its integer `location_id`, coordinates, ISO country code and IANA zone; no candidate is chosen automatically |
 | `pvsyst_acquire_weather` | Plan or download one public Open-Meteo ERA5 year into a new standard hourly CSV plus the raw provider response and a provenance manifest |
-| `pvsyst_review_weather` | Read-only review of one prepared CSV against one native result: provider-to-CSV, CSV-to-native hourly values and labels, and declared `.MET`/`.SIT` header fields. No write, hash, licence or simulation (**SDK acceptance pending; its agent is still working**) |
+| `pvsyst_review_weather` | Read-only review of one prepared CSV against one native result: provider-to-CSV, CSV-to-native hourly values and labels, and declared `.MET`/`.SIT` header fields. No write, hash, licence or simulation (accepted against the corrected legal-time 2024 native run; source-aware review still discloses the temperature approximation and evidence limits) |
 
 ### Simulation (5)
 
