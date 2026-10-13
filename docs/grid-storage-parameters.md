@@ -28,8 +28,9 @@
 正整数串并联电池数量和已启用的电池/储能标志，包含唯一平坦 `pvGridStorage`、`Flags=$00`。
 存在惰性储能字段但未启用的模板被阻塞；不会自动改系统标志或添加不明设备。
 
-只接受 `SelfConsumption/PVAvailable/Immediate` 三元策略组合。
-配置 `strategy=self_consumption` 同步这三项；不把单一枚举值当成完整可运行策略。
+默认保留 `SelfConsumption/PVAvailable/Immediate`；配置 `strategy=self_consumption` 同步这三项。
+已有系统编辑支持 `weak_grid`，但必须显式绑定下文完整 availability；
+不把单一枚举值当成完整可运行策略。
 
 | 输入 | 原生字段 | 单位/含义 |
 |---|---|---|
@@ -136,13 +137,71 @@ D4 使用声明的通用铅酸 12 V/160 Ah、4 串×4 并、固定月温 20 °C�
 PVsyst 原生电池模型处理温度、倍率与寿命。没有用线性容量×SOC 公式冒充其电化学模型。
 年度 CSV/PDF、D1 未消费负荷反例和其他实验产物保留在独立本机 case，未随仓库上传。
 
+## WeakGrid 可用性与备用 SOC
+
+已有储能编辑接口增加可选 `availability`。使用 `updates.strategy=weak_grid` 时必须提供
+完整可用性声明，保留系统/PV/电池/负荷原配置，仅在新 VC 绑定 `pvGridStorage` 内
+所属 `pvUnavail` 对象；仍由 PVsyst 计算，不新增独立储能/调度模型。
+
+```json
+{
+  "project": "example.PRJ",
+  "source_variant": "VC0",
+  "new_variant": "VC1",
+  "updates": {"strategy": "weak_grid", "initial_soc": 0.4, "reserve_soc": 0.5},
+  "availability": {
+    "csv_name": "grid_2024.csv",
+    "year": 2024,
+    "utc_offset_hours": 8,
+    "time_basis": "local_standard_interval_start"
+  },
+  "dry_run": true
+}
+```
+
+CSV 放 UserData，UTF-8、分号分隔，表头 `Date;Grid Available`、单位行 `;ratio`；
+日期为 `YYYY-MM-DD HH:MM` 小时起点。完整 8760/8784 小时，只接受明确 0/1，
+1 为可用、0 为停电，不补缺测、不做 DST/时移、不推断中间值。
+本入口采用严于原生阈值读取的 0/1 输入；原生帮助的 `<=0.5` / `>0.5` 规则不被默默套用。
+源负荷快照年份要一致，根对象自消费位已启用；不因此自动修改原方案时区/天气。
+
+至少有一个停电小时：F6 的全年全可用候选被原生 well-defined 校验拦截；
+F7 在复核时段之外保留一个声明停电日后通过。全可用场景使用 SelfConsumption，
+接口不会偷偷添加一次不存在的停电。每次配置 WeakGrid 都需要当前完整 CSV 重新绑定，
+包括编辑已经存在的 WeakGrid 变体；缺输入时不相信旧缓存。
+
+原生序列化采用 `PVObject_GridUnavail=pvUnavail`、`DefMode=Periods`、
+`HourlyVal=GrdUnav`、Factor/Aver/Hour/Simul，WRFactor=1000；0/1 分别用有符号 base62
+`+0/+G8` 编码为 Day_DDMM 24 小时快照，闰年含 2902。该处理只是软件原格式绑定，
+不是自行计算电池功率或 SOC。源 CSV、原 PRJ/VC 保留，预览零写入，创建只新 VC。
+
+`reserve_soc` 对应 SOCDischSelf：电网可用时保留自用阈值，停电时允许继续向
+SOCDischDecl 硬下限放电；不是发电机电压阈值，也不直接给出固定可用 kWh。
+容量、温度、倍率与实际可用能量仍由原生电池模型计算。
+
+F4 实际原生 48 小时验证第一天停电上网为 0、第二天恢复上网 1174.62 kWh。
+F5/F7 用相同初始 SOC=0.4、SOCDischSelf=0.5 对照：停电时夜间持续放电，SOC 降到
+0.3578；有电网时前八小时电池不放电、SOC 保持 0.4，电网逐时补供 2.5 kW。
+两组均未观察到夜间网充，不能用备用阈值生效冒称网充条件已实现。
+F8 正式通过公开 MCP 预览/创建后完成 2024 原生全年 8784 行：负荷逐点差 0，
+30 个声明停电小时（元旦 24 小时及闰日 6 小时）购电/上网均为 0；
+初 SOC=0.4、全年最低 0.3578、最高 0.95，源 VC/可用性 CSV 保留，PDF 正常生成。
+原生 EUnused、EBatLss、E_Solar、SolFrac 也已实际导出。未供负荷为 0，夜间网充为 0。
+
+**能量复核未闭合项**：F8 使用 AC 平衡式并增加 EUnused 后，8783 小时残差不超过
+0.0097 kW；元旦 11:00 电池在该小时充至上限并产生弃电时残差为 1.5887 kW。
+这不是把全年平衡宣称通过的依据；充电/弃电能量参考侧或小时内分段的实际语义仍在原生取证。
+不改原 CSV、不用自行折算抹除差异、不直接宣布原生模型错误。
+可用性和备用阈值消费已有上述数值证明，年度能量参考点仍明确待复核。
+
+F1 日志级别错误拦在 CLI 适配器，F2 空对象/F3 周期候选仍缺有效剖面，
+这些失败产物保留；它们未计入接口验收通过。
+
 ## 未完成部分
 
-WeakGrid 枚举确实存在，但仅把 Strategy 改为 WeakGrid 的 C1 原生运行被 Checking variant
-以 `The grid Unavailability profile is not well defined` 阻塞。因此暂不开放该策略。
-电网可用性逐时 CSV 的 `factor=1/0` 只证明文件语义，未配置子对象前不代表完整策略。
-备用容量、可用性剖面、电网充电时段/条件、混合 DC 电池端口
-和每端口电压/电流约束是后续独立交付，不用保存 JSON 或解释枚举冒称原生消费。
+原生电网充电时段/条件、混合 DC 电池端口和每端口电压/电流约束仍待取得实际入口；
+不采用软件帮助的效率等效折算作为 DC 端口功能，也不编写近似独立计算替代。
+本版本已验证的是集中 AC 耦合原生架构，未取得的混合入口保留为待办。
 
 效率字段采用官方落盘单位编辑，源电池电化学模型和转换曲线仍由原生处理；
 当前一组原生结果不认证所有温度/倍率/BTR、硬件/BMS、GUI 回存或其他 CLI 版本。
