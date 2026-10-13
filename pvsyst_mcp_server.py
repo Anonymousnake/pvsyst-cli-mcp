@@ -34,6 +34,7 @@ from pvsyst_source_inputs import SCOPE as SOURCED_DESIGN_SCOPE, prepare_sourced_
 from pvsyst_load_profile import prepare_load_profile
 from pvsyst_load_variant import create_load_variant
 from pvsyst_grid_storage import create_grid_storage_variant
+from pvsyst_grid_storage_system import create_grid_storage_system
 from pvsyst_weather import inspect_weather_csv
 from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
@@ -75,7 +76,7 @@ TOOL_GROUPS = {
         "pvsyst_acquire_weather", "pvsyst_review_weather",
     ),
     "Loads & Storage": ("pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
-                        "pvsyst_create_grid_storage_variant"),
+                        "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system"),
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
                    "pvsyst_simulate_design", "pvsyst_prepare_sourced_design"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
@@ -91,7 +92,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                          "pvsyst_simulate_template", "pvsyst_simulate_design",
                          "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
-                          "pvsyst_create_grid_storage_variant")
+                          "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
 
@@ -990,6 +991,59 @@ def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: Stric
     return create_grid_storage_variant(store, project=project, source_variant=source_variant,
                                        new_variant=new_variant,
                                        updates=updates.model_dump(exclude_none=True), dry_run=dry_run)
+
+
+class BatteryPackDesign(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    file_name: StrictStr
+    series_count: StrictInt
+    parallel_count: StrictInt
+    monthly_temperature_c: list[StrictNum]
+    cycle_sow: StrictNum
+    static_sow: StrictNum
+
+
+class GridStorageDesign(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strategy: Literal["self_consumption"]
+    soc_min: StrictNum
+    soc_max: StrictNum
+    initial_soc: StrictNum
+    reserve_soc: StrictNum
+    max_charge_ac_kw: StrictNum
+    max_discharge_ac_kw: StrictNum
+    charger_max_efficiency_pct: StrictNum
+    charger_euro_efficiency_pct: StrictNum
+    battery_inverter_max_efficiency_pct: StrictNum
+    battery_inverter_euro_efficiency_pct: StrictNum
+
+
+@categorized_tool()
+def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: StrictStr,
+                                     new_variant: StrictStr, battery: BatteryPackDesign,
+                                     storage: GridStorageDesign, load_manifest_name: StrictStr,
+                                     dry_run: StrictBool = True) -> dict:
+    """Preview or create a NEW native AC-coupled storage VC from an existing PV-only Grid design.
+    Require explicit workspace loose BTR, series/parallel counts, twelve monthly
+    battery temperatures, cycle/static initial SOW, complete SOC fractions,
+    charger AC-input/battery inverter AC-output kW limits and percent efficiencies.
+    No hardware or climate defaults are inferred. Bind a prepared v1 hourly load
+    record and both current source/normalized CSVs into an explicit MJ snapshot.
+    Enable root self-consumption bit19 and existing native Grid/battery system bits;
+    retain other flags and PV/component/site/weather/geometry fields. Creates only
+    one new VC, never edits the source or replaces files. Only SelfConsumption /
+    PVAvailable / Immediate is verified; SOCDischSelf is saved but unused as a
+    self-consumption backup reserve. Backend is pvsyst_native_ac_coupled, not hybrid
+    DC battery-port modelling, a new BMS model or a grid-charge tariff controller.
+    Creation does not simulate or certify sizing; verify native E_User, SOC and
+    energy in the matching year/timezone before treating configuration as consumed.
+    Non-ASCII new load/component paths add a disclosed BOM to the NEW VC only."""
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_grid_storage_system(store, project=project, source_variant=source_variant,
+                                      new_variant=new_variant, battery=battery.model_dump(),
+                                      storage=storage.model_dump(), load_manifest_name=load_manifest_name,
+                                      dry_run=dry_run)
 
 
 class CapacityRequest(BaseModel):
