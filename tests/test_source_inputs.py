@@ -483,6 +483,22 @@ class SourceInputTests(unittest.TestCase):
         self.assertEqual(coefficients["alpha_isc"]["value"], 0.046)
         self.assertEqual(result["electrical_design"]["mppt_limits"]["max_operating_current_a"]["unit"], "A")
 
+    def test_numeric_excerpts_can_begin_at_the_start_of_the_quote(self):
+        records = coefficient_declarations()
+        records.append(declaration("coefficients.alpha_isc", 0.046, "pct_per_degC", "S5",
+                                   "0.046%/℃", "0.046", "%/℃"))
+        for record in records:
+            if record["field"].startswith("coefficients."):
+                record["excerpt"] = record["excerpt"].split(": ")[-1]
+        result = self.call(declarations=records)
+        self.assertEqual(result["status"], "ready", result["issues"])
+        quoted = [item for item in result["provenance"]
+                  if item["field"].startswith("coefficients.")]
+        self.assertEqual(len(quoted), 3)
+        self.assertTrue(all(item["reference_match"] for item in quoted))
+        self.assertEqual(result["electrical_design"]["coefficients"]["beta_voc"]["value"], -0.25)
+        self.assertEqual(result["electrical_design"]["coefficients"]["alpha_isc"]["value"], 0.046)
+
     def test_source_without_applicable_model_needs_review(self):
         sources = sources_fixture()
         del sources["S3"]["model"]
