@@ -419,7 +419,13 @@ def load_weather_manifest(workspace, name, year, sit_name, met_name):
     if report["valid"] is not True:
         raise ValueError("Prepared source CSV no longer passes full-year inspection")
     check_site(Path(assets["weather_sit"]["path"]), report, data["country_code"])
+    declarations = check_generated_met(
+        Path(assets["weather_met"]["path"]), time_zone=number(report["metadata"]["#Time Zone"]))
+    if not declarations["valid"]:
+        raise ValueError("Prepared MET time basis: " + "; ".join(declarations["issues"])
+                         + "; prepare new SIT/MET files from the original CSV with LegalTime")
     warnings = list(conversion["warnings"])
+    warnings.extend(declarations["unchecked_checks"])
     if data["status"] == "needs_review":
         warnings.append("Weather preparation remains needs_review; original review state is retained")
     return assets, report, warnings
