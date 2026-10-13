@@ -61,6 +61,20 @@ def storage_state(lines, system):
     return state,bounds,values
 
 
+def validate_storage(state):
+    if not state["soc_min"] < state["soc_max"]:
+        raise ValueError("Require soc_min < soc_max")
+    for name in ("initial_soc", "reserve_soc"):
+        if not state["soc_min"] <= state[name] <= state["soc_max"]:
+            raise ValueError(name + " must lie within the declared SOC bounds")
+    for prefix in ("charger", "battery_inverter"):
+        if state[prefix+"_euro_efficiency_pct"] > state[prefix+"_max_efficiency_pct"]:
+            raise ValueError(prefix + " Euro efficiency must not exceed max efficiency")
+    if (state["strategy"] not in STRATEGIES.values() or state["charging_strategy"] != "PVAvailable"
+            or state["discharging_strategy"] != "Immediate"):
+        raise ValueError("Only the checked SelfConsumption/PVAvailable/Immediate triplet is supported; WeakGrid needs separately validated availability input")
+
+
 def create_grid_storage_variant(store, *, project, source_variant, new_variant, updates, dry_run=True):
     """Create a new variant from an existing native storage system with bounded scalar edits."""
     result={"status":"blocked","stage":"preflight","dry_run":dry_run,"issues":[],"warnings":[],
@@ -93,17 +107,7 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
                 index,_=one(fields,key)
                 lines[index]=replace_value(lines[index],value)
             after,_,_=storage_state(lines,system)
-            if not after["soc_min"] < after["soc_max"]:
-                raise ValueError("Require soc_min < soc_max")
-            if not after["soc_min"] <= after["initial_soc"] <= after["soc_max"]:
-                raise ValueError("initial_soc must lie within the declared SOC bounds")
-            if not after["soc_min"] <= after["reserve_soc"] <= after["soc_max"]:
-                raise ValueError("reserve_soc must lie within the declared SOC bounds")
-            for prefix in ("charger", "battery_inverter"):
-                if after[prefix+"_euro_efficiency_pct"]>after[prefix+"_max_efficiency_pct"]:
-                    raise ValueError(prefix+" Euro efficiency must not exceed max efficiency")
-            if after["strategy"] not in STRATEGIES.values() or after["charging_strategy"]!="PVAvailable" or after["discharging_strategy"]!="Immediate":
-                raise ValueError("Only the checked SelfConsumption/PVAvailable/Immediate triplet is supported; WeakGrid needs separately validated availability input")
+            validate_storage(after)
             candidate_text="".join(lines)
             candidate=(b"\xef\xbb\xbf" if original.startswith(b"\xef\xbb\xbf") else b"")+candidate_text.encode("utf-8")
             store._text(candidate)

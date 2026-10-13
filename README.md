@@ -55,7 +55,7 @@ Restart the client after editing its MCP configuration. The server requires Pyth
 
 ## MCP tools by workflow
 
-The server exposes 59 tools across seven groups. Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The new Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
+The server exposes 60 tools across seven groups. Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The new Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
 
 First CLI initialization is serialized inside the MCP process, so concurrent initial requests share one client and the same workspace `RLock` used by CLI, component and variant operations. This is process-local coordination, not an OS/cross-process lock; SHA checks remain optimistic and external editors still require coordination. See [concurrent initialization verification](docs/grid-capacity-verification.md#single-client-concurrent-initialization).
 
@@ -109,15 +109,16 @@ The core project/variant block has passed a fresh-stdio integrated acceptance ex
 | `pvsyst_acquire_weather` | Plan or download one public Open-Meteo ERA5 year into a new standard hourly CSV plus the raw provider response and a provenance manifest |
 | `pvsyst_review_weather` | Read-only review of one prepared CSV against one native result: provider-to-CSV, CSV-to-native hourly values and labels, and declared `.MET`/`.SIT` header fields. No write, hash, licence or simulation (accepted against the corrected legal-time 2024 native run; source-aware review still discloses the temperature approximation and evidence limits) |
 
-### Loads & Storage (3)
+### Loads & Storage (4)
 
 | Tools | Purpose |
 |---|---|
 | `pvsyst_prepare_load_profile` | Check one complete 8760/8784-hour nonnegative load in UserData with explicit W/kW units, year and fixed standard time; preview or create a NEW ASCII native CSV and v1 import record without filling, resampling or yearly normalization |
 | `pvsyst_create_load_variant` | Bind current raw/normalized loads to a NEW VC with an explicit Energy/MJ signed-base62 hourly snapshot, remove the old owning load cache, disclose encoding precision and preserve the source variant/system/strategy/site |
 | `pvsyst_create_grid_storage_variant` | Preview or create a NEW VC from an existing active native AC-coupled Grid storage template; explicit SOC fractions, charger AC input/battery inverter AC output kW limits and percent efficiency edits; preserve pack/PV/load/site/system flags |
+| `pvsyst_create_grid_storage_system` | Add caller-declared battery hardware and native AC-coupled self-consumption to a PV-only Grid VC; require complete SOC/power/efficiency/temperature/SOW and prepared hourly-load inputs, enable real load consumption and create a NEW variant |
 
-See [storage hourly loads](docs/storage-loads.md) and [native storage parameters](docs/grid-storage-parameters.md). These tools cover load preparation/binding and existing self-consumption storage parameter configuration, not full hybrid DC battery-port construction, new pack sizing or grid-charging schedules. WeakGrid is not opened without a validated availability profile. Merely changing the external CSV path can leave the old load cache in use even when native logs say it was read. Native `E_User` has been exported and compared for all 8784 leap-year hours; later CSV edits require a new binding. Preparation/creation alone are never labelled native consumption certification.
+See [storage hourly loads](docs/storage-loads.md) and [native storage parameters](docs/grid-storage-parameters.md). These tools cover load preparation/binding, existing storage parameter edits and PV-to-native-AC-storage construction, not full hybrid DC battery-port construction, automatic pack sizing or grid-charging schedules. WeakGrid is not opened without a validated availability profile. Merely changing the external CSV path can leave the old load cache in use even when native logs say it was read. Native `E_User` has been exported and compared for all 8784 leap-year hours; later CSV edits require a new binding. Preparation/creation alone are never labelled native consumption certification.
 
 ### Simulation (5)
 
