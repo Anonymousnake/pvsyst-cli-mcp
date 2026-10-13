@@ -18,15 +18,15 @@ from pvsyst_results import annual_summary, fingerprint
 
 def simulate_template(cli, store, *, template_project="", variant="", new_project="",
                       pan_name="", ond_name="", site_name="", met_name="",
-                      tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name=""):
+                      tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None):
     # ponytail: one workspace lock; separate workspaces for parallel native runs.
     with store.lock:
         return _simulate_template(cli, store, template_project, variant, new_project,
-                                  pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name)
+                                  pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses)
 
 
 def _simulate_template(cli, store, template_project, variant, new_project,
-                       pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name):
+                       pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses):
     request = dict(template_project=template_project, variant=variant, new_project=new_project,
                    pan_name=pan_name, ond_name=ond_name, site_name=site_name, met_name=met_name,
                    tilt=tilt, year=year)
@@ -37,6 +37,11 @@ def _simulate_template(cli, store, template_project, variant, new_project,
                                 for k, v in capacity.items()} if isinstance(capacity, dict) else capacity)
     if isinstance(tilt, float) and not math.isfinite(tilt):
         request["tilt"] = str(tilt)
+    if azimuth is not None:
+        request["azimuth"] = azimuth if not isinstance(azimuth, float) or math.isfinite(azimuth) else str(azimuth)
+    if losses is not None:
+        request["losses"] = ({key: str(value) if isinstance(value, float) and not math.isfinite(value) else value
+                              for key, value in losses.items()} if isinstance(losses, dict) else losses)
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
               "request": request, "issues": [], "warnings": [], "transactions": [], "recovery": [],
               "metrics": None, "artifacts": {}, "template_preserved": None}
@@ -54,8 +59,28 @@ def _simulate_template(cli, store, template_project, variant, new_project,
     if tilt is not None and (isinstance(tilt, bool) or not isinstance(tilt, (int, float))
                              or not math.isfinite(tilt) or not 0 <= tilt <= 90):
         issue("tilt", "Use a finite numeric tilt in 0..90 degrees")
+    if azimuth is not None and (isinstance(azimuth, bool) or not isinstance(azimuth, (int, float))
+                                or not math.isfinite(azimuth) or not -180 <= azimuth <= 180):
+        issue("azimuth", "Use finite PVsyst azimuth in -180..180 degrees, zero south, west positive")
+    subarray_losses, main_losses = {}, {}
+    if losses is not None:
+        allowed_losses = {"LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor"}
+        if not isinstance(losses, dict):
+            issue("losses", "Use an explicit supported loss object")
+        else:
+            for key, value in losses.items():
+                if (key not in allowed_losses or isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not math.isfinite(value)):
+                    issue("losses." + key, "Require a supported finite numeric loss parameter")
+                elif key == "UFactor":
+                    main_losses[key] = value
+                else:
+                    subarray_losses[key] = value
     if result["issues"]:
         return result
+    angles = {"FieldTilt": tilt}
+    if azimuth is not None:
+        angles["FieldAzim"] = azimuth
 
     assets = {}
     components = {}
@@ -84,9 +109,18 @@ def _simulate_template(cli, store, template_project, variant, new_project,
         array_id = parameters["subarrays"][0]["id"]
         orientation_id = parameters["orientations"][0]["id"]
         preview = store.update_parameters(template_project, variant, parameters["sha256"],
-                                          array_id, orientation_id, orientation_updates={"FieldTilt": tilt},
+                                          array_id, orientation_id, orientation_updates=angles,
+                                          subarray_updates=subarray_losses or None,
+                                          main_array_updates=main_losses or None,
                                           dry_run=True)
         result["configuration_preview"] = preview
+        result["configuration_summary"] = {
+            "orientation": {**parameters["orientations"][0]["values"], **angles},
+            "requested_losses": losses or {},
+            "template_subarray_fields": {key: value for key, value in parameters["subarrays"][0]["values"].items()
+                                         if key in ("LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI", "PQualityModP", "Flags")},
+            "template_main_array_fields": parameters.get("main_array", {}).get("values", {}),
+            "scope": "Unspecified fields retain template settings and native default modes; no installation/loss fitting"}
         result["template_files"] = original["files"]
         result["template_preserved"] = True
         result["structure"] = structure
@@ -170,8 +204,8 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             issue("simulation", cli._redact(str(exc)))
     result["inputs"] = assets
     result["warnings"].extend([
-        ("Template string/inverter counts and azimuth are retained; voltage/current sizing and optimal design are not verified."
-         if capacity is None else "Counts satisfy the supplied design envelope; MPPT topology/mode and azimuth are retained. Envelope accuracy, native model sizing and energy/cost optimality are not certified."),
+        ("Template string/inverter counts are retained; voltage/current sizing and optimal design are not verified."
+         if capacity is None else "Counts satisfy the supplied design envelope; MPPT topology/mode are retained. Envelope accuracy, native model sizing and energy/cost optimality are not certified."),
         "Requested SIT/MET filenames and simulation year are checked in native output; geographic/time-reference compatibility is not certified.",
         "PAN/OND checks cover static fields, not internal model fitting; native results retain a conservative anomaly screen.",
         "Recovery is reverse-order whole-file restoration with fresh-state guards; not a cross-process lock or crash-atomic job.",
@@ -247,7 +281,9 @@ def _simulate_template(cli, store, template_project, variant, new_project,
                 raise ValueError("Configured counts do not match the accepted capacity plan")
         stage("parameters")
         edited = store.update_parameters(new_project, variant, edited["sha256"], array_id, orientation_id,
-                                         orientation_updates={"FieldTilt": tilt})
+                                         orientation_updates=angles,
+                                          subarray_updates=subarray_losses or None,
+                                          main_array_updates=main_losses or None)
         transaction("pvsyst_update_variant_parameters", edited, {
             "tool": "pvsyst_restore_variant", "arguments": {
                 "project": new_project, "variant": variant, "backup_name": edited["backup_name"],

@@ -4,7 +4,9 @@
 
 `pvsyst_simulate_template` 将既有的项目复制、来源同步、组件引用替换、倾角编辑、原生仿真和结果验收串成一个有持久恢复记录的任务。AI 提供明确输入后，整个流程不操作 GUI，也不生成猜测的空白物理设计。
 
-目前共有 50 个 MCP 工具，仍按六类组织；该入口属于仿真组，天气准备入口属于站点与天气组，既有线级工具保持。生产实现只使用标准库及既有后端，没有新增依赖。已运行的 MCP 服务需重启读取新工具。
+单方案输入闭环由 `pvsyst_simulate_design` 提供：它按一份统一 spec 解析精确组件与合格模板、只接受声明式电气来源、规划整数容量、选择天气来源（既有 SIT/MET、暂存标准 CSV 或 Open-Meteo ERA5），再调用本页这套阶段。天气地名先经 `pvsyst_resolve_location` 取候选、由 AI 显式挑一个 `location_id`，年份天气由 `pvsyst_acquire_weather` 获取。输入规则、状态语义与待验收项见 [单方案输入闭环](single-design-inputs.md)。
+
+当前已发布 53 个 MCP 工具，仍按六类组织：站点与天气组 7 个（新增 `pvsyst_resolve_location`、`pvsyst_acquire_weather`），仿真组 4 个（新增 `pvsyst_simulate_design`），其余 50 个工具保持原有名称、参数与已验证记录。另有 2 个已接入但**待 SDK/原生验收**的入口（`pvsyst_review_weather`、`pvsyst_prepare_sourced_design`），目标计数 55；未验收前不当作可用能力。生产实现只使用标准库及既有后端，没有新增第三方依赖（Windows 解析 IANA 时区所需的 `tzdata` 已在 `requirements.txt` 中按平台声明，属于本机 Python 依赖，不是 PVsyst 原生能力变更）。已运行的 MCP 服务需重启读取新工具。
 
 ## 输入与支持范围
 
@@ -117,3 +119,17 @@ recovery 列表按逆序给出现有 pvsyst_restore_variant / pvsyst_restore_pro
 验证脚本和阶段 JSON 位于本地隔离实验目录 gui-roundtrip-7cd385dab330，verify_auto63.py / verify_auto64.py 记录自动运行、独立对照、PDF 指标、失败和恢复。最终代码再次通过 MCP 生成 MCP_AUTO65_FINAL.PRJ 的全年结果，与已完成的独立控制在全部 12 个变量/8760 行上完全一致，PDF 指标及原模板保持检查通过；成功工作配置、报告和恢复清单留存。
 
 本轮五次原生调用：早期异常模型、完整模型自动任务、独立控制及最终代码任务共四次产生全年输出；2020 年日期反例未完成仿真。对 PDF 显示精度的复核没有新增控制运行。最终 181 项离线回归通过（66.071s），真实 SDK 生命周期通过。离线只增加两个代表性测试方法，复用既有 PAN/OND/电路样本；覆盖预检、正式执行、警告脱敏、失败/超时、逆序恢复、异常状态、对象作用域、闰年、时间/单位/有限值和严格输入。既有 SDK 生命周期补缺失字段及新入口类型反例，不为每个阶段新增测试模块。Python 编译和差异空白检查通过，没有分析专有二进制/DLL。
+
+## 单方案入口与 Open-Meteo 获取：已验收与待验收
+
+以下内容与上面 2026-10-12 的模板入口记录相互独立，不修改其结论。
+
+- 离线与 SDK：新增离线测试本轮全部通过（纯设计包络 25、组件发现 10、provider 获取 30、统一流程 25）；真实 SDK 生命周期 67 checks passed。这些是本轮快照，本页不固化总数。
+- native 81 失败保留：原生 SIT 把经度序列化为 4 位小数（`116.39723 → 116.3972`），未改写源数据。
+- native 82：原生序列化精度为 `Lat 39.907567 → 39.9076`、`Long 116.397234 → 116.3972`、`Alt 47.75 → 48`；`check_site` 明示 ±0.0000501 deg / ±0.500001 m，超差反例仍然 `blocked`；这是序列化精度，不是坐标位置完全相等。
+- native 83 已验收（`needs_review`）：`pvsyst_simulate_design(dry_run=False)` 在线获取 ERA5 北京 2024 → 新 SIT/MET → 自动选合格模板与精确 PAN/OND → 21.6 kW 声明包络 → 原生全年 8784 行；E_Grid 36945.2864 kWh、标准 PR 90.610745%、IL_Pmax 73.2493 kWh、GlobInc 1887.6679 kWh/m2。保留复核为 `endpoint_mean` 近似与原生 15 分钟天气偏移提示，因此不是 `completed`。设计值来自明确的 integration fixture 与实验用 `Generic_9kW` OND，不是北京气候设计极值或厂家/工程认证。证据为 `single-design83-evidence.json`，报告为 `Results/MCP_DESIGN83_annual_2024.csv` / `.pdf`；未执行任何 hash 类测试。
+- 空工程 bootstrap：种子工厂与 fallback 已接入离线覆盖，`dry_run` 可纯内存规划、无需用户手工选模板。**native 87 与 88 均已通过**：87 在规范根名 `PVsyst8.1_Data` + 17 根子目录 + `ComposPV` 下 9 个、仅两组件且无 PRJ/SIT/MET 的条件下，`dry_run` 返回 `ready_for_weather`，执行派生官方种子、建立工作工程并获取新 ERA5 天气，2024 年 8784 行原生 `completed`/`needs_review`，E_Grid 36945.2864 kWh、PR 90.610745%（与 83 同值，仅分别观察两份指标，不新增比较或 hash 测试）。88 是最终实证：仅有 PAN/OND、不预建任何目录时，`dry_run` 预检只报缺失、不创建 `Projects`；执行 `workspace_init` 创建 20 个新目录（天气阶段已建立 `Meteo`/`Sites`/`Results`，`ComposPV`/`PVmodules`/`Inverters` 本就存在），**最终 26 个标准目录自动补齐**（不是 init 创建 26 个），同一次执行 8784 行、E_Grid 36945.2864 kWh、PR 90.61074499969226%，26 目录实存、PDF 620743 字节且 `%PDF-` 有效、source 与工作 PRJ 四个文件齐备；首次脚本 `exit 1` 源于把 8784 误改成 8884 的批量替换，属断言 bug 而非产品故障，改后只读原始 CSV/PDF 重放，无原生重跑、无 hash 测试。85 缺结构且根名不符、86 补 26 目录但根名仍不符，均失败并保留 `single-design85-evidence.json` 与全部现场；根名与 26 目录布局必须同时正确，该超集是真实 bootstrap 已证集合而非静态最小链，且根从不重命名。根名与布局只对本机 CLI 8.1.6 已证，其余版本不外推。种子派生保留 `Version=8.1.0/8.1.6` 声明与 UTF-8 BOM；既有 Parent `.BatchParams` 等历史引用保持未改动、单次运行通过，但**不证明**该文件或批参数被加载或消费。离线本轮 29+10+32+22+42=135 项通过（无 skip，含在任何 provider 请求之前执行的嵌套 `ComposPV` 目录链接逃逸与同名文件预检）、真实 SDK 67 passed / 0 failed，本机 syntax、pycompile 与 git diff check 通过。标准种子是**内部 fallback**，工具总数仍是 53，调用者显式给出模板时不会被替换。
+- 天气时区约定：除半小时偏移与年内偏移变化外，**负夏令时（negative DST）约定也阻塞**（`Europe/Dublin` 法律标准 +1 h 而冬季墙钟 0 h），避免 1 小时误标；`Europe/Berlin`、`Australia/Sydney`、`Asia/Shanghai`、`Pacific/Honolulu` 回归正常。
+- 逆向授权与进展：用户已明确授权原生小时数据逆向并已委派指定 route（`met-binary-time-semantics[cline-pass/cline-pass/deepseek-v4.1-flash]`），"不解析 binary"不再是永久限制。88 的 MET 容器已确认是**纯 UTF-8 文本 + base62 签名 token**（`DDMM`/`WRFactor`），不是 binary float block；7 个低辐照 outlier 的值在 MET 内存在而原生导出为 0，差异发生在 simulation/SFI 而非 import。
+- 时间基准限定：83/87/88 的数值只对当时的 `SolarTime` 输入成立；实测发现 MET 内嵌 `HLeg` 会 override SIT 声明，旧闭环按太阳时解释 legal 标签，**逐时数字对齐不等于时间模型正确**，`needs_review` 的 time basis 从未闭合。92 已实证 public MEF `RefTimeS → LegalTime` 后 `HLeg=True`、`timeshift=0`、全年 3×8784 小时 token 无变化，Jan 29 17h 由 0（源 CSV 7）变为 7.0003**93 已完成**：同一 88 源 CSV 以 `mode=csv` 生成新 93 SIT/MET/项目与全年，`LegalTime`、time fields 0、`HLeg=True`、guard 有效、`execution_status=completed`，2024 年 8784 行、`E_Grid` 36930.3633 kWh、PR 90.60707390969796%；7 个旧 outlier 全部恢复（5.0002/6.0002/7.0003 vs 5/6/7），GHI/DHI 最大差 0.002 W/m²、温度 0.0001 °C、超阈 0；15 分钟晴空警告为空系修正 `RefTimeS` 后的自然结果（非 suppress）。`endpoint_mean` 未变真实平均，source-aware review 仍为 `needs_review`。83/87/88 legacy `SolarTime` 结果不作正确 local legal 工程结果。见 [天气工程审核与来源绑定](weather-engineering-review.md)。
+- 另有两个新增入口：`pvsyst_review_weather`（只读三层天气审查，不写/不哈希/不跑仿真；**验收 pending**，合同验收待 native 88 replay 实际结果）与 `pvsyst_prepare_sourced_design`（源文本 + 数值/单位 token + 引文装配 `electrical_design` 草案；**已 SDK 验收**，120 passed / 0 failed）；见 [天气工程审核与来源绑定](weather-engineering-review.md)。

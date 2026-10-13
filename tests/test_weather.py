@@ -67,9 +67,19 @@ def native_weather_commands(site="Test site", country="China", conversion="Conve
                 "Latitude=30\nLongitude=110\nAltitude=100\nTimeZone=8\nHLeg=True\n"
                 + "\n".join(monthly) + "\nEnd of PVObject pvSite\n", encoding="utf-8-sig")
             return subprocess.CompletedProcess([], 0, "Site created", "")
-        Path(argument("omf")).write_bytes(b"opaque native MET fixture")
+        Path(argument("omf")).write_bytes(FAKE_MET_HEAD)
         return subprocess.CompletedProcess([], 0, conversion, "")
     return run
+
+
+# A generated .MET starts with its ASCII owning fields; the prepare guard reads only these,
+# so the fake native runner must return this shape rather than an opaque placeholder.
+FAKE_MET_HEAD = (
+    "PVObject_=pvMeteo\r\n  Version=8.1.6\r\n  Flags=$0143\r\n  IsSourceUt=False\r\n"
+    "  HourShift=0\r\n  TimeShift=0\r\n  TimeShiftTotalMin=0\r\n  PasAccum=60\r\n"
+    "  VarMeteoStepDuration=60\r\n  PVObject_SiteMet=pvSite\r\n    TimeZone=8.0\r\n"
+    "    HLeg=True\r\n  End of PVObject pvSite\r\n  End of PVObject pvMeteo\r\n"
+).encode("utf-8")
 
 
 class WeatherTests(unittest.TestCase):
@@ -244,7 +254,7 @@ class WeatherTests(unittest.TestCase):
                 return subprocess.CompletedProcess([], 0, 'Site created', '')
             self.assertEqual(args[0], 'convert-meteo')
             self.assertEqual(arg('imt'), '0')
-            Path(arg('omf')).write_bytes(b'opaque native MET fixture')
+            Path(arg('omf')).write_bytes(FAKE_MET_HEAD)
             return subprocess.CompletedProcess([], 0, 'The imported weather data are shifted by 25 minutes\nConversion ended successfully...', '')
         with patch.object(server, '_cli', cli):
             preview = server.pvsyst_prepare_weather(**request)

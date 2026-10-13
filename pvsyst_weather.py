@@ -45,8 +45,8 @@ def read_bytes(path):
     return data
 
 
-def inspect_weather_csv(path: Path, expected_year: int | None = None):
-    """Inspect one raw hourly year; never fill gaps, relabel time or alter units."""
+def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
+    """Shared core behind the fingerprinted and the value-only public entry points."""
     if expected_year is not None and (type(expected_year) is not int or not 1 <= expected_year <= 9998):
         raise ValueError("expected_year must be an integer in 1..9998")
     data = read_bytes(path)
@@ -271,7 +271,10 @@ def inspect_weather_csv(path: Path, expected_year: int | None = None):
         months.append(monthly)
     if read_bytes(path) != data:
         raise ValueError("Weather CSV changed during inspection; retry with a stable file")
-    return {"filename": path.name, "sha256": hashlib.sha256(data).hexdigest(),
+    result = {"filename": path.name}
+    if fingerprint_result:
+        result["sha256"] = hashlib.sha256(data).hexdigest()
+    result.update({
             "format": "pvsyst_standard_hourly", "delimiter": separator, "metadata": metadata,
             "units": unit_map, "ignored_columns": [name for name in headers if name not in numeric_columns | DATE_COLUMNS],
             "valid": False if issue_count else None if unchecked else True,
@@ -284,4 +287,21 @@ def inspect_weather_csv(path: Path, expected_year: int | None = None):
             "duplicate_timestamps": duplicates, "nonincreasing_timestamps": out_of_order,
             "invalid_dates": invalid_dates, "nonzero_minute_records": off_grid, "months": months,
             "scope": "Raw standard CSV, explicit units and one full hourly year. No gap filling, time shifting, "
-                     "MET parsing, MEF/SIT matching, clear-sky quality check or native conversion certification."}
+                     "MET parsing, MEF/SIT matching, clear-sky quality check or native conversion certification."})
+    return result
+
+
+def inspect_weather_csv(path: Path, expected_year: int | None = None):
+    """Inspect one raw hourly year and disclose its SHA-256; never fill gaps, relabel time or alter units."""
+    return _inspect_weather(path, expected_year, fingerprint_result=True)
+
+
+def inspect_weather_values(path: Path, expected_year: int | None = None):
+    """Value-only twin of the public inspector: identical checks and key order, no hash.
+
+    No SHA-256 is computed and no ``sha256`` key is returned, so callers that must not
+    fingerprint the file still get the same coverage, unit and monthly-value report.
+    The before/after byte comparison that detects a file changed mid-read is retained;
+    it compares the raw bytes and is not a hash.
+    """
+    return _inspect_weather(path, expected_year, fingerprint_result=False)
