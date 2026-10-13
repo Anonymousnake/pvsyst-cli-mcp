@@ -33,6 +33,7 @@ from pvsyst_simulation import simulate_template
 from pvsyst_source_inputs import SCOPE as SOURCED_DESIGN_SCOPE, prepare_sourced_design
 from pvsyst_load_profile import prepare_load_profile
 from pvsyst_load_variant import create_load_variant
+from pvsyst_grid_storage import create_grid_storage_variant
 from pvsyst_weather import inspect_weather_csv
 from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
@@ -73,7 +74,8 @@ TOOL_GROUPS = {
         "pvsyst_inspect_weather_csv", "pvsyst_prepare_weather", "pvsyst_resolve_location",
         "pvsyst_acquire_weather", "pvsyst_review_weather",
     ),
-    "Loads & Storage": ("pvsyst_prepare_load_profile", "pvsyst_create_load_variant"),
+    "Loads & Storage": ("pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
+                        "pvsyst_create_grid_storage_variant"),
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
                    "pvsyst_simulate_design", "pvsyst_prepare_sourced_design"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
@@ -88,7 +90,8 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                          "pvsyst_acquire_weather", "pvsyst_review_weather",
                          "pvsyst_simulate_template", "pvsyst_simulate_design",
                          "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component",
-                          "pvsyst_prepare_load_profile", "pvsyst_create_load_variant")
+                          "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
+                          "pvsyst_create_grid_storage_variant")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
 
@@ -943,6 +946,50 @@ def pvsyst_create_load_variant(project: StrictStr, source_variant: StrictStr, ne
     return create_load_variant(store, project=project, source_variant=source_variant,
                                new_variant=new_variant, load_manifest_name=load_manifest_name,
                                dry_run=dry_run)
+
+
+class GridStorageUpdates(BaseModel):
+    """Native existing AC-coupled storage scalars; unknown fields stop at the boundary."""
+    model_config = ConfigDict(extra="forbid")
+    strategy: Literal["self_consumption"] | None = None
+    soc_min: StrictNum | None = None
+    soc_max: StrictNum | None = None
+    initial_soc: StrictNum | None = None
+    reserve_soc: StrictNum | None = None
+    max_charge_ac_kw: StrictNum | None = None
+    max_discharge_ac_kw: StrictNum | None = None
+    charger_max_efficiency_pct: StrictNum | None = None
+    charger_euro_efficiency_pct: StrictNum | None = None
+    battery_inverter_max_efficiency_pct: StrictNum | None = None
+    battery_inverter_euro_efficiency_pct: StrictNum | None = None
+
+
+@categorized_tool()
+def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: StrictStr,
+                                       new_variant: StrictStr, updates: GridStorageUpdates,
+                                       dry_run: StrictBool = True) -> dict:
+    """Preview or create a NEW VC from an existing native AC-coupled Grid storage template.
+    Supported variant declarations are 8.1.0/8.1.6 with one complete flat
+    pvGridStorage, Grid pvSystem, declared active storage/battery bits, an existing
+    BTR reference and positive pack counts.
+    SOC fields are fractions 0..1; require min < max, initial and reserve inside
+    those bounds. PMaxCharge limits the charger's AC input in kW, PMaxDisch the
+    battery inverter's AC output; neither is a hybrid DC-port rating. Explicit
+    max/Euro efficiencies are percent, with Euro <= max. Only the verified
+    SelfConsumption/PVAvailable/Immediate triplet is accepted. WeakGrid requires
+    a separately validated availability profile and is not guessed from an enum.
+    reserve_soc is the saved SOCDischSelf value, unused as a backup reserve in
+    SelfConsumption; it is not a standalone generator voltage threshold.
+    Preview writes nothing. Execution creates a NEW VC, retains source PRJ/VC,
+    battery filename/counts, PV/load/site/temperature/SOW/topology and system flags.
+    This does not construct hybrid ports, add battery hardware, schedule grid
+    charging, infer efficiencies or certify physical sizing. Verify native SOC
+    and energy flows before treating saved fields as consumed."""
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_grid_storage_variant(store, project=project, source_variant=source_variant,
+                                       new_variant=new_variant,
+                                       updates=updates.model_dump(exclude_none=True), dry_run=dry_run)
 
 
 class CapacityRequest(BaseModel):
