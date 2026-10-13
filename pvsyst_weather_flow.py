@@ -31,7 +31,7 @@ MEF_TEMPLATE = """PVObject_=pvMeteoFormat
   UsesDST=False
   DateHEte=01/01/24
   DateHHiver=01/01/24
-  RefTimeS=SolarTime
+  RefTimeS=LegalTime
   TypeRE=1
   InclSolMF=0.0
   AzimSolMF=0.0
@@ -71,6 +71,146 @@ End of PVObject pvMeteoFormat
 """
 
 
+MET_HEADER_LIMIT = 256 * 1024
+
+
+def read_object_prefix(path, limit=MET_HEADER_LIMIT):
+    """Parse the bounded leading text of a PVsyst object file into named owning-field segments.
+
+    Shared, read-only helper for the prepare guard and the weather review. Only ``Key=Value``
+    declarations are read. Nesting is tracked explicitly, so a key that exists both on the root
+    object and inside ``PVObject_SiteMet`` (``Version``, ``Flags``, ``TimeZone``) never
+    contaminates the other. A measured-value list, an unknown child object, a closing marker or a
+    non-declaration line ends the read; an encoded hour array is never decoded or rewritten.
+
+    An international site name is decoded as UTF-8, else as cp1252, so a legal non-ASCII site
+    label cannot truncate the declaration block and hide the declarations after it.
+    """
+    with path.open("rb") as stream:
+        data = stream.read(limit)
+    segments = {"root": {}, "SiteMet": {}}
+    section, stop = "root", None
+    for index, raw_line in enumerate(data.split(b"\n"), start=1):
+        line = raw_line.rstrip(b"\r")
+        if index == 1 and line.startswith(b"\xef\xbb\xbf"):
+            line = line[3:]
+        try:
+            text = line.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = line.decode("cp1252")
+            except UnicodeDecodeError:
+                stop = {"line": index, "reason": "undecodable data"}
+                break
+        if any(ord(character) < 32 and character != "\t" for character in text):
+            stop = {"line": index, "reason": "binary or control data"}
+            break
+        text = text.strip()
+        if not text:
+            continue
+        if text.startswith("End of PVObject"):
+            if text.split()[-1] == "pvMeteo":
+                stop = {"line": index, "reason": "end of the pvMeteo object"}
+                break
+            section = "root"
+            continue
+        if "=" not in text:
+            stop = {"line": index, "reason": "first non owning-field line: " + text[:60]}
+            break
+        key, _, value = text.partition("=")
+        key, value = key.strip(), value.strip()
+        if key == "PVObject_":
+            continue
+        if key.startswith("PVObject_"):
+            if key.startswith("PVObject_SiteMet"):
+                section = "SiteMet"
+                continue
+            stop = {"line": index, "reason": "unknown nested object, not treated as an owning field: "
+                                             + key[:60]}
+            break
+        if key.startswith("VarMeteo, list of"):
+            stop = {"line": index, "reason": "start of the measured value lists, after the declarations"}
+            break
+        segments[section].setdefault(key, []).append({"line": index, "value": value})
+    return segments, stop
+
+
+def declared_fields(segments, section, wanted):
+    """Owned fields of one section; a nested value is never returned as a root value."""
+    return {key: entries for key, entries in segments.get(section, {}).items() if key in wanted}
+
+
+def first_value(fields, key):
+    entries = fields.get(key)
+    return entries[0]["value"] if entries else None
+
+
+def check_generated_met(path, *, time_zone):
+    """Verify a freshly converted .MET against the requested local legal standard basis.
+
+    Only the bounded owning-field prefix of the generated file is read; the encoded hour array is
+    never parsed or rewritten. Its purpose is to stop a wrong ``RefTimeS`` from being published as
+    a prepared weather basis: the native site snapshot must declare legal time and the requested
+    standard offset. A field that exists but contradicts the request is a hard failure; a field
+    this profile does not require is reported as unchecked rather than invented.
+    """
+    segments, stop = read_object_prefix(path)
+    root = declared_fields(segments, "root", ("IsSourceUt", "HourShift", "TimeShift",
+                                              "TimeShiftTotalMin", "PasAccum",
+                                              "VarMeteoStepDuration"))
+    site = declared_fields(segments, "SiteMet", ("HLeg", "TimeZone"))
+    issues, unchecked = [], []
+    # A duplicated time declaration is ambiguous even when the values agree, so it is refused
+    # before any value is read.
+    for section, fields, keys in (("root", root, ("IsSourceUt", "HourShift", "TimeShift",
+                                                  "TimeShiftTotalMin", "PasAccum",
+                                                  "VarMeteoStepDuration")),
+                                  ("SiteMet", site, ("HLeg", "TimeZone"))):
+        for key in keys:
+            if len(fields.get(key, ())) > 1:
+                issues.append(f"Generated MET declares {section} {key} more than once; an ambiguous "
+                              "time declaration is refused")
+    source_ut = first_value(root, "IsSourceUt")
+    if source_ut is None:
+        unchecked.append("Generated MET declares no root IsSourceUt")
+    elif source_ut != "False":
+        issues.append(f"Generated MET root declares IsSourceUt={source_ut}, but this local standard "
+                      "import profile requires a non-UTC source declaration (False)")
+    legal = first_value(site, "HLeg")
+    if legal is None:
+        issues.append("Generated MET declares no SiteMet HLeg, so the legal-time basis is unverified")
+    elif legal != "True":
+        issues.append(f"Generated MET SiteMet declares HLeg={legal}, not legal time; the requested "
+                      "local standard CSV basis would not be reproduced")
+    offset = first_value(site, "TimeZone")
+    if offset is None:
+        issues.append("Generated MET declares no SiteMet TimeZone")
+    else:
+        try:
+            if float(offset) != float(time_zone):
+                issues.append(f"Generated MET SiteMet TimeZone={offset} differs from the requested "
+                              f"{time_zone}")
+        except (TypeError, ValueError):
+            issues.append(f"Generated MET SiteMet TimeZone={offset!r} is not a number")
+    for key in ("HourShift", "TimeShift", "TimeShiftTotalMin"):
+        value = first_value(root, key)
+        if value is None:
+            unchecked.append(f"Generated MET declares no root {key}")
+        elif value != "0":
+            issues.append(f"Generated MET root declares {key}={value}, not 0")
+    for key in ("PasAccum", "VarMeteoStepDuration"):
+        value = first_value(root, key)
+        if value is None:
+            unchecked.append(f"Generated MET declares no root {key}")
+        elif value not in ("60", "60.0"):
+            issues.append(f"Generated MET root declares {key}={value}, not a 60 minute step")
+    return {"valid": not issues, "issues": issues, "unchecked_checks": unchecked,
+            "header_read_stop": stop, "root": root, "site": site,
+            "scope": "Declared owning fields of the generated MET only, read from a bounded text "
+                     "prefix; the encoded hour array is not parsed, and a declared legal-time basis "
+                     "is not a certification of the simulation time reference."}
+
+
 def normalized_rows(path, report):
     """Reserialize verified date columns and units; never change the interval labels."""
     reader = csv.reader(io.StringIO(read_bytes(path).decode("utf-8-sig")),
@@ -98,10 +238,11 @@ def check_site(path, report, country_code):
         if len(entries) != 1:
             raise ValueError("SIT requires one owning " + key)
         return entries[0][1]
+    precision = {"Latitude": 0.0000501, "Longitude": 0.0000501, "Altitude": 0.500001, "TimeZone": 1e-6}
     for key in ("Latitude", "Longitude", "Altitude", "TimeZone"):
         tag = "#Time Zone" if key == "TimeZone" else "#" + key
-        if not math.isclose(number(value(key)), number(report["metadata"][tag]), rel_tol=0, abs_tol=1e-6):
-            raise ValueError("Native SIT differs from weather CSV " + tag)
+        if not math.isclose(number(value(key)), number(report["metadata"][tag]), rel_tol=0, abs_tol=precision[key]):
+            raise ValueError("Native SIT differs from weather CSV " + tag + " beyond its serialized precision")
     if value("HLeg") != "True" or value("Site") != report["metadata"]["#Site"]:
         raise ValueError("Native SIT name or legal-standard time differs from the requested CSV")
     if report["metadata"]["#Country"].casefold() not in (value("Country").casefold(), country_code.casefold()):
@@ -114,6 +255,7 @@ def check_site(path, report, country_code):
                                     for i, month in enumerate(report["months"])):
             raise ValueError("Native SIT monthly " + key + " differs beyond its printed precision")
     return {"coordinates_timezone_months_match": True, "country": value("Country"),
+            "coordinate_precision_deg": precision["Latitude"], "altitude_precision_m": precision["Altitude"],
             "monthly_precision_kwh_m2": 0.051, "monthly_temperature_precision_degC": 0.0051,
             "scope": "Serialized site fields and observed monthly inputs, not geocoding or climate certification"}
 
@@ -209,8 +351,19 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
                                                               timeshift=0, log_level=3)
             result["warnings"].extend(result["conversion"]["warnings"])
             unchanged()
-            result.update(status="needs_review" if result["conversion"]["warnings"] or result["site_creation"]["warnings"]
-                          else "prepared", stage="prepared")
+            result["stage"] = "met_declarations"
+            save()
+            # A wrong fixed plane time reference must never be published as a prepared basis.
+            result["met_declarations"] = check_generated_met(
+                met, time_zone=number(report["metadata"]["#Time Zone"]))
+            result["warnings"].extend(result["met_declarations"]["unchecked_checks"])
+            if not result["met_declarations"]["valid"]:
+                raise ValueError("Generated MET time basis: "
+                                 + "; ".join(result["met_declarations"]["issues"]))
+            unchanged()
+            review = (result["conversion"]["warnings"] or result["site_creation"]["warnings"]
+                      or result["met_declarations"]["unchecked_checks"])
+            result.update(status="needs_review" if review else "prepared", stage="prepared")
         except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
             result.update(status="failed", error=cli._redact(str(exc)))
             diagnostics = getattr(exc, "diagnostics", None)
@@ -273,28 +426,81 @@ def load_weather_manifest(workspace, name, year, sit_name, met_name):
 
 
 def compare_native_weather(csv_path, source, report):
+    """Compare native hourly weather against the prepared CSV, row by row.
+
+    Rounding/conversion review is unchanged: the original ``max_abs_delta``,
+    ``signed_delta_sum`` and ``outside_review_threshold`` keys and the ``needs_review``
+    decision based on them are retained. MAE, RMSE, mean signed bias, per-month deltas and
+    a signed annual irradiance difference are added alongside them. Nothing here is a
+    physical or clear-sky certification.
+    """
     units = result_units(csv_path, strict=True)
     for key in ("GlobHor", "DiffHor"):
         if units.get(key) not in ("W/m2", "W/m\u00b2"):
             raise ValueError("Native weather comparison requires " + key + " in W/m2")
     if units.get("T_Amb") not in ("degC", "deg.C", "\u00b0C"):
         raise ValueError("Native weather comparison requires T_Amb in degrees C")
-    stats = {key: {"max_abs_delta": 0.0, "signed_delta_sum": 0.0, "outside_review_threshold": 0}
-             for key in ("GlobHor", "DiffHor", "T_Amb")}
-    count = 0
+    names = ("GlobHor", "DiffHor", "T_Amb")
+    stats = {key: {"max_abs_delta": 0.0, "signed_delta_sum": 0.0, "outside_review_threshold": 0,
+                   "samples": 0, "max_abs": 0.0, "abs_sum": 0.0, "squared_sum": 0.0}
+             for key in names}
+    months = {month: {key: {"samples": 0, "signed_delta_sum": 0.0, "max_abs_delta": 0.0}
+                      for key in names} for month in range(1, 13)}
+    count, previous, steps = 0, None, set()
     for native, expected in zip_longest(iter_result_csv(csv_path, strict=True), normalized_rows(source, report)):
         if native is None or expected is None or native[1][0] != expected[0]:
             raise ValueError("Native weather labels/row count differ from the prepared CSV")
         header, row = native
-        for key, reference, threshold in zip(stats, expected[1:], (0.1, 0.1, 0.01)):
+        stamp = expected[0]
+        if previous is not None:
+            steps.add(round((stamp - previous).total_seconds() / 60.0, 6))
+        previous = stamp
+        for key, reference, threshold in zip(names, expected[1:], (0.1, 0.1, 0.01)):
             if header.count(key) != 1 or not math.isfinite(row[header.index(key)]):
                 raise ValueError("Missing/ambiguous/nonfinite native weather: " + key)
             delta = row[header.index(key)] - reference
-            stats[key]["max_abs_delta"] = max(stats[key]["max_abs_delta"], abs(delta))
-            stats[key]["signed_delta_sum"] += delta
-            stats[key]["outside_review_threshold"] += abs(delta) > threshold
+            state = stats[key]
+            state["max_abs_delta"] = max(state["max_abs_delta"], abs(delta))
+            state["signed_delta_sum"] += delta
+            state["outside_review_threshold"] += abs(delta) > threshold
+            state["samples"] += 1
+            state["max_abs"] = state["max_abs_delta"]
+            state["abs_sum"] += abs(delta)
+            state["squared_sum"] += delta * delta
+            month = months[stamp.month][key]
+            month["samples"] += 1
+            month["signed_delta_sum"] += delta
+            month["max_abs_delta"] = max(month["max_abs_delta"], abs(delta))
         count += 1
+    for state in stats.values():
+        samples = state["samples"]
+        state["mean_signed"] = state["signed_delta_sum"] / samples if samples else None
+        state["mae"] = state["abs_sum"] / samples if samples else None
+        state["rmse"] = math.sqrt(state["squared_sum"] / samples) if samples else None
+        del state["abs_sum"], state["squared_sum"]
+    monthly = []
+    for month in range(1, 13):
+        entry = {"month": month, "samples": months[month]["GlobHor"]["samples"]}
+        for key in names:
+            state = months[month][key]
+            entry[key] = {"samples": state["samples"], "signed_delta_sum": state["signed_delta_sum"],
+                          "mean_signed": (state["signed_delta_sum"] / state["samples"]
+                                          if state["samples"] else None),
+                          "max_abs_delta": state["max_abs_delta"]}
+        monthly.append(entry)
+    step_minutes = sorted(steps)
+    # W/m2 deltas integrate to kWh/m2 only across a regular hourly cadence.
+    regular_hourly = step_minutes == [60.0]
     return {"rows": count, "timestamps_match": True, "columns": stats,
             "needs_review": any(state["outside_review_threshold"] for state in stats.values()),
             "review_thresholds": {"irradiance_w_m2": 0.1, "temperature_degC": 0.01},
-            "scope": "Disclosed rounding/conversion review heuristic, not native storage precision or physical certification"}
+            "step_minutes": step_minutes, "regular_hourly_step": regular_hourly,
+            "signed_energy_delta_kwh_m2": {key: (stats[key]["signed_delta_sum"] / 1000.0
+                                                 if regular_hourly else None)
+                                           for key in ("GlobHor", "DiffHor")},
+            "temperature_mean_delta_degC": stats["T_Amb"]["mean_signed"],
+            "monthly": monthly,
+            "reported_delta_measures": ["MAE", "RMSE", "mean_signed", "max_abs"],
+            "scope": "Disclosed rounding/conversion review heuristic, not native storage precision or "
+                     "physical certification. Deltas are native minus prepared CSV; irradiance deltas "
+                     "integrate to kWh/m2 only on a regular hourly step."}

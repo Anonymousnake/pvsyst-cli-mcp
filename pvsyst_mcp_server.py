@@ -10,7 +10,7 @@ import math
 import os
 from collections.abc import Mapping
 from threading import Lock
-from typing import Any
+from typing import Annotated, Any, Literal
 from functools import wraps
 from pathlib import Path
 
@@ -18,17 +18,26 @@ from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictFloat, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr
 
 from pvsyst_cli import (PVsystCLI, PVsystError, VAR_GROUPS, build_monthly_weather_csv,
                         build_sfi, iter_result_csv, parse_batch_results, result_units, summarize_results)
-from pvsyst_components import ComponentStore
+from pvsyst_component_editor import objects
+from pvsyst_components import ComponentStore, electrical_inventory
 from pvsyst_variants import VariantStore
+from pvsyst_design_flow import simulate_design
 from pvsyst_paths import workspace_file
 from pvsyst_results import compare_results
 from pvsyst_simulation import simulate_template
+from pvsyst_source_inputs import SCOPE as SOURCED_DESIGN_SCOPE, prepare_sourced_design
 from pvsyst_weather import inspect_weather_csv
+from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
+from pvsyst_weather_review import review_weather
+
+# Strict numbers reject booleans and numeric strings, so a JSON true or "20" never
+# becomes a design number. Defined before the first tool signature that uses it.
+StrictNum = StrictInt | StrictFloat
 
 mcp = MCPServer("pvsyst-cli")
 _cli: PVsystCLI | None = None
@@ -58,9 +67,11 @@ TOOL_GROUPS = {
     ),
     "Sites & Weather": (
         "pvsyst_build_monthly_weather", "pvsyst_create_site", "pvsyst_convert_meteo",
-        "pvsyst_inspect_weather_csv", "pvsyst_prepare_weather",
+        "pvsyst_inspect_weather_csv", "pvsyst_prepare_weather", "pvsyst_resolve_location",
+        "pvsyst_acquire_weather", "pvsyst_review_weather",
     ),
-    "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template"),
+    "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
+                   "pvsyst_simulate_design", "pvsyst_prepare_sourced_design"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
 }
 TOOL_CATEGORY = {name: category for category, names in TOOL_GROUPS.items() for name in names}
@@ -69,13 +80,16 @@ if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
 
 # MCP 2.2 middleware sees raw arguments before its default extra=ignore model.
 # Limit strict top-level keys to these entry points and derive keys from signatures.
-STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_simulate_template")
+STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
+                         "pvsyst_acquire_weather", "pvsyst_review_weather",
+                         "pvsyst_simulate_template", "pvsyst_simulate_design",
+                         "pvsyst_prepare_sourced_design")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
 
 async def reject_unknown_tool_arguments(ctx: ServerRequestContext[Any, Any],
                                         call_next: CallNext) -> HandlerResult:
-    """Refuse unknown top-level arguments for the two strict entry points only."""
+    """Refuse unknown top-level arguments for the strict entry points only."""
     if ctx.method == "tools/call" and isinstance(ctx.params, Mapping):
         name = ctx.params.get("name")
         arguments = ctx.params.get("arguments")
@@ -786,6 +800,68 @@ def pvsyst_prepare_weather(csv_name: StrictStr = "", year: StrictInt | None = No
 
 
 @categorized_tool()
+def pvsyst_resolve_location(query: StrictStr, country_code: StrictStr = "") -> dict:
+    """Resolve a place name into provider geocoding candidates without selecting one.
+    Read-only geocoding lookup: returns every candidate with its integer location_id,
+    coordinates, ISO country code and IANA zone, and sets selection_required unless
+    exactly one candidate matched. query must be 2..100 characters of a place name;
+    country_code, when given, must be an uppercase ISO alpha-2 code. No candidate is
+    chosen automatically, nothing is inferred from a single hit and no weather is
+    downloaded or written."""
+    return search_locations(query, country_code)
+
+
+@categorized_tool()
+def pvsyst_acquire_weather(csv_name: StrictStr = "", year: StrictInt | None = None,
+                           location_id: StrictInt | None = None,
+                           latitude: StrictNum | None = None, longitude: StrictNum | None = None,
+                           site_name: StrictStr = "", country_code: StrictStr = "",
+                           altitude: StrictNum | None = None, timezone_name: StrictStr = "",
+                           temperature_method: StrictStr = "endpoint_mean",
+                           dry_run: StrictBool = True) -> dict:
+    """Plan or execute one Open-Meteo ERA5 year as a PVsyst standard hourly weather CSV.
+    Give either location_id from pvsyst_resolve_location, or explicit latitude/longitude
+    together with site_name, country_code and timezone_name; mixing both is blocked.
+    year is an integer in 1940..2068 and the requested year must already be fully
+    published by the provider. temperature_method=endpoint_mean is the only verified
+    method: the unweighted mean of the two UTC instants bounding each local standard
+    hour, disclosed as a linear approximation. dry_run=true (default) downloads nothing
+    and writes nothing; an execution run writes the raw provider response, the standard
+    CSV and a provenance manifest, refuses to overwrite existing files and never fills,
+    zeroes or interpolates a null hour. Half-hour IANA offsets and standard offsets that
+    change inside the requested year are blocked instead of being rebinned. Native MET
+    conversion and pyranometer quality are outside this scope."""
+    return download_weather(cli().workspace, csv_name=csv_name, year=year,
+                            location_id=location_id, latitude=latitude, longitude=longitude,
+                            site_name=site_name, country_code=country_code, altitude=altitude,
+                            timezone_name=timezone_name, temperature_method=temperature_method,
+                            dry_run=dry_run)
+
+
+@categorized_tool()
+def pvsyst_review_weather(csv_name: StrictStr, native_csv_name: StrictStr, year: StrictInt,
+                          acquisition_manifest_name: StrictStr = "",
+                          weather_manifest_name: StrictStr = "") -> dict:
+    """Review one prepared weather CSV against one native result, read-only.
+    csv_name names the prepared standard CSV in workspace/Meteo and native_csv_name the
+    exported hourly result in workspace/Results; year is the strict integer year under
+    review. The CSV is re-inspected with the hash-free value checker, so a historical
+    manifest report is never trusted; the optional acquisition_manifest_name and
+    weather_manifest_name add the stored acquisition provenance and the declared time
+    basis. Provider coverage and native hourly values are compared as measured
+    quantities, and native .MET/.SIT declared fields are read from their file headers
+    only. This review does not certify the effective sun-position time shift inside the
+    native run, does not claim that the endpoint_mean ambient temperature is a measured
+    hourly mean, and does not certify climate extremes. Nothing is written, hashed or
+    simulated. status is blocked, needs_review or completed: review items are listed in
+    the result instead of being dropped, and blocked means the evidence could not be
+    read at all."""
+    return review_weather(cli().workspace, csv_name=csv_name, native_csv_name=native_csv_name,
+                          year=year, acquisition_manifest_name=acquisition_manifest_name,
+                          weather_manifest_name=weather_manifest_name)
+
+
+@categorized_tool()
 def pvsyst_build_monthly_weather(filename: str, global_h: list[float],
                                  temperature: list[float],
                                  diffuse_h: list[float] | None = None,
@@ -833,14 +909,29 @@ class CapacityRequest(BaseModel):
     design_basis: StrictStr | None = None
 
 
+class LossRequest(BaseModel):
+    """Optional template loss overrides; only these four parameters are accepted.
+
+    LIDLoss, PMismMPP and ModuleQualityLoss target the subarray, UFactor targets the
+    whole main array. Omitted keys keep their template value and are never fitted.
+    """
+    model_config = ConfigDict(extra="forbid")
+    LIDLoss: StrictNum | None = None
+    PMismMPP: StrictNum | None = None
+    ModuleQualityLoss: StrictNum | None = None
+    UFactor: StrictNum | None = None
+
+
 @categorized_tool()
 def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictStr = "",
                              new_project: StrictStr = "", pan_name: StrictStr = "",
                              ond_name: StrictStr = "", site_name: StrictStr = "",
-                             met_name: StrictStr = "", tilt: StrictInt | StrictFloat | None = None,
+                             met_name: StrictStr = "", tilt: StrictNum | None = None,
+                             azimuth: StrictNum | None = None,
                              year: StrictInt | None = None, dry_run: StrictBool = True,
                              capacity: CapacityRequest | None = None,
-                             weather_manifest_name: StrictStr = "") -> dict:
+                             weather_manifest_name: StrictStr = "",
+                             losses: LossRequest | None = None) -> dict:
     """Preflight or execute one template-to-full-year grid simulation without GUI.
     Supply an existing valid PRJ/VC, loose text PAN/OND, workspace SIT/MET, tilt,
     year and a NEW project filename. Missing inputs return field-specific issues.
@@ -864,15 +955,21 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
     status is blocked/ready/completed/needs_review/failed; inspect it, not just MCP is_error.
     Extreme IL_Pmax versus STC reference energy triggers a disclosed review heuristic,
     not a claim of native physical validation or an automatic model repair.
-    Year is 1969..2068 due to two-digit native CSV dates. Restart host for this tool."""
+    Year is 1969..2068 due to two-digit native CSV dates. Restart host for this tool.
+    azimuth overrides the template plane azimuth in -180..180 degrees (zero south, west
+    positive); losses accepts only LIDLoss, PMismMPP and ModuleQualityLoss on the
+    subarray plus UFactor on the whole main array. Template fields left unspecified keep
+    their saved values, and the returned configuration_summary discloses the requested
+    angles and losses; no loss is fitted, inferred or defaulted."""
     current = cli()
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
     return simulate_template(current, store, template_project=template_project, variant=variant,
         new_project=new_project, pan_name=pan_name, ond_name=ond_name, site_name=site_name,
-        met_name=met_name, tilt=tilt, year=year, dry_run=dry_run,
+        met_name=met_name, tilt=tilt, azimuth=azimuth, year=year, dry_run=dry_run,
         capacity=capacity.model_dump(exclude_none=True) if capacity is not None else None,
-        weather_manifest_name=weather_manifest_name)
+        weather_manifest_name=weather_manifest_name,
+        losses=losses.model_dump(exclude_none=True) if losses is not None else None)
 
 
 @categorized_tool()
@@ -914,6 +1011,319 @@ def pvsyst_run_simulation(project: str, variant: str,
         report_pages=[p.strip() for p in report_pages.split(",")] if report_pages else None,
         recompute_shading=recompute_shading, log_level=log_level,
     )
+
+
+class DeclaredValue(BaseModel):
+    """One design value, optionally with its declared unit and manufacturer source.
+
+    A bare number is also accepted, but module and MPPT current limits without a source
+    are reported as issues by the design backend instead of being assumed.
+    """
+    model_config = ConfigDict(extra="forbid")
+    value: StrictNum | None = None
+    unit: StrictStr | None = None
+    source: StrictStr | None = None
+
+
+class CoefficientDeclaration(BaseModel):
+    """A temperature coefficient that always states its unit and its source.
+
+    The unit of a serialized component coefficient is never assumed, and both fields are
+    therefore required.
+    """
+    model_config = ConfigDict(extra="forbid")
+    value: StrictNum
+    unit: StrictStr
+    source: StrictStr
+
+
+class EquipmentRequest(BaseModel):
+    """The exact loose component identity, or one explicit workspace filename.
+
+    Every field is optional, and an omitted field stays null: the design backend decides
+    whether one exact manufacturer+model pair or a filename was supplied, so an empty
+    string is never mistaken for a filled-in identity.
+    """
+    model_config = ConfigDict(extra="forbid")
+    file_name: StrictStr | None = None
+    manufacturer: StrictStr | None = None
+    model: StrictStr | None = None
+
+
+class WeatherRequest(BaseModel):
+    """Where the simulated weather comes from; no mode is picked for the caller.
+
+    Text fields default to null so a missing SIT/MET/CSV name, country code or place
+    label is reported by the backend as an unsupplied input instead of an empty value.
+    """
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["existing", "csv", "open_meteo"] = "existing"
+    sit_name: StrictStr | None = None
+    met_name: StrictStr | None = None
+    csv_name: StrictStr | None = None
+    country_code: StrictStr | None = None
+    time_basis: StrictStr | None = None
+    location_id: StrictInt | None = None
+    latitude: StrictNum | None = None
+    longitude: StrictNum | None = None
+    altitude: StrictNum | None = None
+    site_label: StrictStr | None = None
+    timezone_name: StrictStr | None = None
+    temperature_method: StrictStr = "endpoint_mean"
+    weather_manifest_name: StrictStr | None = None
+
+
+class TemperatureRequest(BaseModel):
+    """Design temperatures in degC; min_ambient_basis names its source or method."""
+    model_config = ConfigDict(extra="forbid")
+    min_ambient_c: StrictNum | None = None
+    min_ambient_basis: StrictStr | None = None
+    min_module_operating_c: StrictNum | None = None
+    max_module_operating_c: StrictNum | None = None
+    annual_min_ambient_c: StrictNum | None = None
+
+
+class EnvelopeRequest(BaseModel):
+    """Direct manufacturer voltage values, each optionally carrying unit and source."""
+    model_config = ConfigDict(extra="forbid")
+    cold_voc_v: StrictNum | DeclaredValue | None = None
+    cold_vmp_v: StrictNum | DeclaredValue | None = None
+    hot_vmp_v: StrictNum | DeclaredValue | None = None
+
+
+class CoefficientsRequest(BaseModel):
+    """Declared temperature coefficients, each with an explicit unit and source."""
+    model_config = ConfigDict(extra="forbid")
+    beta_voc: CoefficientDeclaration | None = None
+    beta_vmp: CoefficientDeclaration | None = None
+    alpha_isc: CoefficientDeclaration | None = None
+    alpha_imp: CoefficientDeclaration | None = None
+
+
+class CurrentLimitRequest(BaseModel):
+    """Declared manufacturer current limits, as a value or a declaring object."""
+    model_config = ConfigDict(extra="forbid")
+    max_operating_current_a: StrictNum | DeclaredValue | None = None
+    max_short_circuit_current_a: StrictNum | DeclaredValue | None = None
+
+
+class EffectiveIrradianceRequest(BaseModel):
+    """The maximum effective irradiance and rear gain used by a coefficient envelope."""
+    model_config = ConfigDict(extra="forbid")
+    max_irradiance_w_m2: StrictNum | None = None
+    rear_gain_factor: StrictNum | None = None
+    source: StrictStr | None = None
+
+
+class DesignEnvelopeRequest(BaseModel):
+    """The bounded design-envelope inputs; unknown keys are rejected, not ignored.
+
+    Every value is either a strict number or a declared {value, unit, source} object.
+    Omitted fields stay empty and are returned as concrete issues by the backend, so an
+    empty object never becomes a ready design.
+    """
+    model_config = ConfigDict(extra="forbid")
+    manufacturer_model: StrictStr | None = None
+    target_dc_kw: StrictNum | None = None
+    max_dc_ac_ratio: StrictNum | None = None
+    voltage_standard: StrictStr | None = None
+    capacity_tolerance_pct: StrictNum | None = None
+    temperatures: TemperatureRequest | None = None
+    envelope: EnvelopeRequest | None = None
+    coefficients: CoefficientsRequest | None = None
+    module_limits: CurrentLimitRequest | None = None
+    mppt_limits: CurrentLimitRequest | None = None
+    effective_irradiance: EffectiveIrradianceRequest | None = None
+    design_basis_extra: StrictStr | None = None
+
+
+class SingleDesignRequest(BaseModel):
+    """One bounded design request; every nested object rejects unknown keys.
+
+    scope is fixed to fixed_unshaded_grid and is never guessed from other inputs.
+    """
+    model_config = ConfigDict(extra="forbid")
+    new_project: StrictStr = ""
+    year: StrictInt | None = None
+    target_dc_kw: StrictNum | None = None
+    tilt: StrictNum | None = None
+    azimuth: StrictNum | None = None
+    scope: Literal["fixed_unshaded_grid"] = "fixed_unshaded_grid"
+    module: EquipmentRequest = Field(default_factory=EquipmentRequest)
+    inverter: EquipmentRequest = Field(default_factory=EquipmentRequest)
+    template_project: StrictStr | None = None
+    variant: StrictStr | None = None
+    weather: WeatherRequest = Field(default_factory=WeatherRequest)
+    capacity: CapacityRequest | None = None
+    electrical_design: DesignEnvelopeRequest | None = None
+    losses: LossRequest | None = None
+
+
+@categorized_tool()
+def pvsyst_simulate_design(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
+    """Preflight or execute one bounded design flow from declared inputs without the GUI.
+    spec.new_project names the NEW working project and is required. scope is fixed to
+    fixed_unshaded_grid: one subarray, one ordinary fixed plane, a Grid system,
+    PRCorrTemp=False and no active geometry, layout or shading scene. The flow locates
+    exact loose PAN/OND components and an eligible workspace template. If no template
+    or variant is pinned and no candidate is eligible, it can derive a NEW template from the installed 8.1
+    residential seed, preserving its source fields and declaring the target MPPT counts.
+    It builds the linear design envelope from declared inputs, plans integer capacity,
+    configures the working project and, with dry_run=false, runs the full year.
+    The verified 8.1 workspace root must be named PVsyst8.1_Data. Read-only preflight
+    reports missing standard folders and blocks file conflicts or escaping paths;
+    execution fills missing empty folders without renaming the root or replacing files.
+    weather.mode=existing uses the named workspace SIT/MET pair, weather.mode=csv names a
+    staged standard hourly CSV, and weather.mode=open_meteo acquires one public ERA5 year.
+    Dry-run with open_meteo or a not-yet-created standard template returns
+    ready_for_weather with execution_preflight_complete=false: this is an input/template
+    plan, not a runnable native design. electrical_design requires declared coefficients
+    with units and sources, and source-declared current limits. Voltage/current field
+    names imply V/A when units are omitted; explicitly contradictory units are blocked.
+    Missing required data returns concrete issues; an empty object never becomes ready.
+    losses overrides LIDLoss, PMismMPP and ModuleQualityLoss on the subarray and UFactor
+    on the main array. Every field of spec that is not supplied keeps the template value;
+    no loss, coefficient, temperature or azimuth is fitted, inferred or defaulted, and no
+    design is certified here. status is blocked/ready/ready_for_weather/completed/
+    needs_review/failed; inspect it, not just MCP is_error. Year is 1969..2068. The
+    returned issues, warnings, transactions and recovery steps state exactly what was and
+    was not changed."""
+    current = cli()
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return simulate_design(current, store, spec=spec.model_dump(exclude_none=True), dry_run=dry_run)
+
+
+class SourceTextRequest(BaseModel):
+    """One caller-declared source; its text is checked here and never returned."""
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["manufacturer", "site", "assumption"]
+    title: Annotated[StrictStr, Field(min_length=1)]
+    locator: Annotated[StrictStr, Field(min_length=1)]
+    text: Annotated[StrictStr, Field(min_length=1)]
+    model: StrictStr | None = None
+
+
+class SourceDeclarationRequest(BaseModel):
+    """One claimed value with the exact citation text and tokens it must agree with."""
+    model_config = ConfigDict(extra="forbid")
+    field: StrictStr
+    value: StrictNum
+    unit: StrictStr
+    source_id: StrictStr
+    excerpt: StrictStr
+    source_value_text: StrictStr
+    source_unit_text: StrictStr
+    page: StrictInt | None = None
+
+
+class SourcedDesignGoals(BaseModel):
+    """Explicit engineering goals only; no envelope, coefficient or limit is injected here."""
+    model_config = ConfigDict(extra="forbid")
+    target_dc_kw: StrictNum | None = None
+    max_dc_ac_ratio: StrictNum | None = None
+    capacity_tolerance_pct: StrictNum | None = None
+    voltage_standard: Literal["IEC", "UL"] | None = None
+    design_basis_extra: StrictStr | None = None
+
+
+def sourced_component(store: ComponentStore, kind: str, filename: str) -> tuple[str, str, dict | None]:
+    """Read one loose UTF-8 component by exact filename and bind its declared identity.
+
+    Reuses the store's own path/format checks and the object parser: an explicit filename is
+    never replaced by a manufacturer search, nothing is hashed and no model is invented. The
+    root object is required and a PVObject_Commercial block is optional; when declared, the
+    Commercial identity wins over the root, while a disagreement between the two blocks the
+    flow. Returns (field, message, payload); payload is None when the component blocks.
+    """
+    path = None
+    for library in ("workspace", "builtin"):
+        try:
+            candidate = store._path(kind, filename, library)
+        except ValueError as exc:
+            return f"{kind}.name", str(exc), None
+        if candidate.is_file():
+            path = candidate
+            break
+    if path is None:
+        return (f"{kind}.name",
+                f"{filename} is not a loose {kind} file in the workspace or the installed library", None)
+    try:
+        text = store._text(kind, store._read(path))[1]
+    except (ValueError, OSError) as exc:
+        return f"{kind}.name", str(exc), None
+    if text is None:
+        return (f"{kind}.name",
+                "Legacy binary PAN carries no readable declared identity; use a UTF-8 text component", None)
+    blocks = objects(text)
+    roots = [block for block in blocks if not block.path]
+    commercial = [block for block in blocks if block.path == "PVObject_Commercial"]
+    if len(roots) != 1 or len(commercial) > 1:
+        return (f"{kind}.name",
+                "Expected exactly one root object and at most one PVObject_Commercial block", None)
+    owners = [("Commercial", commercial[0].fields)] if commercial else []
+    owners.append(("root", roots[0].fields))
+    identity = {}
+    for name, key in (("Manufacturer", "manufacturer"), ("Model", "model")):
+        declared = {}
+        for label, fields in owners:
+            values = [value.strip() for _, value in fields.get(name, []) if value.strip()]
+            # Occurrence count, not a de-duplicated set: a repeated identical field is ambiguous.
+            if len(values) > 1:
+                return (f"{kind}.{key}", f"{name} occurs {len(values)} times in its {label} object; "
+                                         "exactly one occurrence is bound", None)
+            if values:
+                declared[label] = values[0]
+        if len({*declared.values()}) > 1:
+            return (f"{kind}.{key}",
+                    f"{name} is declared differently in the root object and the Commercial block", None)
+        if not declared:
+            return f"{kind}.{key}", f"{name} is missing in its owning object", None
+        identity[key] = next(iter(declared.values()))
+    return "", "", {"manufacturer": identity["manufacturer"], "model": identity["model"],
+                    "electrical": electrical_inventory(kind, text)}
+
+
+@categorized_tool()
+def pvsyst_prepare_sourced_design(pan_name: StrictStr, ond_name: StrictStr,
+                                  sources: dict[str, SourceTextRequest],
+                                  declarations: list[SourceDeclarationRequest],
+                                  design: SourcedDesignGoals | None = None) -> dict:
+    """Bind caller-declared excerpts to source text and build the design-envelope request.
+    pan_name and ond_name are exact loose component filenames (workspace first, then the
+    installed library): a manufacturer-only search is never substituted and no model is
+    inferred. The identity label is composed from the owning objects as "PAN manufacturer
+    PAN model / OND manufacturer OND model" and cannot be overridden by the caller. A
+    root-only text component and an 8.1.6 GUI component are both accepted: the root object
+    is required, a PVObject_Commercial block is optional and its identity wins, while a
+    disagreement between the two, a repeated declared field or a legacy binary or non-UTF-8
+    file returns blocked with the concrete field. sources maps short ids to declared source
+    text whose kind is manufacturer, site or assumption; declarations claims one value per
+    field, each tied to a source id, an excerpt and the exact value/unit tokens it must
+    agree with, and the declared source text itself is never returned. design carries
+    explicit engineering goals only, so no envelope, coefficient or limit can be injected
+    without a citation. status is ready, needs_review or blocked; the assembled
+    electrical_design draft, the reused envelope result and the citation provenance come
+    back, and the declared excerpts are a source-consistency check between the claimed
+    value and the quoted loose component identity, not a manufacturer certification."""
+    selected = {}
+    store = components()
+    with store.lock:  # one lock for both reads: a concurrent workspace update cannot split them
+        for kind, filename in (("PAN", pan_name), ("OND", ond_name)):
+            field, message, payload = sourced_component(store, kind, filename)
+            if payload is None:
+                return {"status": "blocked", "stage": "components", "scope": SOURCED_DESIGN_SCOPE,
+                        "issues": [{"field": field, "message": message}], "warnings": [],
+                        "electrical_design": None, "capacity": None, "envelope": None,
+                        "missing_fields": [], "needs_review": False, "provenance": []}
+            selected[kind] = payload
+    label = (f"{selected['PAN']['manufacturer']} {selected['PAN']['model']} / "
+             f"{selected['OND']['manufacturer']} {selected['OND']['model']}")
+    return prepare_sourced_design(
+        selected["PAN"]["electrical"], selected["OND"]["electrical"], manufacturer_model=label,
+        sources={key: entry.model_dump(exclude_none=True) for key, entry in sources.items()},
+        declarations=[entry.model_dump(exclude_none=True) for entry in declarations],
+        design=design.model_dump(exclude_none=True) if design is not None else None)
 
 
 @categorized_tool()
