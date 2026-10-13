@@ -31,6 +31,8 @@ from pvsyst_paths import workspace_file
 from pvsyst_results import compare_results
 from pvsyst_simulation import simulate_template
 from pvsyst_source_inputs import SCOPE as SOURCED_DESIGN_SCOPE, prepare_sourced_design
+from pvsyst_load_profile import prepare_load_profile
+from pvsyst_load_variant import create_load_variant
 from pvsyst_weather import inspect_weather_csv
 from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
@@ -71,6 +73,7 @@ TOOL_GROUPS = {
         "pvsyst_inspect_weather_csv", "pvsyst_prepare_weather", "pvsyst_resolve_location",
         "pvsyst_acquire_weather", "pvsyst_review_weather",
     ),
+    "Loads & Storage": ("pvsyst_prepare_load_profile", "pvsyst_create_load_variant"),
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
                    "pvsyst_simulate_design", "pvsyst_prepare_sourced_design"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
@@ -84,7 +87,8 @@ if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
 STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                          "pvsyst_acquire_weather", "pvsyst_review_weather",
                          "pvsyst_simulate_template", "pvsyst_simulate_design",
-                         "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component")
+                         "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component",
+                          "pvsyst_prepare_load_profile", "pvsyst_create_load_variant")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
 
@@ -889,6 +893,56 @@ def pvsyst_create_site(site_name: str, latitude: float, longitude: float,
                                country_code=country_code, region=region, source=source,
                                albedo=albedo, log_level=log_level)
     return {"site": str(output)}
+
+
+@categorized_tool()
+def pvsyst_prepare_load_profile(csv_name: StrictStr, year: StrictInt, output_name: StrictStr,
+                                 utc_offset_hours: StrictInt,
+                                 time_basis: Literal["local_standard_interval_start"],
+                                 date_format: Literal["iso", "pvsyst_dot", "pvsyst_slash"] = "iso",
+                                 date_column: StrictStr = "Date", load_column: StrictStr = "P Load",
+                                 dry_run: StrictBool = True) -> dict:
+    """Inspect or prepare a NEW native hourly load CSV from workspace/UserData.
+    Require exactly the declared date/load columns plus explicit W or kW units,
+    all 8760/8784 increasing interval-start hours of the requested year and an
+    explicit fixed whole-hour standard UTC offset (no DST). iso dates mean
+    YYYY-MM-DD HH:MM; pvsyst_dot/slash mean DD.MM.YYYY/DD/MM/YYYY HH:MM.
+    dry_run=true writes nothing. Execution preserves the source, writes an ASCII
+    Date;P Load / ;kW CSV to UserHourlyParams and an import record to Results.
+    Missing/duplicate/non-hourly/negative/nonfinite rows stop; no gap filling,
+    resampling, yearly renormalization, net-meter interpretation or time shift.
+    Existing names are preserved. Write failure retains disclosed partial outputs.
+    ready/prepared concern this CSV only, not native consumption: bind the CSV
+    to a variant and verify hourly output. Native calendar lookup ignores year;
+    the importer explicitly checks the requested year's leap day and time basis.
+    input-param-file is an advanced parameters DAT, not a load CSV channel."""
+    return prepare_load_profile(cli(), csv_name=csv_name, year=year, output_name=output_name,
+                                utc_offset_hours=utc_offset_hours, time_basis=time_basis,
+                                date_format=date_format, date_column=date_column,
+                                load_column=load_column, dry_run=dry_run)
+
+
+@categorized_tool()
+def pvsyst_create_load_variant(project: StrictStr, source_variant: StrictStr, new_variant: StrictStr,
+                                load_manifest_name: StrictStr, dry_run: StrictBool = True) -> dict:
+    """Preview or create a NEW variant with an explicit embedded hourly load snapshot.
+    Bind one prepared v1 load manifest in Results to current raw UserData CSV and
+    normalized UserHourlyParams CSV; check full year/time basis/units and paired
+    powers, never open a historical absolute path from the record. Replace the
+    owning pvLoad with Energy/MJ signed-base62 DDMM hours, including leap day;
+    return encoding precision. No annual renormalization, filling or DST shift.
+    The source VC, PRJ, CSVs and other system/strategy/site/topology fields remain
+    unchanged. A later CSV edit requires a new binding; reading-progress logs
+    do not prove native consumption. This sets loads, not battery dispatch or
+    hybrid ports. dry_run=true writes nothing; execution creates a new VC only,
+    never overwrites. Verify E_User in a native run of matching year/timezone
+    before treating configuration as consumed. Legacy binary/ambiguous VCs stop;
+    non-ASCII load paths add a disclosed UTF-8 BOM to the NEW VC."""
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_load_variant(store, project=project, source_variant=source_variant,
+                               new_variant=new_variant, load_manifest_name=load_manifest_name,
+                               dry_run=dry_run)
 
 
 class CapacityRequest(BaseModel):
