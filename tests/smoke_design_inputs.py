@@ -73,8 +73,8 @@ End of PVObject pvModule
 """
 
 SERVER = Path(__file__).resolve().parents[1] / "pvsyst_mcp_server.py"
-EXPECTED_TOOL_COUNT = 56
-EXPECTED_GROUP_COUNT = 6
+EXPECTED_TOOL_COUNT = 58
+EXPECTED_GROUP_COUNT = 7
 NEW_TOOL_GROUPS = (("pvsyst_resolve_location", "Sites & Weather"),
                    ("pvsyst_acquire_weather", "Sites & Weather"),
                    ("pvsyst_review_weather", "Sites & Weather"),
