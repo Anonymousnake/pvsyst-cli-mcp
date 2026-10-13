@@ -24,6 +24,7 @@ from pvsyst_cli import (PVsystCLI, PVsystError, VAR_GROUPS, build_monthly_weathe
                         build_sfi, iter_result_csv, parse_batch_results, result_units, summarize_results)
 from pvsyst_component_editor import objects
 from pvsyst_components import ComponentStore, electrical_inventory
+from pvsyst_component_builder import build_sourced_component
 from pvsyst_variants import VariantStore
 from pvsyst_design_flow import simulate_design
 from pvsyst_paths import workspace_file
@@ -63,7 +64,7 @@ TOOL_GROUPS = {
         "pvsyst_create_component", "pvsyst_copy_component", "pvsyst_clone_component",
         "pvsyst_update_component", "pvsyst_backup_component", "pvsyst_restore_component",
         "pvsyst_archive_component", "pvsyst_restore_archived_component",
-        "pvsyst_compare_components", "pvsyst_project_components",
+        "pvsyst_compare_components", "pvsyst_project_components", "pvsyst_build_sourced_component",
     ),
     "Sites & Weather": (
         "pvsyst_build_monthly_weather", "pvsyst_create_site", "pvsyst_convert_meteo",
@@ -83,7 +84,7 @@ if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
 STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                          "pvsyst_acquire_weather", "pvsyst_review_weather",
                          "pvsyst_simulate_template", "pvsyst_simulate_design",
-                         "pvsyst_prepare_sourced_design")
+                         "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
 
@@ -1215,6 +1216,35 @@ class SourceDeclarationRequest(BaseModel):
     source_value_text: StrictStr
     source_unit_text: StrictStr
     page: StrictInt | None = None
+
+
+@categorized_tool()
+def pvsyst_build_sourced_component(
+        component_type: Literal["PAN", "OND"], template_name: StrictStr, new_name: StrictStr,
+        manufacturer: StrictStr, model: StrictStr,
+        sources: Annotated[dict[str, SourceTextRequest], Field(min_length=1, max_length=16)],
+        declarations: Annotated[list[SourceDeclarationRequest], Field(min_length=1, max_length=32)],
+        source_library: Literal["workspace", "builtin"] = "workspace", dry_run: StrictBool = True,
+        acknowledge_inherited_model: StrictBool = False) -> dict:
+    """Preview or create a NEW user-defined PAN/OND from a complete exact template and cited values.
+    Reuses the source-text/numeric/unit binding and component editors. PAN accepts PNom (W),
+    ISC/Imp (A), Voc/Vmp (V); OND accepts PNomConv/PMaxOUT (kW), VMppMin/VMPPMax/VAbsMax (V),
+    EfficMax/EfficEuro (%). Width/Height/Depth (m or explicitly converted mm) and Weight (kg)
+    require the verified 8.1.6 commercial form. Unspecified fields, hardware counts and
+    efficiency/IAM/model curves stay inherited, not refitted or scaled. Temperature coefficient
+    units are not guessed. A dry run returns citation provenance, inherited parameters and a
+    diff without writes. Creation requires acknowledge_inherited_model=true, writes a new
+    component and a candidate source record in Results, and never overwrites existing paths.
+    Successful preview/creation remain needs_review, not physical certification. Failed writes
+    retain disclosed artifacts for inspection. Use a referencing native run to verify behavior;
+    datasheet authenticity, page layout and source/model applicability are not certified here."""
+    return build_sourced_component(
+        components(), component_type=component_type, template_name=template_name, new_name=new_name,
+        manufacturer=manufacturer, model=model,
+        sources={key: entry.model_dump(exclude_none=True) for key, entry in sources.items()},
+        declarations=[entry.model_dump(exclude_none=True) for entry in declarations],
+        source_library=source_library, dry_run=dry_run,
+        acknowledge_inherited_model=acknowledge_inherited_model)
 
 
 class SourcedDesignGoals(BaseModel):
