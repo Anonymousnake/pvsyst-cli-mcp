@@ -981,7 +981,8 @@ class GridAvailabilityProfile(BaseModel):
 def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: StrictStr,
                                        new_variant: StrictStr, updates: GridStorageUpdates,
                                        dry_run: StrictBool = True,
-                                       availability: GridAvailabilityProfile | None = None) -> dict:
+                                       availability: GridAvailabilityProfile | None = None,
+                                       allow_grid_export: StrictBool | None = None) -> dict:
     """Preview or create a NEW VC from an existing native AC-coupled Grid storage template.
     Supported variant declarations are 8.1.0/8.1.6 with one complete flat
     pvGridStorage, Grid pvSystem, declared active storage/battery bits, an existing
@@ -999,7 +1000,10 @@ def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: Stric
     permits discharge toward SOCDischDecl during outages. It is unused as backup
     in SelfConsumption; never a standalone generator voltage threshold.
     Preview writes nothing. Execution creates a NEW VC, retains source PRJ/VC,
-    battery filename/counts, PV/load/site/temperature/SOW/topology and system flags.
+    battery filename/counts, PV/load/site/temperature/SOW/topology. Optional
+    allow_grid_export toggles only native system bit27: false prevents grid
+    injection, true allows it subject to existing limits, omitted preserves it.
+    This is not a charge-from-grid switch and not a hybrid DC-port setting.
     This does not construct hybrid ports, add battery hardware, schedule grid
     charging, infer efficiencies or certify physical sizing. Verify native SOC
     and energy flows before treating saved fields as consumed."""
@@ -1008,7 +1012,8 @@ def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: Stric
     return create_grid_storage_variant(store, project=project, source_variant=source_variant,
                                        new_variant=new_variant,
                                        updates=updates.model_dump(exclude_none=True), dry_run=dry_run,
-                                       availability=availability.model_dump() if availability else None)
+                                       availability=availability.model_dump() if availability else None,
+                                       allow_grid_export=allow_grid_export)
 
 
 class BatteryPackDesign(BaseModel):
@@ -1041,7 +1046,8 @@ def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: Strict
                                      new_variant: StrictStr, battery: BatteryPackDesign,
                                      storage: GridStorageDesign, load_manifest_name: StrictStr,
                                      dry_run: StrictBool = True,
-                                     availability: GridAvailabilityProfile | None = None) -> dict:
+                                     availability: GridAvailabilityProfile | None = None,
+                                     allow_grid_export: StrictBool | None = None) -> dict:
     """Preview or create a NEW native AC-coupled storage VC from an existing PV-only Grid design.
     Require explicit workspace loose BTR, series/parallel counts, twelve monthly
     battery temperatures, cycle/static initial SOW, complete SOC fractions,
@@ -1049,8 +1055,10 @@ def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: Strict
     No hardware or climate defaults are inferred. Bind a prepared v1 hourly load
     record and both current source/normalized CSVs into an explicit MJ snapshot.
     Enable root self-consumption bit19 and existing native Grid/battery system bits;
-    retain other flags and PV/component/site/weather/geometry fields. Creates only
-    one new VC, never edits the source or replaces files. SelfConsumption and
+    retain other flags and PV/component/site/weather/geometry fields. Optional
+    allow_grid_export toggles only system no-injection bit27; omission preserves
+    the source setting. This controls export, not grid charging or DC coupling.
+    Creates only one new VC, never edits the source or replaces files. SelfConsumption and
     WeakGrid use PVAvailable/Immediate. WeakGrid requires a complete explicit
     availability CSV declaration matching the prepared load year and standard
     UTC offset, with at least one outage. Bind native pvUnavail/HourlyVal ratio
@@ -1067,7 +1075,8 @@ def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: Strict
                                       new_variant=new_variant, battery=battery.model_dump(),
                                       storage=storage.model_dump(), load_manifest_name=load_manifest_name,
                                       dry_run=dry_run,
-                                      availability=availability.model_dump() if availability else None)
+                                      availability=availability.model_dump() if availability else None,
+                                      allow_grid_export=allow_grid_export)
 
 
 class CapacityRequest(BaseModel):
