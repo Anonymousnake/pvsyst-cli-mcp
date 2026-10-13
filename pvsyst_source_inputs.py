@@ -192,7 +192,7 @@ def _number_token_positions(text, token):
         if index < 0:
             return ends
         left = text[index - 1] if index else ""
-        if (not NUMBER_EDGE_LEFT.match(left) and left not in UNICODE_MINUS
+        if (not NUMBER_EDGE_LEFT.match(left) and (not left or left not in UNICODE_MINUS)
                 and not _continues_number_right(text, index + len(token))):
             ends.append(index + len(token))
         start = index + 1
