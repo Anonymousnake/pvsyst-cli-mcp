@@ -22,6 +22,20 @@ NUMERIC_FIELDS = {
 STRATEGIES = {"self_consumption": "SelfConsumption", "weak_grid": "WeakGrid"}
 
 
+def set_grid_export(lines, system, allow_grid_export):
+    """Toggle only native TSysteme.IsNoGridInjection (bit27), when declared."""
+    if allow_grid_export is None:
+        return
+    if type(allow_grid_export) is not bool:
+        raise ValueError("allow_grid_export must be a strict boolean")
+    index, flags = one(direct_fields(lines, system), "Flags")
+    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", flags):
+        raise ValueError("Owning system flags must be unambiguous hexadecimal values")
+    value = int(flags[1:], 16)
+    value = value & ~0x08000000 if allow_grid_export else value | 0x08000000
+    lines[index] = replace_value(lines[index], f"${value:08X}")
+
+
 def storage_state(lines, system):
     """Read owning declared fields only; do not infer an active or certified physical device."""
     root_end = next((i for i,line in enumerate(lines[1:],1) if line.strip().startswith("PVObject_")), len(lines)-1)
@@ -52,7 +66,8 @@ def storage_state(lines, system):
     values = direct_fields(lines,bounds)
     if one(values,"Flags")[1] != "$00":
         raise ValueError("Only the checked flat grid storage Flags=$00 form is supported")
-    state = {"battery_file":battery, "pack_counts":counts, "system_flags":one(fields,"Flags")[1],
+    state = {"battery_file":battery, "pack_counts":counts, "system_flags":flags,
+             "allow_grid_export":not bool(int(flags[1:],16) & 0x08000000),
              "strategy":one(values,"Strategy")[1], "charging_strategy":one(values,"ChargingStrategy")[1],
              "discharging_strategy":one(values,"DischStrategy")[1], "backend":"pvsyst_native_ac_coupled"}
     for name,(key,low,high) in NUMERIC_FIELDS.items():
@@ -80,15 +95,16 @@ def validate_storage(state, *, allow_weak=False):
 
 
 def create_grid_storage_variant(store, *, project, source_variant, new_variant, updates, dry_run=True,
-                                availability=None):
+                                availability=None, allow_grid_export=None):
     """Create a new variant from an existing native storage system with bounded scalar edits."""
     result={"status":"blocked","stage":"preflight","dry_run":dry_run,"issues":[],"warnings":[],
             "artifacts":{},"variant_created":False,"native_consumption_verified":False,
             "scope":"Existing centralized native AC-coupled Grid storage. No hybrid DC-port construction, new hardware sizing or grid-charging tariff controller is inferred."}
     with store.lock:
         try:
-            if type(dry_run) is not bool or not isinstance(updates,dict) or not updates:
-                raise ValueError("Supply a nonempty strict storage update object and boolean dry_run")
+            if (type(dry_run) is not bool or not isinstance(updates,dict)
+                    or (not updates and allow_grid_export is None)):
+                raise ValueError("Supply strict storage updates or explicit grid export control and boolean dry_run")
             if set(updates)-set(NUMERIC_FIELDS)-{"strategy"}:
                 raise ValueError("Unknown storage update fields")
             store._check_project(project)
@@ -111,6 +127,7 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
             for key,value in edits.items():
                 index,_=one(fields,key)
                 lines[index]=replace_value(lines[index],value)
+            set_grid_export(lines, system, allow_grid_export)
             after,_,_=storage_state(lines,system)
             weak = after["strategy"] == "WeakGrid"
             validate_storage(after, allow_weak=availability is not None)
@@ -158,7 +175,7 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
                           before=before,after=after,artifacts={"variant":str(target)},diff=diff[:32000],diff_truncated=len(diff)>32000)
             result["warnings"].append("SOC values are fractions. SOCDischSelf is the WeakGrid reserve threshold: grid availability preserves it; outages permit discharge toward SOCDischDecl. It is unused as backup reserve in SelfConsumption. No grid-charge schedule or independent controller is added.")
             result["warnings"].append("PMaxCharge is the charger's AC input limit; PMaxDisch is the battery inverter's AC output limit. They are not DC port powers. Battery current/voltage and BMS compatibility stay unverified.")
-            result["warnings"].append("Source PRJ/VC, PV components, battery filename/counts, temperature/SOW, load snapshot, site and topology stay unchanged. No grid-charge schedule or target SOC is invented.")
+            result["warnings"].append("Source PRJ/VC, PV components, battery filename/counts, temperature/SOW, load snapshot, site and topology stay unchanged. Only declared system grid-export bit27 may change; omitted export control preserves it. No grid-charge schedule or target SOC is invented.")
             if store._read(source)!=original or (availability_snapshot and availability_snapshot[0].read_bytes()!=availability_snapshot[1]):
                 raise ValueError("Storage template changed before creation")
             if dry_run:

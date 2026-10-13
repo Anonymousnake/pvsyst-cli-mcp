@@ -8,12 +8,13 @@ import re
 from pvsyst_component_editor import replace_value
 from pvsyst_generator import direct_fields, finite, one
 from pvsyst_grid_availability import native_availability
-from pvsyst_grid_storage import NUMERIC_FIELDS, STRATEGIES, storage_state, validate_storage
+from pvsyst_grid_storage import NUMERIC_FIELDS, STRATEGIES, set_grid_export, storage_state, validate_storage
 from pvsyst_load_variant import hourly_load_block, load_snapshot
 
 
 def create_grid_storage_system(store, *, project, source_variant, new_variant, battery,
-                               storage, load_manifest_name, dry_run=True, availability=None):
+                               storage, load_manifest_name, dry_run=True, availability=None,
+                               allow_grid_export=None):
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
               "warnings": [], "artifacts": {}, "variant_created": False,
               "native_consumption_verified": False, "backend": "pvsyst_native_ac_coupled"}
@@ -82,6 +83,7 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             # Bit19 enables user-load consumption; bit28 enables native grid storage.
             lines[root_index] = replace_value(lines[root_index], f"${int(root_flags[1:], 16) | 0x00080000:08X}")
             lines[system_index] = replace_value(lines[system_index], f"${int(system_flags[1:], 16) | 0x10010040:08X}")
+            set_grid_export(lines, system, allow_grid_export)
             additions = {"BatteryFile": battery["file_name"], "NBattSerie": str(battery["series_count"]),
                          "NBattParall": str(battery["parallel_count"]), "CycleSOWBeg": str(cycle),
                          "StaticSOWBeg": str(static), "TypeTempBatt": "1", "TempBattRef": str(temperatures[0]),
