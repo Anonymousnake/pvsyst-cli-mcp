@@ -952,7 +952,7 @@ def pvsyst_create_load_variant(project: StrictStr, source_variant: StrictStr, ne
 class GridStorageUpdates(BaseModel):
     """Native existing AC-coupled storage scalars; unknown fields stop at the boundary."""
     model_config = ConfigDict(extra="forbid")
-    strategy: Literal["self_consumption"] | None = None
+    strategy: Literal["self_consumption", "weak_grid"] | None = None
     soc_min: StrictNum | None = None
     soc_max: StrictNum | None = None
     initial_soc: StrictNum | None = None
@@ -965,10 +965,19 @@ class GridStorageUpdates(BaseModel):
     battery_inverter_euro_efficiency_pct: StrictNum | None = None
 
 
+class GridAvailabilityProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    csv_name: StrictStr
+    year: StrictInt
+    utc_offset_hours: StrictInt
+    time_basis: Literal["local_standard_interval_start"]
+
+
 @categorized_tool()
 def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: StrictStr,
                                        new_variant: StrictStr, updates: GridStorageUpdates,
-                                       dry_run: StrictBool = True) -> dict:
+                                       dry_run: StrictBool = True,
+                                       availability: GridAvailabilityProfile | None = None) -> dict:
     """Preview or create a NEW VC from an existing native AC-coupled Grid storage template.
     Supported variant declarations are 8.1.0/8.1.6 with one complete flat
     pvGridStorage, Grid pvSystem, declared active storage/battery bits, an existing
@@ -976,11 +985,15 @@ def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: Stric
     SOC fields are fractions 0..1; require min < max, initial and reserve inside
     those bounds. PMaxCharge limits the charger's AC input in kW, PMaxDisch the
     battery inverter's AC output; neither is a hybrid DC-port rating. Explicit
-    max/Euro efficiencies are percent, with Euro <= max. Only the verified
-    SelfConsumption/PVAvailable/Immediate triplet is accepted. WeakGrid requires
-    a separately validated availability profile and is not guessed from an enum.
-    reserve_soc is the saved SOCDischSelf value, unused as a backup reserve in
-    SelfConsumption; it is not a standalone generator voltage threshold.
+    max/Euro efficiencies are percent, with Euro <= max. SelfConsumption or
+    WeakGrid with PVAvailable/Immediate are supported. WeakGrid requires a fresh
+    availability declaration: full-year UserData Date;Grid Available / ;ratio CSV,
+    ISO interval-start hours, exact 0/1 values, fixed standard offset and at least
+    one outage. Bind native pvUnavail/HourlyVal GrdUnav Factor/Aver day snapshots,
+    match the load snapshot year and require the root self-consumption flag.
+    reserve_soc is SOCDischSelf: WeakGrid preserves it with grid available and
+    permits discharge toward SOCDischDecl during outages. It is unused as backup
+    in SelfConsumption; never a standalone generator voltage threshold.
     Preview writes nothing. Execution creates a NEW VC, retains source PRJ/VC,
     battery filename/counts, PV/load/site/temperature/SOW/topology and system flags.
     This does not construct hybrid ports, add battery hardware, schedule grid
@@ -990,7 +1003,8 @@ def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: Stric
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
     return create_grid_storage_variant(store, project=project, source_variant=source_variant,
                                        new_variant=new_variant,
-                                       updates=updates.model_dump(exclude_none=True), dry_run=dry_run)
+                                       updates=updates.model_dump(exclude_none=True), dry_run=dry_run,
+                                       availability=availability.model_dump() if availability else None)
 
 
 class BatteryPackDesign(BaseModel):

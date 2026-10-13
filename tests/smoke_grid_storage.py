@@ -84,7 +84,7 @@ async def main():
                 for update in invalid:
                     _,result=await call(new_variant="VC2",updates=update,dry_run=False)
                     check(result["status"]=="blocked" and not (root/"Projects/Storage.VC2").exists(),"invalid semantic update: "+repr(update))
-                for update in ({"soc_min":True},{"soc_max":"0.9"},{"strategy":"weak_grid"},{"allow_grid_charge":True}):
+                for update in ({"soc_min":True},{"soc_max":"0.9"},{"strategy":"power_shift"},{"allow_grid_charge":True}):
                     response,_=await call(new_variant="VC2",updates=update,dry_run=False)
                     check(response.is_error,"strict type/unsupported capability: "+repr(update))
                 response,_=await call(unknown=1)
@@ -152,6 +152,38 @@ async def main():
                 (root/"Projects/Storage.VC10").write_text(pure.replace("Flags=$00100001","Flags=invalid"),encoding="utf-8",newline="")
                 _,invalid_flags=await system_call(source_variant="VC10",new_variant="VC9",dry_run=False)
                 check(invalid_flags["status"]=="blocked" and not (root/"Projects/Storage.VC9").exists(),"ambiguous enabling flags rejected before writes")
+                from datetime import datetime,timedelta
+                origin=datetime(2024,1,1)
+                availability="Date;Grid Available\n;ratio\n"+"".join((origin+timedelta(hours=h)).strftime("%Y-%m-%d %H:%M")+";"+("0" if h<24 else "1")+"\n" for h in range(8784))
+                (root/"UserData/grid.csv").write_text(availability,encoding="ascii",newline="")
+                declaration={"csv_name":"grid.csv","year":2024,"utc_offset_hours":8,"time_basis":"local_standard_interval_start"}
+                weak={"source_variant":"VC6","new_variant":"VC11","updates":{"strategy":"weak_grid","initial_soc":0.4,"reserve_soc":0.5},"availability":declaration}
+                response,plan=await call(**weak)
+                check(not response.is_error and plan["status"]=="ready","WeakGrid public preview: "+repr(plan))
+                check(plan["grid_availability"]["rows"]==8784 and plan["grid_availability"]["unavailable_hours"]==24,"full native availability coverage")
+                check(not (root/"Projects/Storage.VC11").exists(),"WeakGrid preview zero writes")
+                _,made=await call(**weak,dry_run=False)
+                check(made["status"]=="created","native WeakGrid variant created")
+                weak_text=(root/"Projects/Storage.VC11").read_text(encoding="utf-8")
+                check("Strategy=WeakGrid" in weak_text and "PVObject_GridUnavail=pvUnavail" in weak_text,"actual native strategy and object serialized")
+                check("HourlyVal=GrdUnav" in weak_text and "VarType=Factor" in weak_text and "Day_2902=" in weak_text,"native ratio snapshot with leap day")
+                check((root/"UserData/grid.csv").read_text(encoding="ascii")==availability,"availability input retained")
+                _,again=await call(**weak,dry_run=False)
+                check(again["status"]=="blocked","WeakGrid no overwrite")
+                _,missing=await call(source_variant="VC6",new_variant="VC12",updates={"strategy":"weak_grid"},dry_run=False)
+                check(missing["status"]=="blocked" and not (root/"Projects/Storage.VC12").exists(),"WeakGrid missing availability blocked")
+                _,wrong_strategy=await call(source_variant="VC6",new_variant="VC12",updates={"initial_soc":0.4},availability=declaration,dry_run=False)
+                check(wrong_strategy["status"]=="blocked","availability not silently attached to SelfConsumption")
+                for name,value in (("all.csv",availability.replace(";0\n",";1\n")),("fraction.csv",availability.replace(";0\n",";0.5\n",1)),("gap.csv",availability.replace("2024-02-29 00:00;1\n",""))):
+                    (root/"UserData"/name).write_text(value,encoding="ascii",newline="")
+                    _,bad=await call(**{**weak,"new_variant":"VC12","availability":{**declaration,"csv_name":name}},dry_run=False)
+                    check(bad["status"]=="blocked" and not (root/"Projects/Storage.VC12").exists(),"bad native availability "+name)
+                response,_=await call(**{**weak,"new_variant":"VC12","availability":{**declaration,"year":True}})
+                check(response.is_error,"strict availability year")
+                _,year_mismatch=await call(**{**weak,"new_variant":"VC12","availability":{**declaration,"year":2023}},dry_run=False)
+                check(year_mismatch["status"]=="blocked","availability year mismatch not inferred")
+                _,rebound=await call(**{**weak,"source_variant":"VC11","new_variant":"VC12"},dry_run=False)
+                check(rebound["status"]=="created" and (root/"Projects/Storage.VC12").read_text(encoding="utf-8").count("PVObject_GridUnavail=pvUnavail")==1,"existing availability snapshot replaces only owning object")
     print(f"{checks} public storage configuration checks passed; 0 native runs")
 
 if __name__=="__main__":
