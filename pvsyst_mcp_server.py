@@ -468,6 +468,14 @@ class GeneratorUpdates(BaseModel):
     thresholds: dict[str, dict[str, StrictFloat]] | None = None
 
 
+class SoilingUpdates(BaseModel):
+    """Explicit native soiling mode and GUI-precision percentage values."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["none", "constant", "monthly"]
+    yearly_loss_pct: StrictNum | None = None
+    monthly_loss_pct: list[StrictNum] | None = None
+
+
 @categorized_tool()
 def pvsyst_update_variant_parameters(project: str, variant: str,
                                      expected_sha256: str, subarray_id: StrictInt = 1,
@@ -480,7 +488,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      independent_mppt_enabled: StrictBool | None = None,
                                      main_array_updates: dict[str, StrictFloat] | None = None,
                                      variant_name: StrictStr | None = None,
-                                     add_utf8_bom: StrictBool = False) -> dict:
+                                     add_utf8_bom: StrictBool = False,
+                                     soiling_updates: SoilingUpdates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -595,11 +604,19 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     Requires all owned inverter children explicit MPPT; preserves circuit and
     other flags/counts, components/nominal/loss tags. Model power interpretation
     changes; hardware allocations are not redesigned. Returns mppt_mode.
+    soiling_updates configures the native whole-array Soiling block in a separate
+    transaction (variant_name may accompany it). mode=none removes that block;
+    constant requires yearly_loss_pct; monthly requires twelve monthly_loss_pct.
+    Percent values are 0..100 in 0.1 percentage-point increments, matching GUI save
+    precision. Verified scope: 8.1.6 PV-only Grid, one unshaded fixed plane/subarray,
+    main Flags=$00100400/$01900400, Flags2=$082A. Flags and unrelated fields stay
+    unchanged; no irradiance/yield calculation, legacy or file-based soiling edits.
     No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
                         generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
-                        dry_run, power_sharing_enabled, independent_mppt_enabled, main_array_updates, variant_name, add_utf8_bom)
+                        dry_run, power_sharing_enabled, independent_mppt_enabled, main_array_updates, variant_name, add_utf8_bom,
+                        soiling_updates.model_dump(exclude_none=True) if soiling_updates is not None else None)
 
 
 @categorized_tool()
@@ -768,7 +785,9 @@ def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
     variables=grid_storage includes common PV outputs plus native load, SOC,
     battery/grid flows, EUnused and all three converter losses CL_Chrg, CL_InvB,
     CL_Over. Include CL_Over when reviewing native grid-storage energy balance;
-    this exports PVsyst values, not a separate storage calculation."""
+    this exports PVsyst values, not a separate storage calculation.
+    variables=soiling adds native GlobSlg/SlgLoss irradiance outputs to common PV
+    outputs; native runs may omit these columns when soiling is disabled."""
     target = workspace_path("Models", filename, ".sfi")
     names = (VAR_GROUPS[variables] if variables in VAR_GROUPS
              else [part.strip() for part in variables.split(",")])
