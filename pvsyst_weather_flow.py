@@ -145,6 +145,50 @@ def first_value(fields, key):
     return entries[0]["value"] if entries else None
 
 
+def inspect_met_calendar(path, year):
+    """Check annual range declarations only; do not decode or re-calendar native weather."""
+    segments, _ = read_object_prefix(path)
+    fields = declared_fields(segments, "root", ("DateDebF", "DateFinF"))
+    report = {"requested_year": year, "coverage": "unverified", "declarations": fields,
+              "issues": [], "warnings": [],
+              "scope": "Native MET root dates only; not hourly completeness or time-basis certification"}
+    dates = {}
+    for key in ("DateDebF", "DateFinF"):
+        entries = fields.get(key, ())
+        if len(entries) > 1:
+            report["issues"].append(f"Native MET declares {key} more than once")
+            continue
+        if not entries:
+            report["warnings"].append(f"Native MET {key} is missing; annual coverage remains unverified")
+            continue
+        for fmt in ("%d/%m/%y %H:%M", "%d/%m/%Y %H:%M"):
+            try:
+                dates[key] = datetime.strptime(entries[0]["value"], fmt)
+                break
+            except ValueError:
+                continue
+        if key not in dates:
+            report["warnings"].append(f"Native MET {key} format is unreadable; annual coverage remains unverified")
+    if report["issues"] or len(dates) != 2:
+        return report
+    begin, end = dates["DateDebF"], dates["DateFinF"]
+    report.update(declared_start=begin.isoformat(" "), declared_end=end.isoformat(" "))
+    if end < begin:
+        report["issues"].append("Native MET DateFinF precedes DateDebF")
+    elif begin <= datetime(year, 1, 1) and end >= datetime(year, 12, 31, 23):
+        report["coverage"] = "declared"
+    elif begin == datetime(1990, 1, 1) and end == datetime(1990, 12, 31, 23):
+        report["coverage"] = "generic_reference"
+        report["warnings"].append("Native MET declares generic reference year 1990; compatibility with "
+                                  "the requested year remains for the native run to check")
+    else:
+        report["coverage"] = "insufficient"
+        report["issues"].append(f"Requested full year {year} is outside native MET declarations "
+                                f"{begin:%Y-%m-%d %H:%M} through {end:%Y-%m-%d %H:%M}; "
+                                "use a matching weather file/year, not the year in the filename")
+    return report
+
+
 def check_generated_met(path, *, time_zone):
     """Verify a freshly converted .MET against the requested local legal standard basis.
 
