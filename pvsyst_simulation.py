@@ -12,7 +12,7 @@ from pvsyst_components import electrical_inventory
 from pvsyst_sizing import plan_capacity
 from pvsyst_paths import project_path, variant_id, workspace_file
 from pvsyst_pan import validation_fields as pan_validation_fields
-from pvsyst_weather_flow import load_weather_manifest, compare_native_weather
+from pvsyst_weather_flow import load_weather_manifest, compare_native_weather, inspect_met_calendar
 from pvsyst_results import annual_summary, fingerprint
 
 
@@ -151,6 +151,12 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             if not path.is_file():
                 raise FileNotFoundError(f"Required {folder} file is missing: {name}")
             assets[field] = {"path": str(path), "sha256": fingerprint(path)}
+            if field == "met_name":
+                calendar = inspect_met_calendar(path, year)
+                result["meteo_calendar"] = calendar
+                for message in calendar["issues"]:
+                    issue(field, message)
+                result["warnings"].extend(calendar["warnings"])
         except (ValueError, OSError) as exc:
             issue(field, exc)
     weather_report = None
