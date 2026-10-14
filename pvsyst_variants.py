@@ -17,6 +17,7 @@ from pvsyst_paths import project_path, project_root
 from pvsyst_generator import state as generator_state, replace_generator
 from pvsyst_grid import inventory as grid_inventory, resize_capacity, circuit_nodes, require_ordinary_mppt, set_power_sharing, set_independent_mppt
 from pvsyst_component_editor import objects, replace_value
+from pvsyst_soiling import soiling_state, replace_soiling
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -356,7 +357,8 @@ class VariantStore:
             return {"project": project, "variant": variant.upper(),
                     "variant_name": FIELD.fullmatch(lines[names[0]].rstrip("\r\n"))[2] if len(names) == 1 else None,
                     "utf8_bom": data.startswith(b"\xef\xbb\xbf"),
-                    "main_array": {"values": fields(main_array, ("UFactor", "Flags", "Flags2")) if main_array is not None else {}},
+                    "main_array": {"values": fields(main_array, ("UFactor", "Flags", "Flags2")) if main_array is not None else {},
+                                   "soiling": soiling_state(lines, main_array) if main_array is not None else None},
                     "sha256": hashlib.sha256(data).hexdigest(), "orientations": orientations,
                     "generator": generator_state(lines, arrays, system),
                     "subarrays": [{"id": identifier, "values": fields(bounds, (
@@ -372,7 +374,8 @@ class VariantStore:
                           dry_run: bool = False, power_sharing_enabled: bool | None = None,
                           independent_mppt_enabled: bool | None = None,
                           main_array_updates: dict[str, float] | None = None,
-                          variant_name: str | None = None, add_utf8_bom: bool = False) -> dict:
+                          variant_name: str | None = None, add_utf8_bom: bool = False,
+                          soiling_updates: dict | None = None) -> dict:
         allowed_subarray = {"NModSerie": (1, 100), "NInverter": (1, 10000), "NStringCh": (1, 2147483647),
                             "NoOrientation": (1, 2147483647), "NInvMPPT": (1, 10000),
                             "VBkUpEncl_syst": (0, 1),
@@ -382,6 +385,9 @@ class VariantStore:
         allowed_main_array = {"UFactor": (15, 100)}
         requested = ((subarray_updates, allowed_subarray), (orientation_updates, allowed_orientation),
                      (main_array_updates, allowed_main_array))
+        if soiling_updates is not None and (any(changes for changes, _ in requested)
+                or generator_updates is not None or power_sharing_enabled is not None or independent_mppt_enabled is not None):
+            raise ValueError("Soiling updates require a separate transaction; variant_name may accompany them")
         if not isinstance(dry_run, bool):
             raise ValueError("dry_run must be a boolean")
         if not isinstance(add_utf8_bom, bool):
@@ -398,7 +404,7 @@ class VariantStore:
                         or power_sharing_enabled is not None and independent_mppt_enabled is not None):
                     raise ValueError("Mode/sharing changes require separate parameter transactions")
         if (not any(changes for changes, _ in requested) and not generator_updates and variant_name is None
-                and power_sharing_enabled is None and independent_mppt_enabled is None) or any(
+                and power_sharing_enabled is None and independent_mppt_enabled is None and soiling_updates is None) or any(
                 changes is not None and (not isinstance(changes, dict) or
                                          any(key not in allowed for key in changes))
                 for changes, allowed in requested):
@@ -547,6 +553,28 @@ class VariantStore:
             generator = None
             if generator_updates is not None:
                 generator = replace_generator(lines, arrays, system, generator_updates, self.components)
+            soiling_change = None
+            if soiling_updates is not None:
+                main = self._main_array(lines)
+                versions = [self._field_indices(lines, b, "Version") for b in arrays.values()]
+                header_end = next(i for i in range(1, len(lines)) if lines[i].strip().startswith("PVObject_"))
+                root_versions = self._field_indices(lines, (0, header_end), "Version")
+                kinds = self._field_indices(lines, system, "SystemType") if system is not None else []
+                if (len(root_versions) != 1 or FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2] != "8.1.6"
+                        or main is None or len(arrays) != 1 or len(kinds) != 1
+                        or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
+                        or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] != "8.1.6" for v in versions)
+                        or any("pvGridStorage" in line for line in lines)):
+                    raise ValueError("Soiling editing requires a native 8.1.6 PV-only single-subarray Grid variant")
+                for key, accepted in (("Flags", ("$00100400", "$01900400")), ("Flags2", ("$082A",))):
+                    indices = self._field_indices(lines, main, key)
+                    if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in accepted:
+                        raise ValueError("Soiling editing requires verified main-array Flags/Flags2; flags stay unchanged")
+                self._require_no_geometry(lines)
+                if sum(line.strip() == "PVObject_=pvOrient" for line in lines) != 1:
+                    raise ValueError("Soiling editing currently verifies one fixed plane")
+                self._ordinary_fixed_plane(lines, self._orientation(lines, 1))
+                soiling_change = replace_soiling(lines, main, soiling_updates)
             edited_text = "".join(lines)
             candidate = bom_prefix + edited_text.encode("utf-8")
             self._text(candidate)
@@ -558,6 +586,8 @@ class VariantStore:
                 "sha256": hashlib.sha256(candidate).hexdigest(), "changed": candidate != data,
                 "dry_run": dry_run, "diff": diff[:32000],
                 "diff_truncated": len(diff) > 32000 or len(diff.splitlines()) > 500}
+            if soiling_change is not None:
+                result["soiling"] = soiling_change
             if name_change is not None:
                 result.update(name_change=name_change, bom_added=bool(bom_prefix) and not data.startswith(b"\xef\xbb\xbf"))
             if "PMismMPP" in loss_modes:

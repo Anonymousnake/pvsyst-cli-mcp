@@ -80,7 +80,7 @@ The accepted original-database example is a separate working copy, not an overwr
 
 ## Remaining tutorial coverage
 
-Existing load/storage tools and bounded loss/orientation edits are separate accepted capabilities, not proof that every tutorial setting has an exposed editor. Remaining configuration work includes additional loss models, tracking/seasonal/dome/shed definitions, horizon import/editing, new 3D scene construction/editing/validation, peak shaving, inverter-temperature settings, power factor, numeric grid-power limits and P50/P90 configuration.
+Existing load/storage tools and bounded loss/orientation edits are separate accepted capabilities, not proof that every tutorial setting has an exposed editor. Tutorial section 5.4 constant/monthly soiling now has a [native configuration and annual-verification path](soiling-verification.md). Remaining configuration work includes additional loss models, tracking/seasonal/dome/shed definitions, horizon import/editing, new 3D scene construction/editing/validation, peak shaving, inverter-temperature settings, power factor, numeric grid-power limits and P50/P90 configuration.
 
 `pvsyst_run_simulation` can invoke the native program on an existing scene, including the supported shading-recomputation option. That is distinct from creating or editing a 3D scene; the scope limits of `pvsyst_simulate_template` and `pvsyst_simulate_design` apply to those bounded flows, not to every native simulation.
 
