@@ -442,7 +442,8 @@ class PVsystCLI:
                                      if batch_params else ([], {}))
         result = self._run(*args)
         text = self._output(result)
-        if (result.returncode != 0 or "Simulation done in " not in text
+        if (result.returncode != 0
+                or (log_level in (None, 3) and "Simulation done in " not in text)
                 or (csv_target and not csv_target.is_file())
                 or (pdf_target and not pdf_target.is_file())):
             raise PVsystError("Simulation did not complete or produce requested output: " + self._redact(text)[-3000:])
