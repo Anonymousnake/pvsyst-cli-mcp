@@ -1124,6 +1124,8 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
     """Preflight or execute one template-to-full-year grid simulation without GUI.
     Supply an existing valid PRJ/VC, loose text PAN/OND, workspace SIT/MET, tilt,
     year and a NEW project filename. Missing inputs return field-specific issues.
+    Native MET root date declarations are checked before creating the working project;
+    generic-1990, absent or unreadable dates remain disclosed, not inferred from filenames.
     Scope: completely checked single subarray/fixed plane, no active shading/layout,
     PRCorrTemp=False; retain template counts unless capacity is explicitly supplied.
     capacity plans integer series/strings/inverters against declared design voltages,
