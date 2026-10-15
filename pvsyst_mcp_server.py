@@ -484,6 +484,14 @@ class GridLimitUpdates(BaseModel):
     limit_kw: StrictNum | None = None
 
 
+class AuxiliaryUpdates(BaseModel):
+    """Explicit native whole-system operating/night auxiliary powers in kW."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["none", "constant"]
+    operating_kw: StrictNum | None = None
+    night_kw: StrictNum | None = None
+
+
 @categorized_tool()
 def pvsyst_update_variant_parameters(project: str, variant: str,
                                      expected_sha256: str, subarray_id: StrictInt = 1,
@@ -498,7 +506,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      variant_name: StrictStr | None = None,
                                      add_utf8_bom: StrictBool = False,
                                      soiling_updates: SoilingUpdates | None = None,
-                                     grid_limit_updates: GridLimitUpdates | None = None) -> dict:
+                                     grid_limit_updates: GridLimitUpdates | None = None,
+                                     auxiliary_updates: AuxiliaryUpdates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -628,13 +637,21 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     PF, loads/storage, file-based limits and other system modes stop before writes.
     This is not bit27 export permission, kVA, storage peak shaving or external
     output clipping. Original native calculations and existing rollback apply.
+    auxiliary_updates is separate (variant_name may accompany it). constant requires
+    explicit operating_kw and night_kw >=0 in 0.01 kW increments for the whole system;
+    native operating power applies above the verified zero inverter-output threshold,
+    not a clock schedule. none clears native bit18 and removes auxiliary powers.
+    Verified 8.1.6 PV-only fixed/unshaded scope; PF, grid limits, loads/storage,
+    proportional/threshold fields stop before writes. Native negative E_Grid is
+    retained, not clipped; no external auxiliary load or energy calculation.
     No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
                         generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
                         dry_run, power_sharing_enabled, independent_mppt_enabled, main_array_updates, variant_name, add_utf8_bom,
                         soiling_updates.model_dump(exclude_none=True) if soiling_updates is not None else None,
-                        grid_limit_updates.model_dump(exclude_none=True) if grid_limit_updates is not None else None)
+                        grid_limit_updates.model_dump(exclude_none=True) if grid_limit_updates is not None else None,
+                        auxiliary_updates.model_dump(exclude_none=True) if auxiliary_updates is not None else None)
 
 
 @categorized_tool()
