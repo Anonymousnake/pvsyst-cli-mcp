@@ -30,6 +30,7 @@ VAR_GROUPS = {
                         "viIL_Pmax", "viILPmxSH", "viIL_Vmax", "viIL_Imax"),
     "all_common": VERIFIED_VARIABLES,
     "soiling": (*VERIFIED_VARIABLES, "viGlobSlg", "viSlgLoss"),
+    "grid_limit": (*VERIFIED_VARIABLES, "viPGridLim", "viEGrdLim", "viEUnused", "viEOutInv"),
     "grid_storage": (*VERIFIED_VARIABLES, "viE_User", "viEUseful", "viE_Miss", "viE_Avail",
                      "viEBatCh", "viEBatDis", "viEFrGrid", "viSOC_Beg", "viSOC_End",
                      "viEArrMPP", "viEDirUse", "viCL_Chrg", "viCL_InvB", "viCL_Over",
