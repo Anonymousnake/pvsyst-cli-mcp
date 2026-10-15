@@ -494,6 +494,15 @@ class AuxiliaryUpdates(BaseModel):
     night_kw: StrictNum | None = None
 
 
+class SeasonalUpdates(BaseModel):
+    """Explicit native summer/winter angles and winter-month selection."""
+    model_config = ConfigDict(extra="forbid")
+    summer_tilt: StrictNum
+    winter_tilt: StrictNum
+    winter_months: list[StrictInt]
+    orientation_name: StrictStr | None = None
+
+
 @categorized_tool()
 def pvsyst_update_variant_parameters(project: str, variant: str,
                                      expected_sha256: str, subarray_id: StrictInt = 1,
@@ -509,7 +518,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      add_utf8_bom: StrictBool = False,
                                      soiling_updates: SoilingUpdates | None = None,
                                      grid_limit_updates: GridLimitUpdates | None = None,
-                                     auxiliary_updates: AuxiliaryUpdates | None = None) -> dict:
+                                     auxiliary_updates: AuxiliaryUpdates | None = None,
+                                     seasonal_updates: SeasonalUpdates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -646,14 +656,24 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     Verified 8.1.6 PV-only fixed/unshaded scope; PF, grid limits, loads/storage,
     proportional/threshold fields stop before writes. Native negative E_Grid is
     retained, not clipped; no external auxiliary load or energy calculation.
-    No-op edits create no backup."""
+    seasonal_updates is separate and configures native SeasonalTilt from a verified
+    FixedPlane or SeasonalTilt: explicit summer_tilt/winter_tilt in 0..90 degrees,
+    0.1-degree steps, and 1..11 distinct winter_months integers in 1..12.
+    Optional orientation_name changes the owning plane label; azimuth is preserved.
+    Require one 8.1.6 PV-only Grid subarray/plane, complete circuit allocation,
+    no geometry/layout, free horizon and plain system Flags. Averaged planes,
+    trackers, loads/storage and coupled system modes stop before writes.
+    Zero fixed BaseSlope is removed as native GUI does. This is not a fixed-mode
+    switch; restore the snapshot to recover the source. No angle or season model
+    is implemented outside PVsyst. No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
                         generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
                         dry_run, power_sharing_enabled, independent_mppt_enabled, main_array_updates, variant_name, add_utf8_bom,
                         soiling_updates.model_dump(exclude_none=True) if soiling_updates is not None else None,
                         grid_limit_updates.model_dump(exclude_none=True) if grid_limit_updates is not None else None,
-                        auxiliary_updates.model_dump(exclude_none=True) if auxiliary_updates is not None else None)
+                        auxiliary_updates.model_dump(exclude_none=True) if auxiliary_updates is not None else None,
+                        seasonal_updates.model_dump(exclude_none=True) if seasonal_updates is not None else None)
 
 
 @categorized_tool()
