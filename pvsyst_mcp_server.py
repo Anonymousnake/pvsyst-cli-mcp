@@ -454,7 +454,8 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     percent, raw PQualityModU/I/P and Flags, variant_name from the header only (null if absent/
     duplicate there; this does not validate late-root name ambiguity),
     utf8_bom for the VC (raw UTF-8 names do not prove BOM-less native decoding),
-    main_array.values UFactor (W/m2/K)/Flags/Flags2,
+    main_array.values UFactor (W/m2/K)/Flags/Flags2, main_array.soiling,
+    grid_limit native system state (unfamiliar/PF/storage forms report issue),
     and standalone generator settings/thresholds. Nested owning object fields
     are excluded."""
     return variant_call("inspect_parameters", project, variant)
@@ -476,6 +477,13 @@ class SoilingUpdates(BaseModel):
     monthly_loss_pct: list[StrictNum] | None = None
 
 
+class GridLimitUpdates(BaseModel):
+    """Native constant active-power limit at the grid injection point."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["none", "constant"]
+    limit_kw: StrictNum | None = None
+
+
 @categorized_tool()
 def pvsyst_update_variant_parameters(project: str, variant: str,
                                      expected_sha256: str, subarray_id: StrictInt = 1,
@@ -489,7 +497,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      main_array_updates: dict[str, StrictFloat] | None = None,
                                      variant_name: StrictStr | None = None,
                                      add_utf8_bom: StrictBool = False,
-                                     soiling_updates: SoilingUpdates | None = None) -> dict:
+                                     soiling_updates: SoilingUpdates | None = None,
+                                     grid_limit_updates: GridLimitUpdates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -611,12 +620,21 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     precision. Verified scope: 8.1.6 PV-only Grid, one unshaded fixed plane/subarray,
     main Flags=$00100400/$01900400, Flags2=$082A. Flags and unrelated fields stay
     unchanged; no irradiance/yield calculation, legacy or file-based soiling edits.
+    grid_limit_updates is a separate transaction (variant_name may accompany it).
+    mode=constant requires positive limit_kw in 0.1 kW increments: native active
+    power at the injection point, with separate grid-curtailment loss. mode=none
+    clears the active-limit bit and removes its scalars, preserving the inactive
+    location bit. Verified 8.1.6 PV-only single-subarray/fixed-plane/unshaded scope;
+    PF, loads/storage, file-based limits and other system modes stop before writes.
+    This is not bit27 export permission, kVA, storage peak shaving or external
+    output clipping. Original native calculations and existing rollback apply.
     No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
                         generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
                         dry_run, power_sharing_enabled, independent_mppt_enabled, main_array_updates, variant_name, add_utf8_bom,
-                        soiling_updates.model_dump(exclude_none=True) if soiling_updates is not None else None)
+                        soiling_updates.model_dump(exclude_none=True) if soiling_updates is not None else None,
+                        grid_limit_updates.model_dump(exclude_none=True) if grid_limit_updates is not None else None)
 
 
 @categorized_tool()
@@ -787,7 +805,10 @@ def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
     CL_Over. Include CL_Over when reviewing native grid-storage energy balance;
     this exports PVsyst values, not a separate storage calculation.
     variables=soiling adds native GlobSlg/SlgLoss irradiance outputs to common PV
-    outputs; native runs may omit these columns when soiling is disabled."""
+    outputs; native runs may omit these columns when soiling is disabled.
+    variables=grid_limit adds PGridLim, EGrdLim, EUnused and EOutInv. PGridLim is
+    the native limit, EGrdLim the grid-curtailment loss, not EUnused. EOutInv is
+    not the bounded injection column. Disabled runs may omit limit columns."""
     target = workspace_path("Models", filename, ".sfi")
     names = (VAR_GROUPS[variables] if variables in VAR_GROUPS
              else [part.strip() for part in variables.split(",")])
