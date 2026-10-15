@@ -19,6 +19,7 @@ from pvsyst_grid import inventory as grid_inventory, resize_capacity, circuit_no
 from pvsyst_component_editor import objects, replace_value
 from pvsyst_soiling import soiling_state, replace_soiling
 from pvsyst_grid_limit_native import grid_limit_state, replace_grid_limit
+from pvsyst_auxiliaries import auxiliary_state, replace_auxiliaries
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -363,6 +364,7 @@ class VariantStore:
                     "sha256": hashlib.sha256(data).hexdigest(), "orientations": orientations,
                     "generator": generator_state(lines, arrays, system),
                     "grid_limit": grid_limit_state(lines, system),
+                    "auxiliaries": auxiliary_state(lines, system),
                     "subarrays": [{"id": identifier, "values": fields(bounds, (
                         "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT", "NoOrientation",
                         "VBkUpEncl_syst", "VBkUpDecl_syst", "LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI", "PQualityModP", "Flags"))}
@@ -378,7 +380,8 @@ class VariantStore:
                           main_array_updates: dict[str, float] | None = None,
                           variant_name: str | None = None, add_utf8_bom: bool = False,
                           soiling_updates: dict | None = None,
-                          grid_limit_updates: dict | None = None) -> dict:
+                          grid_limit_updates: dict | None = None,
+                          auxiliary_updates: dict | None = None) -> dict:
         allowed_subarray = {"NModSerie": (1, 100), "NInverter": (1, 10000), "NStringCh": (1, 2147483647),
                             "NoOrientation": (1, 2147483647), "NInvMPPT": (1, 10000),
                             "VBkUpEncl_syst": (0, 1),
@@ -395,6 +398,10 @@ class VariantStore:
                 or generator_updates is not None or soiling_updates is not None
                 or power_sharing_enabled is not None or independent_mppt_enabled is not None):
             raise ValueError("Grid-limit updates require a separate transaction; variant_name may accompany them")
+        if auxiliary_updates is not None and (any(changes for changes, _ in requested)
+                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
+                or power_sharing_enabled is not None or independent_mppt_enabled is not None):
+            raise ValueError("Auxiliary updates require a separate transaction; variant_name may accompany them")
         if not isinstance(dry_run, bool):
             raise ValueError("dry_run must be a boolean")
         if not isinstance(add_utf8_bom, bool):
@@ -412,7 +419,7 @@ class VariantStore:
                     raise ValueError("Mode/sharing changes require separate parameter transactions")
         if (not any(changes for changes, _ in requested) and not generator_updates and variant_name is None
                 and power_sharing_enabled is None and independent_mppt_enabled is None
-                and soiling_updates is None and grid_limit_updates is None) or any(
+                and soiling_updates is None and grid_limit_updates is None and auxiliary_updates is None) or any(
                 changes is not None and (not isinstance(changes, dict) or
                                          any(key not in allowed for key in changes))
                 for changes, allowed in requested):
@@ -561,9 +568,9 @@ class VariantStore:
             generator = None
             if generator_updates is not None:
                 generator = replace_generator(lines, arrays, system, generator_updates, self.components)
-            soiling_change = grid_limit_change = None
-            if soiling_updates is not None or grid_limit_updates is not None:
-                control = "Soiling" if soiling_updates is not None else "Grid limit"
+            soiling_change = grid_limit_change = auxiliary_change = None
+            if soiling_updates is not None or grid_limit_updates is not None or auxiliary_updates is not None:
+                control = "Soiling" if soiling_updates is not None else "Grid limit" if grid_limit_updates is not None else "Auxiliary"
                 main = self._main_array(lines)
                 versions = [self._field_indices(lines, b, "Version") for b in arrays.values()]
                 header_end = next(i for i in range(1, len(lines)) if lines[i].strip().startswith("PVObject_"))
@@ -585,8 +592,10 @@ class VariantStore:
                 self._ordinary_fixed_plane(lines, self._orientation(lines, 1))
                 if soiling_updates is not None:
                     soiling_change = replace_soiling(lines, main, soiling_updates)
-                else:
+                elif grid_limit_updates is not None:
                     grid_limit_change = replace_grid_limit(lines, system, grid_limit_updates)
+                else:
+                    auxiliary_change = replace_auxiliaries(lines, system, auxiliary_updates)
             edited_text = "".join(lines)
             candidate = bom_prefix + edited_text.encode("utf-8")
             self._text(candidate)
@@ -602,6 +611,8 @@ class VariantStore:
                 result["soiling"] = soiling_change
             if grid_limit_change is not None:
                 result["grid_limit"] = grid_limit_change
+            if auxiliary_change is not None:
+                result["auxiliaries"] = auxiliary_change
             if name_change is not None:
                 result.update(name_change=name_change, bom_added=bool(bom_prefix) and not data.startswith(b"\xef\xbb\xbf"))
             if "PMismMPP" in loss_modes:
