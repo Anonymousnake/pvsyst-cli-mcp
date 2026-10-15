@@ -2,13 +2,16 @@
 
 本阶段补齐已有GUI保存状态的原生消费，不新增温度/PF/kVA配置接口。GUI/CLI8.1.6.49278；派生工程 `ENERGY_MANAGEMENT`，440kWp/6台Generic 60kW逆变器，Hawaii 2022原天气；原工程、组件、气象保留。试验温度/PF/限值不是工程建议，也不代表其它OND行为。
 
+后续只读检查 `pvsyst_get_variant_parameters.system_parameters` 返回拥有的SystemType/Flags/TempShift/TempFixed/TanPhi/PLimGrid/LimGrSeparLoss原始字符串。唯一字段才返回，缺失/重复省略，system不存在为空对象；不补默认、不计算PF或调整kW/kVA。八个原生GUI参考逐项读回及文件不变性已检查；关闭控制实际为$06000000而非旧摘要的$00，已按原文件更正。另修复Comment=TEMP_...被旧共用解析器误认作嵌套对象的问题，标题不再干扰系统检查。现有受限写入器继续阻断未验证耦合，不因只读暴露而放宽。
+
 ## 原生字段与单变量
 
 下列差异均属于 owning `PVObject_System=pvSystem`。其它阵列、模块/逆变器、朝向与电路不变。
 
 | 原生保存状态 | 系统Flags | 保存字段 |
 |---|---|---|
-| 基线/环境模式恢复/关闭控制 | $00 | 无温度/PF/限值字段 |
+| 基线/环境模式恢复 | $00 | 无温度/PF/限值字段 |
+| PF/限值关闭，保留未使能的位置/类型位 | $06000000 | 无温度/PF/限值字段 |
 | 环境温度+20°C | $4000 | TempShift=20.0、TempFixed=25.0 |
 | 固定60°C | $8000 | TempShift=20.0、TempFixed=60.0 |
 | 常数滞后PF=0.9 | $00100000 | TanPhi=0.484 |
