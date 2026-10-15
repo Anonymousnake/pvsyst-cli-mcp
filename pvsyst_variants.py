@@ -365,6 +365,8 @@ class VariantStore:
                     "main_array": {"values": fields(main_array, ("UFactor", "Flags", "Flags2")) if main_array is not None else {},
                                    "soiling": soiling_state(lines, main_array) if main_array is not None else None},
                     "sha256": hashlib.sha256(data).hexdigest(), "orientations": orientations,
+                    "system_parameters": fields(system, ("SystemType", "Flags", "TempShift", "TempFixed",
+                                                         "TanPhi", "PLimGrid", "LimGrSeparLoss")) if system is not None else {},
                     "generator": generator_state(lines, arrays, system),
                     "grid_limit": grid_limit_state(lines, system),
                     "auxiliaries": auxiliary_state(lines, system),

@@ -459,7 +459,11 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     not prove BOM-less native decoding), main_array UFactor (W/m2/K)/Flags/Flags2,
     main_array.soiling, native grid_limit, auxiliaries and horizon state, and standalone
     generator settings/thresholds. Unsupported system forms report an issue;
-    nested owning object fields are excluded."""
+    system_parameters exposes unique owning SystemType/Flags/TempShift/TempFixed/
+    TanPhi/PLimGrid/LimGrSeparLoss as raw text; missing or duplicate fields are omitted.
+    Native temperature fields use degC; TanPhi is not a computed PF, and PLimGrid
+    units depend on the native mode (kW or kVA). Nested owning object fields are
+    excluded; this does not widen write support."""
     return variant_call("inspect_parameters", project, variant)
 
 
