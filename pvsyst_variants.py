@@ -20,6 +20,7 @@ from pvsyst_component_editor import objects, replace_value
 from pvsyst_soiling import soiling_state, replace_soiling
 from pvsyst_grid_limit_native import grid_limit_state, replace_grid_limit
 from pvsyst_auxiliaries import auxiliary_state, replace_auxiliaries
+from pvsyst_seasonal import replace_seasonal
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -382,7 +383,8 @@ class VariantStore:
                           variant_name: str | None = None, add_utf8_bom: bool = False,
                           soiling_updates: dict | None = None,
                           grid_limit_updates: dict | None = None,
-                          auxiliary_updates: dict | None = None) -> dict:
+                          auxiliary_updates: dict | None = None,
+                          seasonal_updates: dict | None = None) -> dict:
         allowed_subarray = {"NModSerie": (1, 100), "NInverter": (1, 10000), "NStringCh": (1, 2147483647),
                             "NoOrientation": (1, 2147483647), "NInvMPPT": (1, 10000),
                             "VBkUpEncl_syst": (0, 1),
@@ -403,6 +405,10 @@ class VariantStore:
                 or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
                 or power_sharing_enabled is not None or independent_mppt_enabled is not None):
             raise ValueError("Auxiliary updates require a separate transaction; variant_name may accompany them")
+        if seasonal_updates is not None and (any(changes for changes, _ in requested)
+                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
+                or auxiliary_updates is not None or power_sharing_enabled is not None or independent_mppt_enabled is not None):
+            raise ValueError("Seasonal updates require a separate transaction; variant_name may accompany them")
         if not isinstance(dry_run, bool):
             raise ValueError("dry_run must be a boolean")
         if not isinstance(add_utf8_bom, bool):
@@ -420,7 +426,8 @@ class VariantStore:
                     raise ValueError("Mode/sharing changes require separate parameter transactions")
         if (not any(changes for changes, _ in requested) and not generator_updates and variant_name is None
                 and power_sharing_enabled is None and independent_mppt_enabled is None
-                and soiling_updates is None and grid_limit_updates is None and auxiliary_updates is None) or any(
+                and soiling_updates is None and grid_limit_updates is None and auxiliary_updates is None
+                and seasonal_updates is None) or any(
                 changes is not None and (not isinstance(changes, dict) or
                                          any(key not in allowed for key in changes))
                 for changes, allowed in requested):
@@ -569,9 +576,10 @@ class VariantStore:
             generator = None
             if generator_updates is not None:
                 generator = replace_generator(lines, arrays, system, generator_updates, self.components)
-            soiling_change = grid_limit_change = auxiliary_change = None
-            if soiling_updates is not None or grid_limit_updates is not None or auxiliary_updates is not None:
-                control = "Soiling" if soiling_updates is not None else "Grid limit" if grid_limit_updates is not None else "Auxiliary"
+            soiling_change = grid_limit_change = auxiliary_change = seasonal_change = None
+            if any(value is not None for value in (soiling_updates, grid_limit_updates, auxiliary_updates, seasonal_updates)):
+                control = ("Soiling" if soiling_updates is not None else "Grid limit" if grid_limit_updates is not None
+                           else "Auxiliary" if auxiliary_updates is not None else "Seasonal")
                 main = self._main_array(lines)
                 versions = [self._field_indices(lines, b, "Version") for b in arrays.values()]
                 header_end = next(i for i in range(1, len(lines)) if lines[i].strip().startswith("PVObject_"))
@@ -590,13 +598,35 @@ class VariantStore:
                 self._require_no_geometry(lines)
                 if sum(line.strip() == "PVObject_=pvOrient" for line in lines) != 1:
                     raise ValueError(f"{control} editing currently verifies one fixed plane")
-                self._ordinary_fixed_plane(lines, self._orientation(lines, 1))
+                if seasonal_updates is None:
+                    self._ordinary_fixed_plane(lines, self._orientation(lines, 1))
                 if soiling_updates is not None:
                     soiling_change = replace_soiling(lines, main, soiling_updates)
                 elif grid_limit_updates is not None:
                     grid_limit_change = replace_grid_limit(lines, system, grid_limit_updates)
-                else:
+                elif auxiliary_updates is not None:
                     auxiliary_change = replace_auxiliaries(lines, system, auxiliary_updates)
+                else:
+                    if (orientation_id != 1 or [g[2] for g in self._orientation_list(lines)[1]] != [1]
+                            or any("pvLoad" in line or "PVObject_Horizon=" in line for line in lines)):
+                        raise ValueError("Seasonal editing requires one orientation and free horizon without loads")
+                    flags = self._field_indices(lines, system, "Flags")
+                    if len(flags) != 1 or not re.fullmatch(r"\$0{1,8}", FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2]):
+                        raise ValueError("Seasonal editing requires plain Grid system Flags=$00")
+                    bounds = next(iter(arrays.values()))
+                    root = next(block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path)
+                    strings = root.one("NStringCh")[1]
+                    if (root.one("NoOrientation")[1] != "1" or not strings.isdigit() or int(strings) < 1
+                            or root.one("NStrOrient1")[1] != strings
+                            or any(key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0"
+                                   for key in root.fields) or grid_inventory(lines, arrays)["counts_valid"] is not True):
+                        raise ValueError("Seasonal editing requires complete circuit counts and every string in orientation 1")
+                    orientation_name = seasonal_updates.get("orientation_name") if isinstance(seasonal_updates, dict) else None
+                    if orientation_name is not None:
+                        self._validate_display_name(orientation_name, "orientation_name")
+                        if not orientation_name.isascii() and not bom_prefix:
+                            raise ValueError("Non-ASCII orientation_name requires an explicit UTF-8 BOM")
+                    seasonal_change = replace_seasonal(lines, self._orientation(lines, 1), seasonal_updates)
             edited_text = "".join(lines)
             candidate = bom_prefix + edited_text.encode("utf-8")
             self._text(candidate)
@@ -614,6 +644,8 @@ class VariantStore:
                 result["grid_limit"] = grid_limit_change
             if auxiliary_change is not None:
                 result["auxiliaries"] = auxiliary_change
+            if seasonal_change is not None:
+                result["seasonal_orientation"] = seasonal_change
             if name_change is not None:
                 result.update(name_change=name_change, bom_added=bool(bom_prefix) and not data.startswith(b"\xef\xbb\xbf"))
             if "PMismMPP" in loss_modes:

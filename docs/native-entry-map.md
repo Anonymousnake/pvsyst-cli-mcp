@@ -72,7 +72,7 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 |---|---|---|---|
 | 3.1.1 / 12 | 固定平面倾角、方位角：`orientation_updates` | 已有受限配置及原生消费证据；无活动几何/布局，普通非平均平面 | 角度影响已有阴影/布局映射时不得只改标量 |
 | 3.1.1、4.1 / 12、17–21 | 多固定平面复制、分配、删除：`clone_orientation`、`NoOrientation`、`remove_orientation` | 已有受限入口；8.1.6 GUI源的三个状态与MCP结果有48h逐点对照，不只支持单平面 | [固定平面生命周期](grid-capacity-verification.md#gui-saved-816-exclusive-fixed-plane-lifecycle)：独占MPPT/完整计数、无活动场景；不是按季切换 |
-| 3.1.2 / 12 | 季节性倾角切换；MCP只读SummerTilt/WinterTilt/WinterMonths/UsesTiltAver | [GUI与2022全年原生消费已证](plane-horizon-native.md)，4月mask单日分支/固定30度对照通过；专用写入器未实现 | 同一TOrientGroup的SeasonalTilt，不是多固定平面；FieldTilt=0不代表实际全年水平安装 |
+| 3.1.2 / 12 | 季节性倾角切换：seasonal_updates及原生季节字段检查 | [MCP受限写入已验收](seasonal-orientation.md)：固定切换/月mask完整文件同GUI、8760h/14列一致、23负例和恢复通过 | 单平面/子阵/自由地平线/普通Grid；移除零BaseSlope，保留方位及分配；FieldTilt=0非全年水平，回固定用恢复 |
 | 3.1.3 / 13 | Domes | 候选，缺专用配置 | 朝向类型与双面几何，不能套固定平面标量 |
 | 3.1.4 / 13 | Unlimited sheds | 候选，缺专用配置 | 棚架几何、自遮挡及电气分组，先原生保存 |
 | 3.1.5 / 14 | Unlimited sun-shields | 候选，缺专用配置 | 与普通固定平面和3D遮阳板区分 |
