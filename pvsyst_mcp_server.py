@@ -457,7 +457,7 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     Flags, variant_name from the header only (null if absent/duplicate there;
     late-root name ambiguity is not validated), utf8_bom (raw UTF-8 names do
     not prove BOM-less native decoding), main_array UFactor (W/m2/K)/Flags/Flags2,
-    main_array.soiling, native grid_limit and auxiliaries state, and standalone
+    main_array.soiling, native grid_limit, auxiliaries and horizon state, and standalone
     generator settings/thresholds. Unsupported system forms report an issue;
     nested owning object fields are excluded."""
     return variant_call("inspect_parameters", project, variant)
@@ -503,6 +503,14 @@ class SeasonalUpdates(BaseModel):
     orientation_name: StrictStr | None = None
 
 
+class HorizonUpdates(BaseModel):
+    """Native far-horizon points in PVsyst azimuth/elevation degrees."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["none", "profile"]
+    points: list[list[StrictNum]] | None = None
+    profile_name: StrictStr | None = None
+
+
 @categorized_tool()
 def pvsyst_update_variant_parameters(project: str, variant: str,
                                      expected_sha256: str, subarray_id: StrictInt = 1,
@@ -519,7 +527,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      soiling_updates: SoilingUpdates | None = None,
                                      grid_limit_updates: GridLimitUpdates | None = None,
                                      auxiliary_updates: AuxiliaryUpdates | None = None,
-                                     seasonal_updates: SeasonalUpdates | None = None) -> dict:
+                                     seasonal_updates: SeasonalUpdates | None = None,
+                                     horizon_updates: HorizonUpdates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -665,7 +674,15 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     trackers, loads/storage and coupled system modes stop before writes.
     Zero fixed BaseSlope is removed as native GUI does. This is not a fixed-mode
     switch; restore the snapshot to recover the source. No angle or season model
-    is implemented outside PVsyst. No-op edits create no backup."""
+    is implemented outside PVsyst. horizon_updates is separate: none removes the
+    native far-horizon block; profile requires profile_name and 4..100 increasing
+    [azimuth, elevation] points in native degrees, 0.1-degree steps, x=-180..180,
+    y=0..90. All-zero profiles use none. Fixed-plane plain PV-only Grid scope;
+    no trackers, seasonal modes, loads/storage, PF/aux/grid-limit coupling or
+    near-shading/layout edits. Native FracAlbedo=1 stays inherited. New or changed
+    points use the GUI profile template without stale derived factors; name-only
+    updates preserve them. PVsyst computes interpolation, diffuse and losses.
+    No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
                         generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
@@ -673,7 +690,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         soiling_updates.model_dump(exclude_none=True) if soiling_updates is not None else None,
                         grid_limit_updates.model_dump(exclude_none=True) if grid_limit_updates is not None else None,
                         auxiliary_updates.model_dump(exclude_none=True) if auxiliary_updates is not None else None,
-                        seasonal_updates.model_dump(exclude_none=True) if seasonal_updates is not None else None)
+                        seasonal_updates.model_dump(exclude_none=True) if seasonal_updates is not None else None,
+                        horizon_updates.model_dump(exclude_none=True) if horizon_updates is not None else None)
 
 
 @categorized_tool()
