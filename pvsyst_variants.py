@@ -353,7 +353,8 @@ class VariantStore:
                     raise ValueError("Orientation ID must be numeric")
                 self._orientation(lines, int(number))
                 orientations.append({"id": int(number), "values": fields((index, end),
-                                     ("FieldType", "FieldTilt", "FieldAzim"))})
+                                     ("FieldType", "FieldTilt", "FieldAzim", "SummerTilt", "WinterTilt",
+                                      "WinterMonths", "UsesTiltAver"))})
             main_array = self._main_array(lines)
             names = self._display_name_fields(lines)
             return {"project": project, "variant": variant.upper(),

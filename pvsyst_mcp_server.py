@@ -450,14 +450,16 @@ def pvsyst_remove_subarray(project: str, variant: str, subarray_id: StrictInt,
 
 @categorized_tool()
 def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
-    """Inspect orientations, owning subarray scalars including LIDLoss/PMismMPP
-    percent, raw PQualityModU/I/P and Flags, variant_name from the header only (null if absent/
-    duplicate there; this does not validate late-root name ambiguity),
-    utf8_bom for the VC (raw UTF-8 names do not prove BOM-less native decoding),
-    main_array.values UFactor (W/m2/K)/Flags/Flags2, main_array.soiling,
-    grid_limit native system state (unfamiliar/PF/storage forms report issue),
-    and standalone generator settings/thresholds. Nested owning object fields
-    are excluded."""
+    """Inspect orientations, including native SummerTilt/WinterTilt (degrees),
+    WinterMonths (raw month bitmask) and UsesTiltAver. Seasonal FieldTilt=0 is not
+    the effective seasonal angle; these fields are read-only here, not a mode editor.
+    Inspect owning subarray LIDLoss/PMismMPP percent, raw PQualityModU/I/P and
+    Flags, variant_name from the header only (null if absent/duplicate there;
+    late-root name ambiguity is not validated), utf8_bom (raw UTF-8 names do
+    not prove BOM-less native decoding), main_array UFactor (W/m2/K)/Flags/Flags2,
+    main_array.soiling, native grid_limit and auxiliaries state, and standalone
+    generator settings/thresholds. Unsupported system forms report an issue;
+    nested owning object fields are excluded."""
     return variant_call("inspect_parameters", project, variant)
 
 
