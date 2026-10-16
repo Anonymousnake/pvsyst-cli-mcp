@@ -1,6 +1,8 @@
 # 原生功率因数与逆变器额定限制
 
 `pvsyst_update_variant_parameters.power_factor_updates` 配置原生 PF 模式及同组 PNom 选项；`pvsyst_get_variant_parameters.power_factor` 读回语义状态。只序列化软件实际保存的带符号 `TanPhi/TanPhiM`，不实现 Cosφ 换算、无功、额定功率或发电模型。
+后续的独立 `power_controls_updates` 事务已覆盖限定PF/有功/视在限值组合，见[原生功率控制](native-power-controls.md)。本页独立PF接口的旧域保持不变，不因新组合入口放宽。
+
 
 ## 参数与范围
 

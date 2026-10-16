@@ -458,7 +458,8 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     late-root name ambiguity is not validated), utf8_bom (raw UTF-8 names do
     not prove BOM-less native decoding), main_array UFactor (W/m2/K)/Flags/Flags2,
     main_array.soiling, native grid_limit, auxiliaries, horizon, inverter_temperature
-    and power_factor state, p50_p90 (existing native result-template parameters), and standalone
+    and power_factor state, power_controls (verified PF/grid combinations),
+    p50_p90 (existing native result-template parameters), and standalone
     generator settings/thresholds. Unsupported system forms report an issue;
     system_parameters exposes unique owning SystemType/Flags/TempShift/TempFixed/
     TanPhi/PLimGrid/LimGrSeparLoss as raw text; missing or duplicate fields are omitted.
@@ -533,6 +534,23 @@ class PowerFactorUpdates(BaseModel):
     monthly_tan_phi: list[StrictNum] | None = None
 
 
+class PowerControlLimitUpdates(BaseModel):
+    """Explicit native limit quantity, application point and loss classification."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["none", "constant"]
+    quantity: Literal["active", "apparent"]
+    point: Literal["injection", "inverter"]
+    limit: StrictNum | None = None
+    separate_loss: StrictBool | None = None
+
+
+class PowerControlsUpdates(BaseModel):
+    """One native transaction; the standalone editors retain their existing domains."""
+    model_config = ConfigDict(extra="forbid")
+    power_factor: PowerFactorUpdates
+    grid_limit: PowerControlLimitUpdates
+
+
 class P50P90Updates(BaseModel):
     """Complete native P50 parameters for an existing GUI-produced result template."""
     model_config = ConfigDict(extra="forbid")
@@ -572,7 +590,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      horizon_updates: HorizonUpdates | None = None,
                                      inverter_temperature_updates: InverterTemperatureUpdates | None = None,
                                      power_factor_updates: PowerFactorUpdates | None = None,
-                                     p50_p90_updates: P50P90Updates | None = None) -> dict:
+                                     p50_p90_updates: P50P90Updates | None = None,
+                                     power_controls_updates: PowerControlsUpdates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -756,6 +775,18 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     plot or coupled physical changes. Native root flags and cached results stay unchanged.
     Unchecked GUI boxes retain manual values; checked boxes restore native defaults,
     not include/exclude terms. Native PVsyst alone computes probabilities and reports.
+    power_controls_updates is a separate combined PF/grid transaction (variant_name
+    may accompany it); old power_factor_updates/grid_limit_updates stay separate.
+    Supply power_factor using its existing shape and grid_limit with explicit mode,
+    quantity active/apparent and point injection/inverter. Constant also requires
+    positive limit in 0.1 native units (kW active, kVA apparent), separate_loss bool;
+    none supplies neither. No conversion from tangent or independent power model.
+    Only observed native flag families are accepted: monthly/Legacy with an enabled
+    limit require injection/separate loss; inverter point requires constant/native
+    PNom/separate loss; combined loss requires constant/native PNom/injection;
+    NoPF requires active injection/separate loss. No temperature, P50, storage/load
+    or geometry coupling. Inactive type/location bits are explicit, not silently reset.
+    The shared 8.1.6 PV-only single fixed/free-horizon/count gates remain in force.
     No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
@@ -768,7 +799,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         horizon_updates.model_dump(exclude_none=True) if horizon_updates is not None else None,
                         inverter_temperature_updates.model_dump(exclude_none=True) if inverter_temperature_updates is not None else None,
                         power_factor_updates.model_dump(exclude_none=True) if power_factor_updates is not None else None,
-                        p50_p90_updates.model_dump() if p50_p90_updates is not None else None)
+                        p50_p90_updates.model_dump() if p50_p90_updates is not None else None,
+                        power_controls_updates.model_dump(exclude_none=True) if power_controls_updates is not None else None)
 
 
 @categorized_tool()
