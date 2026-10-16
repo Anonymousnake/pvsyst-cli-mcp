@@ -23,6 +23,7 @@ from pvsyst_auxiliaries import auxiliary_state, replace_auxiliaries
 from pvsyst_seasonal import replace_seasonal
 from pvsyst_horizon_native import horizon_state, replace_horizon
 from pvsyst_inverter_temperature import inverter_temperature_state, replace_inverter_temperature
+from pvsyst_power_factor import power_factor_state, replace_power_factor
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -372,6 +373,7 @@ class VariantStore:
                     "grid_limit": grid_limit_state(lines, system),
                     "auxiliaries": auxiliary_state(lines, system),
                     "horizon": horizon_state(lines),
+                    "power_factor": power_factor_state(lines, system),
                     "inverter_temperature": inverter_temperature_state(lines, system),
                     "subarrays": [{"id": identifier, "values": fields(bounds, (
                         "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT", "NoOrientation",
@@ -392,7 +394,8 @@ class VariantStore:
                           auxiliary_updates: dict | None = None,
                           seasonal_updates: dict | None = None,
                           horizon_updates: dict | None = None,
-                          inverter_temperature_updates: dict | None = None) -> dict:
+                          inverter_temperature_updates: dict | None = None,
+                          power_factor_updates: dict | None = None) -> dict:
         allowed_subarray = {"NModSerie": (1, 100), "NInverter": (1, 10000), "NStringCh": (1, 2147483647),
                             "NoOrientation": (1, 2147483647), "NInvMPPT": (1, 10000),
                             "VBkUpEncl_syst": (0, 1),
@@ -427,6 +430,12 @@ class VariantStore:
                 or auxiliary_updates is not None or seasonal_updates is not None or horizon_updates is not None
                 or power_sharing_enabled is not None or independent_mppt_enabled is not None):
             raise ValueError("Inverter-temperature updates require a separate transaction; variant_name may accompany them")
+        if power_factor_updates is not None and (any(changes for changes, _ in requested)
+                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
+                or auxiliary_updates is not None or seasonal_updates is not None or horizon_updates is not None
+                or inverter_temperature_updates is not None or power_sharing_enabled is not None
+                or independent_mppt_enabled is not None):
+            raise ValueError("Power-factor updates require a separate transaction; variant_name may accompany them")
         if not isinstance(dry_run, bool):
             raise ValueError("dry_run must be a boolean")
         if not isinstance(add_utf8_bom, bool):
@@ -445,7 +454,8 @@ class VariantStore:
         if (not any(changes for changes, _ in requested) and not generator_updates and variant_name is None
                 and power_sharing_enabled is None and independent_mppt_enabled is None
                 and soiling_updates is None and grid_limit_updates is None and auxiliary_updates is None
-                and seasonal_updates is None and horizon_updates is None and inverter_temperature_updates is None) or any(
+                and seasonal_updates is None and horizon_updates is None and inverter_temperature_updates is None
+                and power_factor_updates is None) or any(
                 changes is not None and (not isinstance(changes, dict) or
                                          any(key not in allowed for key in changes))
                 for changes, allowed in requested):
@@ -595,10 +605,12 @@ class VariantStore:
             if generator_updates is not None:
                 generator = replace_generator(lines, arrays, system, generator_updates, self.components)
             soiling_change = grid_limit_change = auxiliary_change = seasonal_change = horizon_change = temperature_change = None
-            if any(value is not None for value in (soiling_updates, grid_limit_updates, auxiliary_updates, seasonal_updates, horizon_updates, inverter_temperature_updates)):
+            power_factor_change = None
+            if any(value is not None for value in (soiling_updates, grid_limit_updates, auxiliary_updates, seasonal_updates, horizon_updates, inverter_temperature_updates, power_factor_updates)):
                 control = ("Soiling" if soiling_updates is not None else "Grid limit" if grid_limit_updates is not None
                            else "Auxiliary" if auxiliary_updates is not None else "Seasonal" if seasonal_updates is not None
-                           else "Horizon" if horizon_updates is not None else "Inverter temperature")
+                           else "Horizon" if horizon_updates is not None else "Inverter temperature" if inverter_temperature_updates is not None
+                           else "Power factor")
                 main = self._main_array(lines)
                 versions = [self._field_indices(lines, b, "Version") for b in arrays.values()]
                 header_end = next(i for i in range(1, len(lines)) if lines[i].strip().startswith("PVObject_"))
@@ -628,10 +640,10 @@ class VariantStore:
                 else:
                     if (orientation_id != 1 or [g[2] for g in self._orientation_list(lines)[1]] != [1]
                             or any("pvLoad" in line for line in lines)
-                            or (seasonal_updates is not None or inverter_temperature_updates is not None)
+                            or (seasonal_updates is not None or inverter_temperature_updates is not None or power_factor_updates is not None)
                             and any("PVObject_Horizon=" in line for line in lines)):
                         raise ValueError(f"{control} editing requires one orientation, no loads and a supported horizon state")
-                    if inverter_temperature_updates is None:
+                    if inverter_temperature_updates is None and power_factor_updates is None:
                         flags = self._field_indices(lines, system, "Flags")
                         if len(flags) != 1 or not re.fullmatch(r"\$0{1,8}", FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2]):
                             raise ValueError(f"{control} editing requires plain Grid system Flags=$00")
@@ -645,6 +657,8 @@ class VariantStore:
                         raise ValueError(f"{control} editing requires complete circuit counts and every string in orientation 1")
                     if inverter_temperature_updates is not None:
                         temperature_change = replace_inverter_temperature(lines, system, inverter_temperature_updates)
+                    elif power_factor_updates is not None:
+                        power_factor_change = replace_power_factor(lines, system, power_factor_updates)
                     else:
                         updates = seasonal_updates if seasonal_updates is not None else horizon_updates
                         name_key = "orientation_name" if seasonal_updates is not None else "profile_name"
@@ -680,6 +694,8 @@ class VariantStore:
                 result["horizon"] = horizon_change
             if temperature_change is not None:
                 result["inverter_temperature"] = temperature_change
+            if power_factor_change is not None:
+                result["power_factor"] = power_factor_change
             if name_change is not None:
                 result.update(name_change=name_change, bom_added=bool(bom_prefix) and not data.startswith(b"\xef\xbb\xbf"))
             if "PMismMPP" in loss_modes:
