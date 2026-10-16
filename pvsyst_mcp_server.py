@@ -457,7 +457,8 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     Flags, variant_name from the header only (null if absent/duplicate there;
     late-root name ambiguity is not validated), utf8_bom (raw UTF-8 names do
     not prove BOM-less native decoding), main_array UFactor (W/m2/K)/Flags/Flags2,
-    main_array.soiling, native grid_limit, auxiliaries and horizon state, and standalone
+    main_array.soiling, native grid_limit, auxiliaries, horizon and inverter_temperature
+    state, and standalone
     generator settings/thresholds. Unsupported system forms report an issue;
     system_parameters exposes unique owning SystemType/Flags/TempShift/TempFixed/
     TanPhi/PLimGrid/LimGrSeparLoss as raw text; missing or duplicate fields are omitted.
@@ -515,6 +516,14 @@ class HorizonUpdates(BaseModel):
     profile_name: StrictStr | None = None
 
 
+class InverterTemperatureUpdates(BaseModel):
+    """Explicit native temperature mode and both saved temperature values in degC."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["ambient", "offset", "fixed"]
+    offset_c: StrictNum | None = None
+    fixed_c: StrictNum | None = None
+
+
 @categorized_tool()
 def pvsyst_update_variant_parameters(project: str, variant: str,
                                      expected_sha256: str, subarray_id: StrictInt = 1,
@@ -532,7 +541,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      grid_limit_updates: GridLimitUpdates | None = None,
                                      auxiliary_updates: AuxiliaryUpdates | None = None,
                                      seasonal_updates: SeasonalUpdates | None = None,
-                                     horizon_updates: HorizonUpdates | None = None) -> dict:
+                                     horizon_updates: HorizonUpdates | None = None,
+                                     inverter_temperature_updates: InverterTemperatureUpdates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -686,6 +696,14 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     near-shading/layout edits. Native FracAlbedo=1 stays inherited. New or changed
     points use the GUI profile template without stale derived factors; name-only
     updates preserve them. PVsyst computes interpolation, diffuse and losses.
+    inverter_temperature_updates is separate and requires an ordinary single free-horizon
+    PV-only Grid plane, with no load/storage/PF/aux/grid-limit coupling or geometry.
+    mode ambient removes both native temperature fields; offset/fixed require both
+    offset_c and fixed_c explicitly, including the inactive saved value, with no default.
+    Both values are degC in adapter range [-100,100], 0.1-degree steps: this is an
+    adapter support envelope, not a native GUI or manufacturer limit. Only system
+    temperature mode bits and TempShift/TempFixed change; module Uc and OND curves
+    stay unchanged. PVsyst alone calculates inverter temperature and derating.
     No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
@@ -695,7 +713,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         grid_limit_updates.model_dump(exclude_none=True) if grid_limit_updates is not None else None,
                         auxiliary_updates.model_dump(exclude_none=True) if auxiliary_updates is not None else None,
                         seasonal_updates.model_dump(exclude_none=True) if seasonal_updates is not None else None,
-                        horizon_updates.model_dump(exclude_none=True) if horizon_updates is not None else None)
+                        horizon_updates.model_dump(exclude_none=True) if horizon_updates is not None else None,
+                        inverter_temperature_updates.model_dump(exclude_none=True) if inverter_temperature_updates is not None else None)
 
 
 @categorized_tool()
