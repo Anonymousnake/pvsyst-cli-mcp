@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import re
 
-from pvsyst_component_editor import ASSIGNMENT, replace_value
+from pvsyst_component_editor import ASSIGNMENT, OBJECT_CLOSE_ALIAS, replace_value
 
 THRESHOLDS = ("VBkUpEncl_syst", "VBkUpDecl_syst")
 GENERATOR_MASK = 0x20
@@ -22,6 +22,7 @@ def direct_fields(lines, bounds):
             stack.append(match[4])
         elif line.startswith("End of PVObject ") or line.startswith("End of T"):
             kind = line.removeprefix("End of PVObject ").removeprefix("End of ")
+            kind = OBJECT_CLOSE_ALIAS.get(kind, kind)
             if not stack or stack.pop() != kind:
                 raise ValueError("Unmatched nested object in generator configuration scope")
         elif line == "EndTags":
