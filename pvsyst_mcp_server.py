@@ -528,6 +528,20 @@ class InverterTemperatureUpdates(BaseModel):
     fixed_c: StrictNum | None = None
 
 
+class AgeingUpdates(BaseModel):
+    """Existing activated ageing template only: two model inputs, no cache, no enable state."""
+    model_config = ConfigDict(extra="forbid")
+    simulation_year: StrictInt
+    annual_module_degradation_percent: StrictNum
+
+
+class IamUpdates(BaseModel):
+    """Component IAM bit or the ASHRAE model; PAN curve data is never written."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["component", "ashrae"]
+    ashrae_b0: StrictNum | None = None
+
+
 class StringMismatchUpdates(BaseModel):
     """Native string-voltage-mismatch default bit or one explicit manual percentage."""
     model_config = ConfigDict(extra="forbid")
@@ -602,7 +616,9 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      power_factor_updates: PowerFactorUpdates | None = None,
                                      p50_p90_updates: P50P90Updates | None = None,
                                      power_controls_updates: PowerControlsUpdates | None = None,
-                                     string_mismatch_updates: StringMismatchUpdates | None = None) -> dict:
+                                     string_mismatch_updates: StringMismatchUpdates | None = None,
+                                     ageing_updates: AgeingUpdates | None = None,
+                                     iam_updates: IamUpdates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -805,6 +821,12 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     auxiliary_updates profile has two verified families -- constant power with its
     threshold, or proportional W/kW with its threshold -- and requires all five
     values explicitly with night_kw = 0; the old constant/none shapes are unchanged.
+    ageing_updates is separate (variant_name may accompany it) and applies only to an
+    existing activated ageing template: it writes simulation_year and
+    annual_module_degradation_percent, never the stored loss/mismatch factors, never the
+    enable state, and performs no stochastic sampling. A zero rate is a real value, not a
+    disabled state. iam_updates is separate too and covers only the component IAM bit or
+    the ASHRAE model with an optional b0; PAN files and curve data are never written.
     No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
@@ -819,7 +841,9 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         power_factor_updates.model_dump(exclude_none=True) if power_factor_updates is not None else None,
                         p50_p90_updates.model_dump() if p50_p90_updates is not None else None,
                         power_controls_updates.model_dump(exclude_none=True) if power_controls_updates is not None else None,
-                        string_mismatch_updates.model_dump(exclude_none=True) if string_mismatch_updates is not None else None)
+                        string_mismatch_updates.model_dump(exclude_none=True) if string_mismatch_updates is not None else None,
+                        ageing_updates.model_dump(exclude_none=True) if ageing_updates is not None else None,
+                        iam_updates.model_dump(exclude_none=True) if iam_updates is not None else None)
 
 
 @categorized_tool()
