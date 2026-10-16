@@ -1,6 +1,6 @@
 # 逆变器温度、PF 与 kVA 原生分组验证
 
-本阶段补齐已有GUI保存状态的原生消费，不新增温度/PF/kVA配置接口。GUI/CLI8.1.6.49278；派生工程 `ENERGY_MANAGEMENT`，440kWp/6台Generic 60kW逆变器，Hawaii 2022原天气；原工程、组件、气象保留。试验温度/PF/限值不是工程建议，也不代表其它OND行为。
+本记录补齐已有GUI保存状态的原生消费；后续[逆变器温度配置](inverter-temperature.md)已独立验收，PF/kVA配置仍待接入。GUI/CLI8.1.6.49278；派生工程 `ENERGY_MANAGEMENT`，440kWp/6台Generic 60kW逆变器，Hawaii 2022原天气；原工程、组件、气象保留。试验温度/PF/限值不是工程建议，也不代表其它OND行为。
 
 后续只读检查 `pvsyst_get_variant_parameters.system_parameters` 返回拥有的SystemType/Flags/TempShift/TempFixed/TanPhi/PLimGrid/LimGrSeparLoss原始字符串。唯一字段才返回，缺失/重复省略，system不存在为空对象；不补默认、不计算PF或调整kW/kVA。八个原生GUI参考逐项读回及文件不变性已检查；关闭控制实际为$06000000而非旧摘要的$00，已按原文件更正。另修复Comment=TEMP_...被旧共用解析器误认作嵌套对象的问题，标题不再干扰系统检查。现有受限写入器继续阻断未验证耦合，不因只读暴露而放宽。
 
@@ -45,7 +45,7 @@ InvTemp实际单位°C，InvPmax/E_Grid实际kW。PF开启时EReGrid/EApGrid出�
 
 ## 剩余范围
 
-温度目前只证明上述模式/48h；PF与有功/视在组合证明本夹具2022全年，不外推全部逆变器、月份或leading模式。尚未接入专用配置接口，P50/P90仍待保存和原生概率报告验证。
+此处温度分组记录保留48h口径，后续温度写入器另有offset/fixed完整全年/16列GUI对照；PF与有功/视在组合证明本夹具2022全年，不外推全部逆变器、月份或leading模式。PF/kVA配置接口及P50/P90保存/原生概率报告仍待完成。
 
 储能本轮只补名称线索：PeakShaving、ChargingStrategy/DischStrategy、AfterSunset/FromASpecifiedHour/SpecifiedHours。未绑定持久化或消费，不宣称削峰、网充或混合DC已实现；已有self_consumption/weak_grid策略选择本来已实现，不重复列成缺口。数值型自用率设置的存在本身未证，输出指标不冒充配置项。
 
