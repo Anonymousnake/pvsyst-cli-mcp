@@ -458,7 +458,7 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     late-root name ambiguity is not validated), utf8_bom (raw UTF-8 names do
     not prove BOM-less native decoding), main_array UFactor (W/m2/K)/Flags/Flags2,
     main_array.soiling, native grid_limit, auxiliaries, horizon, inverter_temperature
-    and power_factor state (signed native tan_phi/monthly_tan_phi and pnom_limit), and standalone
+    and power_factor state, p50_p90 (existing native result-template parameters), and standalone
     generator settings/thresholds. Unsupported system forms report an issue;
     system_parameters exposes unique owning SystemType/Flags/TempShift/TempFixed/
     TanPhi/PLimGrid/LimGrSeparLoss as raw text; missing or duplicate fields are omitted.
@@ -533,6 +533,25 @@ class PowerFactorUpdates(BaseModel):
     monthly_tan_phi: list[StrictNum] | None = None
 
 
+class P50P90Updates(BaseModel):
+    """Complete native P50 parameters for an existing GUI-produced result template."""
+    model_config = ConfigDict(extra="forbid")
+    MeteoKind: Literal["SpecYear", "TMY"]
+    P90Custom: StrictInt
+    PxxCustom: StrictInt
+    PxxReport: StrictBool
+    PxxMainResults: StrictBool
+    PlotKind: StrictInt
+    YearDevFromAver: StrictNum
+    MeteoAnnualVariab: StrictNum
+    PVModelVariab: StrictNum
+    InverterVariab: StrictNum
+    SoilingVariab: StrictNum
+    DegradVariab: StrictNum
+    CustomVariab: StrictNum
+    CustomVarLabel: StrictStr
+
+
 @categorized_tool()
 def pvsyst_update_variant_parameters(project: str, variant: str,
                                      expected_sha256: str, subarray_id: StrictInt = 1,
@@ -552,7 +571,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      seasonal_updates: SeasonalUpdates | None = None,
                                      horizon_updates: HorizonUpdates | None = None,
                                      inverter_temperature_updates: InverterTemperatureUpdates | None = None,
-                                     power_factor_updates: PowerFactorUpdates | None = None) -> dict:
+                                     power_factor_updates: PowerFactorUpdates | None = None,
+                                     p50_p90_updates: P50P90Updates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -724,6 +744,18 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     or manufacturer limits. GUI leading uses negative, lagging positive; native
     PVsyst alone computes power and derating. Legacy active/apparent select inverter
     PNom interpretation, not injection limits, and do not change OND hardware data.
+    p50_p90_updates edits an existing GUI-produced P50 result template, separately
+    from physical changes (variant_name may accompany it). Supply all fourteen native
+    keys: SpecYear/TMY kind, two ordered integer percentiles 51..99, report booleans,
+    PlotKind=1, explicit year deviation and six variability percentages, and a custom
+    ASCII label. YearDevFromAver is percent in [-100,100], variability fields percent
+    in [0,100], all using 0.001 steps; these are adapter domains, not scientific bounds.
+    CustomVarLabel requires 1..80 printable trimmed ASCII bytes. Require native 8.1.6
+    plain PV-only single fixed/free-horizon Grid, root Flags=$01800001 and one existing
+    flat P50_P90=TP50_P90 block; no creation/deletion, unknown ClimateChange, cumulative
+    plot or coupled physical changes. Native root flags and cached results stay unchanged.
+    Unchecked GUI boxes retain manual values; checked boxes restore native defaults,
+    not include/exclude terms. Native PVsyst alone computes probabilities and reports.
     No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
@@ -735,7 +767,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         seasonal_updates.model_dump(exclude_none=True) if seasonal_updates is not None else None,
                         horizon_updates.model_dump(exclude_none=True) if horizon_updates is not None else None,
                         inverter_temperature_updates.model_dump(exclude_none=True) if inverter_temperature_updates is not None else None,
-                        power_factor_updates.model_dump(exclude_none=True) if power_factor_updates is not None else None)
+                        power_factor_updates.model_dump(exclude_none=True) if power_factor_updates is not None else None,
+                        p50_p90_updates.model_dump() if p50_p90_updates is not None else None)
 
 
 @categorized_tool()
