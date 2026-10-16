@@ -75,3 +75,15 @@ IAM三态在变体 `pvSubArray.PVObject_IAM` 中独立保存，含模型字段�
 本机验收记录为 `loss-parameters-public-r27.json` 与 `loss-parameters-shared-r28.json`。整份教程目标仍进行中，不把这两项适配器交付等同于完整热模型、IAM模型生成、老化随机、任意变压器树或光谱配置支持。
 
 默认工作区无覆盖部署13个文件：`LOSS_PARAMETER_CONFIG`工程、VC5/D/H/L/M、SFI及三对年度CSV/PDF。全新MCP会话对VCM读取、无操作及8760h/16列复核通过；7页PDF正文全页一致。跨午夜首次PDF断言失败仅因页2–6的第一行报告日期从16/10/26变17/10/26，原校验器只归一了带时间的仿真戳。保留原失败记录及五处精确diff，仅对紧邻版本标题的首行报告日期补归一，不全局抹除日期、不重跑仿真；`loss-parameters-default-r28-review.json`记录裁决，原输入仍一致。
+
+## 原生模型重算探针
+
+后续8.1.6全年隔离对照，原输入保持。以GUI第5年/均值.40/RMS0为源，逐项改变模型输入而保留 `DegradLossFactor=1.80`：仅年数改10得774416.2022kWh；仅均值改.60得782065.7150kWh；两者一起改后全部8760×16列/单位/时间戳与GUI第10年/.60参考完全相同（760851.3587kWh），7页PDF也在显式工程/变体标识及报告时间归一后全页一致。反向只把保存量改为5.70、年数和均值不动，全年仍逐列匹配原第5年参考788152.0032kWh。这证明在当前RMS0、KeepMCValues=False域中，内核采用模型参数重算而非直接采用旧保存损失因子；不要求源文件回写，不外推到随机/RMS非零分支。记录 `ageing-native-probe-r29.json`、`model-pdf-review-r29.json`。
+
+原生 `NoYearSimul`/`DegradLossFactor`/`DegradMismFactor` 属 `pvMainArray` 直属，`ModuleDegradFactor` 属其嵌套 `pvAgeing`；后者原生尾标是 `End of TAgeing`。旧MCP getter在真实片段读取时报错；解析器现在只显式增加 `TAgeing → pvAgeing` 同一别名，共享至direct_fields，不把任意 `End of T...` 变成可配对对象。真实stdio公共调用：六份老化配置读取成功，十一类既有参数无操作不改字节/不建备份，四类错开名/错闭名/漏闭名/未知闭名仍报错且文件不变。该修复只是原生对象兼容，不是新增老化编辑器；模型写入仍待独立验收。记录 `ageing-parser-public-r29.json`。
+
+一轮子代理内部验证错误地给只用于对象片段的objects()传了整份变体，常规样本也在根尾标签失败，故该自测既不能证明也不能否证TAgeing机理。最终以真实MCP输入、补丁前报错和补丁后成功/仍拒错配的对照裁定，未将错误自测计为通过。
+
+IAM另有三个原生年度候选：ASHRAE.080源只将组件定义bit5置回1，保留旧ASHRAE块或完整移除独立IAM块，两者都与组件默认B0的8760×16列完全一致（799980.9366kWh）；两份7页PDF有效模型及其它正文也与组件默认全页一致。只把ASHRAE参数改.050时结果变为797015.3935kWh，仍由原生内核计算。组件默认位与有效模型恢复已取得独立消费证据；不由适配器生成或移植组件曲线，不因这三个探针声称任意IAM/PAN编辑已接入。记录 `iam-native-probe-r29.json`、`model-pdf-review-r29.json`。
+
+这些样本、CSV及PDF仅保留在隔离本机目录。没有运行旧smoke、全量发现或哈希类测试；没有修改商业二进制、原天气、原工程或GUI/INI。

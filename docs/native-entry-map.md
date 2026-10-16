@@ -45,9 +45,9 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 5.3.3 / 27 | 模块失配：`PMismMPP`，% | 已有受限入口；GUI默认/手动绑定及原生消费已证，失配5%的GUI载入/另存与24h对照已证 | 只清子阵默认位0x00040000；单存百分比在默认模式可能无效 |
 | 5.3.4 / 27–28 | string_mismatch_updates：组串电压失配默认/常数 | [原生保存/8760h与受限MCP](native-detailed-losses.md)：PMismString及owning默认bit17，旧教程忽略口径不覆盖8.1.6 | 独立事务，默认不臆补0，非PMismMPP；保持未知位/其它物理字段，详细研究工具仍待 |
 | 5.4 / 28 | 积灰：`soiling_updates` 和 `soiling` SFI | [PR #36 原生与MCP已验收](soiling-verification.md)：常数/月度8760h、15数值列一致 | 主阵列Soiling块，0.1百分点精度；8.1.6 PV-only、无阴影固定单平面；不是自动计算清洗/积雪模型 |
-| 5.5 / 28–29 | PAN IAM/Fresnel及定制入射角曲线 | 变体独立IAM的ASHRAE/普通玻璃/自定义三态保存+8760h已证；PAN组件入口仍待 | [pvSubArray.IAM与原生曲线缓存](native-detailed-losses.md)，不自行算菲涅尔/ASHRAE；OND/BTR编辑不冒充PAN |
+| 5.5 / 28–29 | PAN IAM/Fresnel及定制入射角曲线 | 三模型原生消费及组件定义bit5恢复两候选8760h/全页PDF已证，MCP模型配置/PAN入口待接 | [原生默认恢复与曲线缓存](native-detailed-losses.md)，不自行算菲涅尔/ASHRAE；OND/BTR编辑不冒充PAN |
 | 5.6 / 30 | auxiliary_updates：常数/夜间及profile阈值、比例族 | [原常数MCP](native-auxiliary-power.md)不变；[受限profile](native-detailed-losses.md)两族GUI保存/8760h已证 | pvSystem bit18/5原生字段；新profile显式五值、night0、未验混合停；保留负E_Grid，无外部负荷模型 |
-| 5.7 / 30–31 | 老化年、衰减、失配分布及保留随机结果 | RMS0两态GUI保存/8760h已证；任意配置、MC保留未接MCP | [原生Ageing对象与已存派生量](native-detailed-losses.md)，不自行按年算损失/蒙特卡罗 |
+| 5.7 / 30–31 | 老化年、衰减、失配分布及保留随机结果 | RMS0模型年数/均值四年度对照证明内核重算，TAgeing解析兼容已修；MCP模型写入/MC保留仍待 | [原生重算与保存量区别](native-detailed-losses.md)，不自行按年算损失/蒙特卡罗 |
 | 5.8 / 31 | PV系统不可用时段/统计配置 | seed7生成5%两态文件仅标题不同，8760h逐列一致；MCP专用配置仍待 | [原生随机时段复演](native-detailed-losses.md)；与WeakGrid电网不可用分开，不以24h随机未命中判无消费 |
 | 5.9 / 32–33 | 光谱模型与系数集 | 原生页显示当前MET缺PW与RH，启用禁用；系数可见不等消费 | [真实依赖缺口](native-detailed-losses.md)；不补造数据、不估算光谱校正 |
 | 5.10 / 33 | 各损失效应的交互行为图 | 教程有原生交互图；专用调用/导出尚未定位 | 与全年PDF损失图不同；后者已在基础闭环产生，不借此宣称交互图已接入 |

@@ -17,6 +17,8 @@ MAX_POINTS = 256
 MAIN_CURVE = "Converter/ProfilPIO"
 AUTO_CURVE_MASK = 0x10
 THREE_VOLTAGE_MASK = 0x1000
+# Native ageing closes with its Delphi class name rather than its PV object name.
+OBJECT_CLOSE_ALIAS = {"TAgeing": "pvAgeing"}
 
 
 def replace_value(line: str, value: str) -> str:
@@ -89,9 +91,10 @@ def objects(text: str) -> list[ObjectBlock]:
     stack: list[tuple[str, ObjectBlock]] = []
     result = []
     for index, line in enumerate(text.splitlines()):
-        end = re.fullmatch(r"\s*End of (?:PVObject )?(pv\w+|TConverter|TCubicProfile)\s*", line)
+        end = re.fullmatch(r"\s*End of (?:PVObject )?(pv\w+|TConverter|TCubicProfile|TAgeing)\s*", line)
         if end:
-            if not stack or stack[-1][1].object_type != end[1]:
+            kind = OBJECT_CLOSE_ALIAS.get(end[1], end[1])
+            if not stack or stack[-1][1].object_type != kind:
                 raise ValueError(f"Unmatched object closing tag at line {index + 1}")
             stack[-1][1].end_line = index + 1
             stack.pop()
