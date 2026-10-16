@@ -495,9 +495,12 @@ class GridLimitUpdates(BaseModel):
 class AuxiliaryUpdates(BaseModel):
     """Explicit native whole-system operating/night auxiliary powers in kW."""
     model_config = ConfigDict(extra="forbid")
-    mode: Literal["none", "constant"]
+    mode: Literal["none", "constant", "profile"]
     operating_kw: StrictNum | None = None
     night_kw: StrictNum | None = None
+    operating_threshold_kw: StrictNum | None = None
+    proportional_w_per_kw: StrictNum | None = None
+    proportional_threshold_kw: StrictNum | None = None
 
 
 class SeasonalUpdates(BaseModel):
@@ -523,6 +526,13 @@ class InverterTemperatureUpdates(BaseModel):
     mode: Literal["ambient", "offset", "fixed"]
     offset_c: StrictNum | None = None
     fixed_c: StrictNum | None = None
+
+
+class StringMismatchUpdates(BaseModel):
+    """Native string-voltage-mismatch default bit or one explicit manual percentage."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["default", "constant"]
+    loss_percent: StrictNum | None = None
 
 
 class PowerFactorUpdates(BaseModel):
@@ -591,7 +601,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      inverter_temperature_updates: InverterTemperatureUpdates | None = None,
                                      power_factor_updates: PowerFactorUpdates | None = None,
                                      p50_p90_updates: P50P90Updates | None = None,
-                                     power_controls_updates: PowerControlsUpdates | None = None) -> dict:
+                                     power_controls_updates: PowerControlsUpdates | None = None,
+                                     string_mismatch_updates: StringMismatchUpdates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -787,6 +798,13 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     NoPF requires active injection/separate loss. No temperature, P50, storage/load
     or geometry coupling. Inactive type/location bits are explicit, not silently reset.
     The shared 8.1.6 PV-only single fixed/free-horizon/count gates remain in force.
+    string_mismatch_updates is separate (variant_name may accompany it), for native
+    8.1.6 PV-only single fixed-plane/free-horizon Grid subarrays: mode default clears
+    the manual value and sets the native default bit, constant writes one manual
+    loss_percent (adapter envelope 0.01..100, 0.01 steps; zero is mode default).
+    auxiliary_updates profile has two verified families -- constant power with its
+    threshold, or proportional W/kW with its threshold -- and requires all five
+    values explicitly with night_kw = 0; the old constant/none shapes are unchanged.
     No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
@@ -800,7 +818,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         inverter_temperature_updates.model_dump(exclude_none=True) if inverter_temperature_updates is not None else None,
                         power_factor_updates.model_dump(exclude_none=True) if power_factor_updates is not None else None,
                         p50_p90_updates.model_dump() if p50_p90_updates is not None else None,
-                        power_controls_updates.model_dump(exclude_none=True) if power_controls_updates is not None else None)
+                        power_controls_updates.model_dump(exclude_none=True) if power_controls_updates is not None else None,
+                        string_mismatch_updates.model_dump(exclude_none=True) if string_mismatch_updates is not None else None)
 
 
 @categorized_tool()
