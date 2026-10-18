@@ -55,7 +55,7 @@ Restart the client after editing its MCP configuration. The server requires Pyth
 
 ## MCP tools by workflow
 
-The server exposes 61 tools across seven groups. Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The new Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
+The server exposes 62 tools across seven groups. Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The new Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
 
 First CLI initialization is serialized inside the MCP process, so concurrent initial requests share one client and the same workspace `RLock` used by CLI, component and variant operations. This is process-local coordination, not an OS/cross-process lock; SHA checks remain optimistic and external editors still require coordination. See [concurrent initialization verification](docs/grid-capacity-verification.md#single-client-concurrent-initialization).
 
@@ -70,9 +70,9 @@ Expected input, missing/existing-file and adapter `PVsystError` exceptions retai
 | `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | Confirmed license changes |
 | `pvsyst_export_logs` | Diagnostic ZIP under Results |
 
-### Projects & Variants (20)
+### Projects & Variants (21)
 
-The core project/variant block has passed a fresh-stdio integrated acceptance exercising all 20 tools, six native CLI 8.1.6 runs and exact full-project recovery. See the [delivery checklist, integrated evidence and explicit boundaries](docs/project-variant-acceptance.md). This is not a claim of complete GUI/model or arbitrary-topology parity; those extensions remain in the broader roadmap. Restart an already running MCP server to load the current code/schema.
+The original core project/variant block passed a fresh-stdio integrated acceptance exercising its 20 tools, six native CLI 8.1.6 runs and exact full-project recovery. The tracking creation entry has separate verification below. See the [delivery checklist, integrated evidence and explicit boundaries](docs/project-variant-acceptance.md). This is not a claim of complete GUI/model or arbitrary-topology parity; those extensions remain in the broader roadmap. Restart an already running MCP server to load the current code/schema.
 
 | Tools | Purpose |
 |---|---|
@@ -82,9 +82,12 @@ The core project/variant block has passed a fresh-stdio integrated acceptance ex
 | `pvsyst_update_project_sources`, `pvsyst_restore_project_sources` | Persist a workspace SIT/MET pair across a project and every variant; restore a saved source/title file set |
 | `pvsyst_get_variant_components`, `pvsyst_update_variant_components` | Inspect and replace scoped PAN/OND/BTR/GEN references |
 | `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Inspect, preview and edit variant display names, subarray/orientation scalars, bounded main-array thermal coefficient and standalone generator configuration |
+| `pvsyst_create_tracking_variant` | Preview or create a NEW VC from a verified existing 8.1.6 UnlimTracking record; edit axis azimuth, rotation limits, backtracking and irradiance optimization without changing template geometry or computing a replacement model |
 | `pvsyst_validate_variant_structure`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray` | Check references and edit isolated unshaded grid branches |
 | `pvsyst_restore_variant` | Restore a SHA-guarded variant backup |
 | `pvsyst_archive_project`, `pvsyst_archive_variant`, `pvsyst_restore_project_archive` | Confirmed PRJ/VC archive and recovery |
+
+See [native tracking controls](docs/native-tracking-controls.md) for the bounded template, explicit degree ranges, strict source checks and fresh annual CSV/PDF verification. The native model can produce 2D near-shading losses without an explicit 3D scene; the report's no-Shadings summary label is not a switch-state test. Fixed-plane tools keep their existing scope, and tracking type conversion or arbitrary geometry is not added.
 
 ### Components (14)
 

@@ -36,6 +36,7 @@ from pvsyst_load_variant import create_load_variant
 from pvsyst_grid_storage import create_grid_storage_variant
 from pvsyst_grid_storage_system import create_grid_storage_system
 from pvsyst_native_load import create_native_load_variant
+from pvsyst_tracking import create_tracking_variant
 from pvsyst_weather import inspect_weather_csv
 from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
@@ -62,7 +63,7 @@ TOOL_GROUPS = {
         "pvsyst_clone_variant", "pvsyst_update_variant_components",
         "pvsyst_get_variant_parameters", "pvsyst_update_variant_parameters",
         "pvsyst_validate_variant_structure", "pvsyst_clone_subarray",
-        "pvsyst_remove_subarray", "pvsyst_restore_variant",
+        "pvsyst_remove_subarray", "pvsyst_restore_variant", "pvsyst_create_tracking_variant",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
@@ -95,6 +96,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                          "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
+                          "pvsyst_create_tracking_variant",
                           "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
@@ -1203,6 +1205,59 @@ def pvsyst_create_load_variant(project: StrictStr, source_variant: StrictStr, ne
     return create_load_variant(store, project=project, source_variant=source_variant,
                                new_variant=new_variant, load_manifest_name=load_manifest_name,
                                dry_run=dry_run)
+
+
+class TrackingControls(BaseModel):
+    """Five native UnlimTracking controls in degrees and strict booleans; unknown fields stop."""
+    model_config = ConfigDict(extra="forbid")
+    axis_azimuth_deg: StrictNum
+    min_rotation_deg: StrictNum
+    max_rotation_deg: StrictNum
+    backtracking: StrictBool
+    irradiance_optimization: StrictBool
+
+
+@categorized_tool()
+def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr,
+                                   new_variant: StrictStr, tracking: TrackingControls,
+                                   dry_run: StrictBool = True,
+                                   variant_name: StrictStr | None = None,
+                                   add_utf8_bom: StrictBool = False) -> dict:
+    """Preview or create a NEW variant that edits five native UnlimTracking controls in place.
+    Supported subset is an existing native 8.1.6 PV-only single-subarray Grid variant whose
+    one orientation record is already FieldType=UnlimTracking (Version=8.1.6, Flags=$00,
+    NoOrient=1) under a single counted TOrientGroup list, with pvSystem declaring only
+    Flags=$06000000 and SystemType=Grid, main array Flags=$01900400/Flags2=$082A and
+    subarray 8.1.6/$019E1002/Flags2=$20 with all strings assigned to orientation 1.
+    No loads, storage, P50/P90, saved horizon, explicit 3D scene or module layout is
+    accepted: such sources are blocked rather than silently edited, and complete native
+    grid counts must already be consistent.
+    The read-only record fields must still match their verified native values: Pitch,
+    CollectorWidth, InactiveBandWidth1/2, CellWidth, FracShadingFactor, NSheds=10,
+    NModInWidth=3, BTNoTrackers=-1,-1, plus UsesElectricalEffect and the three averaging
+    switches False. The record Comment is never rewritten and is not used to detect the
+    type; unknown, duplicated or missing record fields stop instead of being replaced.
+    Only AxisAzim, MinPhi, MaxPhi, UsesBacktracking and UsesIrradOptimiz are written, with
+    replace_value keeping the original `=` spacing; angles render one decimal place.
+    Adapter ranges are axis_azimuth_deg -20..20, min_rotation_deg -60..-45 and
+    max_rotation_deg 45..60 with strict 0.1 steps; these are adapter bounds, not measured
+    native GUI limits. All four boolean combinations are accepted. No tracking angle,
+    backtracking or irradiance optimisation is computed here and no template conversion,
+    geometry edit or electrical-effect change is offered.
+    dry_run=true writes nothing; execution creates one NEW VC only and never edits the
+    source PRJ/VC, weather, topology or other orientation records, reusing existing store
+    locking, path checks, read-back verification and no-overwrite semantics. Optional
+    variant_name follows the existing display-name and BOM rules, and add_utf8_bom=true
+    writes a UTF-8 BOM to the NEW VC even without a name; bom_added reports it.
+    native_consumption_verified stays false: the template's own near-shading behaviour is
+    neither modified nor certified, so verify native hourly results and reports for the
+    matching year/timezone before treating saved controls as consumed."""
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_tracking_variant(store, project=project, source_variant=source_variant,
+                                   new_variant=new_variant, tracking=tracking.model_dump(),
+                                   dry_run=dry_run, variant_name=variant_name,
+                                   add_utf8_bom=add_utf8_bom)
 
 
 class ConstantNativeLoad(BaseModel):
