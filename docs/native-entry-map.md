@@ -101,17 +101,17 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 教程节 / PDF页 | 功能及现有入口 | 原生证据 / MCP状态 | 共享依赖与下一验证 |
 |---|---|---|---|
 | 6 / 33–34 | 小时CSV准备、快照绑定：`prepare_load_profile`、`create_load_variant` | 已实现；[小时负荷](storage-loads.md)及[储能记录](grid-storage-parameters.md)记载8784小时 `E_User` 逐点一致 | 全年、单位、固定标准偏移；绑定 `pvLoad` 的原生缓存，不能仅换CSV路径 |
-| 6 / 33–34 | 无电池PV-only自用使能及结果 | 负荷绑定入口存在，但无电池自用使能的独立绑定需确认 | 与储能策略分开；自用率是原生结果，不因此发明设置参数 |
-| 6 / 33 | 常数/月度/日曲线/概率/家庭电器负荷 | 教程候选，缺这些专用定义入口；已有逐时CSV路径 | 不在适配器自造曲线或归一化模型，先确定原生格式 |
+| 6 / 33–34 | 无电池PV-only自用使能及结果 | [GUI保存与8760h消费已证](native-load-storage-controls.md)：根pvVCalcul bit19及pvLoad，恒100kW；尚无新的专用使能API | E_Solar=357897.4666kWh与报告一致；本例EDirUse等于可用发电，非该自用量，不泛化字段定义 |
+| 6 / 33 | 常数/月度/日曲线/概率/家庭电器负荷 | [五态保存及四类8760h消费已证](native-load-storage-controls.md)；概率GUI 0–120kW与CLI 0–432kW不符，语义验收失败；尚无专用定义API | Monthly ValMonth非原样kW；DailyProfile与Probability同Flags=$02；HouseHold位图任意构造未证，不自造曲线或归一化模型 |
 | 7 / 35–36 | BTR、串并联、12个月电池温度、SOW：`create_grid_storage_system` | 已有原生AC耦合构造；GUI重载48h及其他原生参数对照 | 明确硬件/温度/SOW，不推导自动最优选型或BMS |
 | 7.1 / 36–37 | AC耦合自用策略：`create_grid_storage_*` 的 `self_consumption` | 已实现；48h参数对照，已有全年记录按各自fixture/时基使用 | 不把它误列为“策略切换缺入口”；不外推DC端口/网充 |
 | 7.1 / 36–37 | 充电器AC输入、放电逆变器AC输出功率及效率 | 已实现；C1/C2证明两侧1kW限值，分别包含 `CL_Chrg` / `CL_InvB` | 与电池DC功率及网充能力分开；已有控制不重复执行 |
 | 7.1、7.3 / 36–39 | 初始/高/硬低/备用SOC | 已实现，分数0..1；初始/高SOC、SelfConsumption硬低C4已证；WeakGrid备用语义按停电条件验证 | 备用 `SOCDischSelf` 不是发电机电压阈值；停电允许朝硬低放电，不能以“停在备用之上”作验收标准 |
 | 7.1、7.3 / 36–39 | 允许注入：`allow_grid_export` | 已实现；48h禁止/恢复对照，系统Flags仅bit27 | 不是数值kW限值，也不是网充开关；与其它系统位并存 |
 | 7.3 / 38–39 | WeakGrid及全年可用性CSV快照 | 已实现；停电/恢复48h控制，已有8784小时记录须按对应fixture说明 | 负荷与可用性同年同时基，重新绑定；原生日志已读不等于已消费 |
-| 7.3 / 38–39 | 随机电网停运分布 | 教程候选，缺生成入口 | 不用外部随机调度替代原生功能；与PV系统不可用分开 |
-| 7.2 / 37–38 | Peak shaving及四种放电时序 | 候选，缺专用策略；现有enum仅自用/WeakGrid | 依赖原生功率限值、储能策略和负荷互斥规则；不是PV限电本身 |
-| 扩展范围 | 电网充电、混合逆变器DC电池端口 | 尚无已验收入口 | 无日照时没有充电不构成正例；须先证明原生端口/策略，不以AC耦合替代 |
+| 7.3 / 38–39 | 随机电网停运分布 | [原生整页与seed1生成时段已见](native-load-storage-controls.md)，确认仍报配置错误；未形成通过的保存/消费方案；缺生成API | 与PV系统不可用分开，保留失败不猜原因，不用外部随机调度替代 |
+| 7.2 / 37–38 | Peak shaving及四种放电时序 | [AfterSunset/MinMaxHour保存与两组8760h充放电对照已证](native-load-storage-controls.md)；余两态及专用策略API仍待 | 200kW注入限制/AC平衡已核对；指定时段仅在观察窗口放电，AfterSunset有日照放电语义待解释；切Peak原生移除pvLoad，不是PV限电本身 |
+| 扩展范围 | 电网充电、混合逆变器DC电池端口 | [实际AC窗口、DC类/枚举候选已区分](native-load-storage-controls.md)，DC激活链未闭合；尚无已验收入口 | 未找到直接引用不证明不存在；无日照时没有充电不构成正例，先证原生端口/策略，不以AC耦合替代 |
 | 7 / 34–39 | 原生能量平衡与SOC结果：`grid_storage` SFI | 已有完整导出含 `CL_Over`；旧文档记载8784行与完整AC平衡最大0.0097kW残差 | 本阶段未重跑旧年；SolarTime/LegalTime与GUI48h证据不得混用或互相否定 |
 
 储能时段来源：既有C1/C2/C4、全年负荷与全AC平衡属于各自记录；后续 `STORAGE_K1_GUI` 的四次2024-01-01至01-02原生GUI往返只证明那48小时。当地标准时间CSV使用 `LegalTime`，不因为晴空提示自动移时。
