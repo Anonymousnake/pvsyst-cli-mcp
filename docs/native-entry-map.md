@@ -110,9 +110,9 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 7.1、7.3 / 36–39 | 允许注入：`allow_grid_export` | 已实现；48h禁止/恢复对照，系统Flags仅bit27 | 不是数值kW限值，也不是网充开关；与其它系统位并存 |
 | 7.3 / 38–39 | WeakGrid及全年可用性CSV快照 | 已实现；停电/恢复48h控制，已有8784小时记录须按对应fixture说明 | 负荷与可用性同年同时基，重新绑定；原生日志已读不等于已消费 |
 | 7.3 / 38–39 | 随机电网停运分布 | [原生整页与seed1生成时段已见](native-load-storage-controls.md)，确认仍报配置错误；未形成通过的保存/消费方案；缺生成API | 与PV系统不可用分开，保留失败不猜原因，不用外部随机调度替代 |
-| 7.2 / 37–38 | Peak shaving及四种放电时序 | [AfterSunset/MinMaxHour保存与两组8760h充放电对照已证](native-load-storage-controls.md)；余两态及专用策略API仍待 | 200kW注入限制/AC平衡已核对；指定时段仅在观察窗口放电，AfterSunset有日照放电语义待解释；切Peak原生移除pvLoad，不是PV限电本身 |
+| 7.2 / 37–38 | Peak shaving及四种放电时序 | [pvsyst_create_peak_shaving_variant受限MCP已验收](native-peak-shaving.md)：既有Peak/PVToGridMin profile，两态完整文件同GUI，11正向/71负例及3组新8760h/28列/PDF；另两态仍待 | 保留root80000但无pvLoad的原生状态；固定电池/200限值profile，报告为Apparent power；全AC平衡/充放SOC联动已核，AfterSunset不等于仅夜间，不外推端点语义或网充 |
 | 扩展范围 | 电网充电、混合逆变器DC电池端口 | [实际AC窗口、DC类/枚举候选已区分](native-load-storage-controls.md)，DC激活链未闭合；尚无已验收入口 | 未找到直接引用不证明不存在；无日照时没有充电不构成正例，先证原生端口/策略，不以AC耦合替代 |
-| 7 / 34–39 | 原生能量平衡与SOC结果：`grid_storage` SFI | 已有完整导出含 `CL_Over`；旧文档记载8784行与完整AC平衡最大0.0097kW残差 | 本阶段未重跑旧年；SolarTime/LegalTime与GUI48h证据不得混用或互相否定 |
+| 7 / 34–39 | 原生能量平衡与SOC结果：`grid_storage` SFI | 已有完整导出含 `CL_Over`；旧8784行最大0.0097kW保留；R39三个新削峰2022年8760h/28列，完整AC残差最大0.0103kW | 未重跑旧年制造通过；新场景SOC/充放/上网实际联动，电池侧放电不能直接当AC限值；SolarTime/LegalTime与GUI48h证据按各自输入使用 |
 
 储能时段来源：既有C1/C2/C4、全年负荷与全AC平衡属于各自记录；后续 `STORAGE_K1_GUI` 的四次2024-01-01至01-02原生GUI往返只证明那48小时。当地标准时间CSV使用 `LegalTime`，不因为晴空提示自动移时。
 

@@ -51,7 +51,7 @@ CLI 报告确实读取了前十二个已归一化概率，四舍五入后逐档�
 
 实际打开 `TGridStorageForm`，原生策略依次为无储能、自用电、Power shifting、削峰填谷、离网运行的弱电网。Power shifting 的充电/放电枚举与控件已记录，仅为可见入口，不承诺本阶段实现。
 
-削峰由原生选择 Universal_Adjustable_LI.BTR 并配置电池。实验中输入 800 V/1000 Ah 后软件保存 768 V/1000 Ah、15 串 10 并；保留软件保存值，不自行反算或把实验值当工程选型依据。切到 PeakShaving 时原生保存移除了原 `pvLoad`；以后切回 WeakGrid 仍须重新定义负荷。
+削峰由原生选择 Universal_Adjustable_LI.BTR 并配置电池。实验中输入 800 V/1000 Ah 后软件保存 768 V/1000 Ah、15 串 10 并；保留软件保存值，不自行反算或把实验值当工程选型依据。切到 PeakShaving 时原生保存移除了原 `pvLoad`；后续读取确认该保存态根 Flags 仍为 $00080000，不套用 PV-only 负荷一致性规则清位或补造负荷。以后切回 WeakGrid 仍须重新定义负荷。
 
 两个保存态的共同部分为 `pvSystem.Flags=$17000040`、`PLimGrid=200.0`、`LimGrSeparLoss=False`，以及 `pvGridStorage` 的 `Strategy=PeakShaving`、`ChargingStrategy=PVToGridMin`、初始 SOC 0.6、高/低 SOC 0.95/0.2、PMaxCharge/PMaxDisch 均 200、转换器 Max/Euro 效率 98/96.5%。本次控件和原生报告确认功率单位 kW、SOC 为分数、效率为百分数。
 
@@ -68,7 +68,7 @@ EOutInv + EBatDis = E_Grid + EBatCh + CL_Chrg + CL_InvB + CL_Over + EUnused
 
 VCL/VCM 的逐小时最大绝对残差分别为 0.0103/0.0098 kW。EBatDis 峰值 206.23 是电池侧量，不能直接当作 AC 200 kW 放电限值的违反证据。
 
-VCM 的全年放电小时集合为 0、1、6、20、21、22，全部落在观察窗口 0–6 / 20–23 内；这不证明端点开闭规则，也不表示窗口内必放电。VCL 则有 1508 个 GlobInc>0 且 EBatDis>0 的小时，包括首日 07:00/08:00；不将 AfterSunset 简化为“仅 CSV 无日照小时放电”。其精确时序语义、另外两种放电模式及任意参数域尚待验证，MCP 未新增 PeakShaving 策略。
+VCM 的全年放电小时集合为 0、1、6、20、21、22，全部落在观察窗口 0–6 / 20–23 内；这不证明端点开闭规则，也不表示窗口内必放电。VCL 则有 1508 个 GlobInc>0 且 EBatDis>0 的小时，包括首日 07:00/08:00；不将 AfterSunset 简化为“仅 CSV 无日照小时放电”。R35 当批未新增策略 API；后续 [R39 既有削峰模板的限定模式/时段入口](native-peak-shaving.md) 已完成公共与三个新全年回归，但不扩大另外两种时序、任意硬件参数或通用端点语义。
 
 弱电网随机故障页为 `TUnavailMainF`，与 PV 系统不可用分开。输入 0.1%、种子 1 后原生生成一段 5 小时故障，但确认时仍报“未正确定义电网的失效度设置”。保留现场，未保存为可消费方案；不把时段生成成功记为完整持久化或消费通过，不猜该校验失败原因。既有 WeakGrid CSV 与 SOC 证据继续按原文范围成立。
 
