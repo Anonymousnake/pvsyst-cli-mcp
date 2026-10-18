@@ -2,7 +2,7 @@
 
 ## 验证范围与状态
 
-本批使用 PVsyst GUI/CLI 8.1.6，在独立 `STORAGE_LOAD_CONTROLS.PRJ` 中集中访问用户需求、家庭电器、储能策略和系统定义窗口。所有发电、负荷实现、概率实现、充放电和 SOC 均由 PVsyst 执行；本批没有新增计算模型或生产配置 API。
+本批 R35 使用 PVsyst GUI/CLI 8.1.6，在独立 `STORAGE_LOAD_CONTROLS.PRJ` 中集中访问用户需求、家庭电器、储能策略和系统定义窗口。所有发电、负荷实现、概率实现、充放电和 SOC 均由 PVsyst 执行；当批没有新增计算模型或生产配置 API。后续 R36 已实现并验收[常数/月度/日曲线的限定 MCP 入口](storage-loads.md#原生常数月度与日曲线)，其证据与适用域另记，不回写为 R35 已有能力。
 
 原生运行统一覆盖 2022-01-01 00:00 至 2022-12-31 23:00。8 组均产生 8760 个连续小时、有限数值和原生 PDF，共 61 页。批次脚本记录 7 组限定检查通过、1 组概率范围检查失败；这不是 7 项完整配置能力验收。另做全表/PDF复核，保留概率失败，不通过调整断言或改写输入制造通过。
 
@@ -23,7 +23,7 @@
 | VCJ | DailyProfile；Flags=$02；NHourlyValues=1 | 每天 00–23 点均对应 50、55、…、165 kW | 941700 | 8 页 |
 | VCK | Probability；Flags=$02；PowerStep=10 | GUI 分档语义与 CLI 不符，未通过 | 1819027.112，仅记录实际输出 | 8 页 |
 
-五个有负荷报告的 Used Energy 均与对应 CSV 年度求和在报告舍入精度内一致。表中每种模式尚无新的专用 MCP 定义入口；既有小时 CSV 准备/绑定入口不变。
+五个有负荷报告的 Used Energy 均与对应 CSV 年度求和在报告舍入精度内一致。表中状态属于 R35 原生批次；R36 已交付常数/月度/日曲线的受限定义入口，家庭电器/概率仍无新 API。既有小时 CSV 准备/绑定入口不变。
 
 ### 格式、单位与原生提交
 
@@ -78,4 +78,4 @@ VCM 的全年放电小时集合为 0、1、6、20、21、22，全部落在观察
 
 限定指令/指针形态扫描未找到 DC 类的外部直接激活引用。间接调用、注册表及未覆盖形态仍可能存在；不由零命中推断该构建没有 DC 能力，不将只有一个 Batterie 子对象视为拓扑只能由两枚举表达。激活链未闭合，混合 DC 与正向网充仍未验收。
 
-本机证据集中于独立 case，不上传商业模板/气象/原生输出：`storage-load-native-r35.json` 记录全部公共 MCP 调用和概率失败，`storage-load-consumption-review-r35.json` 记录 8 组全表/PDF及原 INI 复核，`storage-load-workspace-r34b.json` 记录受管 GUI 正常退出。`load-family-report-adjudication-r35-4cb81.md` 撤回 children 枚举顺序、尾槽校验语义等未经证实推断；DC 报告的绝对零引用/未装配推断同样已被裁决撤回。后续实现优先已证常数、月度和日曲线的限定原生格式，概率、家庭电器任意位图、随机停电和 DC 激活另证。
+本机证据集中于独立 case，不上传商业模板/气象/原生输出：`storage-load-native-r35.json` 记录全部公共 MCP 调用和概率失败，`storage-load-consumption-review-r35.json` 记录 8 组全表/PDF及原 INI 复核，`storage-load-workspace-r34b.json` 记录受管 GUI 正常退出。`load-family-report-adjudication-r35-4cb81.md` 撤回 children 枚举顺序、尾槽校验语义等未经证实推断；DC 报告的绝对零引用/未装配推断同样已被裁决撤回。常数/月度/日曲线的后续实现见 R36 公共与原生记录，概率、家庭电器任意位图、随机停电和 DC 激活另证。
