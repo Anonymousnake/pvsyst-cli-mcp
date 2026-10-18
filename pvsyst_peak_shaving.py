@@ -5,7 +5,7 @@ import difflib
 import re
 from decimal import Decimal, InvalidOperation
 
-from pvsyst_component_editor import objects, replace_value
+from pvsyst_component_editor import objects, replace_value, require_flat
 from pvsyst_grid import inventory as grid_inventory
 
 BOM = b"\xef\xbb\xbf"
@@ -41,17 +41,6 @@ def _root_block(lines):
 def _block_of(lines, bounds):
     blocks = objects(_view(lines[bounds[0]:bounds[1] + 1]))
     return next(block for block in blocks if not block.path)
-
-
-def _require_flat(block, lines):
-    """Every non-blank line inside the owner must be one of its own assignments; blanks are allowed."""
-    known = {index for entries in block.fields.values() for index, _ in entries}
-    begin, end = block.line - 1, block.end_line - 1
-    if not 0 <= begin < end < len(lines):
-        raise ValueError("Unclosed owning record")
-    for index in range(begin + 1, end):
-        if lines[index].strip() and index not in known:
-            raise ValueError("Unknown or nested line inside the owning record")
 
 
 def _decimal(text, label):
@@ -133,7 +122,7 @@ def peak_block(lines):
         if set(other.fields) & set(EDITABLE):
             raise ValueError("Discharge controls must exist only in the owning pvGridStorage record")
     strategy = block.one("DischStrategy")[1]
-    _require_flat(block, lines)
+    require_flat(block, lines)
     if strategy == "AfterSunset":
         expected = set(STORAGE_TEXT) | set(STORAGE_NUMBER) | {"DischStrategy"}
     elif strategy == WINDOW:
@@ -168,7 +157,7 @@ def _require_scope(store, lines, arrays, system):
         raise ValueError("This PeakShaving profile has no load and does not add one")
     system_root = _block_of(lines, system)
     _require_profile(system_root)
-    _require_flat(system_root, lines[system[0]:system[1] + 1])
+    require_flat(system_root, lines[system[0]:system[1] + 1])
     main = store._main_array(lines)
     if main is None:
         raise ValueError("A pvMainArray section is required")

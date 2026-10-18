@@ -121,6 +121,17 @@ def objects(text: str) -> list[ObjectBlock]:
     return result
 
 
+def require_flat(block, lines):
+    """Every non-blank line inside the owner must be one of its own assignments; blanks are allowed."""
+    known = {index for entries in block.fields.values() for index, _ in entries}
+    begin, end = block.line - 1, block.end_line - 1
+    if not 0 <= begin < end < len(lines):
+        raise ValueError("Unclosed owning record")
+    for index in range(begin + 1, end):
+        if lines[index].strip() and index not in known:
+            raise ValueError("Unknown or nested line inside the owning record")
+
+
 def profiles(text: str) -> list[Profile]:
     """Locate curves by their object path, never by flattened Point_N names."""
     return [block for block in objects(text) if isinstance(block, Profile)]
