@@ -101,8 +101,8 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 教程节 / PDF页 | 功能及现有入口 | 原生证据 / MCP状态 | 共享依赖与下一验证 |
 |---|---|---|---|
 | 6 / 33–34 | 小时CSV准备、快照绑定：`prepare_load_profile`、`create_load_variant` | 已实现；[小时负荷](storage-loads.md)及[储能记录](grid-storage-parameters.md)记载8784小时 `E_User` 逐点一致 | 全年、单位、固定标准偏移；绑定 `pvLoad` 的原生缓存，不能仅换CSV路径 |
-| 6 / 33–34 | 无电池PV-only自用使能及结果 | [GUI保存与8760h消费已证](native-load-storage-controls.md)：根pvVCalcul bit19及pvLoad，恒100kW；尚无新的专用使能API | E_Solar=357897.4666kWh与报告一致；本例EDirUse等于可用发电，非该自用量，不泛化字段定义 |
-| 6 / 33 | 常数/月度/日曲线/概率/家庭电器负荷 | [五态保存及四类8760h消费已证](native-load-storage-controls.md)；概率GUI 0–120kW与CLI 0–432kW不符，语义验收失败；尚无专用定义API | Monthly ValMonth非原样kW；DailyProfile与Probability同Flags=$02；HouseHold位图任意构造未证，不自造曲线或归一化模型 |
+| 6 / 33–34 | 无电池PV-only自用使能及结果 | [pvsyst_create_native_load_variant已验收](storage-loads.md#原生常数月度与日曲线)：根pvVCalcul bit19及pvLoad，三个新配置8760h/CSV/PDF；旧小时API继承语义不变 | 新VC限定PV-only普通固定平面；本例EDirUse不等于E_Solar，不泛化字段定义，不把保存返回值标为已消费 |
+| 6 / 33 | 常数/月度/日曲线/概率/家庭电器负荷 | [常数/月度/日曲线MCP已验收](storage-loads.md#原生常数月度与日曲线)，月度显式kWh/日曲线24项kW；[概率语义失败与家庭电器原生证据](native-load-storage-controls.md)保留，后二者无新API | 15正向/65无写入负例及3组新参数8760h；Monthly ValMonth非原样kW，拒未知/重复/嵌套owner与源HourlyFile/Probability/HouseHold，不自造曲线或归一化模型 |
 | 7 / 35–36 | BTR、串并联、12个月电池温度、SOW：`create_grid_storage_system` | 已有原生AC耦合构造；GUI重载48h及其他原生参数对照 | 明确硬件/温度/SOW，不推导自动最优选型或BMS |
 | 7.1 / 36–37 | AC耦合自用策略：`create_grid_storage_*` 的 `self_consumption` | 已实现；48h参数对照，已有全年记录按各自fixture/时基使用 | 不把它误列为“策略切换缺入口”；不外推DC端口/网充 |
 | 7.1 / 36–37 | 充电器AC输入、放电逆变器AC输出功率及效率 | 已实现；C1/C2证明两侧1kW限值，分别包含 `CL_Chrg` / `CL_InvB` | 与电池DC功率及网充能力分开；已有控制不重复执行 |
