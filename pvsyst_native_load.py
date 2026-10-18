@@ -234,8 +234,10 @@ def _require_scope(store, lines, arrays, system):
            for key in sub_root.fields):
         raise ValueError("Every other NStrOrient* must be zero")
     store._require_no_geometry(lines)
-    if any("pvGridStorage" in line or re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
-        raise ValueError("Grid storage, P50/P90 and saved horizon objects are outside this batch")
+    if any(block.object_type == "pvGridStorage" for block in objects(_view(lines))):
+        raise ValueError("Grid storage objects are outside this batch")
+    if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
+        raise ValueError("P50/P90 and saved horizon objects are outside this batch")
     if sum(line.strip() == "PVObject_=pvOrient" for line in lines) != 1:
         raise ValueError("Requires exactly one orientation record")
     store._ordinary_fixed_plane(lines, store._orientation(lines, 1))
