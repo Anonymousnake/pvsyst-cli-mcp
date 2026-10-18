@@ -1,0 +1,540 @@
+"""Create one external PVCollada 2.0 scene file: a house mesh plus a single fixed PV table."""
+from __future__ import annotations
+
+import math
+import re
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+
+from pvsyst_component_editor import objects
+from pvsyst_pan import validation_fields as pan_validation_fields
+from pvsyst_grid import inventory as grid_inventory
+from pvsyst_paths import safe_filename, workspace_file
+
+NS = "http://www.collada.org/2008/03/COLLADASchema"
+PV = "https://pvcollada.org/2026/XMLSchema"
+# Adapter tolerance for paired declarations and roof parallelism, not a native limit.
+TOL = 1e-6
+SMALLEST = 5e-7
+SITE = "PVObject_SiteSimul=pvSite"
+ORIENT_CLOSE = "End of TOrientGroup"
+HOUSE_KEYS = ("length_m", "width_m", "eave_height_m", "roof")
+LAYOUT_KEYS = ("module_rows", "module_columns", "orientation", "row_spacing_m",
+               "column_spacing_m", "clearance_m", "edge_margin_m")
+GEOMETRY_KEYS = ("model_name", "nom_power_wp", "width_m", "length_m", "geometry_depth_m")
+
+
+def _tag(namespace, name):
+    return f"{{{namespace}}}{name}"
+
+
+def _num(value):
+    """Six-decimal text that never silently collapses a tiny nonzero coordinate to zero."""
+    if not math.isfinite(value):
+        raise ValueError("Coordinate is not finite")
+    if value != 0.0 and abs(value) < SMALLEST:
+        raise ValueError("Coordinate is too small to serialize at six decimals")
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return "0" if text in ("", "-0") else text
+
+
+def _finite(value, label, positive=False, minimum=None, maximum=None):
+    if type(value) is bool or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a strict finite number")
+    try:
+        number = float(value)
+    except OverflowError:
+        raise ValueError(f"{label} is too large to represent") from None
+    if not math.isfinite(number):
+        raise ValueError(f"{label} must be finite")
+    if positive and number <= 0:
+        raise ValueError(f"{label} must be greater than zero")
+    if minimum is not None and number < minimum:
+        raise ValueError(f"{label} must be >= {minimum}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{label} must be <= {maximum}")
+    return number
+
+
+def _paired(fields, root, alias, label):
+    """Both owning declarations must agree; a repeated or conflicting key stops instead of picking one."""
+    found = []
+    for name in (root, alias):
+        entry = fields.get(name)
+        if entry is None:
+            continue
+        if len(entry) != 1:
+            raise ValueError(f"PAN {name} must occur exactly once")
+        found.append((name, _finite(float(entry[0]), f"PAN {name}", positive=True)))
+    if not found:
+        raise ValueError(f"PAN does not declare {label}")
+    if len(found) == 2 and abs(found[0][1] - found[1][1]) > TOL * max(1.0, abs(found[0][1])):
+        raise ValueError(f"PAN {label} disagrees between {root} and {alias}")
+    return found[0][1]
+
+
+def _pick(fields, names, label):
+    for name in names:
+        entry = fields.get(name)
+        if entry is None:
+            continue
+        if len(entry) != 1:
+            raise ValueError(f"PAN {name} must occur exactly once")
+        text = entry[0].strip()
+        if not text:
+            raise ValueError(f"PAN {name} must not be empty")
+        return text
+    raise ValueError(f"PAN does not declare {label}")
+
+
+def module_profile(fields, explicit=None):
+    """PAN width/height stay in metres here; only the XML text multiplies by 1000."""
+    width = _paired(fields, "Width", "LargApp", "module width")
+    height = _paired(fields, "Height", "LongApp", "module height")
+    long_side, short_side = height, width
+    power = _pick(fields, ("PNom", "PNomModule"), "nom_power")
+    try:
+        nom_power = float(power)
+    except ValueError:
+        raise ValueError("PAN nom_power must be a number") from None
+    if not math.isfinite(nom_power) or nom_power <= 0:
+        raise ValueError("PAN nom_power must be a finite positive number")
+    name = _pick(fields, ("Model",), "Model")
+    depth = _explicit_depth(explicit)
+    if explicit is not None:
+        if explicit["name"] != name:
+            raise ValueError("module_geometry.model_name disagrees with the loose PAN")
+        for label, actual, wanted in (("width_m", short_side, explicit["width_m"]),
+                                      ("length_m", long_side, explicit["length_m"]),
+                                      ("nom_power_wp", nom_power, explicit["nom_power"])):
+            if abs(actual - wanted) > TOL * max(1.0, abs(actual)):
+                raise ValueError(f"module_geometry.{label} disagrees with the loose PAN")
+    return {"length_m": long_side, "width_m": short_side, "nom_power": nom_power,
+            "name": name, "depth_m": depth, "depth_source": "caller-provided",
+            "metadata_source": "source-pan"}
+
+
+def _explicit_depth(explicit):
+    if explicit is None:
+        raise ValueError("module_geometry.geometry_depth_m is required: the table geometry needs a module "
+                         "depth and no verified source field provides one")
+    return explicit["depth_m"]
+
+
+def caller_geometry(geometry):
+    """Explicit module metadata for a native database reference; nothing is inferred from a filename."""
+    if geometry is None:
+        return None
+    if not isinstance(geometry, dict) or set(geometry) != set(GEOMETRY_KEYS):
+        raise ValueError("module_geometry must declare exactly " + ", ".join(GEOMETRY_KEYS))
+    if not isinstance(geometry["model_name"], str) or not geometry["model_name"].strip():
+        raise ValueError("module_geometry.model_name must be non-empty text")
+    return {"name": geometry["model_name"].strip(),
+            "nom_power": _finite(geometry["nom_power_wp"], "nom_power_wp", positive=True),
+            "length_m": _finite(geometry["length_m"], "length_m", positive=True),
+            "width_m": _finite(geometry["width_m"], "width_m", positive=True),
+            "depth_m": _finite(geometry["geometry_depth_m"], "geometry_depth_m", positive=True)}
+
+
+def resolve_modules(components, pan_name, geometry):
+    """Workspace loose PAN first, then the installed library; a database reference needs explicit geometry."""
+    explicit = caller_geometry(geometry)
+    pan_path = None
+    for library in ("workspace", "builtin"):
+        if library == "builtin" and components.builtin is None:
+            continue
+        candidate = components._path("PAN", pan_name, library)
+        if candidate.is_file():
+            pan_path = candidate
+            break
+    if pan_path is None:
+        if explicit is None:
+            raise ValueError("The referenced PAN is neither a loose workspace nor an installed-library file; "
+                             "module_geometry is required and no vendor value is guessed")
+        return explicit | {"metadata_source": "caller-provided-for-native-database-reference",
+                           "depth_source": "caller-provided"}, None
+    pan_bytes = components._read(pan_path)
+    inspected = components._inspect("PAN", pan_bytes)
+    if inspected["format"] != "text":
+        if explicit is None:
+            raise ValueError("The referenced PAN is legacy binary and cannot be parsed; module_geometry is required")
+        return explicit | {"metadata_source": "caller-provided-for-native-database-reference",
+                           "depth_source": "caller-provided"}, (pan_path, pan_bytes)
+    if inspected["structural_errors"]:
+        raise ValueError("PAN has structural errors: " + "; ".join(inspected["structural_errors"]))
+    if inspected["known_value_errors"]:
+        raise ValueError("PAN has value errors: " + "; ".join(inspected["known_value_errors"]))
+    _, pan_text = components._text("PAN", pan_bytes)
+    return module_profile(pan_validation_fields(pan_text), explicit), (pan_path, pan_bytes)
+
+
+def house_profile(house):
+    """Rectangular footprint with a flat roof or a symmetric gable; nothing else."""
+    if not isinstance(house, dict) or set(house) != set(HOUSE_KEYS):
+        raise ValueError("house must declare exactly length_m, width_m, eave_height_m and roof")
+    length = _finite(house["length_m"], "length_m", positive=True)
+    width = _finite(house["width_m"], "width_m", positive=True)
+    eave = _finite(house["eave_height_m"], "eave_height_m", positive=True)
+    roof = house["roof"]
+    if not isinstance(roof, dict) or roof.get("kind") not in ("flat", "gable"):
+        raise ValueError("roof.kind must be flat or gable")
+    if roof["kind"] == "flat":
+        if set(roof) != {"kind"}:
+            raise ValueError("flat roof accepts only kind")
+        return {"kind": "flat", "length_m": length, "width_m": width,
+                "eave_height_m": eave, "roof_rise_m": 0.0, "pitch_deg": None}
+    if set(roof) != {"kind", "pitch_deg"}:
+        raise ValueError("gable roof accepts only kind and pitch_deg")
+    pitch = _finite(roof["pitch_deg"], "roof.pitch_deg", positive=True, maximum=90.0)
+    if not 0.0 < pitch < 90.0:
+        raise ValueError("roof.pitch_deg must be strictly between 0 and 90 degrees")
+    ridge = (width / 2.0) * math.tan(math.radians(pitch))
+    if not math.isfinite(ridge):
+        raise ValueError("Derived ridge height is not finite")
+    return {"kind": "gable", "length_m": length, "width_m": width, "eave_height_m": eave,
+            "roof_rise_m": ridge, "pitch_deg": pitch}
+
+
+def layout_profile(layout, modules, total, source_tilt):
+    """One fixed table; tilt and azimuth are inherited, never requested."""
+    if not isinstance(layout, dict) or set(layout) != set(LAYOUT_KEYS):
+        raise ValueError("layout must declare exactly " + ", ".join(LAYOUT_KEYS))
+    rows, columns = layout["module_rows"], layout["module_columns"]
+    for name, value in (("module_rows", rows), ("module_columns", columns)):
+        if type(value) is not int or value < 1:
+            raise ValueError(f"{name} must be a strict positive integer")
+    if rows * columns != total:
+        raise ValueError(f"module_rows x module_columns must equal the source module count {total}")
+    if layout["orientation"] not in ("portrait", "landscape"):
+        raise ValueError("orientation must be portrait or landscape")
+    spacing = {name: _finite(layout[name], name, minimum=0.0) for name in
+               ("row_spacing_m", "column_spacing_m", "clearance_m", "edge_margin_m")}
+    depth = modules["depth_m"]
+    along = modules["width_m"] if layout["orientation"] == "landscape" else modules["length_m"]
+    across = modules["length_m"] if layout["orientation"] == "landscape" else modules["width_m"]
+    column_span = columns * across + (columns - 1) * spacing["column_spacing_m"]
+    slope_span = rows * along + (rows - 1) * spacing["row_spacing_m"]
+    for name, value in (("column_span_m", column_span), ("slope_span_m", slope_span)):
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"Derived {name} must be finite and positive")
+    return {"module_rows": rows, "module_columns": columns, "orientation": layout["orientation"],
+            "row_spacing_m": spacing["row_spacing_m"], "column_spacing_m": spacing["column_spacing_m"],
+            "clearance_m": spacing["clearance_m"], "edge_margin_m": spacing["edge_margin_m"],
+            "geometry_depth_m": depth, "depth_source": "caller-provided",
+            "tilt_deg": source_tilt, "column_span_m": column_span, "slope_span_m": slope_span}
+
+
+def _view(lines):
+    return "".join(lines).replace(ORIENT_CLOSE, "End of PVObject pvOrient")
+
+
+def _block_of(lines, bounds):
+    blocks = objects(_view(lines[bounds[0]:bounds[1] + 1]))
+    root = next((block for block in blocks if not block.path), None)
+    if root is None:
+        raise ValueError("Missing owning record")
+    return root
+
+
+def source_profile(store, lines, arrays, system):
+    """Reuse the bounded subset and verify every claimed gate instead of only documenting it."""
+    if system is None or len(arrays) != 1:
+        raise ValueError("Requires one pvSystem and one subarray")
+    system_root = _block_of(lines, system)
+    if system_root.one("SystemType")[1] != "Grid":
+        raise ValueError("SystemType must be Grid")
+    blocks = objects(_view(lines))
+    root = next(block for block in blocks if not block.path)
+    flags = root.one("Flags")[1]
+    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
+        raise ValueError("Root Flags must be hexadecimal")
+    has_load = any(block.object_type == "pvLoad" for block in blocks)
+    if int(flags[1:], 16) & 0x00080000 and not has_load:
+        raise ValueError("Root load bit is set without a pvLoad record")
+    if has_load or any(block.object_type == "pvGridStorage" for block in blocks):
+        raise ValueError("Loads and storage are outside this batch")
+    if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
+        raise ValueError("P50/P90 and saved horizon objects are outside this batch")
+    bounds = next(iter(arrays.values()))
+    sub_root = _block_of(lines, bounds)
+    series = _finite(float(sub_root.one("NModSerie")[1]), "NModSerie", positive=True)
+    strings = _finite(float(sub_root.one("NStringCh")[1]), "NStringCh", positive=True)
+    if not series.is_integer() or not strings.is_integer():
+        raise ValueError("Source module counts must be integers")
+    orientation_id = sub_root.one("NoOrientation")[1]
+    if not orientation_id.isdigit():
+        raise ValueError("NoOrientation must be a positive integer")
+    store._orientation_list(lines)
+    if sum(block.object_type == "pvOrient" for block in blocks) != 1:
+        raise ValueError("Requires exactly one ordinary fixed-plane orientation")
+    plane = store._orientation(lines, int(orientation_id))
+    store._ordinary_fixed_plane(lines, plane)
+    plane_root = _block_of(lines, plane)
+    tilt = _finite(float(plane_root.one("FieldTilt")[1]), "FieldTilt", minimum=0.0, maximum=90.0)
+    if tilt >= 90.0:
+        raise ValueError("FieldTilt must stay below 90 degrees")
+    azimuth = _finite(float(plane_root.one("FieldAzim")[1]), "FieldAzim", minimum=-180.0, maximum=180.0)
+    store._require_no_geometry(lines)
+    if grid_inventory(lines, arrays)["counts_valid"] is not True:
+        raise ValueError("Requires complete consistent native grid counts")
+    sit = next((block for block in blocks if block.object_type == "pvSite"
+                and block.path == "PVObject_SiteSimul"), None)
+    if sit is None:
+        raise ValueError("Requires an embedded pvSite record for geographic coverage")
+    latitude = _finite(float(sit.one("Latitude")[1]), "Latitude", minimum=0.0, maximum=90.0)
+    longitude = _finite(float(sit.one("Longitude")[1]), "Longitude", minimum=-180.0, maximum=180.0)
+    altitude = _finite(float(sit.one("Altitude")[1]), "Altitude")
+    if latitude <= 0:
+        raise ValueError("The azimuth conversion (180 + FieldAzim) % 360 is only verified for the northern "
+                         "hemisphere; a non-positive site latitude stops here")
+    if not any(block.object_type == "pvOrient" for block in blocks):
+        raise ValueError("Requires one fixed-plane orientation record")
+    return {"module_total": int(series * strings), "tilt_deg": tilt, "field_azimuth_deg": azimuth,
+            "azimuth_deg": (180.0 + azimuth) % 360.0, "pan_name": sub_root.one("PVModule")[1],
+            "site": {"latitude": latitude, "longitude": longitude, "altitude": altitude}}
+
+
+def house_mesh(profile):
+    """Closed box for a flat roof; symmetric gable prism with the ridge parallel to local X."""
+    length, width, eave = profile["length_m"], profile["width_m"], profile["eave_height_m"]
+    if profile["kind"] == "flat":
+        points = [(0, 0, 0), (length, 0, 0), (length, width, 0), (0, width, 0),
+                  (0, 0, eave), (length, 0, eave), (length, width, eave), (0, width, eave)]
+        faces = [(0, 2, 1), (0, 3, 2), (0, 1, 5), (0, 5, 4), (3, 6, 2), (3, 7, 6),
+                 (0, 4, 7), (0, 7, 3), (1, 2, 6), (1, 6, 5), (4, 5, 6), (4, 6, 7)]
+        return points, faces
+    ridge = eave + profile["roof_rise_m"]
+    half = width / 2.0
+    points = [(0, 0, 0), (length, 0, 0), (length, width, 0), (0, width, 0),
+              (0, 0, eave), (length, 0, eave), (length, width, eave), (0, width, eave),
+              (0, half, ridge), (length, half, ridge)]
+    faces = [(0, 2, 1), (0, 3, 2),
+             (0, 1, 5), (0, 5, 4), (3, 6, 2), (3, 7, 6),
+             (0, 4, 8), (0, 8, 7), (0, 7, 3),
+             (1, 2, 6), (1, 6, 9), (1, 9, 5),
+             (4, 9, 8), (4, 5, 9), (7, 8, 9), (7, 9, 6)]
+    return points, faces
+
+
+def rack_mesh(profile):
+    """Positive rectangle: local origin is the low south-west corner, +Y runs up the slope."""
+    tilt = math.radians(profile["tilt_deg"])
+    span = profile["column_span_m"]
+    slope = profile["slope_span_m"]
+    down = slope * math.cos(tilt)
+    drop = slope * math.sin(tilt)
+    for name, value in (("down_slope_m", down), ("drop_m", drop)):
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"Derived {name} must be finite and positive")
+    points = [(0.0, 0.0, 0.0), (span, 0.0, 0.0), (span, down, drop), (0.0, down, drop)]
+    return points, [(0, 1, 2), (0, 2, 3)]
+
+
+def _append_mesh(parent, geometry_id, points, faces):
+    geometry = ET.SubElement(parent, _tag(NS, "geometry"), {"id": geometry_id})
+    mesh = ET.SubElement(geometry, _tag(NS, "mesh"))
+    array = ET.SubElement(mesh, _tag(NS, "source"), {"id": geometry_id + "-positions"})
+    floats = ET.SubElement(array, _tag(NS, "float_array"),
+                           {"id": geometry_id + "-positions-array", "count": str(len(points) * 3)})
+    floats.text = " ".join(_num(axis) for point in points for axis in point)
+    accessor = ET.SubElement(ET.SubElement(array, _tag(NS, "technique_common")),
+                             _tag(NS, "accessor"),
+                             {"source": "#" + geometry_id + "-positions-array",
+                              "count": str(len(points)), "stride": "3"})
+    for axis in ("X", "Y", "Z"):
+        ET.SubElement(accessor, _tag(NS, "param"), {"name": axis, "type": "float"})
+    vertices = ET.SubElement(mesh, _tag(NS, "vertices"), {"id": geometry_id + "-vertices"})
+    ET.SubElement(vertices, _tag(NS, "input"),
+                  {"semantic": "POSITION", "source": "#" + geometry_id + "-positions"})
+    triangles = ET.SubElement(mesh, _tag(NS, "triangles"), {"count": str(len(faces))})
+    ET.SubElement(triangles, _tag(NS, "input"),
+                  {"semantic": "VERTEX", "source": "#" + geometry_id + "-vertices", "offset": "0"})
+    ET.SubElement(triangles, _tag(NS, "p")).text = " ".join(
+        str(vertex) for face in faces for vertex in face)
+    return geometry
+
+
+def _pv_extra(parent):
+    return ET.SubElement(ET.SubElement(parent, _tag(NS, "extra")), _tag(NS, "technique"),
+                         {"profile": "PVCollada-2.0"})
+
+
+def _rack_origin(house, layout):
+    """Low south-west corner of the table: margin from the eave, then the declared clearance."""
+    margin = layout["edge_margin_m"]
+    if house["kind"] == "flat":
+        return [margin, margin, house["eave_height_m"] + layout["clearance_m"]]
+    pitch = math.radians(house["pitch_deg"])
+    half = house["width_m"] / 2.0
+    along = margin * math.cos(pitch)
+    if along + layout["slope_span_m"] * math.cos(math.radians(layout["tilt_deg"])) > half:
+        raise ValueError("edge_margin_m leaves no room for the table before the ridge")
+    return [margin, along, house["eave_height_m"] + margin * math.sin(pitch) + layout["clearance_m"]]
+
+
+def check_fit(house, layout, origin, points):
+    """All four corners must sit on the selected roof face without sinking into it."""
+    corners = [(origin[0] + point[0], origin[1] + point[1], origin[2] + point[2]) for point in points]
+    for corner in corners:
+        for value in corner:
+            if not math.isfinite(value):
+                raise ValueError("Table corner is not finite")
+    length, width = house["length_m"], house["width_m"]
+    if max(corner[0] for corner in corners) > length + TOL:
+        raise ValueError("Table projects past the house end")
+    if house["kind"] == "flat":
+        if max(corner[1] for corner in corners) > width + TOL:
+            raise ValueError("Table projects past the house side")
+        if min(corner[2] for corner in corners) < house["eave_height_m"] - TOL:
+            raise ValueError("Table sinks below the flat roof surface")
+        return
+    if abs(layout["tilt_deg"] - house["pitch_deg"]) > TOL:
+        raise ValueError("Gable roof requires the PV tilt to equal the roof pitch")
+    half = width / 2.0
+    slope = math.tan(math.radians(house["pitch_deg"]))
+    for x, y, z in corners:
+        if not 0.0 - TOL <= y <= half + TOL:
+            raise ValueError("Table corner is not on the front roof face")
+        if z < house["eave_height_m"] + y * slope - TOL:
+            raise ValueError("Table corner sinks below the front roof plane")
+
+
+def build_scene(house, layout, modules, source, created):
+    """Minimal COLLADA document: shared rotation node, house child, PV child with translation."""
+    ET.register_namespace("", NS)
+    ET.register_namespace("pv", PV)
+    root = ET.Element(_tag(NS, "COLLADA"), {"version": "1.5.0"})
+    asset = ET.SubElement(root, _tag(NS, "asset"))
+    coverage = ET.SubElement(ET.SubElement(asset, _tag(NS, "coverage")),
+                             _tag(NS, "geographic_location"))
+    ET.SubElement(coverage, _tag(NS, "longitude")).text = _num(source["site"]["longitude"])
+    ET.SubElement(coverage, _tag(NS, "latitude")).text = _num(source["site"]["latitude"])
+    ET.SubElement(coverage, _tag(NS, "altitude"), {"mode": "absolute"}).text = _num(source["site"]["altitude"])
+    ET.SubElement(asset, _tag(NS, "created")).text = created
+    ET.SubElement(asset, _tag(NS, "modified")).text = created
+    ET.SubElement(asset, _tag(NS, "unit"), {"meter": "1", "name": "m"})
+    ET.SubElement(asset, _tag(NS, "up_axis")).text = "Z_UP"
+    components = ET.SubElement(_pv_extra(asset), _tag(PV, "components"))
+    module = ET.SubElement(ET.SubElement(components, _tag(PV, "modules")), _tag(PV, "module"),
+                           {"id": "ModuleModel1"})
+    for name, text in (("name", modules["name"]), ("nom_power", _num(modules["nom_power"])),
+                       ("length", _num(modules["length_m"] * 1000.0)),
+                       ("width", _num(modules["width_m"] * 1000.0)),
+                       ("depth", _num(modules["depth_m"] * 1000.0))):
+        ET.SubElement(module, _tag(PV, name)).text = text
+    geometries = ET.SubElement(root, _tag(NS, "library_geometries"))
+    house_points, house_faces = house_mesh(house)
+    _append_mesh(geometries, "House", house_points, house_faces)
+    rack_points, rack_faces = rack_mesh(layout)
+    rack = _append_mesh(geometries, "Rack", rack_points, rack_faces)
+    rack_tag = ET.SubElement(_pv_extra(rack), _tag(PV, "rack"))
+    for name, text in (("rack_type", "fixed_tilt"), ("row_spacing", _num(layout["row_spacing_m"])),
+                       ("column_spacing", _num(layout["column_spacing_m"])),
+                       ("module_rows", str(layout["module_rows"])),
+                       ("module_columns", str(layout["module_columns"])),
+                       ("module_orientation", layout["orientation"]),
+                       ("tilt", _num(layout["tilt_deg"])),
+                       ("azimuth", _num(source["azimuth_deg"])), ("module_id", "ModuleModel1")):
+        ET.SubElement(rack_tag, _tag(PV, name)).text = text
+    nodes = ET.SubElement(root, _tag(NS, "library_nodes"))
+    table_node = ET.SubElement(nodes, _tag(NS, "node"), {"id": "TableModel"})
+    instance = ET.SubElement(table_node, _tag(NS, "instance_geometry"), {"url": "#Rack"})
+    ET.SubElement(_pv_extra(instance), _tag(PV, "instance_rack"), {"id": "rackInst1"})
+    table_tag = ET.SubElement(_pv_extra(table_node), _tag(PV, "table"))
+    ET.SubElement(table_tag, _tag(PV, "type")).text = "fixed"
+    scenes = ET.SubElement(root, _tag(NS, "library_visual_scenes"))
+    scene = ET.SubElement(scenes, _tag(NS, "visual_scene"), {"id": "VisualSceneNode"})
+    turn = 180.0 - source["azimuth_deg"]
+    shared = ET.SubElement(scene, _tag(NS, "node"), {"id": "SceneRoot"})
+    ET.SubElement(shared, _tag(NS, "rotate")).text = "0 0 1 " + _num(turn)
+    ET.SubElement(ET.SubElement(shared, _tag(NS, "node"), {"id": "HouseNode"}),
+                  _tag(NS, "instance_geometry"), {"url": "#House"})
+    origin = _rack_origin(house, layout)
+    pv_node = ET.SubElement(shared, _tag(NS, "node"), {"id": "PVTable1"})
+    ET.SubElement(pv_node, _tag(NS, "translate")).text = " ".join(_num(value) for value in origin)
+    pv_instance = ET.SubElement(pv_node, _tag(NS, "instance_node"), {"url": "#TableModel"})
+    table_instance = ET.SubElement(_pv_extra(pv_instance), _tag(PV, "instance_table"), {"id": "Table1"})
+    array = ET.SubElement(table_instance, _tag(PV, "instance_racks_array"))
+    ET.SubElement(array, _tag(PV, "instance_rack_ref"), {"id": "rackRef1", "url": "#rackInst1"})
+    ET.SubElement(ET.SubElement(root, _tag(NS, "scene")), _tag(NS, "instance_visual_scene"),
+                  {"url": "#VisualSceneNode"})
+    return root, {"house_vertices": len(house_points), "house_faces": len(house_faces),
+                  "rack_vertices": len(rack_points), "rack_faces": len(rack_faces),
+                  "rotate_deg": turn, "origin_m": origin, "corners_m": [
+                      [origin[0] + point[0], origin[1] + point[1], origin[2] + point[2]]
+                      for point in rack_points]}
+
+
+def create_house_pv_scene(store, components, *, project, variant, output_name, house, layout,
+                          dry_run=True, module_geometry=None):
+    """Preview or write one new .pvc2; the project, variant and PAN are never written."""
+    result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
+              "warnings": [], "artifacts": {}, "native_consumption_verified": False, "imported": False}
+    with store.lock:
+        try:
+            if type(dry_run) is not bool:
+                raise ValueError("Use a strict boolean")
+            name = safe_filename(output_name, ".pvc2")
+            store._check_project(project)
+            source_path = store._path(project, variant)
+            original = store._read(source_path)
+            text, lines = store._text(original)
+            arrays, system = store._sections(lines)
+            source = source_profile(store, lines, arrays, system)
+            modules, pan_snapshot = resolve_modules(components, source["pan_name"], module_geometry)
+            pocket = house_profile(house)
+            table = layout_profile(layout, modules, source["module_total"], source["tilt_deg"])
+            points, _ = rack_mesh(table)
+            origin = _rack_origin(pocket, table)
+            check_fit(pocket, table, origin, points)
+            created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            root, counts = build_scene(pocket, table, modules, source, created)
+            payload = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+            try:
+                ET.fromstring(payload)
+            except ET.ParseError as exc:
+                raise ValueError("Module metadata must be valid XML text") from exc
+            target = workspace_file(store.workspace, "UserData", name, ".pvc2")
+            if target.parent.is_dir() and any(
+                    path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
+                raise FileExistsError("Choose a new scene file: " + name)
+            result.update(status="ready", project=project, variant=variant, output=name,
+                          artifacts={"scene_file": str(target)},
+                          source={"project": project, "variant": variant, "pan": source["pan_name"],
+                                  "module_total": source["module_total"],
+                                  "field_tilt_deg": source["tilt_deg"],
+                                  "field_azimuth_deg": source["field_azimuth_deg"],
+                                  "collada_azimuth_deg": source["azimuth_deg"],
+                                  "latitude": source["site"]["latitude"]},
+                          modules=modules, house=pocket, layout=table, geometry=counts,
+                          bytes=len(payload))
+            result["warnings"].append(
+                "Module metadata provenance: " + modules["metadata_source"] + ". Geometry uses metres; "
+                "only pv:module dimensions use millimetres. Depth is caller-provided geometry. "
+                "Explicit metadata for a native database reference requires PVsyst's own import consistency "
+                "check; writing this file does not verify a manufacturer model.")
+            result["warnings"].append(
+                "Azimuth uses the COLLADA convention (north = 0, clockwise) and is only verified for a "
+                "northern-hemisphere site. House and table share one parent rotation, so the table translation "
+                "is expressed in the house local frame.")
+            result["warnings"].append(
+                "This is an external PVCollada 2.0 file and the tested version still labels PVC2 support as beta: "
+                "writing it does not prove that PVsyst imports it as a shading scene or consumes it.")
+            if store._read(source_path) != original:
+                raise ValueError("Source variant changed while preparing the scene file")
+            if pan_snapshot is not None and components._read(pan_snapshot[0]) != pan_snapshot[1]:
+                raise ValueError("Source PAN changed while preparing the scene file")
+            if dry_run:
+                return result
+            result["stage"] = "write"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("xb") as stream:
+                stream.write(payload)
+            result.update(status="created", stage="created")
+        except (ValueError, OSError, UnicodeError, KeyError, TypeError) as exc:
+            result["issues"].append(str(exc))
+            result["status"] = "failed" if result["stage"] == "write" else "blocked"
+            if result["status"] == "failed":
+                result["warnings"].append("A partial scene file may exist at the disclosed path; the source "
+                                          "project, variant and PAN are unchanged.")
+    return result

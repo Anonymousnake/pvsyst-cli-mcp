@@ -39,6 +39,7 @@ from pvsyst_native_load import create_native_load_variant
 from pvsyst_tracking import create_tracking_variant
 from pvsyst_peak_shaving import create_peak_shaving_variant
 from pvsyst_dome_allocation import create_dome_allocation_variant
+from pvsyst_scene_file import create_house_pv_scene
 from pvsyst_weather import inspect_weather_csv
 from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
@@ -66,7 +67,7 @@ TOOL_GROUPS = {
         "pvsyst_get_variant_parameters", "pvsyst_update_variant_parameters",
         "pvsyst_validate_variant_structure", "pvsyst_clone_subarray",
         "pvsyst_remove_subarray", "pvsyst_restore_variant", "pvsyst_create_tracking_variant",
-        "pvsyst_create_dome_allocation_variant",
+        "pvsyst_create_dome_allocation_variant", "pvsyst_create_house_pv_scene",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
@@ -102,6 +103,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_create_native_load_variant",
                           "pvsyst_create_tracking_variant",
                           "pvsyst_create_dome_allocation_variant",
+                          "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
                           "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system")
 _strict_arguments: dict[str, frozenset[str]] = {}
@@ -1304,6 +1306,100 @@ def pvsyst_create_dome_allocation_variant(project: StrictStr, source_variant: St
                                           first_orientation_strings=first_orientation_strings,
                                           dry_run=dry_run, variant_name=variant_name,
                                           add_utf8_bom=add_utf8_bom)
+
+
+class FlatRoof(BaseModel):
+    """Flat roof: the plate sits at the eave height."""
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["flat"]
+
+
+class GableRoof(BaseModel):
+    """Symmetric gable roof with the ridge parallel to the house local X axis."""
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["gable"]
+    pitch_deg: StrictNum
+
+
+RoofSpec = Annotated[FlatRoof | GableRoof, Field(discriminator="kind")]
+
+
+class HouseSpec(BaseModel):
+    """Rectangular footprint with an explicit eave height; no other shapes are supported."""
+    model_config = ConfigDict(extra="forbid")
+    length_m: StrictNum
+    width_m: StrictNum
+    eave_height_m: StrictNum
+    roof: RoofSpec
+
+
+class PVTableLayout(BaseModel):
+    """One fixed table; tilt and azimuth always come from the source variant."""
+    model_config = ConfigDict(extra="forbid")
+    module_rows: StrictInt
+    module_columns: StrictInt
+    orientation: Literal["portrait", "landscape"]
+    row_spacing_m: StrictNum
+    column_spacing_m: StrictNum
+    clearance_m: StrictNum
+    edge_margin_m: StrictNum
+
+
+class ModuleGeometry(BaseModel):
+    """Explicit geometric metadata, checked against a readable loose PAN when present."""
+    model_config = ConfigDict(extra="forbid")
+    model_name: StrictStr
+    nom_power_wp: StrictNum
+    width_m: StrictNum
+    length_m: StrictNum
+    geometry_depth_m: StrictNum
+
+
+@categorized_tool()
+def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_name: StrictStr,
+                                 house: HouseSpec, layout: PVTableLayout,
+                                 dry_run: StrictBool = True,
+                                 module_geometry: ModuleGeometry | None = None) -> dict:
+    """Preview or write one external PVCollada 2.0 scene file: a house mesh plus one fixed PV table.
+    The output is the official COLLADA 1.5 XML format, not a PVsyst project variant: there is
+    no PVObject_ serialization, geometry uses library_geometries meshes and visual_scene
+    nodes, and PV semantics live in the PVCollada-2.0 extra technique (module, rack, table,
+    instance_table). Only the file is written; the project, the source variant and the PAN
+    are never modified.
+    Source requirements are the existing bounded subset: one Grid pvSystem, one subarray,
+    one ordinary fixed plane, no shading scene or module layout, no load, storage, P50/P90
+    or saved horizon, complete grid counts and a northern-hemisphere site record. Module
+    width and height come from a readable loose PAN in metres when available; matching
+    Commercial/root aliases must agree and only XML pv:module uses millimetres. For a
+    built-in database reference without a readable loose PAN, provide module_geometry
+    explicitly; its provenance is caller-provided, awaiting PVsyst's import consistency
+    check. A square module is allowed. geometry_depth_m is explicit geometric metadata,
+    not an inferred vendor specification. All provided metadata must agree with a readable
+    source PAN; no PAN, project or variant is generated or rewritten.
+    module_rows x module_columns must equal the source module count (NModSerie x NStringCh),
+    so the table cannot be drawn smaller than the array.
+    Tilt and azimuth are inherited from the source orientation record and only disclosed in
+    the response, so the caller cannot pick engineering angles. The COLLADA azimuth uses
+    north = 0 clockwise, converted as (180 + FieldAzim) % 360; that mapping is only verified
+    for a northern-hemisphere site, so a non-positive latitude stops.
+    House geometry is a closed box (flat) or a symmetric gable prism with the ridge parallel
+    to the local X axis; the table is a positive rectangle whose origin is its low south-west
+    corner, and every corner is checked to sit on the selected roof face without sinking
+    into it (gable also requires tilt == pitch). House and table share one parent Z rotation,
+    so the table translation uses the house local frame; only vertex, face and transform data
+    are generated. No physical, irradiance, shading or optimizer model is computed.
+    Both roof kinds are emitted; the tested version still labels PVC2 support as beta, so
+    creating a file does not prove that PVsyst imports it as a shading scene or consumes it.
+    dry_run=true writes nothing and creates no directory. Execution writes only
+    UserData/<output_name>.pvc2 with no-overwrite semantics and re-checks both the source
+    variant and PAN bytes. native_consumption_verified and imported stay false."""
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_house_pv_scene(store, component_store, project=project, variant=variant,
+                                 output_name=output_name, house=house.model_dump(),
+                                 layout=layout.model_dump(), dry_run=dry_run,
+                                 module_geometry=(module_geometry.model_dump()
+                                                  if module_geometry is not None else None))
 
 
 class AfterSunsetDischarge(BaseModel):
