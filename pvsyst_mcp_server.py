@@ -37,6 +37,7 @@ from pvsyst_grid_storage import create_grid_storage_variant
 from pvsyst_grid_storage_system import create_grid_storage_system
 from pvsyst_native_load import create_native_load_variant
 from pvsyst_tracking import create_tracking_variant
+from pvsyst_peak_shaving import create_peak_shaving_variant
 from pvsyst_weather import inspect_weather_csv
 from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
@@ -79,6 +80,7 @@ TOOL_GROUPS = {
     ),
     "Loads & Storage": ("pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                         "pvsyst_create_native_load_variant",
+                        "pvsyst_create_peak_shaving_variant",
                         "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system"),
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
                    "pvsyst_simulate_design", "pvsyst_prepare_sourced_design"),
@@ -97,6 +99,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
                           "pvsyst_create_tracking_variant",
+                          "pvsyst_create_peak_shaving_variant",
                           "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
@@ -1258,6 +1261,64 @@ def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr
                                    new_variant=new_variant, tracking=tracking.model_dump(),
                                    dry_run=dry_run, variant_name=variant_name,
                                    add_utf8_bom=add_utf8_bom)
+
+
+class AfterSunsetDischarge(BaseModel):
+    """Native AfterSunset discharge mode; it carries no hour fields."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["after_sunset"]
+
+
+class HourWindowDischarge(BaseModel):
+    """Native MinMaxHour window with two distinct adapter-bounded hours."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["hour_window"]
+    start_hour: StrictInt
+    end_hour: StrictInt
+
+
+PeakDischarge = Annotated[AfterSunsetDischarge | HourWindowDischarge, Field(discriminator="mode")]
+
+
+@categorized_tool()
+def pvsyst_create_peak_shaving_variant(project: StrictStr, source_variant: StrictStr,
+                                       new_variant: StrictStr, discharge: PeakDischarge,
+                                       dry_run: StrictBool = True,
+                                       variant_name: StrictStr | None = None,
+                                       add_utf8_bom: StrictBool = False) -> dict:
+    """Preview or create a NEW variant that switches the native PeakShaving discharge strategy.
+    Supported subset is the already-active native 8.1.6 PeakShaving profile: root
+    Flags=$00080000 with no pvLoad, pvSystem Flags=$17000040/Grid plus the pinned battery
+    hardware and temperature profile, and one directly owned pvGridStorage record holding
+    Strategy=PeakShaving, ChargingStrategy=PVToGridMin, the four SOC values 0.6/0.95/0.2/0.5,
+    PMaxCharge/PMaxDisch=200 and the four efficiencies 98/96.5. Those pinned numbers belong
+    to the verified native sample only: they are not engineering limits, and no hardware
+    selection, pack sizing or dispatch model is offered.
+    mode is the explicit discriminator: after_sunset writes DischStrategy=AfterSunset and
+    drops HourBegDisch/HourEndDisch; hour_window writes DischStrategy=MinMaxHour and exactly
+    two bare-integer hour endpoints that differ. Hour values are adapter-bounded to 0..23
+    and are not measured native GUI limits; the source record is checked against the same
+    domain, so a saved NaN, fractional or unknown value stops instead of being overwritten.
+    Only those three fields change: strategy, charging strategy, SOC, power limits,
+    efficiencies, grid limit, root/system flags, battery hardware, geometry, loads and the
+    orientation records stay at their verified values, and every other owning field set is
+    compared exactly so unknown, nested or duplicated fields stop. A source with a load,
+    P50/P90, saved horizon, explicit 3D scene or module layout is blocked.
+    dry_run=true writes nothing; execution creates one NEW VC only and never edits the source
+    PRJ/VC or its inputs, reusing existing store locking, path checks, read-back verification
+    and no-overwrite semantics. variant_name/add_utf8_bom follow the existing display-name
+    and BOM rules. native_consumption_verified stays false: hours are native hour slots
+    only, endpoint inclusivity is not inferred, AfterSunset does not mean discharging
+    solely in hours without irradiance, and creating this variant does not prove that this
+    run consumes it. This tool never changes the grid power limitation or power factor;
+    the pinned PLimGrid/PGridLim 200 belongs to this native profile only, and the profile's
+    grid power limitation is apparent power in the native report, not an active-power edit."""
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_peak_shaving_variant(store, project=project, source_variant=source_variant,
+                                       new_variant=new_variant, discharge=discharge.model_dump(),
+                                       dry_run=dry_run, variant_name=variant_name,
+                                       add_utf8_bom=add_utf8_bom)
 
 
 class ConstantNativeLoad(BaseModel):
