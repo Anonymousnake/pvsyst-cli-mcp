@@ -35,6 +35,7 @@ from pvsyst_load_profile import prepare_load_profile
 from pvsyst_load_variant import create_load_variant
 from pvsyst_grid_storage import create_grid_storage_variant
 from pvsyst_grid_storage_system import create_grid_storage_system
+from pvsyst_native_load import create_native_load_variant
 from pvsyst_weather import inspect_weather_csv
 from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
@@ -76,6 +77,7 @@ TOOL_GROUPS = {
         "pvsyst_acquire_weather", "pvsyst_review_weather",
     ),
     "Loads & Storage": ("pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
+                        "pvsyst_create_native_load_variant",
                         "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system"),
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
                    "pvsyst_simulate_design", "pvsyst_prepare_sourced_design"),
@@ -92,6 +94,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                          "pvsyst_simulate_template", "pvsyst_simulate_design",
                          "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
+                          "pvsyst_create_native_load_variant",
                           "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
@@ -1200,6 +1203,76 @@ def pvsyst_create_load_variant(project: StrictStr, source_variant: StrictStr, ne
     return create_load_variant(store, project=project, source_variant=source_variant,
                                new_variant=new_variant, load_manifest_name=load_manifest_name,
                                dry_run=dry_run)
+
+
+class ConstantNativeLoad(BaseModel):
+    """Native fixed constant consumption in kW; unknown fields stop at the boundary."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["constant"]
+    constant_kw: StrictNum
+
+
+class MonthlyNativeLoad(BaseModel):
+    """Native monthly loads as twelve declared kWh values; never derived from monthly power."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["monthly"]
+    monthly_energy_kwh: list[StrictNum] = Field(min_length=12, max_length=12)
+
+
+class DailyNativeLoad(BaseModel):
+    """Native daily profile as 24 hourly powers; the trailing slot is native format only."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["daily"]
+    daily_power_kw: list[StrictNum] = Field(min_length=24, max_length=24)
+
+
+NativeLoadRequest = Annotated[
+    ConstantNativeLoad | MonthlyNativeLoad | DailyNativeLoad,
+    Field(discriminator="mode"),
+]
+
+
+@categorized_tool()
+def pvsyst_create_native_load_variant(project: StrictStr, source_variant: StrictStr,
+                                      new_variant: StrictStr, load: NativeLoadRequest,
+                                      dry_run: StrictBool = True,
+                                      variant_name: StrictStr | None = None,
+                                      add_utf8_bom: StrictBool = False) -> dict:
+    """Preview or create a NEW variant with one native flat load block (constant, monthly or daily).
+    Supported subset is a native 8.1.6 PV-only single-subarray Grid variant with
+    exactly one ordinary fixed plane, free horizon, no shading scene or module layout,
+    no P50/P90, and a pvSystem declaring only Flags=$06000000 and SystemType=Grid;
+    main array Flags=$01900400/Flags2=$082A and subarray Flags=$019E1002 stay unchanged.
+    mode is the explicit discriminator: constant{constant_kw} writes ConstantLoad with
+    Energy Units=kW; monthly{monthly_energy_kwh} writes the declared twelve kWh values
+    as ValMonth plus the observed three trailing 0.000 slots; daily{daily_power_kw}
+    writes 24 hourly powers and a trailing slot equal to their sum, which reproduces
+    the observed native layout only and is not a load or dispatch model.
+    Numbers must be strict finite nonnegative 0.001-step values; constant_kw must be
+    positive and profiles need at least one positive entry. The 1e6 cap is an adapter
+    bound, not a native or engineering limit. Booleans, strings, empty or wrongly
+    sized arrays, NaN/Inf and unknown fields are rejected, never silently dropped.
+    Only root pvVCalcul bit19, the directly owned pvLoad block and an optional root
+    Comment are written; root Flags must already be 0 or 0x80000 and agree with the
+    presence of an existing pvLoad. An existing constant/monthly/daily block is
+    replaced in place before the unique SimulPlots=Start anchor; the owning pvLoad
+    Comment is normalized to a fixed MCP label inside this declared subset.
+    HourlyFile, Probability, HouseHold, nested, duplicated-owner or unknown-field
+    blocks stop.
+    dry_run=true writes nothing. Execution creates one NEW VC and never edits the
+    source PRJ/VC, inputs, weather, topology or other loads; existing store locking,
+    path checks, read-back verification and no-overwrite semantics apply.
+    add_utf8_bom follows the existing explicit marker habit: false keeps the source
+    marker and a non-ASCII variant_name then needs an existing BOM, true writes a
+    UTF-8 BOM to the NEW VC and is also accepted without a name; bom_added reports it.
+    native_consumption_verified stays false: verify native E_User and the PDF for the
+    matching year/timezone before treating a saved block as consumed."""
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_native_load_variant(store, project=project, source_variant=source_variant,
+                                      new_variant=new_variant, load=load.model_dump(),
+                                      dry_run=dry_run, variant_name=variant_name,
+                                      add_utf8_bom=add_utf8_bom)
 
 
 class GridStorageUpdates(BaseModel):
