@@ -75,16 +75,16 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 3.1.1 / 12 | 固定平面倾角、方位角：`orientation_updates` | 已有受限配置及原生消费证据；无活动几何/布局，普通非平均平面 | 角度影响已有阴影/布局映射时不得只改标量 |
 | 3.1.1、4.1 / 12、17–21 | 多固定平面复制、分配、删除：`clone_orientation`、`NoOrientation`、`remove_orientation` | 已有受限入口；8.1.6 GUI源的三个状态与MCP结果有48h逐点对照，不只支持单平面 | [固定平面生命周期](grid-capacity-verification.md#gui-saved-816-exclusive-fixed-plane-lifecycle)：独占MPPT/完整计数、无活动场景；不是按季切换 |
 | 3.1.2 / 12 | 季节性倾角切换：seasonal_updates及原生季节字段检查 | [MCP受限写入已验收](seasonal-orientation.md)：固定切换/月mask完整文件同GUI、8760h/14列一致、23负例和恢复通过 | 单平面/子阵/自由地平线/普通Grid；移除零BaseSlope，保留方位及分配；FieldTilt=0非全年水平，回固定用恢复 |
-| 3.1.3 / 13 | Domes | 候选，缺专用配置 | 朝向类型与双面几何，不能套固定平面标量 |
-| 3.1.4 / 13 | Unlimited sheds | 候选，缺专用配置 | 棚架几何、自遮挡及电气分组，先原生保存 |
-| 3.1.5 / 14 | Unlimited sun-shields | 候选，缺专用配置 | 与普通固定平面和3D遮阳板区分 |
-| 3.2.1 / 14 | 无限水平轴跟踪 | 候选，缺专用配置 | 轴、行距/几何与跟踪控制先绑定；不自行计算跟踪角 |
-| 3.2.2 / 15 | 水平/倾斜轴跟踪 | 候选，缺专用配置 | 教程要求3D建模；先验证场景与朝向关联 |
-| 3.2.3 / 15 | 竖直轴跟踪 | 候选，缺专用配置 | 类型与控制字段未证 |
-| 3.2.4 / 16 | 跟踪遮阳板 | 候选，缺专用配置 | 几何、控制和场景依赖未证 |
-| 3.2.5 / 16 | 东/西水平轴跟踪 | 候选，缺专用配置 | 与其他水平轴模式分开保存对照 |
-| 3.3.1 / 16 | 双轴跟踪 | 候选，缺专用配置 | 跟踪类型及双轴参数未证 |
-| 3.3.2 / 17 | 双轴 N/S+E/W框架、backtracking | 候选，缺专用配置 | 教程涉及3D field与回溯控制，不能由两个角度替代 |
+| 3.1.3 / 13 | Domes：Dome/DomeBackfaces配对 | [GUI持久化已证](native-orientation-controls.md)；本方案朝向#2未分配PV array，原生校验未通过；尚无专用配置 | 两条TDomeOrientGroup互指，不是3D场景；先完成两面系统分配，不扁平化或删除配对记录 |
+| 3.1.4 / 13 | Unlimited sheds：Sheds | [GUI保存及2022年8760h/16列/PDF已证](native-orientation-controls.md)；尚无专用配置 | 本次默认几何消费不证明任意棚架、自遮挡或电气分组编辑 |
+| 3.1.5 / 14 | Unlimited sun-shields：SunShields | [GUI保存及2022年8760h/16列/PDF已证](native-orientation-controls.md)；尚无专用配置 | 与普通固定平面、3D遮阳板区分；任意几何/活动阴影仍待 |
+| 3.2.1 / 14 | 无限水平轴：UnlimTracking | [GUI保存、默认及四组控制8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 轴方位/phi界限/回溯/辐照优化由原生消费；报告no Shadings，活动2D/电气阴影未测，不自行算跟踪角 |
+| 3.2.2 / 15 | 水平N-S/倾斜轴：TrackHorizNSAxis/TrackTiltedAxis | [GUI保存及无阴影8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 本批无3D场景也可运行基本跟踪；不据此外推活动场景/布局和阴影路径，教程相关3D依赖另验 |
+| 3.2.3 / 15 | 竖直轴：TrackVertAxis | [GUI保存及无阴影8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 类型和本次默认控制消费已证，任意方位界限、几何域待验 |
+| 3.2.4 / 16 | 跟踪遮阳板：TrackSunShield | [GUI保存及无阴影8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 本次类型消费不等于任意几何、回溯组合或3D场景编辑 |
+| 3.2.5 / 16 | 东/西水平轴：TrackHorizAxis | [GUI保存及无阴影8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 与其它水平轴类型分开保存；任意倾角界限、活动阴影另验 |
+| 3.3.1 / 16 | 双轴：TrackTwoAxis | [GUI保存及无阴影8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 本次默认双轴消费已证，任意两组界限及场景映射仍待 |
+| 3.3.2 / 17 | 双轴N/S与E/W框架：TrackFrameNS/EW；backtracking | [两框架保存及无阴影8760h已证](native-orientation-controls.md)；回溯单变量仅在UnlimTracking已证；尚无专用配置 | 不把无限水平轴回溯证据外推到框架回溯/3D field；不由两个角度替代原生跟踪与场景 |
 | 8 / 40–41 | 地平线高度/方位点集、原生HOR保存导入及清除；horizon_updates | [MCP受限profile/none已验收](horizon-profile.md)：四/六点8760h/14列同GUI、名称/清除整文件一致、25负例；原生HOR两路径24h通过 | 单普通固定平面/子阵/plain Grid；原生100槽模板及FracAlbedo=1，变点不继承派生因子、名称保留缓存；不自行闭合/插值/遮挡 |
 | 9.1 / 43 | 3D场景与系统朝向兼容校验 | 缺专用入口，原生绑定未证 | 现有结构验证不是完整3D兼容校验 |
 | 9.2 / 44 | 已有场景执行及重算：`run_simulation(recompute_shading=...)` | 已有调用入口；该复杂场景路径的本阶段原生消费待证 | 高层 `fixed_unshaded_grid` 限制不等于底层run禁止既有3D；选择真实既有场景作控制 |
