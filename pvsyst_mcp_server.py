@@ -38,6 +38,7 @@ from pvsyst_grid_storage_system import create_grid_storage_system
 from pvsyst_native_load import create_native_load_variant
 from pvsyst_tracking import create_tracking_variant
 from pvsyst_peak_shaving import create_peak_shaving_variant
+from pvsyst_dome_allocation import create_dome_allocation_variant
 from pvsyst_weather import inspect_weather_csv
 from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
@@ -65,6 +66,7 @@ TOOL_GROUPS = {
         "pvsyst_get_variant_parameters", "pvsyst_update_variant_parameters",
         "pvsyst_validate_variant_structure", "pvsyst_clone_subarray",
         "pvsyst_remove_subarray", "pvsyst_restore_variant", "pvsyst_create_tracking_variant",
+        "pvsyst_create_dome_allocation_variant",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
@@ -99,6 +101,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
                           "pvsyst_create_tracking_variant",
+                          "pvsyst_create_dome_allocation_variant",
                           "pvsyst_create_peak_shaving_variant",
                           "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system")
 _strict_arguments: dict[str, frozenset[str]] = {}
@@ -1261,6 +1264,46 @@ def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr
                                    new_variant=new_variant, tracking=tracking.model_dump(),
                                    dry_run=dry_run, variant_name=variant_name,
                                    add_utf8_bom=add_utf8_bom)
+
+
+@categorized_tool()
+def pvsyst_create_dome_allocation_variant(project: StrictStr, source_variant: StrictStr,
+                                          new_variant: StrictStr,
+                                          first_orientation_strings: StrictInt,
+                                          dry_run: StrictBool = True,
+                                          variant_name: StrictStr | None = None,
+                                          add_utf8_bom: StrictBool = False) -> dict:
+    """Preview or create a NEW variant that rebalances an existing two-face Dome allocation.
+    Supported subset is the already-allocated native 8.1.6 Dome template: one subarray
+    sharing both faces, NStringCh=40 with NoOrientation=1 and NoOrientation2=2, plus the
+    pinned module/inverter/series/inverter/MPPT declarations and the two paired
+    pvDomeOrient records (main FieldType=Dome at tilt 10 / azimuth 90, back face
+    FieldType=DomeBackfaces at tilt 10 / azimuth -90, NoPairOrient 2/1, IsMainOrient
+    True/False, three averaging switches False, BTNoTrackers=-1,-1, both Version=8.1.6
+    and Flags=$00). Record Comments are kept verbatim and are never used to detect the
+    face type; unknown, duplicated, missing or wrongly paired records stop.
+    Only NStrOrient1 is written, plus an optional root Comment; no inverter, string,
+    module, subarray or orientation record is created or copied, NoOrientation2 is not
+    changed, and a source without an existing allocation is refused rather than completed.
+    The remaining face-two strings are not written as NStrOrient2 because the native
+    template does not store that field, so NStringCh=40 stays the only string total.
+    first_orientation_strings is adapter-bounded to 1..39; that bound is not a measured
+    native GUI or engineering limit, and the source record is validated against the same
+    domain. Circuit node NElements values are inherited unchanged and their semantics are
+    not inferred; no mismatch, string-current or allocation model is computed here.
+    dry_run=true writes nothing; execution creates one NEW VC only and never edits the
+    source PRJ/VC, weather, topology or hardware, reusing existing store locking, path
+    checks, read-back verification and no-overwrite semantics. variant_name/add_utf8_bom
+    follow the existing display-name and BOM rules. native_consumption_verified stays
+    false: verify native hourly results and reports before treating the allocation as
+    consumed."""
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_dome_allocation_variant(store, project=project, source_variant=source_variant,
+                                          new_variant=new_variant,
+                                          first_orientation_strings=first_orientation_strings,
+                                          dry_run=dry_run, variant_name=variant_name,
+                                          add_utf8_bom=add_utf8_bom)
 
 
 class AfterSunsetDischarge(BaseModel):

@@ -75,7 +75,7 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 3.1.1 / 12 | 固定平面倾角、方位角：`orientation_updates` | 已有受限配置及原生消费证据；无活动几何/布局，普通非平均平面 | 角度影响已有阴影/布局映射时不得只改标量 |
 | 3.1.1、4.1 / 12、17–21 | 多固定平面复制、分配、删除：`clone_orientation`、`NoOrientation`、`remove_orientation` | 已有受限入口；8.1.6 GUI源的三个状态与MCP结果有48h逐点对照，不只支持单平面 | [固定平面生命周期](grid-capacity-verification.md#gui-saved-816-exclusive-fixed-plane-lifecycle)：独占MPPT/完整计数、无活动场景；不是按季切换 |
 | 3.1.2 / 12 | 季节性倾角切换：seasonal_updates及原生季节字段检查 | [MCP受限写入已验收](seasonal-orientation.md)：固定切换/月mask完整文件同GUI、8760h/14列一致、23负例和恢复通过 | 单平面/子阵/自由地平线/普通Grid；移除零BaseSlope，保留方位及分配；FieldTilt=0非全年水平，回固定用恢复 |
-| 3.1.3 / 13 | Domes：Dome/DomeBackfaces配对 | [GUI持久化已证](native-orientation-controls.md)；本方案朝向#2未分配PV array，原生校验未通过；尚无专用配置 | 两条TDomeOrientGroup互指，不是3D场景；先完成两面系统分配，不扁平化或删除配对记录 |
+| 3.1.3 / 13 | Domes：Dome/DomeBackfaces配对与同子阵分配 | [pvsyst_create_dome_allocation_variant受限MCP已验收](native-dome-allocation.md)：原生第二朝向开关、39/1与20/20保存重载，6正向/51负例，三种分配均有8760h/16列/PDF正例 | 一个40串子阵/440kWp/6逆变器未增硬件，NoOrientation2=2且不写NStrOrient2；仅既有有效配对10±90模板重分配，保留原未分配失败及一次退出未定的原生失败，不等于3D或首次构造API |
 | 3.1.4 / 13 | Unlimited sheds：Sheds | [GUI保存及2022年8760h/16列/PDF已证](native-orientation-controls.md)；尚无专用配置 | 本次默认几何消费不证明任意棚架、自遮挡或电气分组编辑 |
 | 3.1.5 / 14 | Unlimited sun-shields：SunShields | [GUI保存及2022年8760h/16列/PDF已证](native-orientation-controls.md)；尚无专用配置 | 与普通固定平面、3D遮阳板区分；任意几何/活动阴影仍待 |
 | 3.2.1 / 14 | 无限水平轴：UnlimTracking | [pvsyst_create_tracking_variant受限MCP已验收](native-tracking-controls.md)：5个GUI整文件、3组新8760h/17列/PDF，四开关组合有48h隔离对照 | 五控制由原生消费，不转换类型/不改固定几何；GlobShd与损失图证明无显式3D也有二维遮挡，电气True/独立3D仍待，不自行算跟踪角 |

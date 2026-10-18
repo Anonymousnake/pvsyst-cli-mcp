@@ -4,7 +4,7 @@
 
 本阶段使用 PVsyst GUI/CLI 8.1.6，在隔离工程 `ORIENTATION_CONTROLS.PRJ` 中完成朝向整窗批量保存与原生年度运行。覆盖教程第 3 章中的 14 个可选择类型，以及无限水平轴跟踪的四组控制。三个下拉分组标题不是类型；Dome 一次选择生成 `Dome`、`DomeBackfaces` 两条配对记录，因此可选类型数不等于序列化 `FieldType` 字面值数。
 
-**本 R31 阶段交付入口证据，当时不新增跟踪或 Dome MCP 配置工具。** 后续 R38 已交付[现存 UnlimTracking 模板的受限五控制入口](native-tracking-controls.md)，不扩展为全部类型的新建或几何编辑。既有固定平面、[季节性倾角](seasonal-orientation.md)及[地平线](horizon-profile.md)入口保持原有适用域。通过 `pvsyst_run_simulation` 运行 GUI 保存的方案，本身仍不等于该类型配置工具已验收。
+**本 R31 阶段交付入口证据，当时不新增跟踪或 Dome MCP 配置工具。** 后续 R38 已交付[现存 UnlimTracking 五控制](native-tracking-controls.md)，R40 已交付[现存有效双面 Dome 模板重分配](native-dome-allocation.md)，不扩展为全部类型的新建或几何编辑。既有固定平面、[季节性倾角](seasonal-orientation.md)及[地平线](horizon-profile.md)入口保持原有适用域。通过 `pvsyst_run_simulation` 运行 GUI 保存的方案，本身仍不等于该类型配置工具已验收。
 
 GUI 在同一会话中新增保存 **18 份方案 VCF–VCW**，另有既有基线 VCD 与先前保存的跟踪默认 VCE。年度批次运行 VCD、VCF–VCW，共 **19 次：18 成功、1 次因原生分配前提未满足而失败**；VCE 未列入该年度批次。原始工程及变体保留，GUI 正常关闭，临时工作区的 INI DataPath 已恢复。
 
@@ -76,7 +76,7 @@ VCD 的小时表头、单位和全部数据与前一详细损失批次基线完�
 
 跟踪报告披露 `Tracking algorithm`；普通控制显示 `Astronomic calculation`，VCW 明确显示 `Irradiance optimization`，VCT 披露 `Backtracking activated`。这些报告同时显示 `Near Shadings / no Shadings`，但该标签不足以判断原生二维互遮挡是否活动；R31 未单独导出遮挡量，不再以该标签将场景称为“无阴影”。后续 [R38 原生全年 GlobShd 与损失图对照](native-tracking-controls.md#原生二维遮挡与导出失败裁决) 已在无显式 3D 场景的 UnlimTracking 中观测到辐照遮挡，且双开关有单变量隔离对照。电气效果 True、独立 3D/Module Layout 与其它类型的任意几何路径仍未由该证据验证。
 
-原生 Dome 失败信息为 `You have defined an orientation #2 ... but no PV array has been attributed to it !`。这证明本方案缺少第二朝向的阵列分配，不证明 Dome 类型不受支持。后续需在原生系统入口完成配对分配，再作独立运行；不以删除第二条记录或放宽校验绕过此前提。
+原生 Dome 失败信息为 `You have defined an orientation #2 ... but no PV array has been attributed to it !`。这证明该原方案缺第二朝向归属，不证明类型不受支持。R40 再次复演原失败，并通过系统窗口“第二朝向”在同一40串子阵形成39/1、20/20分配，未复制硬件或删除配对；两组均完成原生全年。随后已有有效模板的受限 MCP 重分配与原生数据一致，首次未分配方案仍需原生入口处理。完整证据与保留失败见[独立文档](native-dome-allocation.md)，不以改 FieldType 或放宽旧固定门控绕过。
 
 ## 证据与后续
 
@@ -94,4 +94,4 @@ VCD 的小时表头、单位和全部数据与前一详细损失批次基线完�
 
 保存驱动在全部原生保存及保留断言完成后，因末尾向 `json.dumps` 误传 `flush` 而退出 1。原始失败记录保留，独立复核确认 18 份文件已保存；未以重复 GUI 操作掩盖该日志错误。年度批次正常结束，Dome 依赖失败另计。
 
-R38 已实现现存 `UnlimTracking` 模板五控制、受限适配器角度域和四种开关组合，新 VC、源保留及原生全年验证见独立文档；不是 R31 已有能力，也不外推原生 GUI 硬范围。Dome 的系统分配、显式 3D、电气效果 True 和其它跟踪类型的任意几何编辑仍待原生正例。全过程保留既有闭环，不增加替代计算或永久验证框架。
+R38 已实现现存 `UnlimTracking` 模板五控制、受限适配器角度域和四种开关组合；R40 完成 Dome 同子阵双面原生分配及已有有效模板的受限计数配置。两项不是 R31 已有能力，也不外推原生 GUI 硬范围。Dome 首次构造/任意几何、显式 3D、电气效果 True 和其它跟踪类型的任意几何编辑仍待独立验证。全过程保留既有闭环，不增加替代计算或永久验证框架。
