@@ -86,15 +86,15 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 3.3.1 / 16 | 双轴：TrackTwoAxis | [GUI保存及无显式3D场景8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 本次默认双轴消费已证，任意两组界限及场景映射仍待 |
 | 3.3.2 / 17 | 双轴N/S与E/W框架：TrackFrameNS/EW；backtracking | [两框架保存及无显式3D场景8760h已证](native-orientation-controls.md)；回溯单变量仅在UnlimTracking已证；尚无专用配置 | 不把无限水平轴回溯证据外推到框架回溯/3D field；不由两个角度替代原生跟踪与场景 |
 | 8 / 40–41 | 地平线高度/方位点集、原生HOR保存导入及清除；horizon_updates | [MCP受限profile/none已验收](horizon-profile.md)：四/六点8760h/14列同GUI、名称/清除整文件一致、25负例；原生HOR两路径24h通过 | 单普通固定平面/子阵/plain Grid；原生100槽模板及FracAlbedo=1，变点不继承派生因子、名称保留缓存；不自行闭合/插值/遮挡 |
-| 9.1 / 43 | 3D场景与系统朝向兼容校验 | [房屋/PV原生绑定已证](house-pv-modeling.md)：导入后用原生朝向管理关联现有系统并删除空朝向，1000块/2241.81m²保存重载；无自动绑定MCP | 仅显示模型不等于绑定完成，原有结构验证仍不是完整3D兼容校验 |
-| 9.2 / 44 | 已有场景执行及重算：`run_simulation(recompute_shading=...)` | [平顶/双坡/房体投影关闭三态各8760h/14数值列/8页PDF已证](house-pv-modeling.md)，另有无场景8760h基线 | 通过既有底层run，不放宽高层fixed_unshaded_grid；基线省略GlobShd，不补列或零 |
+| 9.1 / 43 | 3D场景与系统朝向兼容校验 | [房屋/PV原生绑定已证](house-pv-modeling.md)：R43两屋顶1000块；R44 AI完整住宅40块/89.67m²，原生关联保存重载；无自动绑定MCP | 显示模型不等于关联完成；中断后按实际孤立场区重定位，不盲目重放拖放 |
+| 9.2 / 44 | 已有场景执行及重算：`run_simulation(recompute_shading=...)` | R43三态及R44 AI完整住宅各8760h/14数值列/8页PDF已证，均有同硬件无场景基线 | 通过既有底层run，不放宽fixed_unshaded_grid；基线省略GlobShd，不补列或零，差值不归因到单个构件 |
 | 9.3 / 46 | 线性阴影表、逐步/快速算法、Module Layout | 原生线性/快速表格与显式重算已证；Module Layout与电气阴影依用户要求暂缓 | 同几何开关房体投影的全年14列完全相同，不宣称非零房体损失或电气阴影效果 |
-| 9.4 / 48–50 | 房屋与光伏新建/原生导入 | [pvsyst_create_house_pv_scene](house-pv-modeling.md)：严格PVCollada2.0文件输出，平顶/对称双坡+单固定PV；官方XSD/三组sch与本机8.1.6原生导入保存重载已证 | 文件创建MCP不是自动导入工具；软件beta提示保留，实际导入/朝向关联/仿真分开验收 |
-| 9.5 / 51–53 | 简单房体与PV对象 | PVC2经原生导入为pvShdGenObject/pvShdArrayTable，支持一栋矩形平顶或对称双坡及显式行列/间距 | 暂不包含树木、周围复杂建筑和通用CAD；物理计算仍由PVsyst执行 |
+| 9.4 / 48–50 | AI一次生成整栋房屋/PV场景 | [pvsyst_create_house_pv_scene](house-pv-modeling.md)：AI显式命名构件mesh+PV放置，薄序列化PVCollada2；19构件102顶点70三角通过官方4项校验、原生导入保存重载与全年 | 不是房型模板扩充或自动GUI导入；旧参数路径保留，格式写入、原生关联与仿真分开声明，beta提示保留 |
+| 9.5 / 51–53 | 房屋构件与PV对象 | R44原生保存19个pvShdGenObject+1个pvShdArrayTable；墙/多屋面/挑檐/门窗外形/烟囱/门廊/同栋附属体量由AI输入 | 不要求矩形footprint或两种roof枚举；不做周边树木建筑、材料/建筑物理语义或通用CAD内核 |
 | 9.6 / 54 | 房体投影属性 | 原生TGenericObjectForm勾选/取消启用阴影投射并另存对照已证，未直接patch私有位；暂无通用属性编辑MCP | 仅当前房体控制，不外推所有对象/电气阴影；编辑后的原生表与全年结果如实记录 |
 | 9.7 / 54–55 | 房屋/PV坐标与变换 | PVC2使用共同父旋转+局部平移；本机导入转换、角度/数量/位置保存证据保留 | 只生成标准场景输入，不替代原生几何处理；不是Transform全菜单API |
 | 9.8 / 55–62 | 必要的Tools入口 | 原生Shift+Ctrl+O朝向管理已用于房屋/PV绑定 | 只覆盖本建模流程需要的入口，不宣称工具菜单全集支持 |
-| 9.9 / 63–76 | 房屋/PV导入、保存、重载、重算 | 本批两种屋顶全过程已证；CSV/PDF来自原生全年运行 | PVsyst目前只导入PVCollada2，不导出该格式；通用场景维护API不在本批声明 |
+| 9.9 / 63–76 | 房屋/PV导入、保存、重载、重算 | 两种旧屋顶与AI完整住宅全过程已证；CSV/PDF来自原生全年运行 | PVsyst目前只导入PVCollada2，不导出该格式；通用场景维护API不在本批声明 |
 
 ### 负荷与储能：第 6、7 章
 

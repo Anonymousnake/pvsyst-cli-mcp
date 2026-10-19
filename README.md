@@ -84,7 +84,7 @@ The original core project/variant block passed a fresh-stdio integrated acceptan
 | `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Inspect, preview and edit variant display names, subarray/orientation scalars, bounded main-array thermal coefficient and standalone generator configuration |
 | `pvsyst_create_tracking_variant` | Preview or create a NEW VC from a verified existing 8.1.6 UnlimTracking record; edit axis azimuth, rotation limits, backtracking and irradiance optimization without changing template geometry or computing a replacement model |
 | `pvsyst_create_dome_allocation_variant` | Preview or create a NEW VC that rebalances an already-allocated native two-face Dome template; preserve hardware, paired geometry and the native mixed-orientation model |
-| `pvsyst_create_house_pv_scene` | Preview or create an external PVCollada 2.0 file with one flat/gable house and one fixed PV table; keep native projects/components unchanged and use PVsyst for import, association and physical calculations |
+| `pvsyst_create_house_pv_scene` | Create a complete AI-authored house/PV scene in one call from named architectural meshes and explicit PV placement; serialize PVCollada 2.0 without changing native inputs; retain the legacy flat/gable calls |
 | `pvsyst_validate_variant_structure`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray` | Check references and edit isolated unshaded grid branches |
 | `pvsyst_restore_variant` | Restore a SHA-guarded variant backup |
 | `pvsyst_archive_project`, `pvsyst_archive_variant`, `pvsyst_restore_project_archive` | Confirmed PRJ/VC archive and recovery |
@@ -93,7 +93,7 @@ See [native tracking controls](docs/native-tracking-controls.md) for the bounded
 
 See [native Dome allocation](docs/native-dome-allocation.md) for the verified same-subarray second-orientation workflow and the bounded existing-template API. The original unassigned-pair failure remains reproducible; initial construction still uses PVsyst. Native annual CSV/PDF comparisons, the retained first-run failure and its unchanged-input recheck are documented separately from configuration creation.
 
-See [house and PV modeling](docs/house-pv-modeling.md) for the strict geometric inputs, metre/millimetre domains, native database metadata fallback and PVsyst 8.1.6 import workflow. The new tool writes only a new `.pvc2`, not a private VC shading structure; native import, orientation association and simulation remain separate steps. No trees, surrounding buildings, electrical shading model or replacement irradiance calculation is added.
+See [house and PV modeling](docs/house-pv-modeling.md) for one-shot AI-authored house meshes: named walls, arbitrary roof parts, eaves, door/window geometry, chimney, porch and attached volumes, plus a PV table placed over a named supporting roof. AI supplies the complete geometry; the thin serializer reuses the standard XML/PV references rather than rebuilding a flat/gable template. The original parametric calls remain compatible. It writes only a new `.pvc2`, not private VC shading data; native import, association and calculation remain separate. No trees, surrounding buildings, electrical shading model or replacement irradiance calculation is added.
 
 ### Components (14)
 
