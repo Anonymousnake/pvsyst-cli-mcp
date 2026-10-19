@@ -84,7 +84,7 @@ The original core project/variant block passed a fresh-stdio integrated acceptan
 | `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Inspect, preview and edit variant display names, subarray/orientation scalars, bounded main-array thermal coefficient and standalone generator configuration |
 | `pvsyst_create_tracking_variant` | Preview or create a NEW VC from a verified existing 8.1.6 UnlimTracking record; edit axis azimuth, rotation limits, backtracking and irradiance optimization without changing template geometry or computing a replacement model |
 | `pvsyst_create_dome_allocation_variant` | Preview or create a NEW VC that rebalances an already-allocated native two-face Dome template; preserve hardware, paired geometry and the native mixed-orientation model |
-| `pvsyst_create_house_pv_scene` | Create a complete AI-authored house/PV scene in one call from named architectural meshes and explicit PV placement; serialize PVCollada 2.0 without changing native inputs; retain the legacy flat/gable calls |
+| `pvsyst_create_house_pv_scene` | Create an AI-authored house with one or several named PV regions in one PVCollada call; locate invalid parts/triangles for correction, preserve source module totals and retain legacy calls |
 | `pvsyst_validate_variant_structure`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray` | Check references and edit isolated unshaded grid branches |
 | `pvsyst_restore_variant` | Restore a SHA-guarded variant backup |
 | `pvsyst_archive_project`, `pvsyst_archive_variant`, `pvsyst_restore_project_archive` | Confirmed PRJ/VC archive and recovery |

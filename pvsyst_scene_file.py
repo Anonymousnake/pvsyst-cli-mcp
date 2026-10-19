@@ -1,6 +1,7 @@
 """Serialize AI-authored house meshes and a fixed PV table into PVCollada 2.0."""
 from __future__ import annotations
 
+import json
 import math
 import re
 import xml.etree.ElementTree as ET
@@ -26,6 +27,32 @@ PLACED_LAYOUT_KEYS = ("module_rows", "module_columns", "orientation", "row_spaci
                       "column_spacing_m", "origin_m", "roof_mesh")
 # Adapter payload ceilings, not PVsyst limits or architectural constraints.
 MAX_PARTS, MAX_VERTICES, MAX_TRIANGLES = 128, 50000, 100000
+MAX_TABLES = 64
+AUTHORING_TOOL = "pvsyst-cli-mcp/house-scene/1"
+
+
+class SceneValidationError(ValueError):
+    """Bounded, actionable input diagnostics; no automatic mutation of authored geometry."""
+    def __init__(self, diagnostics):
+        self.diagnostics = diagnostics[:100]
+        self.truncated = len(diagnostics) > 100
+        super().__init__("; ".join(row["message"] for row in self.diagnostics[:3]))
+
+
+def _diagnostic(code, path, message, *, part=None, triangle=None, repair_hint=None):
+    result = {"code": code, "path": path, "message": message,
+              "repair_hint": repair_hint or "Correct the indicated input and submit a new preview."}
+    if part is not None:
+        result["part"] = part
+    if triangle is not None:
+        result["triangle"] = triangle
+    return result
+
+
+def _name(value):
+    if not isinstance(value, str) or not value.strip() or value != value.strip() or len(value) > 120:
+        raise ValueError("Names must be 1..120 characters without surrounding whitespace")
+    return value
 
 
 def _tag(namespace, name):
@@ -201,38 +228,79 @@ def _normal(a, b, c):
 
 def mesh_house_profile(house):
     if set(house) != {"kind", "meshes"} or not isinstance(house["meshes"], list):
-        raise ValueError("A mesh house must declare exactly kind and meshes")
+        raise SceneValidationError([_diagnostic("mesh_fields", "house.meshes",
+                                    "A mesh house must declare exactly kind and meshes")])
     if not 1 <= len(house["meshes"]) <= MAX_PARTS:
-        raise ValueError(f"Declare 1..{MAX_PARTS} named house meshes")
-    parts, names, vertex_count, triangle_count = [], set(), 0, 0
-    for part in house["meshes"]:
+        raise SceneValidationError([_diagnostic("mesh_count", "house.meshes",
+                                    f"Declare 1..{MAX_PARTS} named house meshes")])
+    parts, names, vertex_count, triangle_count, errors = [], set(), 0, 0, []
+    for index, part in enumerate(house["meshes"]):
+        path = f"house.meshes[{index}]"
         if not isinstance(part, dict) or set(part) != {"name", "vertices", "triangles"}:
-            raise ValueError("Each mesh must declare exactly name, vertices and triangles")
-        name = part["name"]
-        if not isinstance(name, str) or not name.strip() or name != name.strip() or len(name) > 120:
-            raise ValueError("Mesh names must be 1..120 characters without surrounding whitespace")
+            errors.append(_diagnostic("mesh_fields", path,
+                                      "Each mesh must declare exactly name, vertices and triangles"))
+            continue
+        try:
+            name = _name(part["name"])
+        except ValueError as exc:
+            errors.append(_diagnostic("mesh_name", path + ".name", str(exc)))
+            continue
         if name.casefold() in names:
-            raise ValueError("House mesh names must be unique, ignoring case")
+            errors.append(_diagnostic("duplicate_mesh_name", path + ".name",
+                                      "House mesh names must be unique, ignoring case", part=name))
         names.add(name.casefold())
         vertices, triangles = part["vertices"], part["triangles"]
         if not isinstance(vertices, list) or len(vertices) < 3:
-            raise ValueError("Each mesh needs at least three vertices")
+            errors.append(_diagnostic("mesh_vertices", path + ".vertices",
+                                      "Each mesh needs at least three vertices", part=name))
+            continue
         if not isinstance(triangles, list) or not triangles:
-            raise ValueError("Each mesh needs explicit triangle indices")
+            errors.append(_diagnostic("mesh_triangles", path + ".triangles",
+                                      "Each mesh needs explicit triangle indices", part=name))
+            continue
         vertex_count += len(vertices)
         triangle_count += len(triangles)
         if vertex_count > MAX_VERTICES or triangle_count > MAX_TRIANGLES:
-            raise ValueError("House mesh payload exceeds the adapter vertex/triangle ceiling")
+            errors.append(_diagnostic("mesh_ceiling", path,
+                                      "House mesh payload exceeds the adapter vertex/triangle ceiling",
+                                      part=name))
+            break
         # Validate the coordinates that will actually be written, including collapsed edges.
-        vertices = [[float(_num(value)) for value in _vector(vertex, "Mesh vertex")]
-                    for vertex in vertices]
-        for triangle in triangles:
+        serialized = []
+        for vi, vertex in enumerate(vertices):
+            try:
+                serialized.append([float(_num(value)) for value in _vector(vertex, "Mesh vertex")])
+            except ValueError as exc:
+                serialized.append(None)
+                errors.append(_diagnostic("mesh_coordinate", f"{path}.vertices[{vi}]", str(exc), part=name))
+        seen_faces = set()
+        for ti, triangle in enumerate(triangles):
+            face_path = f"{path}.triangles[{ti}]"
             if (not isinstance(triangle, list) or len(triangle) != 3
                     or any(type(index) is not int or not 0 <= index < len(vertices) for index in triangle)
                     or len(set(triangle)) != 3):
-                raise ValueError("Triangles require three distinct, in-range, zero-based integer indices")
-            _normal(*(vertices[index] for index in triangle))
-        parts.append({"name": name, "vertices": vertices, "triangles": triangles})
+                errors.append(_diagnostic("triangle_indices", face_path,
+                                          "Triangles require three distinct, in-range, zero-based integer indices",
+                                          part=name, triangle=ti))
+                continue
+            if any(serialized[vertex] is None for vertex in triangle):
+                continue
+            points = [serialized[vertex] for vertex in triangle]
+            try:
+                _normal(*points)
+                key = tuple(sorted(tuple(point) for point in points))
+                if key in seen_faces:
+                    raise ValueError("A coincident triangle is repeated within this mesh")
+                seen_faces.add(key)
+            except ValueError as exc:
+                errors.append(_diagnostic("triangle_geometry", face_path, str(exc), part=name, triangle=ti,
+                                          repair_hint="Replace the indicated triangle; check vertex coordinates, "
+                                                      "six-decimal collapse and duplicated faces."))
+        parts.append({"name": name, "vertices": serialized, "triangles": triangles})
+        if len(errors) > 100:
+            break
+    if errors:
+        raise SceneValidationError(errors)
     return {"kind": "mesh", "meshes": parts}
 
 
@@ -286,7 +354,7 @@ def layout_profile(layout, modules, total, source_tilt, *, placed=False):
     for name, value in (("module_rows", rows), ("module_columns", columns)):
         if type(value) is not int or value < 1:
             raise ValueError(f"{name} must be a strict positive integer")
-    if rows * columns != total:
+    if total is not None and rows * columns != total:
         raise ValueError(f"module_rows x module_columns must equal the source module count {total}")
     if layout["orientation"] not in ("portrait", "landscape"):
         raise ValueError("orientation must be portrait or landscape")
@@ -310,6 +378,67 @@ def layout_profile(layout, modules, total, source_tilt, *, placed=False):
             **spacing,
             "geometry_depth_m": depth, "depth_source": "caller-provided",
             "tilt_deg": source_tilt, "column_span_m": column_span, "slope_span_m": slope_span}
+
+
+def table_profiles(layout, house, modules, source):
+    """Reuse the one-table contract, validating source counts once across named regions."""
+    if not isinstance(layout, dict) or "tables" not in layout:
+        return [layout_profile(layout, modules, source["module_total"], source["tilt_deg"],
+                               placed=house["kind"] == "mesh")]
+    if (house["kind"] != "mesh" or set(layout) != {"tables"}
+            or not isinstance(layout["tables"], list) or not 1 <= len(layout["tables"]) <= MAX_TABLES):
+        raise ValueError(f"Named tables require a mesh house and 1..{MAX_TABLES} table entries")
+    result, names, errors = [], set(), []
+    for index, entry in enumerate(layout["tables"]):
+        path = f"layout.tables[{index}]"
+        try:
+            if not isinstance(entry, dict) or set(entry) != set(PLACED_LAYOUT_KEYS) | {"name"}:
+                raise ValueError("Each named table requires name and all placed-layout fields")
+            name = _name(entry["name"])
+            if name.casefold() in names:
+                raise ValueError("PV table names must be unique, ignoring case")
+            names.add(name.casefold())
+            profile = layout_profile({key: entry[key] for key in PLACED_LAYOUT_KEYS}, modules, None,
+                                     source["tilt_deg"], placed=True)
+            result.append(profile | {"name": name})
+        except (ValueError, KeyError) as exc:
+            errors.append(_diagnostic("pv_table_input", path, str(exc),
+                                      repair_hint="Correct this named table without changing other valid regions."))
+    if errors:
+        raise SceneValidationError(errors)
+    total = sum(table["module_rows"] * table["module_columns"] for table in result)
+    if total != source["module_total"]:
+        raise SceneValidationError([_diagnostic("pv_module_total", "layout.tables",
+            f"All PV tables together must contain {source['module_total']} modules, not {total}",
+            repair_hint="Allocate the existing source modules across tables; do not duplicate the full array.")])
+    return result
+
+
+def check_tables(house, tables):
+    errors = []
+    for index, table in enumerate(tables):
+        path = f"layout.tables[{index}]" if "name" in table else "layout"
+        try:
+            points, _ = rack_mesh(table)
+            check_fit(house, table, _rack_origin(house, table), points)
+        except ValueError as exc:
+            errors.append(_diagnostic("pv_roof_fit", path, str(exc),
+                repair_hint="Check this table's roof_mesh, origin_m and footprint against the source PV plane."))
+    for index, table in enumerate(tables):
+        a = _rack_origin(house, table)
+        down = table["slope_span_m"] * math.cos(math.radians(table["tilt_deg"]))
+        for other_index, other in enumerate(tables[:index]):
+            b = _rack_origin(house, other)
+            other_down = other["slope_span_m"] * math.cos(math.radians(other["tilt_deg"]))
+            offset = (a[2] - b[2]) - math.tan(math.radians(table["tilt_deg"])) * (a[1] - b[1])
+            overlap_x = min(a[0] + table["column_span_m"], b[0] + other["column_span_m"]) - max(a[0], b[0])
+            overlap_y = min(a[1] + down, b[1] + other_down) - max(a[1], b[1])
+            if abs(offset) <= TOL and overlap_x > TOL and overlap_y > TOL:
+                errors.append(_diagnostic("pv_tables_overlap", f"layout.tables[{index}]",
+                    f"PV table overlaps coplanar table {other_index}",
+                    repair_hint="Separate these PV rectangles or explicitly reallocate their modules."))
+    if errors:
+        raise SceneValidationError(errors)
 
 
 def _view(lines):
@@ -519,12 +648,14 @@ def check_fit(house, layout, origin, points):
             raise ValueError("Table corner sinks below the front roof plane")
 
 
-def build_scene(house, layout, modules, source, created):
+def build_scene(house, tables, modules, source, created, recipe=None):
     """Minimal COLLADA document: shared rotation node, house child, PV child with translation."""
     ET.register_namespace("", NS)
     ET.register_namespace("pv", PV)
     root = ET.Element(_tag(NS, "COLLADA"), {"version": "1.5.0"})
     asset = ET.SubElement(root, _tag(NS, "asset"))
+    contributor = ET.SubElement(asset, _tag(NS, "contributor"))
+    ET.SubElement(contributor, _tag(NS, "authoring_tool")).text = AUTHORING_TOOL
     coverage = ET.SubElement(ET.SubElement(asset, _tag(NS, "coverage")),
                              _tag(NS, "geographic_location"))
     ET.SubElement(coverage, _tag(NS, "longitude")).text = _num(source["site"]["longitude"])
@@ -532,6 +663,9 @@ def build_scene(house, layout, modules, source, created):
     ET.SubElement(coverage, _tag(NS, "altitude"), {"mode": "absolute"}).text = _num(source["site"]["altitude"])
     ET.SubElement(asset, _tag(NS, "created")).text = created
     ET.SubElement(asset, _tag(NS, "modified")).text = created
+    if recipe is not None:
+        ET.SubElement(asset, _tag(NS, "subject")).text = json.dumps(recipe, ensure_ascii=True,
+                                                                   separators=(",", ":"), allow_nan=False)
     ET.SubElement(asset, _tag(NS, "unit"), {"meter": "1", "name": "m"})
     ET.SubElement(asset, _tag(NS, "up_axis")).text = "Z_UP"
     components = ET.SubElement(_pv_extra(asset), _tag(PV, "components"))
@@ -551,23 +685,24 @@ def build_scene(house, layout, modules, source, created):
     for index, part in enumerate(parts, 1):
         geometry = _append_mesh(geometries, f"HousePart{index}", part["vertices"], part["triangles"])
         geometry.set("name", part["name"])
-    rack_points, rack_faces = rack_mesh(layout)
-    rack = _append_mesh(geometries, "Rack", rack_points, rack_faces)
-    rack_tag = ET.SubElement(_pv_extra(rack), _tag(PV, "rack"))
-    for name, text in (("rack_type", "fixed_tilt"), ("row_spacing", _num(layout["row_spacing_m"])),
-                       ("column_spacing", _num(layout["column_spacing_m"])),
-                       ("module_rows", str(layout["module_rows"])),
-                       ("module_columns", str(layout["module_columns"])),
-                       ("module_orientation", layout["orientation"]),
-                       ("tilt", _num(layout["tilt_deg"])),
-                       ("azimuth", _num(source["azimuth_deg"])), ("module_id", "ModuleModel1")):
-        ET.SubElement(rack_tag, _tag(PV, name)).text = text
     nodes = ET.SubElement(root, _tag(NS, "library_nodes"))
-    table_node = ET.SubElement(nodes, _tag(NS, "node"), {"id": "TableModel"})
-    instance = ET.SubElement(table_node, _tag(NS, "instance_geometry"), {"url": "#Rack"})
-    ET.SubElement(_pv_extra(instance), _tag(PV, "instance_rack"), {"id": "rackInst1"})
-    table_tag = ET.SubElement(_pv_extra(table_node), _tag(PV, "table"))
-    ET.SubElement(table_tag, _tag(PV, "type")).text = "fixed"
+    for index, layout in enumerate(tables, 1):
+        rack_points, rack_faces = rack_mesh(layout)
+        rack = _append_mesh(geometries, f"Rack{index}", rack_points, rack_faces)
+        rack_tag = ET.SubElement(_pv_extra(rack), _tag(PV, "rack"))
+        for name, text in (("rack_type", "fixed_tilt"), ("row_spacing", _num(layout["row_spacing_m"])),
+                           ("column_spacing", _num(layout["column_spacing_m"])),
+                           ("module_rows", str(layout["module_rows"])),
+                           ("module_columns", str(layout["module_columns"])),
+                           ("module_orientation", layout["orientation"]),
+                           ("tilt", _num(layout["tilt_deg"])),
+                           ("azimuth", _num(source["azimuth_deg"])), ("module_id", "ModuleModel1")):
+            ET.SubElement(rack_tag, _tag(PV, name)).text = text
+        table_node = ET.SubElement(nodes, _tag(NS, "node"), {"id": f"TableModel{index}"})
+        instance = ET.SubElement(table_node, _tag(NS, "instance_geometry"), {"url": f"#Rack{index}"})
+        ET.SubElement(_pv_extra(instance), _tag(PV, "instance_rack"), {"id": f"rackInst{index}"})
+        table_tag = ET.SubElement(_pv_extra(table_node), _tag(PV, "table"))
+        ET.SubElement(table_tag, _tag(PV, "type")).text = "fixed"
     scenes = ET.SubElement(root, _tag(NS, "library_visual_scenes"))
     scene = ET.SubElement(scenes, _tag(NS, "visual_scene"), {"id": "VisualSceneNode"})
     turn = 180.0 - source["azimuth_deg"]
@@ -576,29 +711,41 @@ def build_scene(house, layout, modules, source, created):
     for index, part in enumerate(parts, 1):
         node = ET.SubElement(shared, _tag(NS, "node"), {"id": f"HouseNode{index}", "name": part["name"]})
         ET.SubElement(node, _tag(NS, "instance_geometry"), {"url": f"#HousePart{index}"})
-    origin = _rack_origin(house, layout)
-    pv_node = ET.SubElement(shared, _tag(NS, "node"), {"id": "PVTable1"})
-    ET.SubElement(pv_node, _tag(NS, "translate")).text = " ".join(_num(value) for value in origin)
-    pv_instance = ET.SubElement(pv_node, _tag(NS, "instance_node"), {"url": "#TableModel"})
-    table_instance = ET.SubElement(_pv_extra(pv_instance), _tag(PV, "instance_table"), {"id": "Table1"})
-    array = ET.SubElement(table_instance, _tag(PV, "instance_racks_array"))
-    ET.SubElement(array, _tag(PV, "instance_rack_ref"), {"id": "rackRef1", "url": "#rackInst1"})
+    summaries = []
+    for index, layout in enumerate(tables, 1):
+        origin = _rack_origin(house, layout)
+        pv_node = ET.SubElement(shared, _tag(NS, "node"), {"id": f"PVTable{index}",
+                                "name": layout.get("name", "PV table")})
+        ET.SubElement(pv_node, _tag(NS, "translate")).text = " ".join(_num(value) for value in origin)
+        pv_instance = ET.SubElement(pv_node, _tag(NS, "instance_node"), {"url": f"#TableModel{index}"})
+        table_instance = ET.SubElement(_pv_extra(pv_instance), _tag(PV, "instance_table"),
+                                      {"id": f"Table{index}"})
+        array = ET.SubElement(table_instance, _tag(PV, "instance_racks_array"))
+        ET.SubElement(array, _tag(PV, "instance_rack_ref"),
+                      {"id": f"rackRef{index}", "url": f"#rackInst{index}"})
+        points, _ = rack_mesh(layout)
+        summaries.append({"name": layout.get("name", "PV table"), "origin_m": origin,
+                          "module_total": layout["module_rows"] * layout["module_columns"],
+                          "corners_m": [[origin[axis] + point[axis] for axis in range(3)]
+                                        for point in points]})
     ET.SubElement(ET.SubElement(root, _tag(NS, "scene")), _tag(NS, "instance_visual_scene"),
                   {"url": "#VisualSceneNode"})
     return root, {"house_vertices": sum(len(part["vertices"]) for part in parts),
                   "house_faces": sum(len(part["triangles"]) for part in parts),
                   "house_parts": len(parts), "part_names": [part["name"] for part in parts],
-                  "rack_vertices": len(rack_points), "rack_faces": len(rack_faces),
-                  "rotate_deg": turn, "origin_m": origin, "corners_m": [
-                      [origin[0] + point[0], origin[1] + point[1], origin[2] + point[2]]
-                      for point in rack_points]}
+                  "rack_vertices": 4 * len(tables), "rack_faces": 2 * len(tables),
+                  "pv_table_count": len(tables), "tables": summaries,
+                  "rotate_deg": turn,
+                  **({"origin_m": summaries[0]["origin_m"], "corners_m": summaries[0]["corners_m"]}
+                     if len(tables) == 1 else {})}
 
 
 def create_house_pv_scene(store, components, *, project, variant, output_name, house, layout,
                           dry_run=True, module_geometry=None):
     """Preview or write one new .pvc2; the project, variant and PAN are never written."""
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
-              "warnings": [], "artifacts": {}, "native_consumption_verified": False, "imported": False}
+              "diagnostics": [], "warnings": [], "artifacts": {},
+              "native_consumption_verified": False, "imported": False}
     with store.lock:
         try:
             if type(dry_run) is not bool:
@@ -612,13 +759,14 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             source = source_profile(store, lines, arrays, system)
             modules, pan_snapshot = resolve_modules(components, source["pan_name"], module_geometry)
             pocket = house_profile(house)
-            table = layout_profile(layout, modules, source["module_total"], source["tilt_deg"],
-                                   placed=pocket["kind"] == "mesh")
-            points, _ = rack_mesh(table)
-            origin = _rack_origin(pocket, table)
-            check_fit(pocket, table, origin, points)
+            tables = table_profiles(layout, pocket, modules, source)
+            check_tables(pocket, tables)
+            recipe = {"version": 1, "source": {"project": project, "variant": variant,
+                      "pan": source["pan_name"], "module_total": source["module_total"]},
+                      "house": {"kind": "mesh"} if pocket["kind"] == "mesh" else house,
+                      "layout": layout}
             created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            root, counts = build_scene(pocket, table, modules, source, created)
+            root, counts = build_scene(pocket, tables, modules, source, created, recipe)
             payload = ET.tostring(root, encoding="utf-8", xml_declaration=True)
             try:
                 ET.fromstring(payload)
@@ -640,7 +788,7 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                           modules=modules,
                           house=({"kind": "mesh", "part_count": len(pocket["meshes"])}
                                  if pocket["kind"] == "mesh" else pocket),
-                          layout=table, geometry=counts,
+                          layout={"tables": tables} if "tables" in layout else tables[0], geometry=counts,
                           bytes=len(payload))
             result["warnings"].append(
                 "Module metadata provenance: " + modules["metadata_source"] + ". Geometry uses metres; "
@@ -672,6 +820,11 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             result.update(status="created", stage="created")
         except (ValueError, OSError, UnicodeError, KeyError, TypeError) as exc:
             result["issues"].append(str(exc))
+            if isinstance(exc, SceneValidationError):
+                result["diagnostics"] = exc.diagnostics
+                result["diagnostics_truncated"] = exc.truncated
+            else:
+                result["diagnostics"] = [_diagnostic("scene_input", result["stage"], str(exc))]
             result["status"] = "failed" if result["stage"] == "write" else "blocked"
             if result["status"] == "failed":
                 result["warnings"].append("A partial scene file may exist at the disclosed path; the source "
