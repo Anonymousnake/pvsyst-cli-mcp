@@ -1345,6 +1345,33 @@ class PVTableLayout(BaseModel):
     edge_margin_m: StrictNum
 
 
+class HouseMesh(BaseModel):
+    """AI-authored named architectural geometry; indices are explicit, zero-based triangles."""
+    model_config = ConfigDict(extra="forbid")
+    name: StrictStr
+    vertices: list[Annotated[list[StrictNum], Field(min_length=3, max_length=3)]]
+    triangles: list[Annotated[list[StrictInt], Field(min_length=3, max_length=3)]]
+
+
+class MeshHouseSpec(BaseModel):
+    """One house composed by the caller, not selected from a roof-template catalogue."""
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["mesh"]
+    meshes: list[HouseMesh]
+
+
+class PlacedPVTableLayout(BaseModel):
+    """Explicit local placement over one named, planar, upward-facing roof surface mesh."""
+    model_config = ConfigDict(extra="forbid")
+    module_rows: StrictInt
+    module_columns: StrictInt
+    orientation: Literal["portrait", "landscape"]
+    row_spacing_m: StrictNum
+    column_spacing_m: StrictNum
+    origin_m: Annotated[list[StrictNum], Field(min_length=3, max_length=3)]
+    roof_mesh: StrictStr
+
+
 class ModuleGeometry(BaseModel):
     """Explicit geometric metadata, checked against a readable loose PAN when present."""
     model_config = ConfigDict(extra="forbid")
@@ -1357,15 +1384,25 @@ class ModuleGeometry(BaseModel):
 
 @categorized_tool()
 def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_name: StrictStr,
-                                 house: HouseSpec, layout: PVTableLayout,
+                                 house: MeshHouseSpec | HouseSpec, layout: PlacedPVTableLayout | PVTableLayout,
                                  dry_run: StrictBool = True,
                                  module_geometry: ModuleGeometry | None = None) -> dict:
-    """Preview or write one external PVCollada 2.0 scene file: a house mesh plus one fixed PV table.
-    The output is the official COLLADA 1.5 XML format, not a PVsyst project variant: there is
-    no PVObject_ serialization, geometry uses library_geometries meshes and visual_scene
-    nodes, and PV semantics live in the PVCollada-2.0 extra technique (module, rack, table,
-    instance_table). Only the file is written; the project, the source variant and the PAN
-    are never modified.
+    """Write a complete AI-authored house/PV scene in one call; prefer house.kind='mesh'.
+    AI supplies all named architectural meshes (vertices in metres, explicit zero-based
+    triangle indices): walls, multiple roof faces, eaves, chimney, window/door geometry,
+    porch and other parts of the same house. The serializer does not reconstruct the
+    house from flat/gable templates, invent dimensions, or require a rectangular footprint.
+    Each name is unique ignoring case; total ceilings are 128 parts, 50000 vertices and
+    100000 triangles (adapter ceilings, not PVsyst limits). No external assets or code run.
+    For a mesh house use layout.origin_m=[x,y,z] for the PV table's low local corner and
+    layout.roof_mesh for its named planar, upward-facing support surface. That surface's
+    normal must match the source fixed PV plane. Checks cover four corner projections,
+    not full solid topology, holes, panel intersections or architectural certification.
+    module_rows/columns, orientation and row/column_spacing_m remain explicit. Legacy
+    house={length_m,width_m,eave_height_m,roof} plus the original margin/clearance layout
+    stays compatible; do not mix its layout with mesh mode. All parts share the source
+    azimuth rotation. The tool only serializes official COLLADA1.5/PVCollada2.0 geometry
+    and PV semantics; native project, variant and PAN bytes are never modified.
     Source requirements are the existing bounded subset: one Grid pvSystem, one subarray,
     one ordinary fixed plane, no shading scene or module layout, no load, storage, P50/P90
     or saved horizon, complete grid counts and a northern-hemisphere site record. Module
@@ -1382,13 +1419,9 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
     the response, so the caller cannot pick engineering angles. The COLLADA azimuth uses
     north = 0 clockwise, converted as (180 + FieldAzim) % 360; that mapping is only verified
     for a northern-hemisphere site, so a non-positive latitude stops.
-    House geometry is a closed box (flat) or a symmetric gable prism with the ridge parallel
-    to the local X axis; the table is a positive rectangle whose origin is its low south-west
-    corner, and every corner is checked to sit on the selected roof face without sinking
-    into it (gable also requires tilt == pitch). House and table share one parent Z rotation,
-    so the table translation uses the house local frame; only vertex, face and transform data
+    House/table translation uses the same local frame; only vertex, face and transform data
     are generated. No physical, irradiance, shading or optimizer model is computed.
-    Both roof kinds are emitted; the tested version still labels PVC2 support as beta, so
+    AI-authored parts and legacy roofs use the same serializer. PVC2 support is still beta, so
     creating a file does not prove that PVsyst imports it as a shading scene or consumes it.
     dry_run=true writes nothing and creates no directory. Execution writes only
     UserData/<output_name>.pvc2 with no-overwrite semantics and re-checks both the source

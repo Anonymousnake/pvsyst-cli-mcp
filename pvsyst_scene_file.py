@@ -1,4 +1,4 @@
-"""Create one external PVCollada 2.0 scene file: a house mesh plus a single fixed PV table."""
+"""Serialize AI-authored house meshes and a fixed PV table into PVCollada 2.0."""
 from __future__ import annotations
 
 import math
@@ -16,12 +16,16 @@ PV = "https://pvcollada.org/2026/XMLSchema"
 # Adapter tolerance for paired declarations and roof parallelism, not a native limit.
 TOL = 1e-6
 SMALLEST = 5e-7
-SITE = "PVObject_SiteSimul=pvSite"
 ORIENT_CLOSE = "End of TOrientGroup"
 HOUSE_KEYS = ("length_m", "width_m", "eave_height_m", "roof")
 LAYOUT_KEYS = ("module_rows", "module_columns", "orientation", "row_spacing_m",
                "column_spacing_m", "clearance_m", "edge_margin_m")
 GEOMETRY_KEYS = ("model_name", "nom_power_wp", "width_m", "length_m", "geometry_depth_m")
+
+PLACED_LAYOUT_KEYS = ("module_rows", "module_columns", "orientation", "row_spacing_m",
+                      "column_spacing_m", "origin_m", "roof_mesh")
+# Adapter payload ceilings, not PVsyst limits or architectural constraints.
+MAX_PARTS, MAX_VERTICES, MAX_TRIANGLES = 128, 50000, 100000
 
 
 def _tag(namespace, name):
@@ -168,8 +172,86 @@ def resolve_modules(components, pan_name, geometry):
     return module_profile(pan_validation_fields(pan_text), explicit), (pan_path, pan_bytes)
 
 
+def _vector(values, label):
+    if not isinstance(values, list) or len(values) != 3:
+        raise ValueError(f"{label} must contain three numbers")
+    return [_finite(value, label) for value in values]
+
+
+def _sub(a, b):
+    return [a[i] - b[i] for i in range(3)]
+
+
+def _dot(a, b):
+    value = sum(a[i] * b[i] for i in range(3))
+    if not math.isfinite(value):
+        raise ValueError("Derived geometry is not finite")
+    return value
+
+
+def _normal(a, b, c):
+    u, v = _sub(b, a), _sub(c, a)
+    normal = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+              u[0] * v[1] - u[1] * v[0]]
+    length = math.hypot(*normal)
+    if not math.isfinite(length) or length == 0:
+        raise ValueError("Mesh triangles must be finite and non-degenerate")
+    return [value / length for value in normal]
+
+
+def mesh_house_profile(house):
+    if set(house) != {"kind", "meshes"} or not isinstance(house["meshes"], list):
+        raise ValueError("A mesh house must declare exactly kind and meshes")
+    if not 1 <= len(house["meshes"]) <= MAX_PARTS:
+        raise ValueError(f"Declare 1..{MAX_PARTS} named house meshes")
+    parts, names, vertex_count, triangle_count = [], set(), 0, 0
+    for part in house["meshes"]:
+        if not isinstance(part, dict) or set(part) != {"name", "vertices", "triangles"}:
+            raise ValueError("Each mesh must declare exactly name, vertices and triangles")
+        name = part["name"]
+        if not isinstance(name, str) or not name.strip() or name != name.strip() or len(name) > 120:
+            raise ValueError("Mesh names must be 1..120 characters without surrounding whitespace")
+        if name.casefold() in names:
+            raise ValueError("House mesh names must be unique, ignoring case")
+        names.add(name.casefold())
+        vertices, triangles = part["vertices"], part["triangles"]
+        if not isinstance(vertices, list) or len(vertices) < 3:
+            raise ValueError("Each mesh needs at least three vertices")
+        if not isinstance(triangles, list) or not triangles:
+            raise ValueError("Each mesh needs explicit triangle indices")
+        vertex_count += len(vertices)
+        triangle_count += len(triangles)
+        if vertex_count > MAX_VERTICES or triangle_count > MAX_TRIANGLES:
+            raise ValueError("House mesh payload exceeds the adapter vertex/triangle ceiling")
+        # Validate the coordinates that will actually be written, including collapsed edges.
+        vertices = [[float(_num(value)) for value in _vector(vertex, "Mesh vertex")]
+                    for vertex in vertices]
+        for triangle in triangles:
+            if (not isinstance(triangle, list) or len(triangle) != 3
+                    or any(type(index) is not int or not 0 <= index < len(vertices) for index in triangle)
+                    or len(set(triangle)) != 3):
+                raise ValueError("Triangles require three distinct, in-range, zero-based integer indices")
+            _normal(*(vertices[index] for index in triangle))
+        parts.append({"name": name, "vertices": vertices, "triangles": triangles})
+    return {"kind": "mesh", "meshes": parts}
+
+
+def _inside_triangle(point, a, b, c):
+    # Corner containment only; this is not a solid/mesh-intersection engine.
+    normal = _normal(a, b, c)
+    for start, end in ((a, b), (b, c), (c, a)):
+        u, v = _sub(end, start), _sub(point, start)
+        cross = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                 u[0] * v[1] - u[1] * v[0]]
+        if _dot(cross, normal) < -TOL * max(1.0, math.hypot(*u)):
+            return False
+    return True
+
+
 def house_profile(house):
-    """Rectangular footprint with a flat roof or a symmetric gable; nothing else."""
+    """Prefer AI-authored meshes; keep the original rectangular roof inputs compatible."""
+    if isinstance(house, dict) and house.get("kind") == "mesh":
+        return mesh_house_profile(house)
     if not isinstance(house, dict) or set(house) != set(HOUSE_KEYS):
         raise ValueError("house must declare exactly length_m, width_m, eave_height_m and roof")
     length = _finite(house["length_m"], "length_m", positive=True)
@@ -195,10 +277,11 @@ def house_profile(house):
             "roof_rise_m": ridge, "pitch_deg": pitch}
 
 
-def layout_profile(layout, modules, total, source_tilt):
+def layout_profile(layout, modules, total, source_tilt, *, placed=False):
     """One fixed table; tilt and azimuth are inherited, never requested."""
-    if not isinstance(layout, dict) or set(layout) != set(LAYOUT_KEYS):
-        raise ValueError("layout must declare exactly " + ", ".join(LAYOUT_KEYS))
+    keys = PLACED_LAYOUT_KEYS if placed else LAYOUT_KEYS
+    if not isinstance(layout, dict) or set(layout) != set(keys):
+        raise ValueError("layout must declare exactly " + ", ".join(keys))
     rows, columns = layout["module_rows"], layout["module_columns"]
     for name, value in (("module_rows", rows), ("module_columns", columns)):
         if type(value) is not int or value < 1:
@@ -207,8 +290,14 @@ def layout_profile(layout, modules, total, source_tilt):
         raise ValueError(f"module_rows x module_columns must equal the source module count {total}")
     if layout["orientation"] not in ("portrait", "landscape"):
         raise ValueError("orientation must be portrait or landscape")
-    spacing = {name: _finite(layout[name], name, minimum=0.0) for name in
-               ("row_spacing_m", "column_spacing_m", "clearance_m", "edge_margin_m")}
+    spacing_keys = ("row_spacing_m", "column_spacing_m") if placed else (
+        "row_spacing_m", "column_spacing_m", "clearance_m", "edge_margin_m")
+    spacing = {name: _finite(layout[name], name, minimum=0.0) for name in spacing_keys}
+    if placed:
+        spacing["origin_m"] = _vector(layout["origin_m"], "origin_m")
+        if not isinstance(layout["roof_mesh"], str) or not layout["roof_mesh"].strip():
+            raise ValueError("roof_mesh must name the planar supporting house mesh")
+        spacing["roof_mesh"] = layout["roof_mesh"]
     depth = modules["depth_m"]
     along = modules["width_m"] if layout["orientation"] == "landscape" else modules["length_m"]
     across = modules["length_m"] if layout["orientation"] == "landscape" else modules["width_m"]
@@ -218,8 +307,7 @@ def layout_profile(layout, modules, total, source_tilt):
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"Derived {name} must be finite and positive")
     return {"module_rows": rows, "module_columns": columns, "orientation": layout["orientation"],
-            "row_spacing_m": spacing["row_spacing_m"], "column_spacing_m": spacing["column_spacing_m"],
-            "clearance_m": spacing["clearance_m"], "edge_margin_m": spacing["edge_margin_m"],
+            **spacing,
             "geometry_depth_m": depth, "depth_source": "caller-provided",
             "tilt_deg": source_tilt, "column_span_m": column_span, "slope_span_m": slope_span}
 
@@ -324,8 +412,8 @@ def rack_mesh(profile):
     down = slope * math.cos(tilt)
     drop = slope * math.sin(tilt)
     for name, value in (("down_slope_m", down), ("drop_m", drop)):
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError(f"Derived {name} must be finite and positive")
+        if not math.isfinite(value) or value < 0 or (name == "down_slope_m" and value == 0):
+            raise ValueError(f"Derived {name} is outside the fixed-table geometry range")
     points = [(0.0, 0.0, 0.0), (span, 0.0, 0.0), (span, down, drop), (0.0, down, drop)]
     return points, [(0, 1, 2), (0, 2, 3)]
 
@@ -361,6 +449,8 @@ def _pv_extra(parent):
 
 def _rack_origin(house, layout):
     """Low south-west corner of the table: margin from the eave, then the declared clearance."""
+    if house["kind"] == "mesh":
+        return layout["origin_m"]
     margin = layout["edge_margin_m"]
     if house["kind"] == "flat":
         return [margin, margin, house["eave_height_m"] + layout["clearance_m"]]
@@ -372,13 +462,43 @@ def _rack_origin(house, layout):
     return [margin, along, house["eave_height_m"] + margin * math.sin(pitch) + layout["clearance_m"]]
 
 
+def check_mesh_fit(house, layout, corners, points):
+    roof = next((part for part in house["meshes"] if part["name"] == layout["roof_mesh"]), None)
+    if roof is None:
+        raise ValueError("roof_mesh must reference an existing house mesh name")
+    vertices, faces = roof["vertices"], roof["triangles"]
+    a, b, c = (vertices[index] for index in faces[0])
+    normal = _normal(a, b, c)
+    if normal[2] <= TOL:
+        raise ValueError("The supporting roof mesh must face upward")
+    pv_normal = _normal(*points[:3])
+    if _dot(normal, pv_normal) < 1.0 - TOL:
+        raise ValueError("Supporting roof normal must match the source fixed PV plane")
+    for vertex in vertices:
+        if abs(_dot(normal, _sub(vertex, a))) > TOL:
+            raise ValueError("The supporting roof mesh must be planar")
+    for face in faces:
+        if _dot(normal, _normal(*(vertices[index] for index in face))) < 1.0 - TOL:
+            raise ValueError("Supporting roof triangles must face consistently upward")
+    for x, y, z in corners:
+        roof_z = a[2] - (normal[0] * (x - a[0]) + normal[1] * (y - a[1])) / normal[2]
+        if z < roof_z - TOL:
+            raise ValueError("PV corner sinks below the selected roof plane")
+        point = (x, y, roof_z)
+        if not any(_inside_triangle(point, *(vertices[index] for index in face)) for face in faces):
+            raise ValueError("PV corner projects outside the supporting roof mesh")
+
+
 def check_fit(house, layout, origin, points):
-    """All four corners must sit on the selected roof face without sinking into it."""
+    """Check four projected corners, not complete solid/array intersections."""
     corners = [(origin[0] + point[0], origin[1] + point[1], origin[2] + point[2]) for point in points]
     for corner in corners:
         for value in corner:
             if not math.isfinite(value):
                 raise ValueError("Table corner is not finite")
+    if house["kind"] == "mesh":
+        check_mesh_fit(house, layout, corners, points)
+        return
     length, width = house["length_m"], house["width_m"]
     if max(corner[0] for corner in corners) > length + TOL:
         raise ValueError("Table projects past the house end")
@@ -423,8 +543,14 @@ def build_scene(house, layout, modules, source, created):
                        ("depth", _num(modules["depth_m"] * 1000.0))):
         ET.SubElement(module, _tag(PV, name)).text = text
     geometries = ET.SubElement(root, _tag(NS, "library_geometries"))
-    house_points, house_faces = house_mesh(house)
-    _append_mesh(geometries, "House", house_points, house_faces)
+    if house["kind"] == "mesh":
+        parts = house["meshes"]
+    else:
+        house_points, house_faces = house_mesh(house)
+        parts = [{"name": "House", "vertices": house_points, "triangles": house_faces}]
+    for index, part in enumerate(parts, 1):
+        geometry = _append_mesh(geometries, f"HousePart{index}", part["vertices"], part["triangles"])
+        geometry.set("name", part["name"])
     rack_points, rack_faces = rack_mesh(layout)
     rack = _append_mesh(geometries, "Rack", rack_points, rack_faces)
     rack_tag = ET.SubElement(_pv_extra(rack), _tag(PV, "rack"))
@@ -447,8 +573,9 @@ def build_scene(house, layout, modules, source, created):
     turn = 180.0 - source["azimuth_deg"]
     shared = ET.SubElement(scene, _tag(NS, "node"), {"id": "SceneRoot"})
     ET.SubElement(shared, _tag(NS, "rotate")).text = "0 0 1 " + _num(turn)
-    ET.SubElement(ET.SubElement(shared, _tag(NS, "node"), {"id": "HouseNode"}),
-                  _tag(NS, "instance_geometry"), {"url": "#House"})
+    for index, part in enumerate(parts, 1):
+        node = ET.SubElement(shared, _tag(NS, "node"), {"id": f"HouseNode{index}", "name": part["name"]})
+        ET.SubElement(node, _tag(NS, "instance_geometry"), {"url": f"#HousePart{index}"})
     origin = _rack_origin(house, layout)
     pv_node = ET.SubElement(shared, _tag(NS, "node"), {"id": "PVTable1"})
     ET.SubElement(pv_node, _tag(NS, "translate")).text = " ".join(_num(value) for value in origin)
@@ -458,7 +585,9 @@ def build_scene(house, layout, modules, source, created):
     ET.SubElement(array, _tag(PV, "instance_rack_ref"), {"id": "rackRef1", "url": "#rackInst1"})
     ET.SubElement(ET.SubElement(root, _tag(NS, "scene")), _tag(NS, "instance_visual_scene"),
                   {"url": "#VisualSceneNode"})
-    return root, {"house_vertices": len(house_points), "house_faces": len(house_faces),
+    return root, {"house_vertices": sum(len(part["vertices"]) for part in parts),
+                  "house_faces": sum(len(part["triangles"]) for part in parts),
+                  "house_parts": len(parts), "part_names": [part["name"] for part in parts],
                   "rack_vertices": len(rack_points), "rack_faces": len(rack_faces),
                   "rotate_deg": turn, "origin_m": origin, "corners_m": [
                       [origin[0] + point[0], origin[1] + point[1], origin[2] + point[2]]
@@ -483,7 +612,8 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             source = source_profile(store, lines, arrays, system)
             modules, pan_snapshot = resolve_modules(components, source["pan_name"], module_geometry)
             pocket = house_profile(house)
-            table = layout_profile(layout, modules, source["module_total"], source["tilt_deg"])
+            table = layout_profile(layout, modules, source["module_total"], source["tilt_deg"],
+                                   placed=pocket["kind"] == "mesh")
             points, _ = rack_mesh(table)
             origin = _rack_origin(pocket, table)
             check_fit(pocket, table, origin, points)
@@ -499,6 +629,7 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                     path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
                 raise FileExistsError("Choose a new scene file: " + name)
             result.update(status="ready", project=project, variant=variant, output=name,
+                          modeling_mode="ai-meshes" if pocket["kind"] == "mesh" else "legacy-parametric",
                           artifacts={"scene_file": str(target)},
                           source={"project": project, "variant": variant, "pan": source["pan_name"],
                                   "module_total": source["module_total"],
@@ -506,7 +637,10 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                                   "field_azimuth_deg": source["field_azimuth_deg"],
                                   "collada_azimuth_deg": source["azimuth_deg"],
                                   "latitude": source["site"]["latitude"]},
-                          modules=modules, house=pocket, layout=table, geometry=counts,
+                          modules=modules,
+                          house=({"kind": "mesh", "part_count": len(pocket["meshes"])}
+                                 if pocket["kind"] == "mesh" else pocket),
+                          layout=table, geometry=counts,
                           bytes=len(payload))
             result["warnings"].append(
                 "Module metadata provenance: " + modules["metadata_source"] + ". Geometry uses metres; "
@@ -517,6 +651,11 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                 "Azimuth uses the COLLADA convention (north = 0, clockwise) and is only verified for a "
                 "northern-hemisphere site. House and table share one parent rotation, so the table translation "
                 "is expressed in the house local frame.")
+            if pocket["kind"] == "mesh":
+                result["warnings"].append(
+                    "House geometry is AI/caller-authored, not reconstructed from a fixed roof template. "
+                    "Checks cover finite non-degenerate triangles and PV corner projections onto the named "
+                    "planar roof, not solid topology, holes, full panel intersections or structural design.")
             result["warnings"].append(
                 "This is an external PVCollada 2.0 file and the tested version still labels PVC2 support as beta: "
                 "writing it does not prove that PVsyst imports it as a shading scene or consumes it.")
