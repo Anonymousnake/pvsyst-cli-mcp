@@ -1372,6 +1372,17 @@ class PlacedPVTableLayout(BaseModel):
     roof_mesh: StrictStr
 
 
+class NamedPVTableLayout(PlacedPVTableLayout):
+    """One named PV region; its geometry and source orientation use the existing contract."""
+    name: StrictStr
+
+
+class NamedPVTablesLayout(BaseModel):
+    """Several independently placed regions sharing the source module model and fixed plane."""
+    model_config = ConfigDict(extra="forbid")
+    tables: Annotated[list[NamedPVTableLayout], Field(min_length=1, max_length=64)]
+
+
 class ModuleGeometry(BaseModel):
     """Explicit geometric metadata, checked against a readable loose PAN when present."""
     model_config = ConfigDict(extra="forbid")
@@ -1384,7 +1395,8 @@ class ModuleGeometry(BaseModel):
 
 @categorized_tool()
 def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_name: StrictStr,
-                                 house: MeshHouseSpec | HouseSpec, layout: PlacedPVTableLayout | PVTableLayout,
+                                 house: MeshHouseSpec | HouseSpec,
+                                 layout: NamedPVTablesLayout | PlacedPVTableLayout | PVTableLayout,
                                  dry_run: StrictBool = True,
                                  module_geometry: ModuleGeometry | None = None) -> dict:
     """Write a complete AI-authored house/PV scene in one call; prefer house.kind='mesh'.
@@ -1398,6 +1410,13 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
     layout.roof_mesh for its named planar, upward-facing support surface. That surface's
     normal must match the source fixed PV plane. Checks cover four corner projections,
     not full solid topology, holes, panel intersections or architectural certification.
+    Alternatively layout={tables:[{name,...placed-layout fields},...]} defines 1..64 named
+    PV regions on the same source orientation, with independent rows/columns and origins.
+    Their SUM of module_rows*module_columns must equal the source module total. All use
+    the same source PAN. Table names must be unique ignoring case. Coplanar overlapping
+    PV rectangles stop; no automatic packing or physical shading approximation is used.
+    Structured diagnostics locate invalid parts, vertices, triangles or table entries
+    with repair hints. Fix those inputs and preview again; authored geometry is not patched.
     module_rows/columns, orientation and row/column_spacing_m remain explicit. Legacy
     house={length_m,width_m,eave_height_m,roof} plus the original margin/clearance layout
     stays compatible; do not mix its layout with mesh mode. All parts share the source
@@ -1413,8 +1432,8 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
     check. A square module is allowed. geometry_depth_m is explicit geometric metadata,
     not an inferred vendor specification. All provided metadata must agree with a readable
     source PAN; no PAN, project or variant is generated or rewritten.
-    module_rows x module_columns must equal the source module count (NModSerie x NStringCh),
-    so the table cannot be drawn smaller than the array.
+    Total table modules must equal the source module count (NModSerie x NStringCh),
+    so the scene cannot be drawn smaller than the array.
     Tilt and azimuth are inherited from the source orientation record and only disclosed in
     the response, so the caller cannot pick engineering angles. The COLLADA azimuth uses
     north = 0 clockwise, converted as (180 + FieldAzim) % 360; that mapping is only verified
