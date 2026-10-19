@@ -40,6 +40,7 @@ from pvsyst_tracking import create_tracking_variant
 from pvsyst_peak_shaving import create_peak_shaving_variant
 from pvsyst_dome_allocation import create_dome_allocation_variant
 from pvsyst_scene_file import create_house_pv_scene
+from pvsyst_scene_reader import read_house_pv_scene
 from pvsyst_weather import inspect_weather_csv
 from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
@@ -68,6 +69,7 @@ TOOL_GROUPS = {
         "pvsyst_validate_variant_structure", "pvsyst_clone_subarray",
         "pvsyst_remove_subarray", "pvsyst_restore_variant", "pvsyst_create_tracking_variant",
         "pvsyst_create_dome_allocation_variant", "pvsyst_create_house_pv_scene",
+        "pvsyst_read_house_pv_scene",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
@@ -102,7 +104,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
                           "pvsyst_create_tracking_variant",
-                          "pvsyst_create_dome_allocation_variant",
+                          "pvsyst_create_dome_allocation_variant", "pvsyst_read_house_pv_scene",
                           "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
                           "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system")
@@ -1452,6 +1454,25 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
                                  layout=layout.model_dump(), dry_run=dry_run,
                                  module_geometry=(module_geometry.model_dump()
                                                   if module_geometry is not None else None))
+
+
+@categorized_tool()
+def pvsyst_read_house_pv_scene(scene_name: StrictStr) -> dict:
+    """Read a generated UserData/*.pvc2 back into complete house/PV create arguments.
+    Parses actual XML mesh vertices/triangles and module dimensions, then rebuilds the
+    supported dialect and compares canonical XML so unknown content is never dropped.
+    Named tables, single placed tables and legacy parametric inputs emitted with the
+    versioned standard asset metadata round-trip. Use returned create_arguments, change
+    the intended parts/layout, supply a NEW output_name and preview/create with the
+    existing pvsyst_create_house_pv_scene tool; the original file is never overwritten.
+    required_inputs always includes output_name. Old R44 AI scenes without provenance
+    return needs_context with project/variant/roof association missing, never guessed.
+    Source declarations are file metadata, not proof the native project still matches;
+    creation checks the current project/PAN again. No project or native scene is edited,
+    imported/native_consumption_verified stay false, and no geometry is auto-repaired.
+    Reads only bounded UTF-8 XML; DTD/entity declarations and unsupported extensions stop.
+    This is not a general COLLADA converter or a native VC scene exporter."""
+    return read_house_pv_scene(components(), scene_name)
 
 
 class AfterSunsetDischarge(BaseModel):
