@@ -1,8 +1,8 @@
-# 原生无限水平轴跟踪控制
+# 原生跟踪控制
 
 ## 入口与支持域
 
-`pvsyst_create_tracking_variant` 预览或创建一个新的 VC，只修改现存 `UnlimTracking` 朝向记录的五个原生字段。不提供固定平面到跟踪器的转换，不编辑跟踪器几何、电气效应、3D 场景或 Module Layout，不在适配器中计算跟踪角、回溯或辐照优化。已有固定/季节平面和地平线入口的门控不变。
+`pvsyst_create_tracking_variant`预览或创建一个新VC，修改已存在的原生跟踪记录。原R38域是UnlimTracking五控制，下述示例保持有效；R53扩展九种已证原生类型、所属控件及公共回读，见末节。没有固定平面转跟踪类型、跨类型转换、任意几何、3D或Module Layout编辑，不计算跟踪角/回溯/辐照。其它原有门禁保持。
 
 ```json
 {
@@ -21,7 +21,7 @@
 }
 ```
 
-源必须已经具备下述原生记录；普通固定平面或其它跟踪类型会被阻断。五个 `tracking` 参数全部必填，未知字段、混合类型、布尔代替数字、字符串数字及 NaN/Inf 不被默默转换。
+源必须具备该类型的原生记录，普通固定平面仍停止。原五参数合法调用不变；R53可显式提交一个或多个该类型所属控件，未提供值继承原记录。未知字段、混合类型、布尔代替数字、字符串数字及NaN/Inf不转换。
 
 | 输入 | 原生字段 | 适配器支持域 |
 |---|---|---|
@@ -37,7 +37,7 @@
 
 朝向的 23 个已证 owning 字段必须齐全且各自唯一，五个控制不得出现在其它 owner。源角度、开关本身也必须满足支持域，坏值不会被新值覆盖掩盖。只在解析视图匹配 `End of TOrientGroup`，不改变真实文件的 closing tag 或公共解析 alias。
 
-几何固定于已证模板：Pitch=6.600 m、CollectorWidth=3.000 m、两侧 InactiveBandWidth=0.020 m、CellWidth=0.156 m、NSheds=10、NModInWidth=3、FracShadingFactor=1.000；UsesElectricalEffect 和三个 Aver 开关保持 False，BTNoTrackers 保持 `-1,-1,`。这些是本入口模板条件，不是工程选型推荐。朝向 Comment 即使残留 Fixed 文案也原样保留，不用它判断类型。
+Unlim几何仍限已证模板：Pitch=6.600m、CollectorWidth=3.000m、两侧InactiveBandWidth=0.020m、CellWidth=0.156m、NSheds=10、NModInWidth=3、FracShadingFactor=1.000；三个Aver开关False，BTNoTrackers为`-1,-1,`。R53仅在该类型原来拥有UsesElectricalEffect时允许显式改该字段，不构造其它类型的字段。这些是适配器条件不是工程推荐；Comment保留，不据其判型。
 
 含负荷、储能、P50/P90、保存的地平线、显式 3D 场景或 Module Layout 的源阻断；**无显式场景不等于关闭原生二维互遮挡**。几何和电气效果字段不改，但原生近处遮挡结果可以随跟踪控制变化。
 
@@ -86,4 +86,44 @@ SFI 使用已实证的 `vi*` 序列化标识，CSV/定义表使用不带 vi 的�
 
 本机证据：`tracking-native-probe-r38.json`、`tracking-public-r38.json`、保留失败的 `tracking-native-r38.json`、独立 `tracking-consumption-review-r38.json` 及对应 CSV/PDF。原 R37 GUI 会话在范围检查前退出、原因未定，未记为正常关闭；`tracking-recovery-r38.json` 记录随后完整 INI 备份逐字节恢复与所有克隆 VC 同源文件。该退出没有被用作 GUI 硬范围证据。商业输入、程序、实验文件不随仓库分发；未跑全量测试发现、旧 smoke 或自定义哈希检查。
 
-本批不扩大其它跟踪类型、任意几何、跨类型转换、活动 3D、电气遮挡、Dome 系统分配、储能或地平线耦合；也不将上述模板、单年天气或原生默认值当作通用工程限值。已运行的 MCP 进程需重启加载新工具/schema。
+原R38未扩大其它类型；R53新增范围与独立证据如下。任意几何、跨类型转换、活动3D/Module Layout、Dome系统分配、储能和地平线耦合仍不增加。重启长驻MCP刷新schema。
+
+## 九类已证跟踪记录：R53
+
+选择性复用批准参考51148b9的原生记录映射，不新增工具或计算内核。读取器按源FieldType暴露实际存储控件，创建器只替换该类型已拥有的字段；9种字段集合各自精确且每字段唯一，不用合并大字典伪造类型转换。
+
+| FieldType | 开放的原生字段 |
+|---|---|
+| UnlimTracking | AxisAzim, MinPhi/MaxPhi, UsesBacktracking, UsesIrradOptimiz, UsesElectricalEffect |
+| TrackHorizNSAxis | AxisAzim, MinPhi/MaxPhi, CentralGap, PitchSlope, UsesBacktracking/IrradOptimiz/WindStow, WindStowSpeed/Position |
+| TrackTiltedAxis | 同上一行，并有AxisTilt |
+| TrackVertAxis | AxisAzim, FieldTilt, MinAzim/MaxAzim |
+| TrackSunShield | AxisAzim, MinTilt/MaxTilt, UsesBacktracking |
+| TrackHorizAxis | AxisAzim, MinTilt/MaxTilt, PitchSlope, UsesBacktracking |
+| TrackTwoAxis | AxisAzim, MinAzim/MaxAzim, MinTilt/MaxTilt |
+| TrackFrameNS | AxisAzim, AxisTilt, MinTilt/MaxTilt, FrameMinPhi/MaxPhi, UsesBacktracking |
+| TrackFrameEW | AxisAzim, MinPhi/MaxPhi, FrameMinTilt/MaxTilt, UsesBacktracking |
+
+公名沿用axis/min/max等`*_deg`、`central_gap_m`、`pitch_slope_deg`、`wind_stow_speed_mps`/`wind_stow_position_deg`及严格布尔；公开schema明确列出。角度为度、CentralGap为米、风速为m/s。三项旧角度仍用原适配器域，其它数值仅有限0.1适配精度，不宣称GUI范围。源与候选都对所有现存min/max对验序，单边编辑用源另一侧；源坏对即使本次只改其它字段也停止。巨大值的Decimal量化溢出归为输入问题，不泄漏未捕获异常；不静默舍入。
+
+原root8.1.6/Flags、Grid系统、本/子阵标志、单子阵/朝向、电路数量、无显式几何/负荷/储能/P50/地平线门禁保留。PartialSystemInclObj、BTNoTrackers、平均模式及未请求几何保持原值。电气效应仅Unlim原有二维字段开放，不包含通用电气阴影/Module Layout；新配置`native_consumption_verified`仍为false，另行运行才有消费证据。
+
+一条长期公共MCP契约使用显式`PVSYST_CONTRACT_WORKSPACE`原生文本夹具，先复制到系统临时工作区与非可执行CLI占位，验证旧五控制、部分修改/回读/再创建、所属字段、坏源对/候选对、精度/极大值、预览无写与源字节保持。临时36次公共调用补验全部九类预览/实际创建/读取及版本、固定式、字段归属和不完整输入；没有实现函数测试搬运。
+
+新公共配置分别跑8.1.6的2022-01-01..02，均48连续有限小时、无警告及原生PDF；仅短期验证，不外推全年。比较使用原R31同类型/天气的前48h：
+
+| 原生类型及本次改动 | 并网kWh | 变化小时 |
+|---|---:|---:|
+| UnlimTracking，electrical_effect=true | 4698.5315 | 8 |
+| TrackHorizNSAxis，AxisAzim10.1 | 5195.441 | 22 |
+| TrackTiltedAxis，AxisTilt20 | 5807.527 | 22 |
+| TrackVertAxis，FieldTilt25 | 5360.562 | 22 |
+| TrackSunShield，MinTilt/MaxTilt=-5/70 | 5263.459 | 4 |
+| TrackHorizAxis，PitchSlope2 | 5262.802 | 0 |
+| TrackTwoAxis，Azim=-120/120、Tilt=-5/70 | 6049.455 | 8 |
+| TrackFrameNS，AxisTilt20、FramePhi=-45/45 | 6010.324 | 12 |
+| TrackFrameEW，FrameTilt=-5/70 | 6072.937 | 4 |
+
+水平轴坡度在此时段未见输出变化，不据此说字段无效。追加仅改其倾角界限0/30的公共新配置，48h为5014.480kWh、22小时变化。Unlim电气态本次真实导出ShdElec列，单位为kW；其它类型没有该字段就不添加。未测风收拢阈值触发、未验任意场景几何或GUI边界，不把全类型基线曾运行升级为每个控件所有条件均消费。
+
+证据`native-migration-r53/public-tracking-matrix.json`、`native-tracking-48h.json`、`native-horiz-limit.json`；九组主批次源与输入字节保持，追加结果与现场保留，原R31/R38全年记录保持。首次实现委派选错参考目录已记录source-selection-incident.json；不采信该目录证据，父将候选与批准51148b9逐项全文diff核对，再以本批公共/原生结果验收。独立只读审查通过，未运行全量、旧smoke或哈希类测试；没有替代跟踪或阴影算法。

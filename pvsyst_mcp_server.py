@@ -1237,13 +1237,29 @@ def pvsyst_create_load_variant(project: StrictStr, source_variant: StrictStr, ne
 
 
 class TrackingControls(BaseModel):
-    """Five native UnlimTracking controls in degrees and strict booleans; unknown fields stop."""
+    """Explicit controls of the source native tracking type; absent fields remain inherited."""
     model_config = ConfigDict(extra="forbid")
-    axis_azimuth_deg: StrictNum
-    min_rotation_deg: StrictNum
-    max_rotation_deg: StrictNum
-    backtracking: StrictBool
-    irradiance_optimization: StrictBool
+    axis_azimuth_deg: StrictNum | None = None
+    min_rotation_deg: StrictNum | None = None
+    max_rotation_deg: StrictNum | None = None
+    backtracking: StrictBool | None = None
+    irradiance_optimization: StrictBool | None = None
+    axis_tilt_deg: StrictNum | None = None
+    field_tilt_deg: StrictNum | None = None
+    min_azimuth_deg: StrictNum | None = None
+    max_azimuth_deg: StrictNum | None = None
+    min_tilt_deg: StrictNum | None = None
+    max_tilt_deg: StrictNum | None = None
+    frame_min_rotation_deg: StrictNum | None = None
+    frame_max_rotation_deg: StrictNum | None = None
+    frame_min_tilt_deg: StrictNum | None = None
+    frame_max_tilt_deg: StrictNum | None = None
+    central_gap_m: StrictNum | None = None
+    pitch_slope_deg: StrictNum | None = None
+    wind_stow_position_deg: StrictNum | None = None
+    wind_stow_speed_mps: StrictNum | None = None
+    wind_stow: StrictBool | None = None
+    electrical_effect: StrictBool | None = None
 
 
 @categorized_tool()
@@ -1252,39 +1268,31 @@ def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr
                                    dry_run: StrictBool = True,
                                    variant_name: StrictStr | None = None,
                                    add_utf8_bom: StrictBool = False) -> dict:
-    """Preview or create a NEW variant that edits five native UnlimTracking controls in place.
-    Supported subset is an existing native 8.1.6 PV-only single-subarray Grid variant whose
-    one orientation record is already FieldType=UnlimTracking (Version=8.1.6, Flags=$00,
-    NoOrient=1) under a single counted TOrientGroup list, with pvSystem declaring only
-    Flags=$06000000 and SystemType=Grid, main array Flags=$01900400/Flags2=$082A and
-    subarray 8.1.6/$019E1002/Flags2=$20 with all strings assigned to orientation 1.
-    No loads, storage, P50/P90, saved horizon, explicit 3D scene or module layout is
-    accepted: such sources are blocked rather than silently edited, and complete native
-    grid counts must already be consistent.
-    The read-only record fields must still match their verified native values: Pitch,
-    CollectorWidth, InactiveBandWidth1/2, CellWidth, FracShadingFactor, NSheds=10,
-    NModInWidth=3, BTNoTrackers=-1,-1, plus UsesElectricalEffect and the three averaging
-    switches False. The record Comment is never rewritten and is not used to detect the
-    type; unknown, duplicated or missing record fields stop instead of being replaced.
-    Only AxisAzim, MinPhi, MaxPhi, UsesBacktracking and UsesIrradOptimiz are written, with
-    replace_value keeping the original `=` spacing; angles render one decimal place.
-    Adapter ranges are axis_azimuth_deg -20..20, min_rotation_deg -60..-45 and
-    max_rotation_deg 45..60 with strict 0.1 steps; these are adapter bounds, not measured
-    native GUI limits. All four boolean combinations are accepted. No tracking angle,
-    backtracking or irradiance optimisation is computed here and no template conversion,
-    geometry edit or electrical-effect change is offered.
-    dry_run=true writes nothing; execution creates one NEW VC only and never edits the
-    source PRJ/VC, weather, topology or other orientation records, reusing existing store
-    locking, path checks, read-back verification and no-overwrite semantics. Optional
-    variant_name follows the existing display-name and BOM rules, and add_utf8_bom=true
-    writes a UTF-8 BOM to the NEW VC even without a name; bom_added reports it.
-    native_consumption_verified stays false: the template's own near-shading behaviour is
-    neither modified nor certified, so verify native hourly results and reports for the
-    matching year/timezone before treating saved controls as consumed."""
+    """Preview or create a NEW variant editing the source native tracking record only.
+    Supported 8.1.6 FieldTypes are UnlimTracking, TrackHorizNSAxis, TrackTiltedAxis,
+    TrackVertAxis, TrackSunShield, TrackHorizAxis, TrackTwoAxis, TrackFrameNS and TrackFrameEW.
+    No conversion: each source must already have its exact recorded field shape, one
+    counted orientation1, one PV-only Grid subarray and complete consistent circuit counts.
+    Root/system/main/subarray flags and geometry/layout/load/storage/P50/horizon gates
+    remain in force. Only controls that belong to that FieldType are accepted.
+    Supply one or more controls; unspecified values stay inherited. Existing five-control
+    Unlim calls remain valid. All present min/max pairs use source values for the side
+    not changed, and both source and candidate must keep their order. AxisAzim/MinPhi/MaxPhi
+    retain adapter domains -20..20/-60..-45/45..60. Other numeric controls have finite 0.1
+    adapter precision, not measured GUI bounds. Lengths are meters, angles degrees and
+    WindStowSpeed is meters/second. Booleans are strict.
+    electrical_effect is writable only in an existing UnlimTracking record owning that
+    field. Unlim geometry, BTNoTrackers, averaging and every other unrequested field stay
+    inherited; no tracking, backtracking, irradiance or shading model is computed.
+    Default preview creates nothing; execution exclusively creates one NEW VC, preserves
+    the source, and reuses lock/path/snapshot/candidate readback. Optional variant_name and
+    add_utf8_bom follow existing display-name rules. Public getter exposes the stored
+    controls for read/edit closure. Native consumption is never inferred from saving:
+    native_consumption_verified stays false until a separate native run is reviewed."""
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
     return create_tracking_variant(store, project=project, source_variant=source_variant,
-                                   new_variant=new_variant, tracking=tracking.model_dump(),
+                                   new_variant=new_variant, tracking=tracking.model_dump(exclude_none=True),
                                    dry_run=dry_run, variant_name=variant_name,
                                    add_utf8_bom=add_utf8_bom)
 

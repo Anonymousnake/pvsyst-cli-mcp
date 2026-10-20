@@ -82,15 +82,15 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 3.1.3 / 13 | Domes：Dome/DomeBackfaces配对与同子阵分配 | [pvsyst_create_dome_allocation_variant受限MCP已验收](native-dome-allocation.md)：原生第二朝向开关、39/1与20/20保存重载，6正向/51负例，三种分配均有8760h/16列/PDF正例 | 一个40串子阵/440kWp/6逆变器未增硬件，NoOrientation2=2且不写NStrOrient2；仅既有有效配对10±90模板重分配，保留原未分配失败及一次退出未定的原生失败，不等于3D或首次构造API |
 | 3.1.4 / 13 | Unlimited sheds：Sheds | [GUI保存及2022年8760h/16列/PDF已证](native-orientation-controls.md)；尚无专用配置 | 本次默认几何消费不证明任意棚架、自遮挡或电气分组编辑 |
 | 3.1.5 / 14 | Unlimited sun-shields：SunShields | [GUI保存及2022年8760h/16列/PDF已证](native-orientation-controls.md)；尚无专用配置 | 与普通固定平面、3D遮阳板区分；任意几何/活动阴影仍待 |
-| 3.2.1 / 14 | 无限水平轴：UnlimTracking | [pvsyst_create_tracking_variant受限MCP已验收](native-tracking-controls.md)：5个GUI整文件、3组新8760h/17列/PDF，四开关组合有48h隔离对照 | 五控制由原生消费，不转换类型/不改固定几何；GlobShd与损失图证明无显式3D也有二维遮挡，电气True/独立3D仍待，不自行算跟踪角 |
-| 3.2.2 / 15 | 水平N-S/倾斜轴：TrackHorizNSAxis/TrackTiltedAxis | [GUI保存及无显式3D场景8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 本批无3D场景也可运行基本跟踪；不据此外推活动场景/布局和阴影路径，教程相关3D依赖另验 |
-| 3.2.3 / 15 | 竖直轴：TrackVertAxis | [GUI保存及无显式3D场景8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 类型和本次默认控制消费已证，任意方位界限、几何域待验 |
-| 3.2.4 / 16 | 跟踪遮阳板：TrackSunShield | [GUI保存及无显式3D场景8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 本次类型消费不等于任意几何、回溯组合或3D场景编辑 |
-| 3.2.5 / 16 | 东/西水平轴：TrackHorizAxis | [GUI保存及无显式3D场景8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 与其它水平轴类型分开保存；任意倾角界限、活动阴影另验 |
-| 3.3.1 / 16 | 双轴：TrackTwoAxis | [GUI保存及无显式3D场景8760h/报告已证](native-orientation-controls.md)；尚无专用配置 | 本次默认双轴消费已证，任意两组界限及场景映射仍待 |
-| 3.3.2 / 17 | 双轴N/S与E/W框架：TrackFrameNS/EW；backtracking | [两框架保存及无显式3D场景8760h已证](native-orientation-controls.md)；回溯单变量仅在UnlimTracking已证；尚无专用配置 | 不把无限水平轴回溯证据外推到框架回溯/3D field；不由两个角度替代原生跟踪与场景 |
+| 3.2.1 / 14 | 无限水平轴：UnlimTracking | [R38原生全年与R53受限配置](native-tracking-controls.md)；原五控制保持，R53电气True在新公共配置48h消费并导出ShdElec | 仅原有二维字段，不转换类型/固定几何，不含Module Layout/独立3D，不自行算跟踪角 |
+| 3.2.2 / 15 | 水平N-S/倾斜轴：TrackHorizNSAxis/TrackTiltedAxis | [R53共同MCP入口与公共回读](native-tracking-controls.md)，新轴方位/轴倾角各48h有变化，原R31全年保留 | 只编辑源所属字段；风收拢触发阈值、任意场景/布局与GUI边界未测 |
+| 3.2.3 / 15 | 竖直轴：TrackVertAxis | [R53受限MCP/部分修改/回读](native-tracking-controls.md)，FieldTilt25新配置48h有变化 | 不外推任意方位界限、几何和3D映射 |
+| 3.2.4 / 16 | 跟踪遮阳板：TrackSunShield | [R53受限MCP与48h消费](native-tracking-controls.md)，新倾角对有变化；R31全年保留 | 不转类型，不开放任意几何与活动场景 |
+| 3.2.5 / 16 | 东/西水平轴：TrackHorizAxis | [R53受限MCP与48h消费](native-tracking-controls.md)，坡度2此段无变化；追加倾角0/30有22小时变化 | 如实保留无变化，不据此说坡度无效；时段不外推全年 |
+| 3.3.1 / 16 | 双轴：TrackTwoAxis | [R53界限公共创建/回读/再编辑与48h消费](native-tracking-controls.md)，Azim=-120/120、Tilt=-5/70有变化 | 全部源/候选minmax对验序，未改侧用源值，不做场景映射 |
+| 3.3.2 / 17 | 双轴N/S与E/W框架：TrackFrameNS/EW；backtracking | [R53同入口两框架48h新参数消费](native-tracking-controls.md)；保留原R31全年证据 | 不把Unlim回溯单变量证据外推到框架回溯全部条件，不替代原生算法 |
 | 8 / 40–41 | 地平线高度/方位点集、原生HOR保存导入及清除；horizon_updates | [MCP受限profile/none已验收](horizon-profile.md)：四/六点8760h/14列同GUI、名称/清除整文件一致、25负例；原生HOR两路径24h通过 | 单普通固定平面/子阵/plain Grid；原生100槽模板及FracAlbedo=1，变点不继承派生因子、名称保留缓存；不自行闭合/插值/遮挡 |
-| 9.1 / 43 | 3D场景与系统朝向兼容校验 | [房屋/PV原生绑定已证](house-pv-modeling.md)：R43两屋顶1000块；R44 AI完整住宅40块/89.67m²，原生关联保存重载；无自动绑定MCP | 显示模型不等于关联完成；中断后按实际孤立场区重定位，不盲目重放拖放 |
+| 9.1 / 43 | 3D场景与系统朝向兼容校验 | [房屋/PV原生绑定及R47/48自动入口已证](house-pv-modeling.md)：公共import工具的关联/有效性/保存/重载/必要年度独立通过 | 只限已打开匹配工程和录制中文8.1.6布局，GUI1..2区；显示模型不等于关联完成，停止保留现场 |
 | 9.2 / 44 | 已有场景执行及重算：`run_simulation(recompute_shading=...)` | R43三态及R44 AI完整住宅各8760h/14数值列/8页PDF已证，均有同硬件无场景基线 | 通过既有底层run，不放宽fixed_unshaded_grid；基线省略GlobShd，不补列或零，差值不归因到单个构件 |
 | 9.3 / 46 | 线性阴影表、逐步/快速算法、Module Layout | 原生线性/快速表格与显式重算已证；Module Layout与电气阴影依用户要求暂缓 | 同几何开关房体投影的全年14列完全相同，不宣称非零房体损失或电气阴影效果 |
 | 9.4 / 48–50 | AI一次生成整栋房屋/PV场景 | [pvsyst_create_house_pv_scene](house-pv-modeling.md)：AI显式命名构件mesh+PV放置，薄序列化PVCollada2；19构件102顶点70三角通过官方4项校验、原生导入保存重载与全年 | 不是房型模板扩充或自动GUI导入；旧参数路径保留，格式写入、原生关联与仿真分开声明，beta提示保留 |
