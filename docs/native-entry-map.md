@@ -47,7 +47,7 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 5.4 / 28 | 积灰：`soiling_updates` 和 `soiling` SFI | [PR #36 原生与MCP已验收](soiling-verification.md)：常数/月度8760h、15数值列一致 | 主阵列Soiling块，0.1百分点精度；8.1.6 PV-only、无阴影固定单平面；不是自动计算清洗/积雪模型 |
 | 5.5 / 28–29 | iam_updates：组件定义/ASHRAE；其它IAM与PAN仍待 | [受限MCP及8760h/全页PDF已验](native-model-inputs.md)，保留组件默认缓存语义；Fresnel/custom/PAN编辑仍待 | [整窗与默认恢复证据](native-detailed-losses.md)，不自行算菲涅尔/ASHRAE；OND/BTR编辑不冒充PAN |
 | 5.6 / 30 | auxiliary_updates：常数/夜间及profile阈值、比例族 | [原常数MCP](native-auxiliary-power.md)不变；[受限profile](native-detailed-losses.md)两族GUI保存/8760h已证 | pvSystem bit18/5原生字段；新profile显式五值、night0、未验混合停；保留负E_Grid，无外部负荷模型 |
-| 5.7 / 30–31 | ageing_updates：现存激活RMS0模板年数/均值 | [MCP模型输入及8760h已验](native-model-inputs.md)，只改两输入、内核重算、缓存保留；启停/MC/任意模板待 | [重算与保存量证据](native-detailed-losses.md)，零均值非关闭，不自行按年算损失/蒙特卡罗 |
+| 5.7 / 30–31 | ageing_updates年数/均值/成对RMS原生输入，ageing_enabled独立启停 | [R51共享完整模板及公共闭环已验](native-model-inputs.md)，停用仍可读；37次边界、6组48h加两次同输入复跑，原8760h证据保留 | 只改原生输入/bit20，不写保存因子；非零RMS重复输出变化，MC样本数组复用未证，不自算或以单次能量归因开关 |
 | 5.8 / 31 | PV系统不可用时段/统计配置 | seed7生成5%两态文件仅标题不同，8760h逐列一致；MCP专用配置仍待 | [原生随机时段复演](native-detailed-losses.md)；与WeakGrid电网不可用分开，不以24h随机未命中判无消费 |
 | 5.9 / 32–33 | 光谱模型与系数集 | 原生页显示当前MET缺PW与RH，启用禁用；系数可见不等消费 | [真实依赖缺口](native-detailed-losses.md)；不补造数据、不估算光谱校正 |
 | 5.10 / 33 | 各损失效应的交互行为图 | 教程有原生交互图；专用调用/导出尚未定位 | 与全年PDF损失图不同；后者已在基础闭环产生，不借此宣称交互图已接入 |

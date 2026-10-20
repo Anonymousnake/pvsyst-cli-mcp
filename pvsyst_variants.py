@@ -27,7 +27,7 @@ from pvsyst_horizon_native import horizon_state, replace_horizon
 from pvsyst_inverter_temperature import inverter_temperature_state, replace_inverter_temperature
 from pvsyst_power_factor import power_factor_state, replace_power_factor
 from pvsyst_string_mismatch import replace_string_mismatch, string_mismatch_state
-from pvsyst_ageing import ageing_model_state, replace_ageing_model
+from pvsyst_ageing import ageing_model_state, replace_ageing_model, replace_ageing_enabled
 from pvsyst_iam import iam_model_state, replace_iam_model
 from pvsyst_p50_native import p50_state, replace_p50
 from pvsyst_power_controls import power_controls_state, replace_power_controls
@@ -419,7 +419,8 @@ class VariantStore:
                           power_controls_updates: dict | None = None,
                           string_mismatch_updates: dict | None = None,
                           ageing_updates: dict | None = None,
-                          iam_updates: dict | None = None) -> dict:
+                          iam_updates: dict | None = None,
+                          ageing_enabled: bool | None = None) -> dict:
         allowed_subarray = {"NModSerie": (1, 100), "NInverter": (1, 10000), "NStringCh": (1, 2147483647),
                             "NoOrientation": (1, 2147483647), "NInvMPPT": (1, 10000),
                             "VBkUpEncl_syst": (0, 1),
@@ -429,6 +430,9 @@ class VariantStore:
         allowed_main_array = {"UFactor": (15, 100)}
         requested = ((subarray_updates, allowed_subarray), (orientation_updates, allowed_orientation),
                      (main_array_updates, allowed_main_array))
+        ageing_transaction = ageing_updates is not None or ageing_enabled is not None
+        if ageing_enabled is not None and type(ageing_enabled) is not bool:
+            raise ValueError("ageing_enabled must be a strict boolean")
         if soiling_updates is not None and (any(changes for changes, _ in requested)
                 or generator_updates is not None or power_sharing_enabled is not None or independent_mppt_enabled is not None):
             raise ValueError("Soiling updates require a separate transaction; variant_name may accompany them")
@@ -480,13 +484,15 @@ class VariantStore:
                 or p50_p90_updates is not None or power_controls_updates is not None
                 or power_sharing_enabled is not None or independent_mppt_enabled is not None):
             raise ValueError("String-mismatch updates require a separate transaction; variant_name may accompany them")
-        for extra, label in ((ageing_updates, "Ageing model"), (iam_updates, "IAM model")):
+        for extra, label in ((ageing_updates, "Ageing model"), (iam_updates, "IAM model"),
+                             (ageing_enabled, "Ageing enable")):
             if extra is not None and (any(changes for changes, _ in requested)
                     or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
                     or auxiliary_updates is not None or seasonal_updates is not None or horizon_updates is not None
                     or inverter_temperature_updates is not None or power_factor_updates is not None
                     or p50_p90_updates is not None or power_controls_updates is not None
-                    or string_mismatch_updates is not None or ageing_updates is not None and iam_updates is not None
+                    or string_mismatch_updates is not None
+                    or sum(value is not None for value in (ageing_updates, iam_updates, ageing_enabled)) > 1
                     or power_sharing_enabled is not None or independent_mppt_enabled is not None):
                 raise ValueError(f"{label} updates require a separate transaction; variant_name may accompany them")
         if not isinstance(dry_run, bool):
@@ -510,7 +516,7 @@ class VariantStore:
                 and seasonal_updates is None and horizon_updates is None and inverter_temperature_updates is None
                 and power_factor_updates is None and p50_p90_updates is None and power_controls_updates is None
                 and string_mismatch_updates is None
-                and ageing_updates is None and iam_updates is None) or any(
+                and ageing_updates is None and iam_updates is None and ageing_enabled is None) or any(
                 changes is not None and (not isinstance(changes, dict) or
                                          any(key not in allowed for key in changes))
                 for changes, allowed in requested):
@@ -666,12 +672,12 @@ class VariantStore:
             string_mismatch_change = None
             ageing_change = None
             iam_change = None
-            if any(value is not None for value in (soiling_updates, grid_limit_updates, auxiliary_updates, seasonal_updates, horizon_updates, inverter_temperature_updates, power_factor_updates, p50_p90_updates, power_controls_updates, string_mismatch_updates, ageing_updates, iam_updates)):
+            if any(value is not None for value in (soiling_updates, grid_limit_updates, auxiliary_updates, seasonal_updates, horizon_updates, inverter_temperature_updates, power_factor_updates, p50_p90_updates, power_controls_updates, string_mismatch_updates, ageing_updates, iam_updates, ageing_enabled)):
                 control = ("Soiling" if soiling_updates is not None else "Grid limit" if grid_limit_updates is not None
                            else "Auxiliary" if auxiliary_updates is not None else "Seasonal" if seasonal_updates is not None
                            else "Horizon" if horizon_updates is not None else "Inverter temperature" if inverter_temperature_updates is not None
                            else "Power factor" if power_factor_updates is not None else "P50/P90" if p50_p90_updates is not None
-                           else "Ageing model" if ageing_updates is not None
+                           else "Ageing model" if ageing_transaction
                            else "IAM model" if iam_updates is not None
                            else "String mismatch" if string_mismatch_updates is not None
                            else "Combined power controls")
@@ -687,10 +693,13 @@ class VariantStore:
                         or any("pvGridStorage" in line for line in lines)):
                     raise ValueError(f"{control} editing requires a native 8.1.6 PV-only single-subarray Grid variant")
                 for key, accepted in (("Flags", ("$00100400", "$01900400")),
-                                      ("Flags2", ("$0010082A",) if ageing_updates is not None else ("$082A",))):
+                                      ("Flags2", ("$082A",))):
+                    if key == "Flags2" and ageing_transaction:
+                        # The shared ageing reader owns both enable states and the complete template.
+                        continue
                     indices = self._field_indices(lines, main, key)
                     if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in accepted:
-                        raise ValueError(f"{control} editing requires verified main-array Flags/Flags2; flags stay unchanged")
+                        raise ValueError(f"{control} editing requires verified main-array Flags/Flags2")
                 self._require_no_geometry(lines)
                 if sum(line.strip() == "PVObject_=pvOrient" for line in lines) != 1:
                     raise ValueError(f"{control} editing currently verifies one fixed plane")
@@ -707,7 +716,7 @@ class VariantStore:
                             or any("pvLoad" in line for line in lines)
                             or (seasonal_updates is not None or inverter_temperature_updates is not None or power_factor_updates is not None or p50_p90_updates is not None or power_controls_updates is not None
                                 or string_mismatch_updates is not None
-                                or ageing_updates is not None or iam_updates is not None
+                                or ageing_transaction or iam_updates is not None
                                 or (auxiliary_updates is not None and auxiliary_updates.get("mode") == "profile"))
                             and any("PVObject_Horizon=" in line for line in lines)):
                         raise ValueError(f"{control} editing requires one orientation, no loads and a supported horizon state")
@@ -725,7 +734,7 @@ class VariantStore:
                             or any(key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0"
                                    for key in root.fields) or grid_inventory(lines, arrays)["counts_valid"] is not True):
                         raise ValueError(f"{control} editing requires complete circuit counts and every string in orientation 1")
-                    if ageing_updates is not None or iam_updates is not None:
+                    if ageing_transaction or iam_updates is not None:
                         sflags = self._field_indices(lines, bounds, "Flags")
                         if (len(sflags) != 1
                                 or FIELD.fullmatch(lines[sflags[0]].rstrip("\r\n"))[2] != "$019E1002"
@@ -751,6 +760,8 @@ class VariantStore:
                         string_mismatch_change = replace_string_mismatch(lines, bounds, string_mismatch_updates)
                     elif ageing_updates is not None:
                         ageing_change = replace_ageing_model(lines, main, ageing_updates)
+                    elif ageing_enabled is not None:
+                        ageing_change = replace_ageing_enabled(lines, main, ageing_enabled)
                     elif iam_updates is not None:
                         iam_change = replace_iam_model(lines, bounds, iam_updates)
                     else:

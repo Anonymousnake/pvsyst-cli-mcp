@@ -549,10 +549,13 @@ class InverterTemperatureUpdates(BaseModel):
 
 
 class AgeingUpdates(BaseModel):
-    """Existing activated ageing template only: two model inputs, no cache, no enable state."""
+    """Existing activated native template; inputs and recorded RMS/retention controls only."""
     model_config = ConfigDict(extra="forbid")
     simulation_year: StrictInt
     annual_module_degradation_percent: StrictNum
+    keep_mc_values: StrictBool | None = None
+    modules_rms_year_isc_percent: StrictNum | None = None
+    modules_rms_year_voc_percent: StrictNum | None = None
 
 
 class IamUpdates(BaseModel):
@@ -638,7 +641,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      power_controls_updates: PowerControlsUpdates | None = None,
                                      string_mismatch_updates: StringMismatchUpdates | None = None,
                                      ageing_updates: AgeingUpdates | None = None,
-                                     iam_updates: IamUpdates | None = None) -> dict:
+                                      iam_updates: IamUpdates | None = None,
+                                      ageing_enabled: StrictBool | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -846,9 +850,15 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     values explicitly with night_kw = 0; the old constant/none shapes are unchanged.
     ageing_updates is separate (variant_name may accompany it) and applies only to an
     existing activated ageing template: it writes simulation_year and
-    annual_module_degradation_percent, never the stored loss/mismatch factors, never the
-    enable state, and performs no stochastic sampling. A zero rate is a real value, not a
-    disabled state. iam_updates is separate too and covers only the component IAM bit or
+    annual_module_degradation_percent, optional keep_mc_values and a paired
+    modules_rms_year_isc_percent/modules_rms_year_voc_percent (adapter 0..100 percent, 0.01 steps). Stored factors
+    and warranty lists are preserved; no degradation or stochastic sampling is computed.
+    The retention flag is a native input; sample-array persistence is not verified.
+    ageing_enabled is a separate strict boolean transaction for an existing fully
+    validated template, toggling only main-array Flags2 bit20; it never creates a block
+    or activates an unsupported template. Disabled templates remain readable but must
+    be enabled before model editing. Zero rate is a value, not the disabled state.
+    iam_updates is separate too and covers only the component IAM bit or
     the ASHRAE model with an optional b0; PAN files and curve data are never written.
     No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
@@ -866,7 +876,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         power_controls_updates.model_dump(exclude_none=True) if power_controls_updates is not None else None,
                         string_mismatch_updates.model_dump(exclude_none=True) if string_mismatch_updates is not None else None,
                         ageing_updates.model_dump(exclude_none=True) if ageing_updates is not None else None,
-                        iam_updates.model_dump(exclude_none=True) if iam_updates is not None else None)
+                        iam_updates.model_dump(exclude_none=True) if iam_updates is not None else None,
+                        ageing_enabled)
 
 
 @categorized_tool()
