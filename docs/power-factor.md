@@ -1,7 +1,7 @@
 # 原生功率因数与逆变器额定限制
 
 `pvsyst_update_variant_parameters.power_factor_updates` 配置原生 PF 模式及同组 PNom 选项；`pvsyst_get_variant_parameters.power_factor` 读回语义状态。只序列化软件实际保存的带符号 `TanPhi/TanPhiM`，不实现 Cosφ 换算、无功、额定功率或发电模型。
-后续的独立 `power_controls_updates` 事务已覆盖限定PF/有功/视在限值组合，见[原生功率控制](native-power-controls.md)。本页独立PF接口的旧域保持不变，不因新组合入口放宽。
+独立`power_controls_updates`事务覆盖限定PF/有功/视在限值组合，见[原生功率控制](native-power-controls.md)。R50仅在已证族内补齐月度PNom组合及读写闭环，其它几何、负荷和系统耦合门禁不变。
 
 
 ## 参数与范围
@@ -12,11 +12,11 @@
 |---|---|---|
 | none | 无；移除两个 PF 字段 | native |
 | constant | tan_phi | native / active / apparent |
-| monthly | monthly_tan_phi，按一月至十二月的12项 | native |
+| monthly | monthly_tan_phi，按一月至十二月的12项 | native / active / apparent |
 
 值是无量纲原生正切，不是 Cosφ。本适配器域为 [-1,1]、0.001 增量，严格有限数值且不接受布尔或数值字符串；这是支持范围，不是 GUI 或厂家边界。原生 GUI 的领先保存负值、滞后保存正值，原生报告已确认。允许 signed 月值原样输入，不从符号推导外部无功曲线。
 
-`pnom_limit=native` 清除旧版强制位，交由原有 OND/原生模式决定。`active/apparent` 是逆变器 PNom 的旧版强制解释，不是并网注入点的 kW/kVA 限值；GUI 本身将其列为 Legacy parameters。月度与旧版强制模式的组合尚未验证，入口暂不接受。它不调整 OND 硬件数据或厂家功率因数限值。
+`pnom_limit=native`清除旧版强制位，交由原有OND/原生模式决定。`active/apparent`是逆变器PNom的旧版强制解释，不是注入点kW/kVA限值；GUI将其列为Legacy parameters。R50月度组合的独立原生验证见下节；它不调整OND硬件数据或厂家功率因数限值。
 
 ```json
 {
@@ -54,6 +54,25 @@ GUI/CLI 8.1.6.49278；派生 `ENERGY_CONTROLS`、`POWER_FACTOR`，原有440 kWp/
 本夹具中，正负同幅 PF 的全部共同小时列相同；`EReGrid/EApGrid` 表头仍为原生 `kVAh`，负 TanPhi 的 EReGrid 也仍为正值。这证明原生导出行为，不表示取得带符号无功或所有 OND 都具有同样反应。不重标单位、不自行补符号、不把 InvPmax 当成每个小时 E_Grid 的严格上界。
 
 本机证据为 `energy-native-batch-r22.json`、`power-factor-acceptance-r22-r2.json`、原生 CSV/PDF；商业输入与本机产物不随仓库分发。初次验收因布局反例错误使用通用 PVObject_ 标签而暂停，原失败记录保留；更正为原生 PVObject_ModuleLayout 标签后续跑，未修改生产门控来使反例通过。未执行哈希测试、旧 smoke 或全量测试发现。
+
+## 月度PNom闭环：R50
+
+参考实现只移除写侧限制，却留下读侧“仅constant可带PNom”的检查，导致成功写出后getter及再次编辑报错。当前读写共用同一组合规则；两个写入器在候选副本上重读实际存储语义、核对请求后再提交，不依赖人工构造的after。
+
+独立月度态为`$00300000/$00B00000/$00700000`。组合入口新增的月度PNom启用限值族仅为有功注入点且单列损失的`$05B00000/$05700000`；无限值采用显式`quantity=active/point=inverter`，不会无条件加注入点位。不把其它未列族或monthly+PNom+视在注入限值悄悄放宽；none PF仍要求native。停用注入点保留位的既有原生族与“所有none路径不可达”不是同一命题。
+
+新公共MCP57次调用覆盖三个PNom态、实际写入/回读/无操作/再编辑/清除、独立和组合入口及错误输入保持原字节。一条长期公共协议回归以`PVSYST_CONTRACT_WORKSPACE`显式接收原生文本夹具目录，先复制至系统临时工作区，再用非可执行CLI占位文件验证闭环；未配置夹具时明确skip，不冒充执行。运行`tests/contracts/test_power_factor_roundtrip.py`的本次记录为真实通过，不依赖内部函数。
+
+原生8.1.6新建两份独立派生工程，每份三个状态都由公共接口配置并跑2022全年。R50使用显式十二项TanPhiM（0.484,0.470,0.456,0.441,0.426,0.411,0.395,0.379,0.363,0.395,0.426,0.456），不与R22不同月表作单变量比较。
+
+| 原生配置 | native并网kWh | active并网kWh | apparent并网kWh | 输出 |
+|---|---:|---:|---:|---|
+| 月度PF，无注入限值 | 783924.5326 | 799980.9366 | 783924.5326 | 8760h/18数值列/7页 |
+| 月度PF，有功250注入/单列损失 | 693111.6926 | 693356.8866 | 693111.6926 | 8760h/21数值列/8页 |
+
+六组均连续8760h、数值有限、CLI无警告、E_Grid原生单位kW；按一小时步长汇总为kWh。active分别改变1792/151个并网小时；apparent与当前Generic夹具的native结果相同，不外推为所有OND的默认模式。原生报告逆变器名义单位分别为active的kWac与native/apparent的kVA，未计算余弦或自行重标单位。
+
+输入源工程与配置字节保留，CLI不改新配置源。记录`native-migration-r50/public-pnom-roundtrip.json`、`native-pnom-annual.json`和`native-output-review.json`。报告单位复核首轮误把同段的注入点kWac当逆变器单位，按独立字段位置修正校验器后重读既有报告通过；失败记录保留，不重跑或改动物理输出。独立只读审查通过；未运行全量/旧smoke/哈希探针，生产并发标记仍按原API使用。
 
 ## P50 独立待办
 

@@ -64,10 +64,10 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 |---|---|---|---|
 | 10.1 / 77 | inverter_temperature_updates：TempShift/TempFixed及$4000/$8000；ambient移除两字段 | [MCP受限配置已验收](inverter-temperature.md)：三模式完整文件同GUI、offset/fixed8760h/16列一致、35负例/恢复 | 两显式保存值不补inactive默认；[-100,100]/0.1仅适配器域，非GUI/厂家限；普通单平面/free horizon/无PF等耦合 |
 | 10.2 / 78–81 | power_factor_updates：常数TanPhi、月度12项TanPhiM；正滞后/负领先 | [受限MCP已验收](power-factor.md)：七个完整文件同GUI、七组8760h原生控制及两组公共8760h/18列精确对照 | 直接传原生无量纲正切，不换算Cos；CSV EReGrid/EApGrid均原样标kVAh，负TanPhi也未导出负无功，不补符号 |
-| 10.2 / 78–81 | 同一PF事务的pnom_limit native/active/apparent；系统bit22/23 | [常数PF的两种Legacy模式已证](power-factor.md)：原生PDF明确强制有功/视在PNom，年度电量/InvPmax不同 | 不是注入点kW/kVA限值，不改OND硬件；月度+Legacy组合未验，保持阻断 |
+| 10.2 / 78–81 | 同一PF事务的pnom_limit native/active/apparent；系统bit22/23 | [常数及R50月度PNom闭环已证](power-factor.md)：57次公共闭环、6组8760h/原生PNom单位验证；月度读写共用规则 | 不改OND硬件或算余弦；新增组合仅已有无限值及有功注入/单列损失族，其他耦合仍限原域 |
 | 10.3 / 81–82 | owning `pvSystem.PLimGrid`（kWac）、`LimGrSeparLoss`；GUI注入点Flags=$05000000，逆变器端=$01000000，禁用注入点保留$04000000 | GUI持久化及2022全年原生消费已证；[NoPF受限MCP切片已验收](grid-power-limit.md) | 限定Active power/注入点250kW夹具；`E_Grid`最大250kW，693356.8866kWh；`PGridLim/EGrdLim`实际导出，`EUnused=0`不是未限电 |
 | 10.3 / 81–82 | 逆变器端/注入点位置、单独损失 | 原无下游损耗夹具全年相同；非零AC的24h控制已区分：并网最大250与246.93kW | 本场景注入点多15.340kWh，不外推所有场景/全年；未扩大MCP活动AC标志范围，EOutInv不是有界并网输出 |
-| 10.3 / 81–82 | power_controls_updates：PF+有功/视在、端点、损失分类的独立组合事务 | [受限MCP已验收](native-power-controls.md)：19完整GUI文件/19原生全年、38公共转换、57反例、7公共8760h与CSV/PDF一致 | 旧PF/NoPF限值域不变；仅已验flag族，NoPF视在/月度Legacy/温度/P50/储能及活动AC耦合仍阻断；PGridLim视在模式列头仍kW，不做外部换算 |
+| 10.3 / 81–82 | power_controls_updates：PF+有功/视在、端点、损失分类的独立组合事务 | [受限MCP已验收](native-power-controls.md)：19完整GUI文件/19原生全年、38公共转换、57反例、7公共8760h与CSV/PDF一致 | 旧PF/NoPF限值域不变；仅已验flag族；R50补齐月度PNom的无限值与有功注入族，其它无证月度族、NoPF视在/温度/P50/储能及活动AC耦合仍阻断；PGridLim视在模式列头仍kW，不做外部换算 |
 | 10.4 / 82–83 | p50_p90_updates：根级P50_P90/TP50_P90十四字段，既有GUI结果模板 | [受限MCP已验收](p50-native-parameters.md)：四个完整文件同GUI、四组8760h/16列及概率页正文一致、50反例/恢复 | 仅原生结果模板/root Flags01800001；未仿真保存不落参数、输入块单独不足以取得专页，反例保留；新建/ClimateChange/累计图仍待，不自算分位 |
 
 限电本机证据为隔离case的 `native-grid-limit-reference.json` 和原生7页报告：第3页明确 `Active power`、`Limit applied at the injection point`、250kWac；第5页为 `Unused energy (grid limitation)`、693357kWh。参考输入与结果不随仓库分发。系统bit27仅表示允许/禁止注入，与数值限值位及PLimGrid不同。
