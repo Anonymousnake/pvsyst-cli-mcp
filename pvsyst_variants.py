@@ -34,6 +34,7 @@ from pvsyst_power_controls import power_controls_state, replace_power_controls
 from pvsyst_peak_shaving import peak_shaving_state
 from pvsyst_shading_scene import shading_state
 from pvsyst_system_unavail import system_unavail_state
+from pvsyst_tracking import WRITABLE as TRACKING_FIELDS
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -366,9 +367,10 @@ class VariantStore:
                 if not number.isdigit():
                     raise ValueError("Orientation ID must be numeric")
                 self._orientation(lines, int(number))
-                orientations.append({"id": int(number), "values": fields((index, end),
-                                     ("FieldType", "FieldTilt", "FieldAzim", "SummerTilt", "WinterTilt",
-                                      "WinterMonths", "UsesTiltAver"))})
+                values = fields((index, end), ("FieldType", "FieldTilt", "FieldAzim", "SummerTilt",
+                                               "WinterTilt", "WinterMonths", "UsesTiltAver"))
+                values.update(fields((index, end), TRACKING_FIELDS.get(values.get("FieldType"), ())))
+                orientations.append({"id": int(number), "values": values})
             main_array = self._main_array(lines)
             names = self._display_name_fields(lines)
             return {"project": project, "variant": variant.upper(),

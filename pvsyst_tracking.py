@@ -1,4 +1,4 @@
-"""Create a NEW VC with five verified native UnlimTracking controls; no tracking model."""
+"""Create a NEW VC with verified native tracking controls; no tracking model."""
 from __future__ import annotations
 
 import difflib
@@ -12,25 +12,110 @@ BOM = b"\xef\xbb\xbf"
 STEP = Decimal("0.1")
 # Parser view only: the saved bytes keep the original orientation closing tag.
 ORIENT_CLOSE = re.compile(r"(?m)^([ \t]*)End of TOrientGroup([ \t]*)(?=\r?$)")
-MODEL_KEYS = ("axis_azimuth_deg", "min_rotation_deg", "max_rotation_deg",
-              "backtracking", "irradiance_optimization")
-TARGETS = {"axis_azimuth_deg": "AxisAzim", "min_rotation_deg": "MinPhi",
-           "max_rotation_deg": "MaxPhi", "backtracking": "UsesBacktracking",
-           "irradiance_optimization": "UsesIrradOptimiz"}
+
 # Adapter ranges only; the native GUI limits are not measured.
 RANGES = {"AxisAzim": (Decimal("-20"), Decimal("20")),
           "MinPhi": (Decimal("-60"), Decimal("-45")),
           "MaxPhi": (Decimal("45"), Decimal("60"))}
-GEOMETRY = {"Pitch": Decimal("6.600"), "CollectorWidth": Decimal("3.000"),
-            "InactiveBandWidth1": Decimal("0.020"), "InactiveBandWidth2": Decimal("0.020"),
-            "CellWidth": Decimal("0.156"), "FracShadingFactor": Decimal("1.000")}
-INTEGERS = {"NSheds": "10", "NModInWidth": "3"}
-FALSE_FLAGS = ("UsesElectricalEffect", "UsesTiltAver", "UsesAzimAver", "UsesSlopeAver")
+
+# Record shapes recorded from native 8.1.6 saves in orientation-type-matrix-r31.
+# Each entry is the exact owning field sequence of that FieldType's TOrientGroup.
+_SHARED_HEAD = ("Comment", "Version", "Flags", "NoOrient", "FieldType")
+_SHARED_TAIL = ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver", "BTNoTrackers")
+_SHELF = ("Pitch", "CollectorWidth", "InactiveBandWidth1", "InactiveBandWidth2")
+_RECORD_FIELDS = {
+    "UnlimTracking": _SHARED_HEAD + ("AxisAzim", "MinPhi", "MaxPhi", "UsesBacktracking",
+                                     "UsesIrradOptimiz", "Pitch", "CollectorWidth",
+                                     "InactiveBandWidth1", "InactiveBandWidth2", "NSheds",
+                                     "UsesElectricalEffect", "FracShadingFactor", "NModInWidth",
+                                     "CellWidth") + _SHARED_TAIL,
+    "TrackHorizNSAxis": _SHARED_HEAD + ("AxisAzim", "MinPhi", "MaxPhi", "CentralGap",
+                                        "PitchSlope", "UsesBacktracking", "PartialSystemInclObj",
+                                        "UsesIrradOptimiz", "UsesWindStow", "WindStowSpeed",
+                                        "WindStowPosition") + _SHELF + _SHARED_TAIL,
+    "TrackTiltedAxis": _SHARED_HEAD + ("AxisTilt", "AxisAzim", "MinPhi", "MaxPhi", "CentralGap",
+                                       "PitchSlope", "UsesBacktracking", "PartialSystemInclObj",
+                                       "UsesIrradOptimiz", "UsesWindStow", "WindStowSpeed",
+                                       "WindStowPosition") + _SHELF + _SHARED_TAIL,
+    "TrackVertAxis": _SHARED_HEAD + ("FieldTilt", "AxisAzim", "MinAzim", "MaxAzim",
+                                     "PartialSystemInclObj") + _SHARED_TAIL,
+    "TrackSunShield": _SHARED_HEAD + ("AxisAzim", "MinTilt", "MaxTilt", "UsesBacktracking")
+                      + _SHELF + _SHARED_TAIL,
+    "TrackHorizAxis": _SHARED_HEAD + ("AxisAzim", "MinTilt", "MaxTilt", "PitchSlope",
+                                      "UsesBacktracking", "PartialSystemInclObj")
+                      + _SHELF + _SHARED_TAIL,
+    "TrackTwoAxis": _SHARED_HEAD + ("AxisAzim", "MinAzim", "MaxAzim", "MinTilt", "MaxTilt",
+                                    "PartialSystemInclObj") + _SHARED_TAIL,
+    "TrackFrameNS": _SHARED_HEAD + ("AxisTilt", "AxisAzim", "MinTilt", "MaxTilt",
+                                    "FrameMinPhi", "FrameMaxPhi", "UsesBacktracking",
+                                    "PartialSystemInclObj") + _SHELF + _SHARED_TAIL,
+    "TrackFrameEW": _SHARED_HEAD + ("AxisAzim", "MinPhi", "MaxPhi", "FrameMinTilt",
+                                    "FrameMaxTilt", "UsesBacktracking", "PartialSystemInclObj")
+                    + _SHELF + _SHARED_TAIL,
+}
+
+# Which editable controls each FieldType owns. A control outside this map is refused,
+# so one record shape is never silently mutated into another. PartialSystemInclObj is
+# present in several recorded shapes but is deliberately not writable here.
+WRITABLE = {
+    "UnlimTracking": ("UsesElectricalEffect", "AxisAzim", "MinPhi", "MaxPhi",
+                      "UsesBacktracking", "UsesIrradOptimiz"),
+    "TrackHorizNSAxis": ("AxisAzim", "MinPhi", "MaxPhi", "UsesBacktracking",
+                         "UsesIrradOptimiz", "UsesWindStow", "WindStowSpeed", "WindStowPosition",
+                         "CentralGap", "PitchSlope"),
+    "TrackTiltedAxis": ("AxisAzim", "AxisTilt", "MinPhi", "MaxPhi", "UsesBacktracking",
+                        "UsesIrradOptimiz", "UsesWindStow", "WindStowSpeed", "WindStowPosition",
+                        "CentralGap", "PitchSlope"),
+    "TrackVertAxis": ("AxisAzim", "FieldTilt", "MinAzim", "MaxAzim"),
+    "TrackSunShield": ("AxisAzim", "MinTilt", "MaxTilt", "UsesBacktracking"),
+    "TrackHorizAxis": ("AxisAzim", "MinTilt", "MaxTilt", "PitchSlope", "UsesBacktracking"),
+    "TrackTwoAxis": ("AxisAzim", "MinAzim", "MaxAzim", "MinTilt", "MaxTilt"),
+    "TrackFrameNS": ("AxisAzim", "AxisTilt", "MinTilt", "MaxTilt", "FrameMinPhi", "FrameMaxPhi",
+                     "UsesBacktracking"),
+    "TrackFrameEW": ("AxisAzim", "MinPhi", "MaxPhi", "FrameMinTilt", "FrameMaxTilt",
+                     "UsesBacktracking"),
+}
+
+# Public JSON keys usable for any type; the legacy five keep their UnlimTracking names.
+GENERIC_KEYS = {
+    "axis_azimuth_deg": "AxisAzim",
+    "axis_tilt_deg": "AxisTilt",
+    "field_tilt_deg": "FieldTilt",
+    "min_rotation_deg": "MinPhi",
+    "max_rotation_deg": "MaxPhi",
+    "min_azimuth_deg": "MinAzim",
+    "max_azimuth_deg": "MaxAzim",
+    "min_tilt_deg": "MinTilt",
+    "max_tilt_deg": "MaxTilt",
+    "frame_min_rotation_deg": "FrameMinPhi",
+    "frame_max_rotation_deg": "FrameMaxPhi",
+    "frame_min_tilt_deg": "FrameMinTilt",
+    "frame_max_tilt_deg": "FrameMaxTilt",
+    "central_gap_m": "CentralGap",
+    "pitch_slope_deg": "PitchSlope",
+    "wind_stow_position_deg": "WindStowPosition",
+    "wind_stow_speed_mps": "WindStowSpeed",
+    "backtracking": "UsesBacktracking",
+    "irradiance_optimization": "UsesIrradOptimiz",
+    "wind_stow": "UsesWindStow",
+    "electrical_effect": "UsesElectricalEffect",
+}
+
+# Every min/max pair that can appear in a recorded shape, checked for order in the source
+# and again on the candidate, not only for the pair the request happens to touch.
+PAIRS = (("MinPhi", "MaxPhi"), ("MinAzim", "MaxAzim"), ("MinTilt", "MaxTilt"),
+         ("FrameMinPhi", "FrameMaxPhi"), ("FrameMinTilt", "FrameMaxTilt"))
+BOOLEAN_FIELDS = ("UsesBacktracking", "UsesIrradOptimiz", "UsesWindStow",
+                  "UsesElectricalEffect")
+FALSE_FLAGS = ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver")
 BT_NO_TRACKERS = "-1,-1,"
-OWN = ("Comment", "Version", "Flags", "NoOrient", "FieldType", "AxisAzim", "MinPhi", "MaxPhi",
-       "UsesBacktracking", "UsesIrradOptimiz", "Pitch", "CollectorWidth", "InactiveBandWidth1",
-       "InactiveBandWidth2", "NSheds", "UsesElectricalEffect", "FracShadingFactor",
-       "NModInWidth", "CellWidth", "UsesTiltAver", "UsesAzimAver", "UsesSlopeAver", "BTNoTrackers")
+
+# Baseline values recorded from the native type batch; a source record must match them
+# before any control is written, so a mismatched template stops instead of being edited.
+UNLIM_GEOMETRY = {"Pitch": Decimal("6.600"), "CollectorWidth": Decimal("3.000"),
+                  "InactiveBandWidth1": Decimal("0.020"), "InactiveBandWidth2": Decimal("0.020"),
+                  "CellWidth": Decimal("0.156"), "FracShadingFactor": Decimal("1.000")}
+UNLIM_INTEGERS = {"NSheds": "10", "NModInWidth": "3"}
 
 
 def _view(lines):
@@ -56,48 +141,87 @@ def _decimal(text, label):
     return value
 
 
-def _angle(number, key):
-    """Shared native-token domain: adapter range first, then the 0.1 step, for source and request."""
-    low, high = RANGES[TARGETS[key]]
-    if not low <= number <= high:
-        raise ValueError(f"{key} must stay within the adapter range {low}..{high}")
-    if number != number.quantize(STEP):
-        raise ValueError(f"{key} must use at most 0.1 steps (adapter range, not a native limit)")
+def _stepped(number, field):
+    """Accept only values already on the 0.1 grid; quantize overflow must not escape."""
+    try:
+        stepped = number.quantize(STEP)
+    except (InvalidOperation, ArithmeticError):
+        raise ValueError(f"{field} is outside the decimal range this adapter can step") from None
+    if number != stepped:
+        raise ValueError(f"{field} must use at most 0.1 steps (adapter range, not a native limit)")
     return number
 
 
-def _source_controls(block):
-    """The saved record must already sit inside the same domain; a bad value is blocked, not overwritten."""
-    for key in ("axis_azimuth_deg", "min_rotation_deg", "max_rotation_deg"):
-        _angle(_decimal(block.one(TARGETS[key])[1], key), key)
-    for name in ("UsesBacktracking", "UsesIrradOptimiz"):
-        if block.one(name)[1] not in ("True", "False"):
-            raise ValueError(f"{name} must already be True or False in the source record")
+def _angle(number, field):
+    """Declared adapter domains, not measured native GUI bounds."""
+    low, high = RANGES[field]
+    if not low <= number <= high:
+        raise ValueError(f"{field} must stay within the adapter range {low}..{high}")
+    return _stepped(number, field)
 
 
-def tracking_values(tracking):
-    """Check the five declared controls and render the exact native tokens."""
-    if not isinstance(tracking, dict) or set(tracking) != set(MODEL_KEYS):
-        raise ValueError("tracking must contain exactly the five declared controls")
+def _check_pairs(fieldtype, values, source):
+    """Order every pair this record owns, using the request first and the saved token next."""
+    allowed = set(WRITABLE[fieldtype])
+    for low, high in PAIRS:
+        if low not in allowed and high not in allowed:
+            continue
+        lo, hi = values.get(low), values.get(high)
+        if lo is None and source is not None and low in _RECORD_FIELDS[fieldtype]:
+            lo = source.one(low)[1]
+        if hi is None and source is not None and high in _RECORD_FIELDS[fieldtype]:
+            hi = source.one(high)[1]
+        if lo is None or hi is None:
+            raise ValueError(f"{low} and {high} must both be readable to check their order")
+        if not Decimal(lo) < Decimal(hi):
+            raise ValueError(f"{low} must stay below {high}")
+
+
+def render_control(field, value):
+    """Render one requested control to its native token, or stop."""
+    if field in BOOLEAN_FIELDS:
+        if type(value) is not bool:
+            raise ValueError(f"{field} must be a strict boolean")
+        return "True" if value else "False"
+    if type(value) is bool or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a strict finite number")
+    number = _decimal(str(value), field)
+    return f"{_angle(number, field) if field in RANGES else _stepped(number, field):.1f}"
+
+
+def _check_source_numbers(block, fieldtype):
+    """The saved record must already satisfy the same domain; a bad value stops, never overwritten."""
+    for name in WRITABLE[fieldtype]:
+        if name in BOOLEAN_FIELDS:
+            if block.one(name)[1] not in ("True", "False"):
+                raise ValueError(f"{name} must already be True or False in the source record")
+            continue
+        number = _decimal(block.one(name)[1], name)
+        if name in RANGES:
+            _angle(number, name)
+        else:
+            _stepped(number, name)
+
+
+def tracking_values(tracking, fieldtype, source=None):
+    """Check the declared controls for this record type and render exact native tokens."""
+    if not isinstance(tracking, dict) or not tracking:
+        raise ValueError("tracking must declare at least one control")
+    allowed = WRITABLE[fieldtype]
     values = {}
-    for key in ("axis_azimuth_deg", "min_rotation_deg", "max_rotation_deg"):
-        value = tracking[key]
-        if type(value) is bool or not isinstance(value, (int, float)):
-            raise ValueError(f"{key} must be a strict finite number")
-        number = _angle(_decimal(str(value), key), key)
-        values[TARGETS[key]] = f"{number:.1f}"
-    for key, name in (("backtracking", "UsesBacktracking"),
-                      ("irradiance_optimization", "UsesIrradOptimiz")):
-        if type(tracking[key]) is not bool:
-            raise ValueError(f"{key} must be a strict boolean")
-        values[name] = "True" if tracking[key] else "False"
-    if not Decimal(values["MinPhi"]) < Decimal(values["MaxPhi"]):
-        raise ValueError("min_rotation_deg must stay below max_rotation_deg")
+    for key, value in tracking.items():
+        field = GENERIC_KEYS.get(key)
+        if field is None:
+            raise ValueError(f"Unknown tracking control: {key}")
+        if field not in allowed:
+            raise ValueError(f"{field} is not a control of a {fieldtype} record")
+        values[field] = render_control(field, value)
+    _check_pairs(fieldtype, values, source)
     return values
 
 
 def orient_block(lines):
-    """Return the one directly owned UnlimTracking record after checking every fixed field."""
+    """Return the one directly owned tracking record after checking every owned field."""
     blocks = objects(_view(lines))
     records = [block for block in blocks if block.object_type == "pvOrient"]
     if len(records) != 1:
@@ -105,38 +229,46 @@ def orient_block(lines):
     block = records[0]
     if block.path != "PVObject_" or not block.end_line:
         raise ValueError("pvOrient must be the complete directly owned record")
-    if set(block.fields) != set(OWN):
-        raise ValueError("Unknown or missing fields in the pvOrient record")
-    for name in OWN:
-        block.one(name)  # every owning field must occur exactly once; duplicates stop here
-    for other in blocks:
-        if other is block:
-            continue
-        if set(other.fields) & set(TARGETS.values()):
-            raise ValueError("Tracking controls must exist only in the owning pvOrient record")
     if block.one("Version")[1] != "8.1.6" or block.one("Flags")[1] != "$00":
         raise ValueError("pvOrient requires Version=8.1.6 and Flags=$00")
     if block.one("NoOrient")[1] != "1":
         raise ValueError("Only orientation 1 is supported")
-    if block.one("FieldType")[1] != "UnlimTracking":
-        raise ValueError("Only an existing UnlimTracking record is supported")
-    for name, expected in GEOMETRY.items():
-        if _decimal(block.one(name)[1], name) != expected:
-            raise ValueError(f"{name} must stay at its verified native value")
-    for name, expected in INTEGERS.items():
-        if block.one(name)[1] != expected:
-            raise ValueError(f"{name} must stay at {expected}")
+    fieldtype = block.one("FieldType")[1]
+    if fieldtype not in _RECORD_FIELDS:
+        raise ValueError(f"Unsupported FieldType: {fieldtype}")
+    own = _RECORD_FIELDS[fieldtype]
+    if set(block.fields) != set(own):
+        raise ValueError(f"{fieldtype} record fields do not match the recorded native shape")
+    for name in own:
+        block.one(name)  # every owning field must occur exactly once; duplicates stop here
+    writable = set(WRITABLE[fieldtype])
+    for other in blocks:
+        if other is block:
+            continue
+        if set(other.fields) & writable:
+            raise ValueError("Tracking controls must exist only in the owning pvOrient record")
+    if fieldtype == "UnlimTracking":
+        for name, expected in UNLIM_GEOMETRY.items():
+            if _decimal(block.one(name)[1], name) != expected:
+                raise ValueError(f"{name} must stay at its verified native value")
+        for name, expected in UNLIM_INTEGERS.items():
+            if block.one(name)[1] != expected:
+                raise ValueError(f"{name} must stay at {expected}")
+    # UsesElectricalEffect is deliberately absent from FALSE_FLAGS: a native pair shows the
+    # switch is live (the tracked case drops 28.325 to 18.702 on the same hour), so it is a
+    # writable control for UnlimTracking rather than an invariant.
     for name in FALSE_FLAGS:
-        if block.one(name)[1] != "False":
+        if name in own and block.one(name)[1] != "False":
             raise ValueError(f"{name} must stay False")
     if block.one("BTNoTrackers")[1] != BT_NO_TRACKERS:
         raise ValueError(f"BTNoTrackers must stay {BT_NO_TRACKERS}")
-    _source_controls(block)
+    _check_source_numbers(block, fieldtype)
+    _check_pairs(fieldtype, {}, block)
     return block
 
 
 def _require_scope(store, lines, arrays, system):
-    """Verified native 8.1.6 PV-only single-subarray Grid variant around one UnlimTracking record."""
+    """Verified native 8.1.6 PV-only single-subarray Grid variant around one tracking record."""
     root = _root_block(lines)
     if root.one("Version")[1] != "8.1.6":
         raise ValueError("Requires a native 8.1.6 variant")
@@ -196,8 +328,9 @@ def create_tracking_variant(store, *, project, source_variant, new_variant, trac
             text, lines = store._text(original)
             arrays, system = store._sections(lines)
             _require_scope(store, lines, arrays, system)
-            values = tracking_values(tracking)
             block = orient_block(lines)
+            fieldtype = block.one("FieldType")[1]
+            values = tracking_values(tracking, fieldtype, block)
             candidate_lines = list(lines)
             for name, rendered in values.items():
                 index, _ = block.one(name)
@@ -206,7 +339,8 @@ def create_tracking_variant(store, *, project, source_variant, new_variant, trac
             name_change = None
             if variant_name is not None:
                 store._validate_display_name(variant_name, "variant_name")
-                bom_prefix = store._display_name_prefix(original, variant_name, add_utf8_bom, "variant_name")
+                bom_prefix = store._display_name_prefix(original, variant_name, add_utf8_bom,
+                                                        "variant_name")
                 index, = store._display_name_fields(candidate_lines, complete=True)
                 before = candidate_lines[index].partition("=")[2].strip()
                 candidate_lines[index] = replace_value(candidate_lines[index], variant_name)
@@ -216,27 +350,25 @@ def create_tracking_variant(store, *, project, source_variant, new_variant, trac
             _, checked = store._text(candidate)
             checked_arrays, _ = store._sections(checked)
             verified = orient_block(checked)
+            if verified.one("FieldType")[1] != fieldtype:
+                raise ValueError("Candidate changed the tracked FieldType")
             if len(checked_arrays) != 1 or any(verified.one(name)[1] != rendered
                                                for name, rendered in values.items()):
                 raise ValueError("Candidate did not keep the requested tracking controls")
             result.update(status="ready", project=project, source_variant=source_variant,
-                          variant=target.suffix[1:].upper(), tracking=values,
-                          artifacts={"variant": str(target)},
+                          variant=target.suffix[1:].upper(), field_type=fieldtype,
+                          tracking=values, artifacts={"variant": str(target)},
                           bom_added=bool(bom_prefix) and not original.startswith(BOM))
             if name_change is not None:
                 result["name_change"] = name_change
-            result["warnings"].append(
-                "Only one new VC is written: the five owning pvOrient controls and an optional root Comment "
-                "change; geometry, BTNoTrackers, electrical-effect settings, PRJ, weather, topology, loads and "
-                "storage stay inherited. Saving is not native consumption.")
-            result["warnings"].append(
-                "Supported subset is an existing native 8.1.6 UnlimTracking record with one orientation list and "
-                "one subarray. Sources with an explicit 3D scene, module layout, load, storage, P50/P90 or saved "
-                "horizon are blocked rather than silently accepted. Geometry and electrical-effect settings are "
-                "not edited and no 2D shading is computed here; native near-shading losses may still change with "
-                "these controls.")
+            result["warnings"].extend([
+                "Only the declared owning %s controls and optional root Comment change; "
+                "unrequested geometry, controls, topology and source files stay inherited." % fieldtype,
+                "Electrical effect is editable only where the native type owns that field. "
+                "No tracking/backtracking/irradiance/shading model is computed; saving is not native consumption.",
+            ])
             diff = "".join(difflib.unified_diff(text.splitlines(keepends=True),
-                                               candidate_text.splitlines(keepends=True)))
+                                                candidate_text.splitlines(keepends=True)))
             result.update(diff=diff[:32000], diff_truncated=len(diff) > 32000)
             if store._read(source) != original:
                 raise ValueError("Template changed while preparing the tracking variant")
@@ -251,6 +383,6 @@ def create_tracking_variant(store, *, project, source_variant, new_variant, trac
             result["status"] = "failed" if result["stage"] == "write" else "blocked"
             if result["status"] == "failed":
                 result["warnings"].append(
-                    "The new variant may contain a partial artifact; inspect the disclosed path before retrying. "
-                    "Original template is retained.")
+                    "The new variant may contain a partial artifact; inspect the disclosed path "
+                    "before retrying. Original template is retained.")
     return result
