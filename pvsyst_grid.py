@@ -117,6 +117,49 @@ def circuit_nodes(lines):
     return roots
 
 
+TRANSFORMER_KEYS = ("OutputVoltage", "STCRefPower", "STCIronLossFrac", "STCIronLoss",
+                    "STCCopperLossFrac", "NightDisconnect", "IsHVTransformer")
+
+
+def transformer_state(lines):
+    """Read the serialized MV/HV transformer layers without interpreting any quantity.
+
+    The native saves carry these seven fields on every TransformerNode, and an HV
+    configuration nests an HV layer above the MV one. Values are reported exactly as
+    stored: this function does not convert units, derive reference power, or decide
+    whether a loss fraction is physically consistent.
+    """
+    result = {"layers": [], "count": 0, "nested": False, "issues": [],
+              "scope": "serialized transformer fields and nesting; not electrical validation"}
+    try:
+        roots = circuit_nodes(lines)
+    except (UnsupportedCircuit, ValueError) as exc:
+        result["issues"].append(str(exc))
+        return result
+    found = []
+
+    def walk(node, depth):
+        if node.kind == "TransformerNode":
+            missing = [key for key in TRANSFORMER_KEYS if key not in node.fields]
+            repeated = [key for key in TRANSFORMER_KEYS if len(node.fields.get(key, [])) > 1]
+            if missing or repeated:
+                result["issues"].append(
+                    "TransformerNode at line %d is missing or repeats %s"
+                    % (node.line, ", ".join(sorted(missing + repeated))))
+            else:
+                found.append({"depth": depth,
+                              "fields": {key: node.one(key) for key in TRANSFORMER_KEYS}})
+        for child in node.children:
+            walk(child, depth + 1 if node.kind == "TransformerNode" else depth)
+
+    for root in roots:
+        walk(root, 0)
+    result["layers"] = found
+    result["count"] = len(found)
+    result["nested"] = any(layer["depth"] > 0 for layer in found)
+    return result
+
+
 def inventory(lines, arrays):
     """Compare serialized inverter/string multiplicities with subarray declarations.
 

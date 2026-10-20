@@ -28,12 +28,15 @@ ASHRAE_KEYS = ("Flags", "IAMMode", "B0_IAM")
 OPTIC_KEYS = ("N_Glass", "N_EVA", "N_ARCoating", "DGlass", "DArCoating")
 # IAMProfile is parsed as a child object, so it is not among the pvIAM root fields
 FRESNEL_KEYS = ("Flags", "IAMMode") + OPTIC_KEYS
+# A user point table keeps only the profile: no optics fields are stored.
+USER_KEYS = ("Flags", "IAMMode")
 CACHE_KEYS = ("NPtsMax", "NPtsEff", "LastCompile", "Mode")
 SCOPE = ("Owning subarray only; native IAM component bit5 and the pvIAM IAMMode/B0_IAM fields. "
          "Accepted source shapes: component with no pvIAM block, component with a retained Ashrae "
          "block, component with a preserved FresnelAR optics cache, and the stored Ashrae state. "
          "A retained cache is reported as stored metadata and is never treated as an effective "
-         "ASHRAE model while bit5 is set. No curve evaluation.")
+         "ASHRAE model while bit5 is set. No curve evaluation. FresnelSmooth and UserProfile are "
+         "reported read-only: their stored tables are returned verbatim and never generated.")
 
 
 def _blocks(lines, bounds):
@@ -118,6 +121,21 @@ def _fresnel_shape(parsed, block):
     return True
 
 
+def _stored_points(parsed, block):
+    """Return the stored table verbatim; the values are never generated or interpolated."""
+    children = _children(parsed)
+    if len(children) != 1 or children[0].path != PROFILE_PATH or children[0].object_type != PROFILE_TYPE:
+        raise ValueError("Require exactly one IAMProfile/TCubicProfile child")
+    curve = children[0]
+    extra = set(curve.fields) - (set(CACHE_KEYS) | {f"Point_{i}" for i in range(1, 10)})
+    if extra:
+        raise ValueError(f"Refusing to drop unknown TCubicProfile field {sorted(extra)[0]}")
+    points = curve.points()
+    for key in ("LastCompile", "Mode"):
+        one(curve.fields, key)
+    return [{"angle_deg": float(angle), "factor": float(factor)} for angle, factor in points]
+
+
 def _read(lines, bounds):
     if not isinstance(bounds, tuple) or len(bounds) != 2:
         raise ValueError("Require one owning subarray bounds")
@@ -150,8 +168,26 @@ def _read(lines, bounds):
         elif model == "FresnelAR" and component:
             _fresnel_shape(parsed, block)
             b0 = None
+        elif model in ("FresnelSmooth", "UserProfile"):
+            # Both native forms are read-only here: their tables come from the software
+            # or the user, and this adapter never derives a curve.
+            if component:
+                raise ValueError(f"{model} cannot be the effective model while bit5 is set")
+            expected = FRESNEL_KEYS if model == "FresnelSmooth" else USER_KEYS
+            if set(block.fields) != set(expected):
+                raise ValueError(f"Require exactly the recorded {model} pvIAM fields")
+            if one(block.fields, "Flags")[1] != "$00":
+                raise ValueError("Require native Flags=$00")
+            for key in expected:
+                if key not in ("Flags", "IAMMode", "IAMProfile"):
+                    _finite_entry(block, key, key)
+            b0 = None
+            points = _stored_points(parsed, block)
+            state = {"effective": model, "stored_model": model, "stored_ashrae_b0": None,
+                     "points": points, "scope": "stored table reported verbatim; not evaluated"}
+            return fields, index, raw, block, state
         else:
-            raise ValueError("Require a verified Ashrae or component FresnelAR pvIAM state")
+            raise ValueError("Require a verified Ashrae, component FresnelAR, FresnelSmooth or UserProfile pvIAM state")
         state = {"effective": "component" if component else "ashrae",
                  "stored_model": model, "stored_ashrae_b0": b0}
     return fields, index, raw, block, state
@@ -223,6 +259,10 @@ def replace_iam_model(lines, bounds, updates):
     if mode == "ashrae":
         b0 = _step(finite(updates["ashrae_b0"], "ashrae_b0", minimum=0, maximum=1), "ashrae_b0")
     fields, index, raw, block, before = _read(lines, bounds)
+    # Broader reading must not broaden this editor or discard an authored point table.
+    if before.get("stored_model") in ("FresnelSmooth", "UserProfile"):
+        raise ValueError("The stored IAM table is read-only in this entry point; "
+                         "replace or regenerate it through the native software")
     body = _body(lines, bounds, index, raw, block, _anchor(lines, bounds, fields), mode, b0)
     candidate = lines[:bounds[0] + 1] + body + lines[bounds[1]:]
     # the body may change the block height, so re-read the candidate with its own bounds
