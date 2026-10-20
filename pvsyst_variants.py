@@ -15,7 +15,9 @@ from pathlib import Path
 from pvsyst_components import ComponentStore, FIELD, MAX_PROJECT_BYTES
 from pvsyst_paths import project_path, project_root
 from pvsyst_generator import state as generator_state, replace_generator
-from pvsyst_grid import inventory as grid_inventory, resize_capacity, circuit_nodes, require_ordinary_mppt, set_power_sharing, set_independent_mppt
+from pvsyst_grid import (inventory as grid_inventory, resize_capacity, circuit_nodes,
+                         require_ordinary_mppt, set_power_sharing, set_independent_mppt,
+                         transformer_state)
 from pvsyst_component_editor import objects, replace_value
 from pvsyst_soiling import soiling_state, replace_soiling
 from pvsyst_grid_limit_native import grid_limit_state, replace_grid_limit
@@ -29,6 +31,9 @@ from pvsyst_ageing import ageing_model_state, replace_ageing_model
 from pvsyst_iam import iam_model_state, replace_iam_model
 from pvsyst_p50_native import p50_state, replace_p50
 from pvsyst_power_controls import power_controls_state, replace_power_controls
+from pvsyst_peak_shaving import peak_shaving_state
+from pvsyst_shading_scene import shading_state
+from pvsyst_system_unavail import system_unavail_state
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -383,6 +388,10 @@ class VariantStore:
                     "power_controls": power_controls_state(lines, system),
                     "ageing": ageing_model_state(lines, main_array) if main_array is not None else None,
                     "inverter_temperature": inverter_temperature_state(lines, system),
+                     "transformers": transformer_state(lines),
+                     "system_unavailability": system_unavail_state(lines, system),
+                     "peak_shaving": peak_shaving_state(lines),
+                     "shading_scene": shading_state(lines),
                     "subarrays": [{"id": identifier, "values": fields(bounds, (
                         "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT", "NoOrientation",
                         "VBkUpEncl_syst", "VBkUpDecl_syst", "LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI", "PQualityModP", "Flags")),

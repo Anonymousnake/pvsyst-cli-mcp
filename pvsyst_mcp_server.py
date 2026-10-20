@@ -480,7 +480,12 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     TanPhi/PLimGrid/LimGrSeparLoss as raw text; missing or duplicate fields are omitted.
     Native temperature fields use degC; TanPhi is not a computed PF, and PLimGrid
     units depend on the native mode (kW or kVA). Nested owning object fields are
-    excluded; this does not widen write support."""
+    excluded; this does not widen write support.
+    Read-only transformers, system_unavailability, peak_shaving and shading_scene expose
+    stored native layers, outage periods, strategy and scene declarations. These values
+    are not computed electrical quantities, dispatch or decoded geometry. Ageing reports
+    its stored template fields; IAM includes native FresnelSmooth/UserProfile point tables
+    without evaluating them. A broader readable P50 root state does not widen writing."""
     return variant_call("inspect_parameters", project, variant)
 
 
