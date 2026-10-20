@@ -18,6 +18,13 @@ END = "EndTags"
 PLOTS = "SimulPlots=Start"
 ROOT_TYPE = "pvVCalcul"
 ROOT_FLAGS = 0x01800001
+# Read-only coverage: the block is identical across these root states, and the recorded
+# variants carrying them complete a full native year, so refusing to report them hides
+# real parameters. Writing still requires the result template below.
+READ_FLAGS = (0x01800001,   # result template, as recorded by the verified writer
+              0x01000000,   # enabled without the result bit
+              0x00800001,   # result baseline without the enable bit
+              0x00000000)   # block present but neither bit set, as in the VCI save
 ORDER = ("MeteoKind", "P90Custom", "PxxCustom", "PxxReport", "PxxMainResults", "PlotKind",
          "YearDevFromAver", "MeteoAnnualVariab", "PVModelVariab", "InverterVariab",
          "SoilingVariab", "DegradVariab", "CustomVariab", "CustomVarLabel")
@@ -75,7 +82,7 @@ def _validate(values):
     return out
 
 
-def _read(lines):
+def _read(lines, require_template=False):
     """Locate the single root block in a result template and re-validate it in place."""
     heads = [i for i, line in enumerate(lines) if line.strip() == HEAD]
     if len(heads) > 1:
@@ -101,10 +108,15 @@ def _read(lines):
         raise ValueError(f"Require a single {ROOT_TYPE} root object above P50_P90")
     version = roots[0].one("Version")[1]
     if version != "8.1.6":
-        raise ValueError("P50 editing requires root Version=8.1.6")
+        raise ValueError("P50 requires root Version=8.1.6")
     raw_flags = roots[0].one("Flags")[1]
-    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags) or int(raw_flags[1:], 16) != ROOT_FLAGS:
+    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags):
+        raise ValueError("P50 root Flags must be a hexadecimal token")
+    state = int(raw_flags[1:], 16)
+    if require_template and state != ROOT_FLAGS:
         raise ValueError("P50 editing requires the observed result-template root Flags $01800001")
+    if state not in READ_FLAGS:
+        raise ValueError("P50 root Flags is not one of the recorded native states")
     fields = {}
     for i in range(head + 1, tail):
         text = lines[i].strip()
@@ -151,7 +163,7 @@ def p50_state(lines):
 def replace_p50(lines, updates):
     """Replace the fourteen existing native values in place, keeping order and formatting."""
     target = _validate(updates)
-    got = _read(lines)
+    got = _read(lines, require_template=True)
     if got is None:
         raise ValueError("Require an existing root P50_P90 block; this editor never creates one")
     fields, before = got

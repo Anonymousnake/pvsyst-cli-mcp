@@ -6,6 +6,7 @@ import re
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_component_editor import objects, replace_value, require_flat
+from pvsyst_generator import direct_fields
 from pvsyst_grid import inventory as grid_inventory
 
 BOM = b"\xef\xbb\xbf"
@@ -275,3 +276,61 @@ def create_peak_shaving_variant(store, *, project, source_variant, new_variant, 
                     "The new variant may contain a partial artifact; inspect the disclosed path before retrying. "
                     "Original template is retained.")
     return result
+
+
+STORAGE_OWN = ("Flags", "Strategy", "ChargingStrategy", "DischStrategy", "HourBegDisch", "HourEndDisch",
+               "BattSoCInit", "SOCChDecl", "SOCDischDecl", "SOCDischSelf", "PMaxCharge",
+               "PMaxDisch", "BattRectMaxEffic", "BattRectEuroEffic", "BattInvMaxEffic",
+               "BattInvEuroEffic")
+
+
+def peak_shaving_state(lines):
+    """Report the stored peak-shaving strategy and its native fields, or why it is absent.
+
+    Values are returned as stored text: endpoint inclusivity, the meaning of AfterSunset
+    beyond the native label, and every efficiency figure are not interpreted here.
+    """
+    owner = [i for i, line in enumerate(lines)
+             if line.strip() == "PVObject_GridStorage=pvGridStorage"]
+    if not owner:
+        return {"mode": None, "reason": "no pvGridStorage section"}
+    if len(owner) != 1:
+        return {"mode": None, "issue": "Requires exactly one pvGridStorage record"}
+    end = next((i for i in range(owner[0] + 1, len(lines))
+                if lines[i].strip() == "End of PVObject pvGridStorage"), None)
+    if end is None:
+        return {"mode": None, "issue": "pvGridStorage is not closed"}
+    try:
+        owned = direct_fields(lines, (owner[0], end))
+    except ValueError as exc:
+        return {"mode": None, "issue": str(exc)}
+    for key, entries in owned.items():
+        if len(entries) != 1:
+            return {"mode": None, "issue": f"Duplicate {key} in pvGridStorage"}
+    fields = {key: entries[0][1] for key, entries in owned.items()}
+    if "Strategy" not in fields:
+        return {"mode": None, "issue": "pvGridStorage carries no Strategy"}
+    if fields["Strategy"] != "PeakShaving":
+        return {"mode": "other", "strategy": fields["Strategy"],
+                "reason": "the stored strategy is not peak shaving"}
+    # The two discharge modes carry different field sets: an AfterSunset save holds no
+    # hour fields at all, matching the writer's own rule.
+    expected = set(STORAGE_OWN)
+    if fields.get("DischStrategy") == "AfterSunset":
+        expected -= {"HourBegDisch", "HourEndDisch"}
+    if set(fields) != expected:
+        return {"mode": None,
+                "issue": "pvGridStorage fields do not match the recorded native shape"}
+    strategy = fields["DischStrategy"]
+    if strategy == "AfterSunset":
+        discharge = {"mode": "after_sunset"}
+    elif strategy == WINDOW:
+        discharge = {"mode": "hour_window", "start_hour": fields["HourBegDisch"],
+                     "end_hour": fields["HourEndDisch"]}
+    else:
+        return {"mode": "other", "discharge_strategy": strategy,
+                "reason": "unrecorded discharge strategy"}
+    return {"mode": "configured", "discharge": discharge,
+            "charging_strategy": fields["ChargingStrategy"],
+            "values": {key: fields[key] for key in sorted(expected)},
+            "scope": "stored native strategy and fields; no dispatch, SoC or efficiency model"}

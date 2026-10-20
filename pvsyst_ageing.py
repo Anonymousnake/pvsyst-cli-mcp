@@ -28,6 +28,9 @@ AGE_FIXED = {"Flags": "$00", "KeepMCValues": "False", "ProgressMode": "1", "Curv
              "NSigmaLimit": "2.0", "ImpDegradSharing": "80.0", "ModulesRMSYearISC": "0.00",
              "ModulesRMSYearVoc": "0.00"}
 MAIN_FLAGS2 = "$0010082A"
+AGE_TEMPLATE_ORDER = ("Flags", "KeepMCValues", "PlotKind", "CurveWarranty", "ProgressMode",
+                      "NSigmaLimit", "ImpDegradSharing", "ModulesRMSYearISC", "ModulesRMSYearVoc",
+                      "ModuleYearWarr", "ModuleWarranty")
 SCOPE = "Native ageing model inputs only; stored factors are reported, never written"
 
 
@@ -111,6 +114,7 @@ def _read(lines, bounds):
              "annual_module_degradation_percent": _percent_native(one(age.fields, MEAN_FIELD)[1]),
              "stored_loss_factor_percent": stored[STORED_LOSS],
              "stored_mismatch_factor_percent": stored[STORED_MISMATCH],
+              "template": {key: one(age.fields, key)[1] for key in AGE_TEMPLATE_ORDER},
              "note": "stored factors are native metadata; native recomputes the applied loss"}
     return shift, root, age, state
 
