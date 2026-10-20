@@ -69,7 +69,7 @@ TOOL_GROUPS = {
         "pvsyst_validate_variant_structure", "pvsyst_clone_subarray",
         "pvsyst_remove_subarray", "pvsyst_restore_variant", "pvsyst_create_tracking_variant",
         "pvsyst_create_dome_allocation_variant", "pvsyst_create_house_pv_scene",
-        "pvsyst_read_house_pv_scene",
+        "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
@@ -104,7 +104,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
                           "pvsyst_create_tracking_variant",
-                          "pvsyst_create_dome_allocation_variant", "pvsyst_read_house_pv_scene",
+                          "pvsyst_create_dome_allocation_variant", "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
                           "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
                           "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system")
@@ -1473,6 +1473,37 @@ def pvsyst_read_house_pv_scene(scene_name: StrictStr) -> dict:
     Reads only bounded UTF-8 XML; DTD/entity declarations and unsupported extensions stop.
     This is not a general COLLADA converter or a native VC scene exporter."""
     return read_house_pv_scene(components(), scene_name)
+
+
+@categorized_tool()
+def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
+                                  dry_run: StrictBool = True, confirm: StrictBool = False) -> dict:
+    """Import a generated house/PV scene using the already open native PVsyst GUI.
+    This bounded Windows path targets Chinese PVsyst 8.1.6 rev49278 with native
+    logical DPI96 and the recorded physical window metrics, with
+    the matching workspace and recipe project already open on its project page.
+    Supports one or two PV regions; creation/standard export retains its 64-region
+    limit. Unknown GUI metrics, dialogs, source/PAN mismatches and unsupported scene
+    dialects stop rather than patching private VC data or guessing control positions.
+    dry_run reads state only: no activation, key/mouse input or clipboard access.
+    Execute with dry_run=false AND confirm=true, then leave the native desktop alone:
+    selects the clean source variant, imports PVC2, assigns its regions to orientation1,
+    runs PVsyst's scene-validity check and shading table, and saves a NEW native variant
+    with the explicit display title variant_name (1..80 printable UTF-8 bytes).
+    Native warnings beyond the expected beta notice stop; invalid geometry is returned
+    as the software's own text. Any failure leaves the current window for inspection;
+    an already-created variant path is disclosed even if postchecks fail. No automatic
+    retry, source overwrite, application start/exit or INI modification is performed.
+    Native validity text replaces the clipboard only after this confirmed operation;
+    only the newly copied native text is read, never the earlier clipboard.
+    imported/native_geometry_verified become true only after native persistence checks;
+    native_consumption_verified stays false until a separate native simulation.
+    Use pvsyst_run_simulation on the returned variant for energy/shading consumption."""
+    from pvsyst_scene_native import import_house_pv_scene
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return import_house_pv_scene(store, component_store, cli(), scene_name, variant_name,
+                                 dry_run=dry_run, confirm=confirm)
 
 
 class AfterSunsetDischarge(BaseModel):
