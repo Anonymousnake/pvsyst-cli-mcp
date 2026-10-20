@@ -1820,7 +1820,8 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
                              year: StrictInt | None = None, dry_run: StrictBool = True,
                              capacity: CapacityRequest | None = None,
                              weather_manifest_name: StrictStr = "",
-                             losses: LossRequest | None = None) -> dict:
+                             losses: LossRequest | None = None,
+                             report_pages: list[StrictStr] | None = None) -> dict:
     """Preflight or execute one template-to-full-year grid simulation without GUI.
     Supply an existing valid PRJ/VC, loose text PAN/OND, workspace SIT/MET, tilt,
     year and a NEW project filename. Missing inputs return field-specific issues.
@@ -1851,7 +1852,10 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
     positive); losses accepts only LIDLoss, PMismMPP and ModuleQualityLoss on the
     subarray plus UFactor on the whole main array. Template fields left unspecified keep
     their saved values, and the returned configuration_summary discloses the requested
-    angles and losses; no loss is fitted, inferred or defaulted."""
+    angles and losses; no loss is fitted, inferred or defaulted.
+    Optional report_pages is a nonempty list of native page names (for example
+    ["summary", "losses"]); omit it for the default complete report. Invalid pages
+    stop in preflight, and the request/manifest records the selection."""
     current = cli()
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -1860,7 +1864,8 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
         met_name=met_name, tilt=tilt, azimuth=azimuth, year=year, dry_run=dry_run,
         capacity=capacity.model_dump(exclude_none=True) if capacity is not None else None,
         weather_manifest_name=weather_manifest_name,
-        losses=losses.model_dump(exclude_none=True) if losses is not None else None)
+        losses=losses.model_dump(exclude_none=True) if losses is not None else None,
+        report_pages=report_pages)
 
 
 @categorized_tool()
@@ -2048,6 +2053,7 @@ class SingleDesignRequest(BaseModel):
     capacity: CapacityRequest | None = None
     electrical_design: DesignEnvelopeRequest | None = None
     losses: LossRequest | None = None
+    report_pages: list[StrictStr] | None = None
 
 
 @categorized_tool()
@@ -2078,7 +2084,8 @@ def pvsyst_simulate_design(spec: SingleDesignRequest, dry_run: StrictBool = True
     design is certified here. status is blocked/ready/ready_for_weather/completed/
     needs_review/failed; inspect it, not just MCP is_error. Year is 1969..2068. The
     returned issues, warnings, transactions and recovery steps state exactly what was and
-    was not changed."""
+    was not changed. Optional spec.report_pages selects native PDF page names; omitted
+    means the complete default report, and invalid lists stop before discovery/weather."""
     current = cli()
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)

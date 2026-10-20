@@ -76,6 +76,13 @@ class PVsystError(RuntimeError):
         self.diagnostics = diagnostics
 
 
+def validate_report_pages(pages):
+    """Use the native page vocabulary at every entry point, before side effects."""
+    if pages is not None and (not isinstance(pages, (list, tuple)) or not pages
+            or any(not isinstance(page, str) or page not in REPORT_PAGES for page in pages)):
+        raise ValueError("Unknown or empty PDF report page list")
+
+
 def build_sfi(path: str | os.PathLike, variables: list[str] | str,
               comment: str = "Hourly Results") -> Path:
     """Create an hourly SFI from verified groups or explicit vi* identifiers."""
@@ -424,9 +431,8 @@ class PVsystCLI:
             if report_language not in allowed:
                 raise ValueError(f"Unsupported report language: {report_language}")
             args.append(f"-rl:{report_language}")
+        validate_report_pages(report_pages)
         if report_pages is not None:
-            if not report_pages or any(page not in REPORT_PAGES for page in report_pages):
-                raise ValueError("Unknown or empty PDF report page list")
             args.append("-rp:" + ",".join(report_pages))
         if recompute_shading is not None:
             self._require("run-simulation", "recompute-shadingfactors-tables")

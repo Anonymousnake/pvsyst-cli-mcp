@@ -23,7 +23,7 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 8–10：MET 年历预检 | `pvsyst_simulate_template`、`pvsyst_simulate_design` | PR #35 已合并：原生错年失败促成 owning-header 预检；通用1990/缺失/未知日期仍显式待审，头部不证明实际小时或时区 |
 | 17–21：组件、逆变器与引用 | `pvsyst_project_components`、组件读写/复制/引用工具、`pvsyst_run_simulation` | 原始加密数据库模型已有全年/PDF证据；任意新 loose PAN/OND 需重新引用运行，避免简短模型遮蔽原始库 |
 | 17–21：子阵、串并联、MPPT、共享 | 变体参数、`pvsyst_validate_variant_structure`、`pvsyst_clone_subarray`、`pvsyst_remove_subarray` | 既有受限拓扑入口；按[拓扑与原生对照记录](grid-capacity-verification.md)的具体模式/版本/几何条件使用，不把图形计数或缓存额定值当成运行功率 |
-| 8–10、33：全年执行、小时结果与报告 | `pvsyst_build_sfi`、`pvsyst_run_simulation`、`pvsyst_read_results`、`pvsyst_read_rows` | 原生2022年8760小时、13列有限样本、7页PDF；799980.9366kWh 与报告799981kWh一致。年度PR按原生/标准年口径，不平均逐小时PR |
+| 8–10、33：全年执行、小时结果与报告 | `pvsyst_build_sfi`、`pvsyst_run_simulation`、`pvsyst_read_results`、`pvsyst_read_rows`，模板及统一设计的report_pages | 原2022/8760h记录保留；R52三条2024/8784h原生路径验证默认7页、模板2页、设计1页，三份CSV完全一致；页选择走原生-rp，不事后裁PDF，见[报告通道](automatic-simulation.md) |
 
 基础闭环已验收不代表高级编辑器齐全。原始组件、天气、教程、商业二进制和本机实验产物不随本地图分发。
 

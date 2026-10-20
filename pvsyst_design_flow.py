@@ -25,7 +25,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from pvsyst_cli import PVsystError
+from pvsyst_cli import PVsystError, validate_report_pages
 from pvsyst_design_envelope import REQUEST_KEYS, prepare_design_envelope
 from pvsyst_design_inputs import discover_design_inputs
 from pvsyst_paths import project_name, variant_id, workspace_file, workspace_folder
@@ -55,7 +55,7 @@ ISO_COUNTRY = re.compile(r"[A-Z]{2}")
 
 SPEC_KEYS = frozenset((
     "scope", "new_project", "year", "target_dc_kw", "tilt", "azimuth", "module", "inverter",
-    "template_project", "variant", "capacity", "electrical_design", "losses", "weather",
+    "template_project", "variant", "capacity", "electrical_design", "losses", "weather", "report_pages",
 ))
 EQUIPMENT_KEYS = frozenset(("file_name", "manufacturer", "model"))
 WEATHER_KEYS = frozenset((
@@ -305,6 +305,10 @@ def _validate_spec(spec) -> list[dict]:
         return issues
     for key in sorted(set(spec) - SPEC_KEYS):
         bad(str(key), "Unknown design-flow spec input")
+    try:
+        validate_report_pages(spec.get("report_pages"))
+    except ValueError as exc:
+        bad("report_pages", exc)
     if spec.get("scope", SCOPE) != SCOPE:
         bad("scope", "Only fixed_unshaded_grid is supported; a roof or free-standing scope would need "
                      "thermal and loss inputs this flow never infers")
@@ -930,7 +934,8 @@ def _design_flow(cli, store, spec, dry_run):
         cli, store, template_project=template_project, variant=variant, new_project=new_project,
         pan_name=pan_name, ond_name=ond_name, site_name=sit_name, met_name=met_name, tilt=tilt,
         year=year, dry_run=dry_run, capacity=flat_capacity, weather_manifest_name=manifest_name,
-        azimuth=azimuth, losses=losses or None))
+        azimuth=azimuth, losses=losses or None,
+        report_pages=spec.get("report_pages")))
     if stopped is not None:
         result["warnings"].append(RETAINED_NOTE)
         return stopped

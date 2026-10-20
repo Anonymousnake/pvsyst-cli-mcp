@@ -6,7 +6,7 @@
 
 单方案输入闭环由 `pvsyst_simulate_design` 提供：它按一份统一 spec 解析精确组件与合格模板、只接受声明式电气来源、规划整数容量、选择天气来源（既有 SIT/MET、暂存标准 CSV 或 Open-Meteo ERA5），再调用本页这套阶段。天气地名先经 `pvsyst_resolve_location` 取候选、由 AI 显式挑一个 `location_id`，年份天气由 `pvsyst_acquire_weather` 获取。输入规则、状态语义与待验收项见 [单方案输入闭环](single-design-inputs.md)。
 
-当前已发布 53 个 MCP 工具，仍按六类组织：站点与天气组 7 个（新增 `pvsyst_resolve_location`、`pvsyst_acquire_weather`），仿真组 4 个（新增 `pvsyst_simulate_design`），其余 50 个工具保持原有名称、参数与已验证记录。另有 2 个已接入但**待 SDK/原生验收**的入口（`pvsyst_review_weather`、`pvsyst_prepare_sourced_design`），目标计数 55；未验收前不当作可用能力。生产实现只使用标准库及既有后端，没有新增第三方依赖（Windows 解析 IANA 时区所需的 `tzdata` 已在 `requirements.txt` 中按平台声明，属于本机 Python 依赖，不是 PVsyst 原生能力变更）。已运行的 MCP 服务需重启读取新工具。
+本页早期记录对应当时的53工具快照，不作为当前发布计数；当前67工具总览及已验收状态见README。R52仅给既有入口追加原生报告页参数，不新增工具或第三方依赖。已运行的MCP服务需重启读取新schema；下方历史验收按各自版本/阶段保留，不把旧pending条目当作当前裁决。
 
 ## 输入与支持范围
 
@@ -22,6 +22,7 @@
 | dry_run | 严格布尔值，默认 true；显式 false 才创建副本并执行 |
 | capacity | 可选的显式设计包络与目标 DC 容量，有限整数规划/校核/分步配置；详见 [容量指南](capacity-sizing.md) |
 | weather_manifest_name | 可选；`pvsyst_prepare_weather` 生成的来源清单文件名，在写入前校验资产哈希、年份与 SIT/MET 名称，并启用显式原生加载与逐时天气对照 |
+| report_pages | 可选原生页名列表，如`["summary","losses"]`；省略/null保留默认完整报告，空列表或未知页名在写入前停止 |
 
 缺少输入时返回对应字段的 issues，不消耗仿真执行次数。日期、倾角和布尔参数不接受数字字符串或布尔值冒充数字。年份限制来自当前两位年份 SFI 时间戳解析契约，不是 PVsyst 原生绝对年份上限。
 
@@ -95,6 +96,22 @@ recovery 列表按逆序给出现有 pvsyst_restore_variant / pvsyst_restore_pro
 工作区进程内锁与摘要检查不排除外部编辑；任务清单和多阶段事务不是断电原子作业。如果进程被终止在编辑与清单写入之间，应从已保存阶段、后端备份及现存文件检查恢复，不宣称自动恢复任意中断点。不同原生工作区可用于并发；同一进程内单工作区作业串行。
 
 绑定已准备天气的全年仿真若触发 `failed`，项目编辑沿用同一条恢复路径：低辐照案例按逆序的 `pvsyst_restore_variant` 与 `pvsyst_restore_project_sources` 恢复后，工作 PRJ/VC 与模板复制字节相同、且不同于失败配置，失败清单、SFI 与已准备的天气文件保留。独立天气准备不编辑 PRJ/VC；其失败保留已创建的天气文件与阶段清单，而不是套用项目恢复工具。
+
+## 报告页公开通道：R52
+
+模板工具的`report_pages`和统一设计的`spec.report_pages`均已接入公开严格schema、早期预检、模板任务、原生`-rp:`调用及持久请求清单。复用CLI既有词表与单一校验函数，不自行切割/重排PDF或影响物理计算；原始`pvsyst_run_simulation`的逗号字符串接口保持。可用原生名称为：
+
+```text
+cover summary notes params horizon shadings usersneeds results econeval circuit losses financialbalance p50p90 carbonbalance predefgraphs
+```
+
+页名存在不代表该配置具有相应内容；比如概率页仍依赖原生结果状态。默认不传`-rp`，不替调用方推断“全选”；未知页、空列表及错误类型在发现/天气/副本写入前停止。合法选择进入模板返回的`request.report_pages`与任务manifest，统一设计的`preview.simulation`保持相同请求信息。
+
+新公共协议长期契约不依赖原生样本或可执行程序，验证两个公开入口、严格类型/词表及零目录写入。首轮确实发现设计公开Pydantic模型仍缺字段（尽管内部已接通），保留`native-migration-r52/public-schema-first-failure.json`后补齐模型；未降低验收目标。
+
+8.1.6原生三条完整路径使用已验收R93完整论文PAN/Generic9kW及既有2024 LegalTime SIT/MET，沿用显式实验包络，不猜新模型或天气：模板默认完整报告7页；模板summary+losses为2页；统一设计results为1页。均完成8784连续小时，三份CSV全部表头/时间轴/数值一致，年并网36930.3633kWh，原工程字节保持，manifest保留准确选择。输出由软件生成而不是事后裁PDF。
+
+证据为`native-migration-r52/native-report-selection.json`，原生报告与派生工程留在隔离bootstrap88工作区，输入不随仓库分发。独立只读审查及定向编译通过；无全量/旧smoke/哈希类测试，生产并发与资产保护照常保留。
 
 ## 本地验收记录
 
