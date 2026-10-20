@@ -185,7 +185,9 @@ def read_house_pv_scene(components, scene_name):
             else:
                 arguments.update(project=declared["project"], variant=declared["variant"])
             result.update(status="needs_context" if legacy else "ready", required_inputs=required,
-                          source=dict(declared, provenance="not-recorded" if legacy else "file-declared"),
+                          source=dict(declared, provenance="not-recorded" if legacy else "file-declared",
+                                      site=source["site"], tilt_deg=source["tilt_deg"],
+                                      collada_azimuth_deg=source["azimuth_deg"]),
                           geometry=counts, create_arguments=arguments)
         except (ValueError, OSError, UnicodeError, ET.ParseError, TypeError, KeyError, OverflowError) as exc:
             result["issues"].append(str(exc))
