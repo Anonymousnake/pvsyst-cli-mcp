@@ -23,7 +23,9 @@ PNOM_BITS = {"native": 0x00000000, "active": 0x00800000, "apparent": 0x00400000}
 LEGAL = frozenset((
     0x00000000, 0x00100000, 0x00300000, 0x00500000, 0x00900000, 0x04000000, 0x05000000,
     0x06000000, 0x06100000, 0x05100000, 0x07100000, 0x05300000, 0x07300000, 0x01100000,
-    0x03100000, 0x05900000, 0x07900000, 0x05500000, 0x07500000))
+    0x03100000, 0x05900000, 0x07900000, 0x05500000, 0x07500000,
+    # Recorded monthly PNom families: no grid limit, or active injection with separate loss.
+    0x00B00000, 0x00700000, 0x05B00000, 0x05700000))
 SCOPE = ("Owning native pvSystem only; combined PF and injection/grid-limit tags, "
          "no cosine, kVA or power calculation")
 
@@ -211,5 +213,9 @@ def replace_power_controls(lines, system, updates):
     for key in ORDER:
         if key in rendered:
             body.append(f"{indent}{key}={rendered[key]}{eol}")
-    lines[system[0] + 1:system[1]] = body
+    candidate = list(lines)
+    candidate[system[0] + 1:system[1]] = body
+    if power_controls_state(candidate, (system[0], system[0] + len(body) + 1)) != dict(mode="configured", **after):
+        raise ValueError("Candidate combined control state differs from the request")
+    lines[:] = candidate
     return {"before": before, "after": after, "scope": SCOPE}

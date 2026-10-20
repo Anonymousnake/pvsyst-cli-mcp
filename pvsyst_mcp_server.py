@@ -805,7 +805,7 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     loads/storage, temperature, auxiliary or grid-limit coupling. mode none removes
     PF fields; constant requires tan_phi, monthly requires twelve monthly_tan_phi
     in January-to-December order. Require explicit pnom_limit native/active/apparent;
-    none and monthly currently accept only native. Values are signed dimensionless
+    only none requires native; constant/monthly accept all three. Values are signed dimensionless
     native tangent values in adapter range [-1,1], 0.001 steps, not cosine values
     or manufacturer limits. GUI leading uses negative, lagging positive; native
     PVsyst alone computes power and derating. Legacy active/apparent select inverter
@@ -829,10 +829,13 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     positive limit in 0.1 native units (kW active, kVA apparent), separate_loss bool;
     none supplies neither. No conversion from tangent or independent power model.
     Only observed native flag families are accepted: monthly/Legacy with an enabled
-    limit require injection/separate loss; inverter point requires constant/native
-    PNom/separate loss; combined loss requires constant/native PNom/injection;
-    NoPF requires active injection/separate loss. No temperature, P50, storage/load
-    or geometry coupling. Inactive type/location bits are explicit, not silently reset.
+    limit require injection/separate loss. Monthly plus Legacy with an enabled limit
+    supports active quantity only. An enabled inverter-point limit requires
+    constant/native PNom/separate loss; combined loss requires constant/native
+    PNom/injection. Enabled NoPF requires active injection/separate loss.
+    Monthly PNom without a grid limit uses explicit active quantity/inverter point.
+    No temperature, P50, storage/load or geometry coupling. Inactive type/location
+    bits are explicit, not silently reset.
     The shared 8.1.6 PV-only single fixed/free-horizon/count gates remain in force.
     string_mismatch_updates is separate (variant_name may accompany it), for native
     8.1.6 PV-only single fixed-plane/free-horizon Grid subarrays: mode default clears
