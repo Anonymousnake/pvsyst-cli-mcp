@@ -7,7 +7,7 @@ import math
 import subprocess
 from pathlib import Path
 
-from pvsyst_cli import PVsystError, VAR_GROUPS, build_sfi
+from pvsyst_cli import PVsystError, VAR_GROUPS, build_sfi, validate_report_pages
 from pvsyst_components import electrical_inventory
 from pvsyst_sizing import plan_capacity
 from pvsyst_paths import project_path, variant_id, workspace_file
@@ -18,15 +18,18 @@ from pvsyst_results import annual_summary, fingerprint
 
 def simulate_template(cli, store, *, template_project="", variant="", new_project="",
                       pan_name="", ond_name="", site_name="", met_name="",
-                      tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None):
+                      tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
+                      report_pages=None):
     # ponytail: one workspace lock; separate workspaces for parallel native runs.
     with store.lock:
         return _simulate_template(cli, store, template_project, variant, new_project,
-                                  pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses)
+                                  pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses,
+                                  report_pages=report_pages)
 
 
 def _simulate_template(cli, store, template_project, variant, new_project,
-                       pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses):
+                       pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses,
+                       *, report_pages=None):
     request = dict(template_project=template_project, variant=variant, new_project=new_project,
                    pan_name=pan_name, ond_name=ond_name, site_name=site_name, met_name=met_name,
                    tilt=tilt, year=year)
@@ -52,6 +55,12 @@ def _simulate_template(cli, store, template_project, variant, new_project,
     for field, value in request.items():
         if value is None or value == "":
             issue(field, "Required input is missing")
+    if report_pages is not None:
+        request["report_pages"] = report_pages
+        try:
+            validate_report_pages(report_pages)
+        except ValueError as exc:
+            issue("report_pages", exc)
     if type(dry_run) is not bool:
         issue("dry_run", "Use a strict boolean")
     if year is not None and (type(year) is not int or not 1969 <= year <= 2068):
@@ -307,7 +316,8 @@ def _simulate_template(cli, store, template_project, variant, new_project,
                          if weather_report is not None else {})
         run = cli.run_simulation(new_project, variant, sfi=paths["sfi"], out_csv=paths["csv"],
                                  report_pdf=paths["pdf"], time_step="hour", start_date=f"{year}.01.01",
-                                 end_date=f"{year}.12.31", report_language="en", log_level=3, **native_inputs)
+                                 end_date=f"{year}.12.31", report_language="en", log_level=3,
+                                 report_pages=report_pages, **native_inputs)
         result["run"] = run
         result["warnings"].extend(run.get("warnings", []))
         stage("results")
