@@ -35,6 +35,7 @@ from pvsyst_peak_shaving import peak_shaving_state
 from pvsyst_shading_scene import shading_state
 from pvsyst_system_unavail import system_unavail_state
 from pvsyst_tracking import WRITABLE as TRACKING_FIELDS
+from pvsyst_shed_geometry import WRITABLE as SHED_FIELDS, TYPES as SHED_TYPES
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -370,6 +371,8 @@ class VariantStore:
                 values = fields((index, end), ("FieldType", "FieldTilt", "FieldAzim", "SummerTilt",
                                                "WinterTilt", "WinterMonths", "UsesTiltAver"))
                 values.update(fields((index, end), TRACKING_FIELDS.get(values.get("FieldType"), ())))
+                if values.get("FieldType") in SHED_TYPES:
+                    values.update(fields((index, end), SHED_FIELDS.values()))
                 orientations.append({"id": int(number), "values": values})
             main_array = self._main_array(lines)
             names = self._display_name_fields(lines)

@@ -80,8 +80,8 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 | 3.1.1、4.1 / 12、17–21 | 多固定平面复制、分配、删除：`clone_orientation`、`NoOrientation`、`remove_orientation` | 已有受限入口；8.1.6 GUI源的三个状态与MCP结果有48h逐点对照，不只支持单平面 | [固定平面生命周期](grid-capacity-verification.md#gui-saved-816-exclusive-fixed-plane-lifecycle)：独占MPPT/完整计数、无活动场景；不是按季切换 |
 | 3.1.2 / 12 | 季节性倾角切换：seasonal_updates及原生季节字段检查 | [MCP受限写入已验收](seasonal-orientation.md)：固定切换/月mask完整文件同GUI、8760h/14列一致、23负例和恢复通过 | 单平面/子阵/自由地平线/普通Grid；移除零BaseSlope，保留方位及分配；FieldTilt=0非全年水平，回固定用恢复 |
 | 3.1.3 / 13 | Domes：Dome/DomeBackfaces配对与同子阵分配 | [pvsyst_create_dome_allocation_variant受限MCP已验收](native-dome-allocation.md)：原生第二朝向开关、39/1与20/20保存重载，6正向/51负例，三种分配均有8760h/16列/PDF正例 | 一个40串子阵/440kWp/6逆变器未增硬件，NoOrientation2=2且不写NStrOrient2；仅既有有效配对10±90模板重分配，保留原未分配失败及一次退出未定的原生失败，不等于3D或首次构造API |
-| 3.1.4 / 13 | Unlimited sheds：Sheds | [GUI保存及2022年8760h/16列/PDF已证](native-orientation-controls.md)；尚无专用配置 | 本次默认几何消费不证明任意棚架、自遮挡或电气分组编辑 |
-| 3.1.5 / 14 | Unlimited sun-shields：SunShields | [GUI保存及2022年8760h/16列/PDF已证](native-orientation-controls.md)；尚无专用配置 | 与普通固定平面、3D遮阳板区分；任意几何/活动阴影仍待 |
+| 3.1.4 / 13 | Unlimited sheds：Sheds | [R54公共新VC/回读/再编辑及48h消费](native-shed-controls.md)，Pitch/Tilt/NSheds/Width/Electrical均有变化；保留R31全年基线 | 完整8.1.6源门禁、角0.1/长0.001不舍入，不推导电气分组、不转换3D |
+| 3.1.5 / 14 | Unlimited sun-shields：SunShields | [R54同入口与48h消费](native-shed-controls.md)，Pitch/Tilt有变化，Electrical并网值此段相同；保留R31全年 | 如实保留相同结果，不等于开关普遍无效；任意组合/GUI边界仍未测 |
 | 3.2.1 / 14 | 无限水平轴：UnlimTracking | [R38原生全年与R53受限配置](native-tracking-controls.md)；原五控制保持，R53电气True在新公共配置48h消费并导出ShdElec | 仅原有二维字段，不转换类型/固定几何，不含Module Layout/独立3D，不自行算跟踪角 |
 | 3.2.2 / 15 | 水平N-S/倾斜轴：TrackHorizNSAxis/TrackTiltedAxis | [R53共同MCP入口与公共回读](native-tracking-controls.md)，新轴方位/轴倾角各48h有变化，原R31全年保留 | 只编辑源所属字段；风收拢触发阈值、任意场景/布局与GUI边界未测 |
 | 3.2.3 / 15 | 竖直轴：TrackVertAxis | [R53受限MCP/部分修改/回读](native-tracking-controls.md)，FieldTilt25新配置48h有变化 | 不外推任意方位界限、几何和3D映射 |
