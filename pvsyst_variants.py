@@ -380,7 +380,7 @@ class VariantStore:
             return {"project": project, "variant": variant.upper(),
                     "variant_name": FIELD.fullmatch(lines[names[0]].rstrip("\r\n"))[2] if len(names) == 1 else None,
                     "utf8_bom": data.startswith(b"\xef\xbb\xbf"),
-                    "main_array": {"values": fields(main_array, ("UFactor", "Flags", "Flags2")) if main_array is not None else {},
+                    "main_array": {"values": fields(main_array, ("UFactor", "Flags", "Flags2", "MVNbTransfos", "VOutTransfo")) if main_array is not None else {},
                                    "soiling": soiling_state(lines, main_array) if main_array is not None else None},
                     "sha256": hashlib.sha256(data).hexdigest(), "orientations": orientations,
                     "system_parameters": fields(system, ("SystemType", "Flags", "TempShift", "TempFixed",

@@ -267,8 +267,8 @@ def orient_block(lines):
     return block
 
 
-def _require_scope(store, lines, arrays, system):
-    """Verified native 8.1.6 PV-only single-subarray Grid variant around one tracking record."""
+def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), system_flags=("$06000000",)):
+    """Verified native 8.1.6 PV-only single-subarray Grid scope; callers own flag-family validation."""
     root = _root_block(lines)
     if root.one("Version")[1] != "8.1.6":
         raise ValueError("Requires a native 8.1.6 variant")
@@ -280,14 +280,14 @@ def _require_scope(store, lines, arrays, system):
     system_root = _block_of(lines, system)
     if set(system_root.fields) != {"Flags", "SystemType"}:
         raise ValueError("pvSystem must declare only Flags and SystemType for this batch")
-    if system_root.one("SystemType")[1] != "Grid" or system_root.one("Flags")[1] != "$06000000":
-        raise ValueError("Requires SystemType=Grid with Flags=$06000000")
+    if system_root.one("SystemType")[1] != "Grid" or system_root.one("Flags")[1] not in system_flags:
+        raise ValueError("Requires SystemType=Grid with the caller's verified system flag family")
     main = store._main_array(lines)
     if main is None:
         raise ValueError("A pvMainArray section is required")
     main_root = _block_of(lines, main)
-    if main_root.one("Flags")[1] != "$01900400" or main_root.one("Flags2")[1] != "$082A":
-        raise ValueError("Main array requires the verified Flags=$01900400 and Flags2=$082A")
+    if main_root.one("Flags")[1] not in main_flags or main_root.one("Flags2")[1] != "$082A":
+        raise ValueError("Main array requires the caller's verified flag family and Flags2=$082A")
     sub_root = _block_of(lines, next(iter(arrays.values())))
     if sub_root.one("Version")[1] != "8.1.6" or sub_root.one("Flags")[1] != "$019E1002":
         raise ValueError("Subarray requires the verified 8.1.6 declaration and 019E1002 flags")

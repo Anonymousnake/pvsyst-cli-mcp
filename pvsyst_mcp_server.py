@@ -70,7 +70,7 @@ TOOL_GROUPS = {
         "pvsyst_remove_subarray", "pvsyst_restore_variant", "pvsyst_create_tracking_variant",
         "pvsyst_create_dome_allocation_variant", "pvsyst_create_house_pv_scene",
         "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
-        "pvsyst_create_shed_geometry_variant",
+        "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
@@ -105,7 +105,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
                           "pvsyst_create_tracking_variant",
-                           "pvsyst_create_shed_geometry_variant",
+                           "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant",
                           "pvsyst_create_dome_allocation_variant", "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
                           "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
@@ -1297,6 +1297,30 @@ def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr
                                    new_variant=new_variant, tracking=tracking.model_dump(exclude_none=True),
                                    dry_run=dry_run, variant_name=variant_name,
                                    add_utf8_bom=add_utf8_bom)
+
+
+@categorized_tool()
+def pvsyst_create_mv_night_disconnect_variant(project: StrictStr, source_variant: StrictStr,
+                                              new_variant: StrictStr, night_disconnect: StrictBool,
+                                              dry_run: StrictBool = True,
+                                              variant_name: StrictStr | None = None,
+                                              add_utf8_bom: StrictBool = False) -> dict:
+    """Preview or exclusively create a NEW VC changing a recorded MV night switch.
+    Source and candidate both require native8.1.6 PV-only single fixed plane/subarray,
+    valid circuit counts and the recorded single-MV20kV profile. Native field ownership,
+    MVNbTransfos=1 and NightDisconnect/main-array bit29 consistency are checked first.
+    Only that bool and dependent bit change (plus optional name/BOM). Reference power,
+    iron/copper losses, AC/DC cables and all unrelated inputs remain inherited; no
+    transformer formula or loss conversion. HV/multiple transformers, custom loss tables,
+    loads/storage/P50/horizon/active geometry and unknown flag families are blocked.
+    Configuration never claims native consumption; verify separate native outputs.
+    Preview writes nothing; execution retains source/snapshot/no-overwrite protections."""
+    from pvsyst_mv_night import create_mv_night_variant
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_mv_night_variant(store, project=project, source_variant=source_variant,
+        new_variant=new_variant, night_disconnect=night_disconnect, dry_run=dry_run,
+        variant_name=variant_name, add_utf8_bom=add_utf8_bom)
 
 
 class ShedGeometryUpdates(BaseModel):
