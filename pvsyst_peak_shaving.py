@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from pvsyst_component_editor import objects, replace_value, require_flat
 from pvsyst_generator import direct_fields
 from pvsyst_grid import inventory as grid_inventory
+from pvsyst_grid_storage import storage_state, validate_storage
 
 BOM = b"\xef\xbb\xbf"
 # Parser view only: the saved bytes keep the original orientation closing tag.
@@ -23,11 +24,8 @@ SYSTEM_NUMBER = {"PLimGrid": Decimal("200"), "SOHBattBeg": Decimal("1"),
                  "TempBattRef": Decimal("20")}
 SYSTEM_MONTHS = "TempBattMois"
 STORAGE_TEXT = {"Flags": "$00", "Strategy": "PeakShaving", "ChargingStrategy": "PVToGridMin"}
-STORAGE_NUMBER = {"BattSoCInit": Decimal("0.6"), "SOCChDecl": Decimal("0.95"),
-                  "SOCDischDecl": Decimal("0.2"), "SOCDischSelf": Decimal("0.5"),
-                  "PMaxCharge": Decimal("200"), "PMaxDisch": Decimal("200"),
-                  "BattRectMaxEffic": Decimal("98"), "BattRectEuroEffic": Decimal("96.5"),
-                  "BattInvMaxEffic": Decimal("98"), "BattInvEuroEffic": Decimal("96.5")}
+STORAGE_NUMBER = ("BattSoCInit", "SOCChDecl", "SOCDischDecl", "SOCDischSelf", "PMaxCharge", "PMaxDisch",
+                  "BattRectMaxEffic", "BattRectEuroEffic", "BattInvMaxEffic", "BattInvEuroEffic")
 WINDOW = "MinMaxHour"
 
 
@@ -138,9 +136,11 @@ def peak_block(lines):
     for name in STORAGE_TEXT:
         if block.one(name)[1] != STORAGE_TEXT[name]:
             raise ValueError(f"{name} must stay at its verified native value")
-    for name, expected_value in STORAGE_NUMBER.items():
-        if _decimal(block.one(name)[1], name) != expected_value:
-            raise ValueError(f"{name} must stay at its verified native value")
+    systems = [record for record in blocks if record.object_type == "pvSystem"]
+    if len(systems) != 1 or not systems[0].end_line:
+        raise ValueError("Requires one complete owning storage system")
+    state, _, _ = storage_state(lines, (systems[0].line - 1, systems[0].end_line - 1))
+    validate_storage(state, preserved=state)
     return block
 
 
