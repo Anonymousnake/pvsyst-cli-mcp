@@ -70,6 +70,7 @@ TOOL_GROUPS = {
         "pvsyst_remove_subarray", "pvsyst_restore_variant", "pvsyst_create_tracking_variant",
         "pvsyst_create_dome_allocation_variant", "pvsyst_create_house_pv_scene",
         "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
+        "pvsyst_create_shed_geometry_variant",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
@@ -104,6 +105,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
                           "pvsyst_create_tracking_variant",
+                           "pvsyst_create_shed_geometry_variant",
                           "pvsyst_create_dome_allocation_variant", "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
                           "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
@@ -1295,6 +1297,51 @@ def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr
                                    new_variant=new_variant, tracking=tracking.model_dump(exclude_none=True),
                                    dry_run=dry_run, variant_name=variant_name,
                                    add_utf8_bom=add_utf8_bom)
+
+
+class ShedGeometryUpdates(BaseModel):
+    """Explicit native Sheds/SunShields inputs; omitted values stay inherited."""
+    model_config = ConfigDict(extra="forbid")
+    field_tilt_deg: StrictNum | None = None
+    field_azimuth_deg: StrictNum | None = None
+    pitch_m: StrictNum | None = None
+    collector_width_m: StrictNum | None = None
+    inactive_band_width_1_m: StrictNum | None = None
+    inactive_band_width_2_m: StrictNum | None = None
+    shed_count: StrictInt | None = None
+    module_columns: StrictInt | None = None
+    cell_width_m: StrictNum | None = None
+    shading_factor: StrictNum | None = None
+    electrical_effect: StrictBool | None = None
+
+
+@categorized_tool()
+def pvsyst_create_shed_geometry_variant(project: StrictStr, source_variant: StrictStr,
+                                        new_variant: StrictStr, geometry: ShedGeometryUpdates,
+                                        dry_run: StrictBool = True,
+                                        variant_name: StrictStr | None = None,
+                                        add_utf8_bom: StrictBool = False) -> dict:
+    """Preview or exclusively create a NEW native Sheds/SunShields variant.
+    Use an existing recorded type with one orientation/subarray and complete grid counts,
+    native8.1.6 root/system/main/subarray flags, no load/storage/P50/horizon or active
+    geometry/layout. Shared tracking-template scope gates apply; no type conversion.
+    Declare one or more type-owned geometry fields. Angles use0.1 degrees (tilt0..90,
+    azimuth-180..180); lengths/factor use0.001. Pitch/collector/cell width must be positive,
+    inactive bands nonnegative and their sum below collector width, factor0..1;
+    counts strict positive32-bit and booleans strict. These are adapter domains, not
+    measured GUI or manufacturer limits. Source and candidate share exact validation,
+    with no rounding of unsupported precision or invention of unknown native fields.
+    Preserve all unrequested data, hardware, topology and source bytes; getter exposes
+    stored fields for create/read/create closure. Native alone computes shading and
+    electrical grouping. Saving never sets native_consumption_verified to true.
+    Preview creates nothing. Optional name/BOM rules and snapshot/no-overwrite guards
+    are inherited; failures disclose partial artifacts without automatic cleanup."""
+    from pvsyst_shed_geometry import create_shed_variant
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_shed_variant(store, project=project, source_variant=source_variant,
+        new_variant=new_variant, geometry=geometry.model_dump(exclude_none=True),
+        dry_run=dry_run, variant_name=variant_name, add_utf8_bom=add_utf8_bom)
 
 
 @categorized_tool()

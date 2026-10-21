@@ -55,7 +55,7 @@ Restart the client after editing its MCP configuration. The server requires Pyth
 
 ## MCP tools by workflow
 
-The server exposes 67 tools across seven groups. Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
+The server exposes 68 tools across seven groups. Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
 
 First CLI initialization is serialized inside the MCP process, so concurrent initial requests share one client and the same workspace `RLock` used by CLI, component and variant operations. This is process-local coordination, not an OS/cross-process lock; SHA checks remain optimistic and external editors still require coordination. See [concurrent initialization verification](docs/grid-capacity-verification.md#single-client-concurrent-initialization).
 
@@ -70,7 +70,7 @@ Expected input, missing/existing-file and adapter `PVsystError` exceptions retai
 | `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | Confirmed license changes |
 | `pvsyst_export_logs` | Diagnostic ZIP under Results |
 
-### Projects & Variants (25)
+### Projects & Variants (26)
 
 The original core project/variant block passed a fresh-stdio integrated acceptance exercising its 20 tools, six native CLI 8.1.6 runs and exact full-project recovery. Tracking creation and Dome allocation have separate verification below. See the [delivery checklist, integrated evidence and explicit boundaries](docs/project-variant-acceptance.md). This is not a claim of complete GUI/model or arbitrary-topology parity; those extensions remain in the broader roadmap. Restart an already running MCP server to load the current code/schema.
 
@@ -83,6 +83,7 @@ The original core project/variant block passed a fresh-stdio integrated acceptan
 | `pvsyst_get_variant_components`, `pvsyst_update_variant_components` | Inspect and replace scoped PAN/OND/BTR/GEN references |
 | `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Inspect, preview and edit bounded variant parameters; read native transformer layers, PV outage periods, peak-shaving/scene declarations, ageing templates and IAM tables without widening their writers. See [stored native state](docs/native-state-inspection.md) |
 | `pvsyst_create_tracking_variant` | Preview or create a NEW VC from one of nine verified native tracking record types; partial type-owned controls, public read/edit closure, exact precision and ordered source/candidate bounds. Preserve source and unrequested geometry; no replacement tracking/shading model |
+| `pvsyst_create_shed_geometry_variant` | Create/read/revise an existing native Sheds or SunShields template with exact stored precision and full shared model gates; no type conversion or replacement shading model. See [native shed controls](docs/native-shed-controls.md) |
 | `pvsyst_create_dome_allocation_variant` | Preview or create a NEW VC that rebalances an already-allocated native two-face Dome template; preserve hardware, paired geometry and the native mixed-orientation model |
 | `pvsyst_create_house_pv_scene` | Create an AI-authored house with one or several named PV regions in one PVCollada call; locate invalid parts/triangles for correction, preserve source module totals and retain legacy calls |
 | `pvsyst_read_house_pv_scene` | Recover complete house/PV create arguments from supported scene XML, stop rather than drop unknown content, and expose missing context in older AI scenes for explicit revision into a new file |
