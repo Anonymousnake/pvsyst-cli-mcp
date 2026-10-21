@@ -32,7 +32,7 @@
 
 - 根 Flags=$00080000 且无 pvLoad。这是软件切换削峰后实际保存并被消费的状态；保留它，不套用 PV-only 负荷一致性规则去清位或补造负荷。
 - pvSystem 为 Grid、Flags=$17000040、BatteryFile=Universal_Adjustable_LI.BTR；PLimGrid=200、LimGrSeparLoss=False；SOHBattBeg=1、BattVoltage_Syst=768、BattCapacity_Syst=1000；TypeTempBatt=1、TempBattRef=20、TempBattMois 为十二个 20；NBattSerie=15、NBattParall=10。完整 13 项 owning 字段各自唯一，不忽略未知字段或嵌套行。
-- pvGridStorage 的 Flags=$00、Strategy=PeakShaving、ChargingStrategy=PVToGridMin；BattSoCInit/SOCChDecl/SOCDischDecl/SOCDischSelf 为 0.6/0.95/0.2/0.5；PMaxCharge/PMaxDisch=200；两套 Max/Euro 效率均为 98/96.5。AfterSunset 恰 14 个字段，MinMaxHour 恰 16 个字段。
+- pvGridStorage 的 Flags=$00、Strategy=PeakShaving、ChargingStrategy=PVToGridMin；原R39样本SOC为0.6/0.95/0.2/0.5、PMaxCharge/PMaxDisch200、两套Max/Euro98/96.5。R55不再把这些标量常数作为不可修改的前提，改为复用已验收储能SOC/功率/效率语义，使有效标量编辑后仍可改时序；硬件、系统标志及PLim200等其它条件保持。AfterSunset仍恰14字段、MinMaxHour恰16字段，详见[跨入口闭环](grid-storage-parameters.md#r55-原策略标量闭环)。
 - 单子阵、朝向 1 的普通固定平面，无平均开关；主阵 Flags=$01900400/Flags2=$082A；子阵 Version=8.1.6、Flags=$019E1002、Flags2=$20。NStrOrient1=NStringCh、其它分配为零，并通过原生电路计数检查。
 - 无负荷、P50/P90、保存的地平线、显式 3D 场景或 Module Layout；不扩展到其它削峰时序、Power shifting、WeakGrid、网充或混合 DC 端口。
 

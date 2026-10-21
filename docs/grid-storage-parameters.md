@@ -41,7 +41,7 @@ J2/J4 分别经真实公开 MCP 编辑已有储能、从纯 PV 创建 WeakGrid�
 逐点等于 J1；J3 经公开接口恢复回送后，各数值列逐点等于原 G1，恢复 73.6155 kWh 上网。
 两入口预览均零写入；源 PV/储能方案、可用性输入保留。该功能没有新增储能调度后端。
 
-默认保留 `SelfConsumption/PVAvailable/Immediate`；配置 `strategy=self_consumption` 同步这三项。
+未显式传strategy时保留源策略；R55增加已证`PeakShaving/PVToGridMin`的`MinMaxHour`/`AfterSunset`两态标量编辑。配置`strategy=self_consumption`仍同步原三元组`SelfConsumption/PVAvailable/Immediate`，显式策略变更不享受源策略豁免。
 已有系统编辑支持 `weak_grid`，但必须显式绑定下文完整 availability；
 不把单一枚举值当成完整可运行策略。
 
@@ -252,3 +252,34 @@ F1 日志级别错误拦在 CLI 适配器，F2 空对象/F3 周期候选仍缺�
 效率字段采用官方落盘单位编辑，源电池电化学模型和转换曲线仍由原生处理；
 当前一组原生结果不认证所有温度/倍率/BTR、硬件/BMS、GUI 回存或其他 CLI 版本。
 原生文件与逆向脚本留在独立本机 case，不进入仓库。
+
+## R55 原策略标量闭环
+
+选择性复用批准参考51148b9的“保留源已证策略组合”思路，不复制其内部函数测试，也不采信“所有真实模板都是Peak”的跨工作区推论。SelfConsumption及有完整availability的WeakGrid原路径保留。只有不声明strategy且候选与实际源before的三元组相同，才可保留上述两种Peak组合；调用方没有策略豁免标记入口。SOC区间/初始/备用值与两套Euro≤Max关系始终先于豁免检查，坏源先停止，即使本次更新能把它修到合法也不掩盖。
+
+源储能对象必须唯一完整并直接属于root的PVObject_GridStorage，不以全局行号误认其它owner。数值先Decimal解析，非有限及转float下溢的非零源值停止；保留原浮点字段序列化，不把Shed角度/长度精度硬套到SOC。原生MinMaxHour端点须0..23严格整数且不同。最终候选从实际编码bytes重解析、重验并与after状态等值，再执行原snapshot/独占新VC流程。WeakGrid仍须本次完整availability，与原负荷年份/时基一致；不豁免新策略或构造接口。
+
+公共`pvsyst_get_variant_parameters.grid_storage`返回已存储的电池/策略/10标量/有效小时字段，`mode=stored`不表示已仿真；无对象为null，坏或未支持的声明为unsupported+issues。声明行空格与解析器一致，不将合法空格写成对象不存在。
+
+还修正一个真实跨入口断链：原Peak时序创建器要求SOC/功率/效率等于模板常数，导致标量修改后失去后续时序编辑能力。它现在复用同一storage_state/validate_storage；仍精确校验Peak字段集合、策略文本、硬件/BTR/Systemflags/PLim200/温度及root/子阵/几何/负荷/电路数量门禁，时序入口本身仍只写放电模式和小时字段，不写SOC等标量。
+
+长期公共协议契约先复制真实PEAK_CONFIG.VCM/VCL到系统临时目录、用非可执行CLI占位，覆盖预览、标量→回读→标量→Peak时序→标量→回读以及坏源tuple/SOC/下溢/小时、坏候选SOC/效率、合法空格和源字节保持。额外3次合成协议夹具从明确的原生Peak与常数负荷记录拼接，验证带pvLoad形状解析、自消费标量可编辑、Weak缺availability停止、显式Weak→Self原转换保留；这3次不是Self/Weak的新物理消费证据。
+
+8.1.6原生8组2022-01-01..02，每组48连续有限小时、26数值列、8页PDF且无警告，已声明标量与原策略均公共回读，不宣称穷举全部10项或所有组合；所有源与新配置输入字节保持。本批实际48h结果如下，不外推全年：
+
+| 组合（其余保持源值） | E_Grid kWh | 首SOC | 最低/最高SOC | 最大充电AC kW | 最大放电AC kW |
+|---|---:|---:|---:|---:|---:|
+| 原window，初始0.6 | 4656.208 | 0.6 | 0.2752/0.95 | 137.8835 | 199.998 |
+| 初始0.5 | 4576.570 | 0.5 | 0.2751/0.95 | 137.8835 | 199.998 |
+| 高SOC0.8 | 4472.485 | 0.6 | 0.2752/0.8 | 137.8835 | 199.998 |
+| 硬低SOC0.4 | 4240.220 | 0.6 | 0.4750/0.95 | 136.7508 | 199.998 |
+| 充电AC100 | 4496.317 | 0.6 | 0.2752/0.8517 | 100.0000 | 199.998 |
+| 放电AC100 | 4533.315 | 0.6 | 0.2623/0.9419 | 137.8835 | 100.004 |
+| 两套Max/Euro97/95% | 4627.883 | 0.6 | 0.2755/0.9455 | 137.8842 | 199.9966 |
+| AfterSunset初始0.5 | 4580.726 | 0.5 | 0.2533/0.9330 | 137.8835 | 199.998 |
+
+功率通过原生`EBatCh+CL_Chrg`和`EBatDis-CL_InvB`复核AC端，不误用电池DC侧。100.004kW为导出两列相减结果，保留0.004kW残差，符合本批0.02kW导出复核容差，不外部裁剪。SOC0.4配置实际最低0.475，并网变化与边界检查均通过，不宣称任意时段必触及下限。效率组合同时改四值，不把输出差归因单条曲线。
+
+八组逐项确认功率列kW、SOC ratio，并以无负荷/无网取电的原生导出量复核`E_Avail+EBatDis=E_Grid+EBatCh+CL_Chrg+CL_InvB+CL_Over+EUnused`，最大绝对残差0.0073kW；这是输出一致性检查，不是替代能量模型。另跑第9次原生48h：先标量改初SOC0.5，再用时序入口改AfterSunset，全部表头、时间轴及26数值列精确等于“原AfterSunset源再改初SOC0.5”的独立路径，输入不被运行改写。
+
+证据为本机`native-migration-r55/native-storage-48h.json`、`native-output-review.json`、`native-cross-entry.json`及`public-legacy-storage-compat.json`。原生数据、BTR、气象不随仓库分发。独立静态复审通过，首轮对null契约的误读已撤回；续审因运行时旧agent地址失效而新建，实际provider/model未回显，单独记录，不伪称指定路线。长期公共契约/定向编译通过，不运行全量发现、旧smoke或哈希探针；策略触发的任意年/温度/电池曲线、网充或混合DC端口未由本批升级。

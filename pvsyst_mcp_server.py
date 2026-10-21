@@ -1607,10 +1607,10 @@ def pvsyst_create_peak_shaving_variant(project: StrictStr, source_variant: Stric
     Supported subset is the already-active native 8.1.6 PeakShaving profile: root
     Flags=$00080000 with no pvLoad, pvSystem Flags=$17000040/Grid plus the pinned battery
     hardware and temperature profile, and one directly owned pvGridStorage record holding
-    Strategy=PeakShaving, ChargingStrategy=PVToGridMin, the four SOC values 0.6/0.95/0.2/0.5,
-    PMaxCharge/PMaxDisch=200 and the four efficiencies 98/96.5. Those pinned numbers belong
-    to the verified native sample only: they are not engineering limits, and no hardware
-    selection, pack sizing or dispatch model is offered.
+    Strategy=PeakShaving and ChargingStrategy=PVToGridMin. Stored SOC, AC power limits and
+    efficiencies use the shared storage semantic validator, so valid scalar edits remain
+    editable here instead of requiring the original sample's numeric constants. Pinned
+    hardware/system limits remain unchanged; no sizing or dispatch model is offered.
     mode is the explicit discriminator: after_sunset writes DischStrategy=AfterSunset and
     drops HourBegDisch/HourEndDisch; hour_window writes DischStrategy=MinMaxHour and exactly
     two bare-integer hour endpoints that differ. Hour values are adapter-bounded to 0..23
@@ -1745,8 +1745,11 @@ def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: Stric
     SOC fields are fractions 0..1; require min < max, initial and reserve inside
     those bounds. PMaxCharge limits the charger's AC input in kW, PMaxDisch the
     battery inverter's AC output; neither is a hybrid DC-port rating. Explicit
-    max/Euro efficiencies are percent, with Euro <= max. SelfConsumption or
-    WeakGrid with PVAvailable/Immediate are supported. WeakGrid requires a fresh
+    max/Euro efficiencies are percent, with Euro <= max. Scalar-only edits also retain
+    the source PeakShaving/PVToGridMin pair with MinMaxHour or AfterSunset unchanged;
+    source and candidate both validate SOC/efficiency/window semantics. Explicit strategy
+    still uses SelfConsumption or WeakGrid with PVAvailable/Immediate. Public getter
+    exposes grid_storage for read/re-edit; absent storage is null. WeakGrid requires a fresh
     availability declaration: full-year UserData Date;Grid Available / ;ratio CSV,
     ISO interval-start hours, exact 0/1 values, fixed standard offset and at least
     one outage. Bind native pvUnavail/HourlyVal GrdUnav Factor/Aver day snapshots,
