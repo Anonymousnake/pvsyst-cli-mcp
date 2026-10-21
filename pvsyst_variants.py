@@ -36,6 +36,7 @@ from pvsyst_shading_scene import shading_state
 from pvsyst_system_unavail import system_unavail_state
 from pvsyst_tracking import WRITABLE as TRACKING_FIELDS
 from pvsyst_shed_geometry import WRITABLE as SHED_FIELDS, TYPES as SHED_TYPES
+from pvsyst_grid_storage import grid_storage_state
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -396,6 +397,7 @@ class VariantStore:
                      "transformers": transformer_state(lines),
                      "system_unavailability": system_unavail_state(lines, system),
                      "peak_shaving": peak_shaving_state(lines),
+                      "grid_storage": grid_storage_state(lines, system),
                      "shading_scene": shading_state(lines),
                     "subarrays": [{"id": identifier, "values": fields(bounds, (
                         "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT", "NoOrientation",
