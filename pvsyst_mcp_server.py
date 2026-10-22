@@ -70,7 +70,7 @@ TOOL_GROUPS = {
         "pvsyst_remove_subarray", "pvsyst_restore_variant", "pvsyst_create_tracking_variant",
         "pvsyst_create_dome_allocation_variant", "pvsyst_create_house_pv_scene",
         "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
-        "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant",
+        "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
@@ -105,7 +105,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
                           "pvsyst_create_tracking_variant",
-                           "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant",
+                           "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant",
                           "pvsyst_create_dome_allocation_variant", "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
                           "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
@@ -1297,6 +1297,41 @@ def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr
                                    new_variant=new_variant, tracking=tracking.model_dump(exclude_none=True),
                                    dry_run=dry_run, variant_name=variant_name,
                                    add_utf8_bom=add_utf8_bom)
+
+
+class ACCablingUpdates(BaseModel):
+    """Explicit native cable geometry; omitted conductor/section inherit active source."""
+    model_config = ConfigDict(extra="forbid")
+    length_m: StrictNum
+    metal: Literal["Copper", "Aluminium"] | None = None
+    section: Literal["ISO60228_10", "ISO60228_16", "ISO60228_25", "ISO60228_35", "ISO60228_50",
+                     "ISO60228_70", "ISO60228_95", "ISO60228_120"] | None = None
+
+
+@categorized_tool()
+def pvsyst_create_ac_cabling_variant(project: StrictStr, source_variant: StrictStr,
+                                     new_variant: StrictStr, ac: ACCablingUpdates,
+                                     dry_run: StrictBool = True, variant_name: StrictStr | None = None,
+                                     add_utf8_bom: StrictBool = False) -> dict:
+    """Preview or create a NEW VC with native uniform per-inverter AC cables.
+    Only recorded8.1.6 PV-only single fixed plane/subarray, complete counts and native
+    main/circuit/system flag families; no MV/HV/load/storage/P50/horizon/active geometry.
+    Source and actual candidate validate all coupled main, subarray and inverter cable
+    owners. Custom resistance, mixed/partial/inconsistent source cables are blocked.
+    length_m is positive, <=100000 and exactly0.1m representable, not rounded; adapter
+    bounds are not measured GUI or engineering limits. Active sources inherit omitted
+    metal/section; inactive sources use the recorded Copper/ISO60228_10 template values.
+    PVsyst computes electrical quantities from native CableType. StringNode DC cables,
+    hardware and every unrequested record remain unchanged; no resistance/loss formula.
+    Getter ac_cabling exposes stored state, represented groups and physical inverter
+    count for read/re-edit. Preview writes nothing; execution exclusively creates one
+    new VC with existing snapshot/path/name/BOM guards. Saving is not native consumption."""
+    from pvsyst_ac_cabling import create_ac_cabling_variant
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_ac_cabling_variant(store, project=project, source_variant=source_variant,
+        new_variant=new_variant, ac=ac.model_dump(exclude_none=True), dry_run=dry_run,
+        variant_name=variant_name, add_utf8_bom=add_utf8_bom)
 
 
 @categorized_tool()
