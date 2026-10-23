@@ -70,7 +70,7 @@ TOOL_GROUPS = {
         "pvsyst_remove_subarray", "pvsyst_restore_variant", "pvsyst_create_tracking_variant",
         "pvsyst_create_dome_allocation_variant", "pvsyst_create_house_pv_scene",
         "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
-        "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant",
+        "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant", "pvsyst_create_native_dc_cabling_variant",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
@@ -105,7 +105,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
                           "pvsyst_create_tracking_variant",
-                           "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant",
+                           "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant", "pvsyst_create_native_dc_cabling_variant",
                           "pvsyst_create_dome_allocation_variant", "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
                           "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
@@ -1332,6 +1332,38 @@ def pvsyst_create_ac_cabling_variant(project: StrictStr, source_variant: StrictS
     return create_ac_cabling_variant(store, project=project, source_variant=source_variant,
         new_variant=new_variant, ac=ac.model_dump(exclude_none=True), dry_run=dry_run,
         variant_name=variant_name, add_utf8_bom=add_utf8_bom)
+
+
+class NativeDCUpdates(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["resistance", "percent"]
+    value: StrictNum
+
+
+@categorized_tool()
+def pvsyst_create_native_dc_cabling_variant(project: StrictStr, source_variant: StrictStr,
+                                            dc: NativeDCUpdates, variant_name: StrictStr,
+                                            dry_run: StrictBool = True, confirm: StrictBool = False) -> dict:
+    """Set native DC resistance(mOhm) or STC loss(%) through the ALREADY OPEN GUI.
+    Chinese PVsyst8.1.6rev49278/DPI96 and recorded window metrics only; one ordinary
+    fixed-plane/subarray PV-only Grid, complete counts, no AC/MV/HV/load/storage/
+    geometry/horizon/P50. Both native DC mode flag families are explicit source gates;
+    all other editors retain their existing domains. value is finite, nonnegative,
+    exact0.01 precision, <=20 characters; percent<=100. These are adapter constraints,
+    not manufacturer limits. PVsyst computes the coupled subarray and StringNode values.
+    dry_run only reads source/GUI state and does NOT activate/select/type/click. Actual
+    input requires dry_run=false AND confirm=true; leave the desktop alone. The operator
+    must have the matching project open and DataPath equal to the MCP workspace. No
+    application start/exit, INI edit, clipboard, external DC formula or private VC patch.
+    Native SaveAs chooses the new VC id; variant_name is its display title. Saved candidate
+    owners/precision and all non-DC physical records are verified, sources preserved;
+    BOM/display comments may normalize. Failure can leave a new file/current modal for
+    inspection, and its path is disclosed. Saving is NOT simulation consumption proof."""
+    from pvsyst_dc_native import create_native_dc_cabling_variant
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return create_native_dc_cabling_variant(store, cli(), project=project, source_variant=source_variant,
+        dc=dc.model_dump(), variant_name=variant_name, dry_run=dry_run, confirm=confirm)
 
 
 @categorized_tool()
