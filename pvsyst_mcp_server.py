@@ -60,7 +60,7 @@ TOOL_GROUPS = {
         "pvsyst_license_deactivate", "pvsyst_license_sync", "pvsyst_export_logs",
     ),
     "Projects & Variants": (
-        "pvsyst_list_projects", "pvsyst_list_variants", "pvsyst_inspect_project", "pvsyst_prepare_design_project",
+        "pvsyst_list_projects", "pvsyst_list_variants", "pvsyst_inspect_project", "pvsyst_prepare_design_project", "pvsyst_review_project_inputs",
         "pvsyst_create_project", "pvsyst_clone_project", "pvsyst_update_project_parameters", "pvsyst_update_project_sources",
         "pvsyst_restore_project_sources", "pvsyst_archive_project", "pvsyst_archive_variant",
         "pvsyst_restore_project_archive", "pvsyst_get_variant_components",
@@ -100,7 +100,7 @@ if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
 # Limit strict top-level keys to these entry points and derive keys from signatures.
 STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                          "pvsyst_acquire_weather", "pvsyst_review_weather",
-                         "pvsyst_simulate_template", "pvsyst_simulate_design", "pvsyst_run_house_task", "pvsyst_run_sourced_house_task", "pvsyst_prepare_design_project",
+                         "pvsyst_simulate_template", "pvsyst_simulate_design", "pvsyst_run_house_task", "pvsyst_run_sourced_house_task", "pvsyst_prepare_design_project", "pvsyst_review_project_inputs",
                          "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
@@ -489,6 +489,38 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     its stored template fields; IAM includes native FresnelSmooth/UserProfile point tables
     without evaluating them. A broader readable P50 root state does not widen writing."""
     return variant_call("inspect_parameters", project, variant)
+
+
+@categorized_tool()
+def pvsyst_review_project_inputs(project: StrictStr, variant: StrictStr,
+                                  preparation_manifest_name: StrictStr) -> dict:
+    """Compare producer-declared source inputs with saved project/variant fields, read-only.
+    preparation_manifest_name is a completed Results/<source>_prepare_<year>.json from
+    pvsyst_prepare_design_project, optionally carrying cited-source provenance. It is a
+    selected declaration baseline, not authenticated engineering evidence or a job resume.
+    Reads existing project/parameter/reference APIs; one Grid subarray and assigned fixed
+    non-seasonal orientation only. Compare PAN/OND and project/variant SIT/MET filenames,
+    tilt/azimuth at existing editor three-decimal serialization, accepted-plan string/
+    inverter counts, and explicitly requested loss scalar fields. ModuleQualityLoss is
+    compared to owning PQualityModU/I exactly as the existing editor writes it.
+    Only stored values are compared, not actual runtime effectiveness. Raw default/manual
+    flags are disclosed but not interpreted here, so requested losses retain needs_review.
+    Electrical envelope temperatures/coefficients/current limits and project saved design
+    temperatures are shown separately, not equated by name/unit; year is an execution
+    option, target capacity is a goal rather than an exact field. Source review remains.
+    status=reviewed means no difference in compared saved fields, not design certification;
+    needs_review includes differences, unassessed requested-loss modes or source concerns;
+    blocked means incomplete/ambiguous/out-of-scope baseline or target. All calls report
+    readonly=true/native_consumption_verified=false/runtime_state_observed=false.
+    Never writes records/files, activates GUI, repairs/invalidates geometry, queries a
+    licence, runs annual simulation or reads arbitrary baseline-supplied filesystem paths.
+    Existing production input snapshots reject mixed-state reads. Unsaved user work and
+    native effective solar/weather/physics are not inspected or approved."""
+    from pvsyst_project_review import review_project_inputs
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return review_project_inputs(store, project=project, variant=variant,
+                                 preparation_manifest_name=preparation_manifest_name)
 
 
 class GeneratorUpdates(BaseModel):

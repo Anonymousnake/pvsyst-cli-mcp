@@ -3,8 +3,7 @@
 `pvsyst_simulate_design` 把组件解析、模板筛选、电气包络、容量规划、天气获取/准备、项目配置和全年仿真串成一次调用。
 AI 提供明确输入后，流程不操作 GUI，也不从零发明一份空白物理设计。
 
-当前已发布 53 个工具、仍按六类组织：站点与天气组 7 个（新增 `pvsyst_resolve_location`、`pvsyst_acquire_weather`），
-仿真组 4 个（新增 `pvsyst_simulate_design`），其余 50 个工具的名称、参数与历史验证记录不变。
+本页记录最初53工具阶段的单方案闭环，计数不是当前发布状态；当前总览见[README](../README.md)。后续[独立源准备](design-project-preparation.md)、[来源住宅任务](sourced-house-task.md)与[声明/保存值审查](project-input-review.md)另有分批证据，旧阶段记录不自动升级为新能力。
 本页只覆盖新增的单方案输入闭环；模板仿真的既有边界见 [模板驱动的全年自动仿真](automatic-simulation.md)，
 容量规划见 [容量指南](capacity-sizing.md)。无合格模板时使用的标准模板种子是**内部 fallback**，不新增 MCP 工具入口。
 已运行的 MCP 服务需重启才能读到新工具与 schema。
@@ -27,13 +26,13 @@ AI 提供明确输入后，流程不操作 GUI，也不从零发明一份空白�
 
 ### 新增的两个入口
 
-工具总数目标为 **55**，除本页已验收的单方案闭环外，另有两个已接入代码但**尚未 SDK/原生验收**的入口：
+以下为最初计划55工具阶段的接入说明，不代表当前待验收状态；后续验收与边界以[天气工程审核与来源绑定](weather-engineering-review.md)和当前总览为准：
 
 - `pvsyst_review_weather`（站点与天气组）：只读三层天气审查——provider→CSV（同转换器重建）、CSV→原生逐时数值与标签、`.MET`/`.SIT` 头部**声明层**字段；不写文件、不做哈希、不跑仿真、不读许可，也不证明原生运行中有效的太阳位置时间偏移。
 - `pvsyst_prepare_sourced_design`（仿真组）：用调用者声明的源文本 + 精确数值/单位 token + 引文装配 `electrical_design` 草案，缺项以草案/冲突返回，再复用既有包络；身份标签由所属对象组合、调用者不可覆盖。
 
-`pvsyst_prepare_sourced_design` 已通过 SDK 验收（120 passed / 0 failed，exit 0；真实 Jinko/Solis 案例返回 `blocked`、`missing=13`），`pvsyst_review_weather` 仍待验收。
-**未 reload 的运行宿主仍提供旧工具集合**，不要假定当前实例已是 55。边界与来源缺项见 [天气工程审核与来源绑定](weather-engineering-review.md)。
+当时记录：`pvsyst_prepare_sourced_design` 通过 SDK 验收（120 passed / 0 failed，exit 0；真实 Jinko/Solis 案例返回 `blocked`、`missing=13`），天气审查在该时点仍待验收。后续结果不反写为当时已通过。
+**未 reload 的运行宿主仍提供其旧工具集合**，以当前会话实际schema为准，不按本文历史计数推断。边界与来源缺项见 [天气工程审核与来源绑定](weather-engineering-review.md)。
 
 ## 统一 spec
 
