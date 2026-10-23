@@ -38,6 +38,7 @@ from pvsyst_tracking import WRITABLE as TRACKING_FIELDS
 from pvsyst_shed_geometry import WRITABLE as SHED_FIELDS, TYPES as SHED_TYPES
 from pvsyst_grid_storage import grid_storage_state
 from pvsyst_ac_cabling import ac_cabling_state
+from pvsyst_dc_native import dc_cabling_state
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -397,6 +398,7 @@ class VariantStore:
                     "inverter_temperature": inverter_temperature_state(lines, system),
                      "transformers": transformer_state(lines),
                       "ac_cabling": ac_cabling_state(lines),
+                       "dc_cabling": dc_cabling_state(lines),
                      "system_unavailability": system_unavail_state(lines, system),
                      "peak_shaving": peak_shaving_state(lines),
                       "grid_storage": grid_storage_state(lines, system),
