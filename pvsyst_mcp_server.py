@@ -89,7 +89,7 @@ TOOL_GROUPS = {
                         "pvsyst_create_peak_shaving_variant",
                         "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system"),
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
-                   "pvsyst_simulate_design", "pvsyst_prepare_sourced_design", "pvsyst_run_house_task"),
+                   "pvsyst_simulate_design", "pvsyst_prepare_sourced_design", "pvsyst_run_house_task", "pvsyst_run_sourced_house_task"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
 }
 TOOL_CATEGORY = {name: category for category, names in TOOL_GROUPS.items() for name in names}
@@ -100,7 +100,7 @@ if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
 # Limit strict top-level keys to these entry points and derive keys from signatures.
 STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                          "pvsyst_acquire_weather", "pvsyst_review_weather",
-                         "pvsyst_simulate_template", "pvsyst_simulate_design", "pvsyst_run_house_task", "pvsyst_prepare_design_project",
+                         "pvsyst_simulate_template", "pvsyst_simulate_design", "pvsyst_run_house_task", "pvsyst_run_sourced_house_task", "pvsyst_prepare_design_project",
                          "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
@@ -2497,6 +2497,64 @@ def pvsyst_prepare_sourced_design(pan_name: StrictStr, ond_name: StrictStr,
         sources={key: entry.model_dump(exclude_none=True) for key, entry in sources.items()},
         declarations=[entry.model_dump(exclude_none=True) for entry in declarations],
         design=design.model_dump(exclude_none=True) if design is not None else None)
+
+
+class SourcedHouseTaskRequest(BaseModel):
+    """Cited source inputs plus the existing preparation and house schemas."""
+    model_config = ConfigDict(extra="forbid")
+    design: SingleDesignRequest
+    new_project: StrictStr
+    variant_name: StrictStr
+    house: MeshHouseSpec
+    layout: NamedPVTablesLayout | PlacedPVTableLayout
+    sources: dict[str, SourceTextRequest] = Field(default_factory=dict)
+    declarations: list[SourceDeclarationRequest] = Field(default_factory=list)
+    goals: SourcedDesignGoals | None = None
+    module_geometry: ModuleGeometry | None = None
+
+
+@categorized_tool()
+def pvsyst_run_sourced_house_task(spec: SourcedHouseTaskRequest, dry_run: StrictBool = True,
+        confirm: StrictBool = False, resume: StrictBool = False, retry_simulation: StrictBool = False,
+        accept_source_review: StrictBool = False) -> dict:
+    """Bind cited inputs, prepare a source project without an annual run, then deliver one house.
+    design reuses SingleDesignRequest, but module/inverter require exact loose file_name and
+    capacity/electrical_design must be absent: the existing cited-source helper builds the
+    electrical draft. sources/declarations/goals reuse pvsyst_prepare_sourced_design semantics;
+    an explicit design.target_dc_kw is also an engineering goal, never a guessed rating.
+    Missing/mismatched citations return needs_context and the concrete draft without writes.
+    design.new_project is the NEW source; spec.new_project is a DISTINCT final house project.
+    Complete house/layout/module geometry reuse the existing native house input contract.
+    Dry-run on a fresh source is ready_for_preparation or ready_for_weather, not full house
+    preflight; it writes nothing and launches no GUI. Execution requires dry_run=false AND
+    confirm=true. Source review additionally requires accept_source_review=true, and remains
+    needs_review in the final result; confirmation never certifies source authenticity.
+    Prepared source and house manifests own recovery: resume rechecks request/provenance,
+    canonical inputs and prepared files, then resumes the existing child checkpoint without
+    another preparation/annual baseline. Partial source preparation remains inspectable via
+    its existing recovery transactions, not automatically repeated or silently overwritten.
+    Final annual execution is only the existing native house task. GUI/version/DPI/topology
+    bounds are unchanged. Existing user windows are not taken over, INI is not edited here.
+    Weather assets/source review are checked; the house path does not add hourly comparison
+    against the source weather CSV. It reports weather_native_comparison_performed=false.
+    Raw source text is not persisted or echoed; accepted citation provenance is preserved.
+    No new PV/sizing/dispatch model or general job framework."""
+    from pvsyst_sourced_house import run_sourced_house_task
+    current = cli()
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    with store.lock:
+        goals = spec.goals.model_dump(exclude_none=True) if spec.goals is not None else {}
+        if (spec.design.target_dc_kw is not None and "target_dc_kw" not in goals
+                and not any(entry.field == "target_dc_kw" for entry in spec.declarations)):
+            goals["target_dc_kw"] = spec.design.target_dc_kw
+        binding = pvsyst_prepare_sourced_design(
+            pan_name=spec.design.module.file_name or "", ond_name=spec.design.inverter.file_name or "",
+            sources=spec.sources, declarations=spec.declarations, design=SourcedDesignGoals(**goals))
+        request = spec.model_dump(exclude_none=True, exclude={"sources", "declarations", "goals"})
+        return run_sourced_house_task(store, component_store, current, request=request, binding=binding,
+            dry_run=dry_run, confirm=confirm, resume=resume, retry_simulation=retry_simulation,
+            accept_source_review=accept_source_review)
 
 
 @categorized_tool()
