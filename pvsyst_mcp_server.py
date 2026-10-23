@@ -70,7 +70,7 @@ TOOL_GROUPS = {
         "pvsyst_remove_subarray", "pvsyst_restore_variant", "pvsyst_create_tracking_variant",
         "pvsyst_create_dome_allocation_variant", "pvsyst_create_house_pv_scene",
         "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
-        "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant", "pvsyst_create_native_dc_cabling_variant",
+        "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant", "pvsyst_create_native_dc_cabling_variant", "pvsyst_open_native_project",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component", "pvsyst_validate_component",
@@ -105,7 +105,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
                           "pvsyst_create_tracking_variant",
-                           "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant", "pvsyst_create_native_dc_cabling_variant",
+                           "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant", "pvsyst_create_native_dc_cabling_variant", "pvsyst_open_native_project",
                           "pvsyst_create_dome_allocation_variant", "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
                           "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
@@ -1638,6 +1638,28 @@ def pvsyst_read_house_pv_scene(scene_name: StrictStr) -> dict:
     Reads only bounded UTF-8 XML; DTD/entity declarations and unsupported extensions stop.
     This is not a general COLLADA converter or a native VC scene exporter."""
     return read_house_pv_scene(components(), scene_name)
+
+
+@categorized_tool()
+def pvsyst_open_native_project(project: StrictStr, dry_run: StrictBool = True,
+                                 confirm: StrictBool = False) -> dict:
+    """Open a workspace PRJ through the recorded Chinese8.1.6rev49278/DPI96 native GUI.
+    Requires native INI DataPath already equal to this MCP workspace. Reads/validates
+    the requested project and native process inventory, including instances without a
+    visible form. Preview never starts/activates/selects/types; a cold launch requires
+    dry_run=false AND confirm=true. Only a newly launched process receives native Grid/
+    Load/filter/confirm actions; the final project basename and unchanged PRJ are checked.
+    A preexisting matching ready project is returned already_open with owned=false and
+    existing_session_read_only=true: no activation, variant selection, reload or close.
+    Any other/ambiguous/busy existing session stops untouched, preserving unobservable
+    unsaved work. This is not a native dirty-state detector or consent to edit an existing
+    window. No INI, clipboard or VC patch; no application is closed/force-terminated.
+    A failed cold launch discloses its owned PID/current stage for inspection. Successful
+    opened state is not house import, geometry validity or simulation certification."""
+    from pvsyst_native_project import open_native_project
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return open_native_project(store, cli(), project=project, dry_run=dry_run, confirm=confirm)
 
 
 @categorized_tool()
