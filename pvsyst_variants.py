@@ -372,7 +372,7 @@ class VariantStore:
                     raise ValueError("Orientation ID must be numeric")
                 self._orientation(lines, int(number))
                 values = fields((index, end), ("FieldType", "FieldTilt", "FieldAzim", "SummerTilt",
-                                               "WinterTilt", "WinterMonths", "UsesTiltAver"))
+                                               "WinterTilt", "WinterMonths", "UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"))
                 values.update(fields((index, end), TRACKING_FIELDS.get(values.get("FieldType"), ())))
                 if values.get("FieldType") in SHED_TYPES:
                     values.update(fields((index, end), SHED_FIELDS.values()))
