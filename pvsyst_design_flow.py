@@ -29,7 +29,7 @@ from pvsyst_cli import PVsystError, validate_report_pages
 from pvsyst_design_envelope import REQUEST_KEYS, prepare_design_envelope
 from pvsyst_design_inputs import discover_design_inputs
 from pvsyst_paths import project_name, variant_id, workspace_file, workspace_folder
-from pvsyst_simulation import simulate_template
+from pvsyst_simulation import simulate_template, prepare_template
 from pvsyst_sizing import NUMBERS as CAPACITY_NUMBERS
 from pvsyst_standard_template import SEED_VARIANT, prepare_standard_template
 from pvsyst_weather_acquisition import download_weather
@@ -396,7 +396,7 @@ def _entries(root):
         return []
 
 
-def _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name):
+def _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name, *, prepare_only=False):
     """Every name the flow could create, checked before the first write of any phase."""
     issues, targets = [], {}
     new_project = spec["new_project"]
@@ -411,11 +411,15 @@ def _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name):
     except (ValueError, OSError, AttributeError) as exc:
         issues.append({"field": "new_project", "message": str(exc)})
     try:
-        prefix = f"{stem}_annual_{year}"
-        targets["annual_csv"] = workspace_file(cli.workspace, "Results", prefix + ".csv", ".csv")
-        targets["annual_pdf"] = workspace_file(cli.workspace, "Results", prefix + ".pdf", ".pdf")
-        targets["annual_manifest"] = workspace_file(cli.workspace, "Results", prefix + ".json", ".json")
-        targets["annual_sfi"] = workspace_file(cli.workspace, "Models", prefix + ".SFI", ".SFI")
+        if prepare_only:
+            prefix = f"{stem}_prepare_{year}"
+            targets["project_manifest"] = workspace_file(cli.workspace, "Results", prefix + ".json", ".json")
+        else:
+            prefix = f"{stem}_annual_{year}"
+            targets["annual_csv"] = workspace_file(cli.workspace, "Results", prefix + ".csv", ".csv")
+            targets["annual_pdf"] = workspace_file(cli.workspace, "Results", prefix + ".pdf", ".pdf")
+            targets["annual_manifest"] = workspace_file(cli.workspace, "Results", prefix + ".json", ".json")
+            targets["annual_sfi"] = workspace_file(cli.workspace, "Models", prefix + ".SFI", ".SFI")
         # These derivations mirror pvsyst_weather_flow.prepare_weather and
         # pvsyst_weather_acquisition.download_weather; keep the three in step.
         if weather["mode"] in ("csv", "open_meteo"):
@@ -583,7 +587,7 @@ def _identity_drift(previous, current):
     return None
 
 
-def _native_preflight(cli, mode):
+def _native_preflight(cli, mode, *, prepare_only=False):
     """Read-only capability/licence check run before any weather download.
 
     ``simulate_template`` and ``prepare_weather`` repeat these checks; running them here means a
@@ -591,8 +595,9 @@ def _native_preflight(cli, mode):
     """
     state = {}
     try:
-        for option in SIMULATION_OPTIONS:
-            cli._require("run-simulation", option)
+        if not prepare_only:
+            for option in SIMULATION_OPTIONS:
+                cli._require("run-simulation", option)
         if mode != "existing":
             for option in SITE_OPTIONS:
                 cli._require("create-site", option)
@@ -600,7 +605,7 @@ def _native_preflight(cli, mode):
         state["version"] = cli.version()
         licence = cli.license_info()
         state["license"] = licence
-        if licence.get("status") == "TRIAL" and licence.get("remaining_executions") == 0:
+        if not prepare_only and licence.get("status") == "TRIAL" and licence.get("remaining_executions") == 0:
             raise ValueError("PVsystCLI reports no remaining trial executions")
     except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
         return None, cli._redact(str(exc))
@@ -616,7 +621,7 @@ def _identity(selected):
     return f"{pan['manufacturer']} {pan['model']} / {ond['manufacturer']} {ond['model']}", None
 
 
-def _design_flow(cli, store, spec, dry_run):
+def _design_flow(cli, store, spec, dry_run, *, prepare_only=False):
     result = {"status": "blocked", "stage": "spec", "dry_run": dry_run,
               "execution_preflight_complete": False, "issues": [], "warnings": [],
               "selected": None,
@@ -626,6 +631,9 @@ def _design_flow(cli, store, spec, dry_run):
               "metrics": None,
               "artifacts": {"acquire": {}, "prepare": {}, "simulate": {}, "seed": {}},
               "recovery": []}
+    if prepare_only:
+        result.update(operation="prepare_project", prepared=False, simulated=False,
+                      native_consumption_verified=False)
     if type(dry_run) is not bool:
         _issue(result, "dry_run", "Use a strict boolean")
         return result
@@ -656,13 +664,14 @@ def _design_flow(cli, store, spec, dry_run):
         result["issues"].extend(layout_issues)
         return _stop(result, "workspace")
 
-    issues, targets = _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name)
+    issues, targets = _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name,
+                                      prepare_only=prepare_only)
     result["artifacts"]["planned"] = {key: str(path) for key, path in targets.items()}
     if issues:
         result["issues"] = issues
         return _stop(result, "outputs")
 
-    native, error = _native_preflight(cli, mode)
+    native, error = _native_preflight(cli, mode, prepare_only=prepare_only)
     if error is not None:
         _issue(result, "native_preflight", error)
         return _stop(result, "native_preflight")
@@ -930,31 +939,42 @@ def _design_flow(cli, store, spec, dry_run):
             f"The written seed {seed_project}/{SEED_VARIANT} reads back the requested components and "
             "counts; the annual simulation runs on the working copy named by new_project")
 
-    simulation, stopped = _phase(result, "simulation", lambda: simulate_template(
+    phase_name = "project_preparation" if prepare_only else "simulation"
+    runner = prepare_template if prepare_only else simulate_template
+    context = {"preparation_context": {"request": spec, "selected": result["selected"],
+               "envelope": result["preview"]["envelope"], "review_required": inherited_review,
+               "warnings": list(result["warnings"])}} if prepare_only else {}
+    simulation, stopped = _phase(result, phase_name, lambda: runner(
         cli, store, template_project=template_project, variant=variant, new_project=new_project,
         pan_name=pan_name, ond_name=ond_name, site_name=sit_name, met_name=met_name, tilt=tilt,
         year=year, dry_run=dry_run, capacity=flat_capacity, weather_manifest_name=manifest_name,
         azimuth=azimuth, losses=losses or None,
-        report_pages=spec.get("report_pages")))
+        report_pages=spec.get("report_pages"), **context))
     if stopped is not None:
         result["warnings"].append(RETAINED_NOTE)
         return stopped
-    result["preview"]["simulation"] = simulation
-    result["artifacts"]["simulate"] = dict(simulation.get("artifacts") or {})
+    result["preview"][phase_name] = simulation
+    result["artifacts"]["project_preparation" if prepare_only else "simulate"] = dict(simulation.get("artifacts") or {})
     result["metrics"] = simulation.get("metrics")
     result["recovery"] = list(simulation.get("recovery") or [])
-    _inherit(result, simulation, "simulation")
-    if simulation.get("status") not in (("ready",) if dry_run else SIMULATE_SUCCESS):
+    _inherit(result, simulation, phase_name)
+    accepted = ("prepared", "needs_review") if prepare_only else SIMULATE_SUCCESS
+    if simulation.get("status") not in (("ready",) if dry_run else accepted):
         if simulation.get("status") == "failed":
             result["warnings"].append(RETAINED_NOTE)
-        return _stop(result, simulation.get("stage") or "simulation",
+        return _stop(result, simulation.get("stage") or phase_name,
                      "failed" if simulation.get("status") == "failed" else "blocked")
 
     result["execution_preflight_complete"] = True
     if dry_run:
         return _stop(result, simulation.get("stage") or "preflight", "ready")
-    result["status"] = "needs_review" if inherited_review or simulation["status"] == "needs_review" else "completed"
-    result["stage"] = simulation.get("stage") or "completed"
+    if prepare_only:
+        result["prepared"] = simulation.get("prepared", False)
+        result["prepared_project"] = {"project": new_project, "variant": variant, "year": year,
+                                      "site": sit_name, "met": met_name,
+                                      "manifest": simulation["artifacts"].get("manifest")}
+    result["status"] = "needs_review" if inherited_review or simulation["status"] == "needs_review" else ("prepared" if prepare_only else "completed")
+    result["stage"] = simulation.get("stage") or ("prepared" if prepare_only else "completed")
     return result
 
 
@@ -972,3 +992,9 @@ def simulate_design(cli, store, *, spec: dict, dry_run=True):
     # the ordering store.lock -> cli._lock is fixed and no second job/concurrency layer is needed.
     with store.lock:
         return _design_flow(cli, store, spec, dry_run)
+
+
+def prepare_design_project(cli, store, *, spec: dict, dry_run=True):
+    """Prepare a guarded source project without an annual run or generated SFI/CSV/PDF."""
+    with store.lock:
+        return _design_flow(cli, store, spec, dry_run, prepare_only=True)

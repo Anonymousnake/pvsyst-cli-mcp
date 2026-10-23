@@ -27,9 +27,16 @@ def simulate_template(cli, store, *, template_project="", variant="", new_projec
                                   report_pages=report_pages)
 
 
-def _simulate_template(cli, store, template_project, variant, new_project,
-                       pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses,
-                       *, report_pages=None):
+def prepare_template(cli, store, **kwargs):
+    """Reuse the same guarded configuration, stopping before SFI/annual execution."""
+    with store.lock:
+        return _simulate_template(cli, store, **kwargs, prepare_only=True)
+
+
+def _simulate_template(cli, store, template_project="", variant="", new_project="",
+                       pan_name="", ond_name="", site_name="", met_name="", tilt=None, year=None,
+                       dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
+                       *, report_pages=None, prepare_only=False, preparation_context=None):
     request = dict(template_project=template_project, variant=variant, new_project=new_project,
                    pan_name=pan_name, ond_name=ond_name, site_name=site_name, met_name=met_name,
                    tilt=tilt, year=year)
@@ -48,6 +55,10 @@ def _simulate_template(cli, store, template_project, variant, new_project,
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
               "request": request, "issues": [], "warnings": [], "transactions": [], "recovery": [],
               "metrics": None, "artifacts": {}, "template_preserved": None}
+
+    if prepare_only:
+        result.update(operation="prepare_project", prepared=False, simulated=False,
+                      native_consumption_verified=False, preparation_context=preparation_context or {})
 
     def issue(field, message):
         result["issues"].append({"field": field, "message": str(message)})
@@ -179,11 +190,12 @@ def _simulate_template(cli, store, template_project, variant, new_project,
         except (ValueError, OSError, KeyError, TypeError) as exc:
             issue("weather_manifest_name", exc)
     try:
-        prefix = f"{Path(new_project).stem}_annual_{year}"
-        paths = {"csv": workspace_file(cli.workspace, "Results", prefix + ".csv", ".csv"),
-                 "pdf": workspace_file(cli.workspace, "Results", prefix + ".pdf", ".pdf"),
-                 "manifest": workspace_file(cli.workspace, "Results", prefix + ".json", ".json"),
-                 "sfi": workspace_file(cli.workspace, "Models", prefix + ".SFI", ".SFI")}
+        prefix = f"{Path(new_project).stem}_{'prepare' if prepare_only else 'annual'}_{year}"
+        paths = {"manifest": workspace_file(cli.workspace, "Results", prefix + ".json", ".json")}
+        if not prepare_only:
+            paths.update(csv=workspace_file(cli.workspace, "Results", prefix + ".csv", ".csv"),
+                         pdf=workspace_file(cli.workspace, "Results", prefix + ".pdf", ".pdf"),
+                         sfi=workspace_file(cli.workspace, "Models", prefix + ".SFI", ".SFI"))
         if any(path.exists() for path in paths.values()):
             raise FileExistsError("An output/SFI/manifest already exists; choose a new working project")
         result["artifacts"] = {key: str(path) for key, path in paths.items()}
@@ -208,10 +220,12 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             if not math.isfinite(nominal) or nominal <= 0:
                 raise ValueError("Template/module combination has invalid nominal DC power")
             result["nominal_dc_power_kw"] = nominal
-            for option in ("input-sfi-file", "start-date", "end-date", "time-step"):
-                cli._require("run-simulation", option)
+            if not prepare_only:
+                for option in ("input-sfi-file", "start-date", "end-date", "time-step"):
+                    cli._require("run-simulation", option)
             license_state = cli.license_info()
-            if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
+            if (not prepare_only and license_state.get("status") == "TRIAL"
+                    and license_state.get("remaining_executions") == 0):
                 raise ValueError("PVsystCLI reports no remaining trial executions")
             result["license"] = license_state
             result["cli_version"] = cli.version()
@@ -306,55 +320,63 @@ def _simulate_template(cli, store, template_project, variant, new_project,
         result["working_files"] = store.inspect_project(new_project)["files"]
         if store.validate_structure(new_project, variant)["valid"] is not True:
             raise ValueError("Configured working variant failed structural validation")
-        stage("simulation")
-        check_inputs()
-        variables = list(VAR_GROUPS["all_common"])
-        if weather_report is not None:
-            variables.extend(["viGlobHor", "viDiffHor", "viT_Amb"])
-        build_sfi(paths["sfi"], variables)
-        native_inputs = ({"site": Path(assets["site_name"]["path"]), "met": Path(assets["met_name"]["path"])}
-                         if weather_report is not None else {})
-        run = cli.run_simulation(new_project, variant, sfi=paths["sfi"], out_csv=paths["csv"],
-                                 report_pdf=paths["pdf"], time_step="hour", start_date=f"{year}.01.01",
-                                 end_date=f"{year}.12.31", report_language="en", log_level=3,
-                                 report_pages=report_pages, **native_inputs)
-        result["run"] = run
-        result["warnings"].extend(run.get("warnings", []))
-        stage("results")
-        output_snapshot = fingerprint(paths["csv"])
-        expected_context = {"Project": new_project, "Geographical Site": site_name, "Weather data": met_name,
-                            "Simulation variant": f"{Path(new_project).stem}.{variant}"}
-        context = {}
-        with paths["csv"].open(encoding="utf-8-sig", errors="replace", newline="") as stream:
-            for row in csv.reader(stream, delimiter=";"):
-                if row and row[0].strip().lower() == "date":
-                    break
-                if len(row) >= 2 and row[0].strip() in expected_context:
-                    key = row[0].strip()
-                    if key in context:
-                        raise ValueError("Duplicate native result context: " + key)
-                    context[key] = row[1].strip()
-        if any(context.get(key, "").casefold() != value.casefold() for key, value in expected_context.items()):
-            raise ValueError("Native CSV did not consume the requested project/variant/site/weather: " + str(context))
-        result["native_context"] = context
-        result["metrics"] = annual_summary(paths["csv"], year, nominal)
-        if result["metrics"]["sha256"] != output_snapshot:
-            raise ValueError("Native output changed between context and annual validation")
-        if weather_report is not None:
-            result["weather_comparison"] = compare_native_weather(
-                paths["csv"], Path(assets["weather_source"]["path"]), weather_report)
-        with paths["pdf"].open("rb") as stream:
-            if stream.read(5) != b"%PDF-":
-                raise ValueError("Native report is not a PDF")
-        if store.inspect_project(new_project)["files"] != result["working_files"]:
-            raise ValueError("Working files changed during native simulation")
-        check_inputs()
-        if fingerprint(paths["csv"]) != output_snapshot:
-            raise ValueError("Native output changed across result validation stages")
-        flags = result["metrics"]["diagnostic_flags"]
-        result["warnings"].extend(flags)
-        review = flags or weather_warnings or result.get("weather_comparison", {}).get("needs_review", False)
-        result.update(status="needs_review" if review else "completed", stage="completed")
+        if prepare_only:
+            check_inputs()
+            review = weather_warnings or result["preparation_context"].get("review_required", False)
+            result.update(status="needs_review" if review else "prepared", stage="prepared",
+                          prepared=True, working_project=new_project, working_variant=variant)
+            result["artifacts"].update(project=str(store._path(new_project)),
+                                       variant=str(store._path(new_project, variant)))
+        else:
+            stage("simulation")
+            check_inputs()
+            variables = list(VAR_GROUPS["all_common"])
+            if weather_report is not None:
+                variables.extend(["viGlobHor", "viDiffHor", "viT_Amb"])
+            build_sfi(paths["sfi"], variables)
+            native_inputs = ({"site": Path(assets["site_name"]["path"]), "met": Path(assets["met_name"]["path"])}
+                             if weather_report is not None else {})
+            run = cli.run_simulation(new_project, variant, sfi=paths["sfi"], out_csv=paths["csv"],
+                                     report_pdf=paths["pdf"], time_step="hour", start_date=f"{year}.01.01",
+                                     end_date=f"{year}.12.31", report_language="en", log_level=3,
+                                     report_pages=report_pages, **native_inputs)
+            result["run"] = run
+            result["warnings"].extend(run.get("warnings", []))
+            stage("results")
+            output_snapshot = fingerprint(paths["csv"])
+            expected_context = {"Project": new_project, "Geographical Site": site_name, "Weather data": met_name,
+                                "Simulation variant": f"{Path(new_project).stem}.{variant}"}
+            context = {}
+            with paths["csv"].open(encoding="utf-8-sig", errors="replace", newline="") as stream:
+                for row in csv.reader(stream, delimiter=";"):
+                    if row and row[0].strip().lower() == "date":
+                        break
+                    if len(row) >= 2 and row[0].strip() in expected_context:
+                        key = row[0].strip()
+                        if key in context:
+                            raise ValueError("Duplicate native result context: " + key)
+                        context[key] = row[1].strip()
+            if any(context.get(key, "").casefold() != value.casefold() for key, value in expected_context.items()):
+                raise ValueError("Native CSV did not consume the requested project/variant/site/weather: " + str(context))
+            result["native_context"] = context
+            result["metrics"] = annual_summary(paths["csv"], year, nominal)
+            if result["metrics"]["sha256"] != output_snapshot:
+                raise ValueError("Native output changed between context and annual validation")
+            if weather_report is not None:
+                result["weather_comparison"] = compare_native_weather(
+                    paths["csv"], Path(assets["weather_source"]["path"]), weather_report)
+            with paths["pdf"].open("rb") as stream:
+                if stream.read(5) != b"%PDF-":
+                    raise ValueError("Native report is not a PDF")
+            if store.inspect_project(new_project)["files"] != result["working_files"]:
+                raise ValueError("Working files changed during native simulation")
+            check_inputs()
+            if fingerprint(paths["csv"]) != output_snapshot:
+                raise ValueError("Native output changed across result validation stages")
+            flags = result["metrics"]["diagnostic_flags"]
+            result["warnings"].extend(flags)
+            review = flags or weather_warnings or result.get("weather_comparison", {}).get("needs_review", False)
+            result.update(status="needs_review" if review else "completed", stage="completed")
     except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
         result.update(status="failed", error=cli._redact(str(exc))[-12000:])
     try:
@@ -365,5 +387,7 @@ def _simulate_template(cli, store, template_project, variant, new_project,
             result["working_files"] = store.inspect_project(new_project)["files"]
     except (ValueError, OSError) as exc:
         result.update(status="failed", error=cli._redact(str(exc)))
+    if prepare_only and result["status"] == "failed":
+        result["prepared"] = False
     save()
     return result
