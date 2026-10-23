@@ -89,7 +89,7 @@ TOOL_GROUPS = {
                         "pvsyst_create_peak_shaving_variant",
                         "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system"),
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
-                   "pvsyst_simulate_design", "pvsyst_prepare_sourced_design"),
+                   "pvsyst_simulate_design", "pvsyst_prepare_sourced_design", "pvsyst_run_house_task"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
 }
 TOOL_CATEGORY = {name: category for category, names in TOOL_GROUPS.items() for name in names}
@@ -100,7 +100,7 @@ if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
 # Limit strict top-level keys to these entry points and derive keys from signatures.
 STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                          "pvsyst_acquire_weather", "pvsyst_review_weather",
-                         "pvsyst_simulate_template", "pvsyst_simulate_design",
+                         "pvsyst_simulate_template", "pvsyst_simulate_design", "pvsyst_run_house_task",
                          "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
@@ -1558,6 +1558,54 @@ class ModuleGeometry(BaseModel):
     width_m: StrictNum
     length_m: StrictNum
     geometry_depth_m: StrictNum
+
+
+class HouseTaskRequest(BaseModel):
+    """Complete authored geometry plus one exact source; no inferred engineering inputs."""
+    model_config = ConfigDict(extra="forbid")
+    source_project: StrictStr
+    source_variant: StrictStr
+    new_project: StrictStr
+    variant_name: StrictStr
+    year: StrictInt
+    house: MeshHouseSpec
+    layout: NamedPVTablesLayout | PlacedPVTableLayout
+    module_geometry: ModuleGeometry | None = None
+    report_pages: list[StrictStr] | None = None
+
+
+@categorized_tool()
+def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
+                            confirm: StrictBool = False, resume: StrictBool = False,
+                            retry_simulation: StrictBool = False) -> dict:
+    """Deliver one AI-authored residential project through existing native entries.
+    Source must be the existing bounded single fixed PV-only northern-site template,
+    with identical bound workspace SIT/MET in PRJ/VC. Hardware/counts/angles/losses,
+    source engineering defaults and weather remain inherited and disclosed, never sized
+    or guessed. AI supplies a complete mesh house and one/two placed PV regions in spec;
+    all module counts/source-PAN metadata and native8.1.6CN/DPI96 boundaries remain.
+    Preview writes nothing/does not activate or launch GUI; cold execution requires
+    dry_run=false and confirm=true, configured DataPath and NO preexisting native GUI.
+    It exclusively creates a working PRJ/VC0, PVC2 and SFI, opens one owned GUI, imports/
+    associates/checks/shading-tables/SavesAs one NEW native variant, then normally closes
+    only its actual Popen. Unknown dialogs/unsaved-work questions are not dismissed.
+    A NEW CLI process reloads the saved variant, recomputes native shading and generates
+    the explicit full-year CSV/PDF. Completeness/context/finite columns/GlobShd and source
+    preservation are checked using existing result validators; no replacement PV model.
+    File creation, native save and simulation-consumption remain distinct checkpoints.
+    Results/<new-project-stem>_house_task.json records the exact request and guarded files;
+    existing artifacts are never overwritten/deleted. Resume requires the IDENTICAL spec
+    and explicit resume=true; no checkpoint PID grants ownership. Partial unverified native
+    saves need inspection, not blind reimport. A failed run keeps its outputs: explicit
+    retry_simulation=true chooses NEW attempt names, without rebuilding the saved scene.
+    A completed retry-free resume revalidates artifacts and runs no new GUI/simulation.
+    Status/phase/issues matter, not just MCP is_error; any unexpected stop retains evidence.
+    Process coordination is one server/workspace RLock, not a global desktop/task service."""
+    from pvsyst_house_task import run_house_task
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return run_house_task(store, component_store, cli(), request=spec.model_dump(exclude_none=True),
+        dry_run=dry_run, confirm=confirm, resume=resume, retry_simulation=retry_simulation)
 
 
 @categorized_tool()
