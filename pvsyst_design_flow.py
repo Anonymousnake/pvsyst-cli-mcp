@@ -621,7 +621,7 @@ def _identity(selected):
     return f"{pan['manufacturer']} {pan['model']} / {ond['manufacturer']} {ond['model']}", None
 
 
-def _design_flow(cli, store, spec, dry_run, *, prepare_only=False):
+def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_context=None):
     result = {"status": "blocked", "stage": "spec", "dry_run": dry_run,
               "execution_preflight_complete": False, "issues": [], "warnings": [],
               "selected": None,
@@ -944,6 +944,9 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False):
     context = {"preparation_context": {"request": spec, "selected": result["selected"],
                "envelope": result["preview"]["envelope"], "review_required": inherited_review,
                "warnings": list(result["warnings"])}} if prepare_only else {}
+    if prepare_only and source_context is not None:
+        context["preparation_context"]["source_binding"] = source_context
+        context["preparation_context"]["review_required"] |= bool(source_context.get("needs_review"))
     simulation, stopped = _phase(result, phase_name, lambda: runner(
         cli, store, template_project=template_project, variant=variant, new_project=new_project,
         pan_name=pan_name, ond_name=ond_name, site_name=sit_name, met_name=met_name, tilt=tilt,
@@ -994,7 +997,7 @@ def simulate_design(cli, store, *, spec: dict, dry_run=True):
         return _design_flow(cli, store, spec, dry_run)
 
 
-def prepare_design_project(cli, store, *, spec: dict, dry_run=True):
-    """Prepare a guarded source project without an annual run or generated SFI/CSV/PDF."""
+def prepare_design_project(cli, store, *, spec: dict, dry_run=True, source_context=None):
+    """Prepare without an annual run; optional already-bound source provenance stays metadata."""
     with store.lock:
-        return _design_flow(cli, store, spec, dry_run, prepare_only=True)
+        return _design_flow(cli, store, spec, dry_run, prepare_only=True, source_context=source_context)

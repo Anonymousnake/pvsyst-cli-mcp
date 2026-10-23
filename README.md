@@ -55,7 +55,7 @@ Restart the client after editing its MCP configuration. The server requires Pyth
 
 ## MCP tools by workflow
 
-The server exposes 74 tools across seven groups. The approved house/native migration is consolidated in the [acceptance summary and explicit limits](docs/native-migration-acceptance.md). Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
+The server exposes 75 tools across seven groups. The approved house/native migration is consolidated in the [acceptance summary and explicit limits](docs/native-migration-acceptance.md). Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
 
 First CLI initialization is serialized inside the MCP process, so concurrent initial requests share one client and the same workspace `RLock` used by CLI, component and variant operations. This is process-local coordination, not an OS/cross-process lock; SHA checks remain optimistic and external editors still require coordination. See [concurrent initialization verification](docs/grid-capacity-verification.md#single-client-concurrent-initialization).
 
@@ -144,13 +144,14 @@ Native constant/monthly/daily definitions use the guarded 8.1.6 fixed-plane PV-o
 Existing native PeakShaving/PVToGridMin discharge controls are exposed through [bounded peak-shaving configuration](docs/native-peak-shaving.md), without hardware sizing, grid charging or independent scheduling. The original storage APIs retain their SelfConsumption/WeakGrid paths. New windows have passed native annual CSV/PDF and complete AC-balance checks; this does not redefine AfterSunset as a no-sunlight test.
 
 
-### Simulation (6)
+### Simulation (7)
 
 | Tools | Purpose |
 |---|---|
 | `pvsyst_build_sfi` | Create an hourly export definition; `variables=grid_storage` includes native load/SOC/battery/grid flows, unmet load, unused energy and `CL_Over` converter-limit losses for complete storage balance |
 | `pvsyst_run_simulation` | Single or batch CLI simulation with CSV/PDF outputs; redacted diagnostics and warning lines |
 | `pvsyst_simulate_template` | Read-only preflight or guarded template copy/configuration, complete-year run and metric/report acceptance |
+| `pvsyst_run_sourced_house_task` | One cited-input task: return concrete missing-source drafts, require explicit continuation of review, prepare a guarded source without an annual baseline, then reuse native house delivery. Existing two manifests own recovery; final source review stays visible. See [sourced house task](docs/sourced-house-task.md) |
 | `pvsyst_run_house_task` | One complete AI-mesh house task: new guarded project/scene, owned native open/import/association/validity/table/SaveAs, normal owned GUI exit, fresh CLI full-year reload and CSV/PDF; durable resume, explicit new-name retry and source/inheritance disclosure. One/two PV regions, configured Chinese8.1.6/DPI96 profile. See [native house task](docs/native-house-task.md) |
 | `pvsyst_simulate_design` | One unified single-design spec: exact component and template resolution, declared electrical envelope, integer capacity planning, weather mode selection and guarded full-year run |
 | `pvsyst_prepare_sourced_design` | Assemble one `electrical_design` draft from caller-declared source text, exact value/unit tokens and excerpts, then reuse the envelope; missing fields come back as a draft (**SDK-accepted: 120 passed / 0 failed, exit 0; the real Jinko/Solis case returned `blocked` with 13 missing fields, not a complete manufacturer engineering package**) |
