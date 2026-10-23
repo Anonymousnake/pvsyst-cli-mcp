@@ -26,7 +26,7 @@ from pvsyst_component_editor import objects
 from pvsyst_components import ComponentStore, electrical_inventory
 from pvsyst_component_builder import build_sourced_component
 from pvsyst_variants import VariantStore
-from pvsyst_design_flow import simulate_design
+from pvsyst_design_flow import simulate_design, prepare_design_project
 from pvsyst_paths import workspace_file
 from pvsyst_results import compare_results
 from pvsyst_simulation import simulate_template
@@ -60,7 +60,7 @@ TOOL_GROUPS = {
         "pvsyst_license_deactivate", "pvsyst_license_sync", "pvsyst_export_logs",
     ),
     "Projects & Variants": (
-        "pvsyst_list_projects", "pvsyst_list_variants", "pvsyst_inspect_project",
+        "pvsyst_list_projects", "pvsyst_list_variants", "pvsyst_inspect_project", "pvsyst_prepare_design_project",
         "pvsyst_create_project", "pvsyst_clone_project", "pvsyst_update_project_parameters", "pvsyst_update_project_sources",
         "pvsyst_restore_project_sources", "pvsyst_archive_project", "pvsyst_archive_variant",
         "pvsyst_restore_project_archive", "pvsyst_get_variant_components",
@@ -100,7 +100,7 @@ if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
 # Limit strict top-level keys to these entry points and derive keys from signatures.
 STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                          "pvsyst_acquire_weather", "pvsyst_review_weather",
-                         "pvsyst_simulate_template", "pvsyst_simulate_design", "pvsyst_run_house_task",
+                         "pvsyst_simulate_template", "pvsyst_simulate_design", "pvsyst_run_house_task", "pvsyst_prepare_design_project",
                          "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component",
                           "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
                           "pvsyst_create_native_load_variant",
@@ -2273,6 +2273,33 @@ class SingleDesignRequest(BaseModel):
     electrical_design: DesignEnvelopeRequest | None = None
     losses: LossRequest | None = None
     report_pages: list[StrictStr] | None = None
+
+
+@categorized_tool()
+def pvsyst_prepare_design_project(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
+    """Prepare one new design project without GUI or annual simulation, using existing flow gates.
+    Same strict SingleDesignRequest/source/weather/fixed_unshaded_grid boundaries as
+    pvsyst_simulate_design: exact PAN/OND and template, explicit counts or sourced design
+    envelope, declared angles/losses and bound existing/csv/open_meteo weather. Missing
+    design evidence stops with concrete issues; no manufacturer/site value is guessed.
+    dry_run writes nothing. Future weather/seed inputs return ready_for_weather, never a
+    falsely completed native preflight. Execution reuses guarded clone/source/component/
+    capacity/parameter edits and structural readback, then stops BEFORE SFI/CSV/PDF/run.
+    A zero remaining simulation quota does not itself block non-simulation preparation;
+    required weather commands/version/licence are still queried, not bypassed.
+    status=prepared or needs_review with prepared=true means configured files exist;
+    simulated/native_consumption_verified stay false and metrics stays null. Review flags
+    are preserved, including provider/weather review, never upgraded to energy acceptance.
+    Results/<stem>_prepare_<year>.json retains declared request/envelope/selected sources,
+    inherited configuration and existing guarded recovery transactions. Existing files
+    are not overwritten, original template/component/weather assets remain protected.
+    prepared_project gives exact project/variant/year/SIT/MET for a subsequent house task
+    or explicit native run; report_pages is validated but no report is generated here.
+    The old simulation entry still runs its annual path by default. No new sizing/PV model."""
+    current = cli()
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return prepare_design_project(current, store, spec=spec.model_dump(exclude_none=True), dry_run=dry_run)
 
 
 @categorized_tool()
