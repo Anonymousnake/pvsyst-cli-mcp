@@ -267,7 +267,8 @@ def orient_block(lines):
     return block
 
 
-def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), system_flags=("$06000000",)):
+def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), system_flags=("$06000000",),
+                   sub_flags=("$019E1002",)):
     """Verified native 8.1.6 PV-only single-subarray Grid scope; callers own flag-family validation."""
     root = _root_block(lines)
     if root.one("Version")[1] != "8.1.6":
@@ -289,8 +290,8 @@ def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), s
     if main_root.one("Flags")[1] not in main_flags or main_root.one("Flags2")[1] != "$082A":
         raise ValueError("Main array requires the caller's verified flag family and Flags2=$082A")
     sub_root = _block_of(lines, next(iter(arrays.values())))
-    if sub_root.one("Version")[1] != "8.1.6" or sub_root.one("Flags")[1] != "$019E1002":
-        raise ValueError("Subarray requires the verified 8.1.6 declaration and 019E1002 flags")
+    if sub_root.one("Version")[1] != "8.1.6" or sub_root.one("Flags")[1] not in sub_flags:
+        raise ValueError("Subarray requires native 8.1.6 and the caller's verified flag family")
     if sub_root.one("Flags2")[1] != "$20":
         raise ValueError("Subarray requires the verified Flags2=$20")
     strings = sub_root.one("NStringCh")[1]
