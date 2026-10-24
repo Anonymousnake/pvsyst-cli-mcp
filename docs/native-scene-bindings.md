@@ -37,4 +37,4 @@
 
 本机 `pvsyst-native-bindings-study/round1/public-saved-binding-review.json` 另记录真实单双朝向保存项目公开读取：GROUPED_ROOF_NATIVE.VC2为2组、SOURCED_RESIDENTIAL_HOUSE.VC1为1组，均stored_consistent；输入字节保持，零CLI/GUI/仿真。原生模式的既有持久化/计算证据见[分组场景](grouped-house-scenes.md)，不由本读取接口重复运行或升级。
 
-下一步仍是源XML空间与原生区域的独立对应，以及GUI中的可核实逐区身份入口；自动分组导入继续needs_context。本核对只提供可审查的保存数据和一致性差异，为后续连接保留真实缺口。
+下一步仍是源XML空间与原生区域的独立对应，以及GUI中的可核实逐区身份入口；自动分组导入继续needs_context。本核对只提供可审查的保存数据和一致性差异，为后续连接保留真实缺口。后续[GUI身份入口实测](native-scene-identity-map.md)确认了原生属性页路径及虚拟树语义停点，不改变本接口的false几何/消费标志。
