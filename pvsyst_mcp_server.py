@@ -1572,12 +1572,13 @@ class PlacedPVTableLayout(BaseModel):
 
 
 class NamedPVTableLayout(PlacedPVTableLayout):
-    """One named PV region; its geometry and source orientation use the existing contract."""
+    """One named region; dual-source authoring explicitly selects its stored orientation ID."""
     name: StrictStr
+    orientation_id: StrictInt | None = None
 
 
 class NamedPVTablesLayout(BaseModel):
-    """Several independently placed regions sharing the source module model and fixed plane."""
+    """Named regions on one source plane, or one region per two explicit source planes."""
     model_config = ConfigDict(extra="forbid")
     tables: Annotated[list[NamedPVTableLayout], Field(min_length=1, max_length=64)]
 
@@ -1662,15 +1663,25 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
     Their SUM of module_rows*module_columns must equal the source module total. All use
     the same source PAN. Table names must be unique ignoring case. Coplanar overlapping
     PV rectangles stop; no automatic packing or physical shading approximation is used.
+    Candidate-only dual-plane authoring accepts exactly two ordinary fixed-plane source
+    subarrays with complete exclusive8.1.0/8.1.6 branches, the same PAN/OND and distinct
+    orientations1/2. Use exactly two named tables with strict orientation_id=1/2, one
+    region per source plane, and each region's count must equal that source subarray.
+    House vertices and every origin_m stay in orientation1's local frame; only each PV
+    node gets its source-relative standard Z rotation. Roof normal/corner checks use
+    that frame. Grouped XY bounding footprints must be disjoint (adapter restriction,
+    not a collision/engineering limit). Writes version2 metadata; native auto-import
+    remains needs_context until per-table identity/geometric verification is bridged.
     Structured diagnostics locate invalid parts, vertices, triangles or table entries
     with repair hints. Fix those inputs and preview again; authored geometry is not patched.
     module_rows/columns, orientation and row/column_spacing_m remain explicit. Legacy
     house={length_m,width_m,eave_height_m,roof} plus the original margin/clearance layout
-    stays compatible; do not mix its layout with mesh mode. All parts share the source
-    azimuth rotation. The tool only serializes official COLLADA1.5/PVCollada2.0 geometry
-    and PV semantics; native project, variant and PAN bytes are never modified.
-    Source requirements are the existing bounded subset: one Grid pvSystem, one subarray,
-    one ordinary fixed plane, no shading scene or module layout, no load, storage, P50/P90
+    stays compatible; do not mix its layout with mesh mode. House parts share the source
+    anchor azimuth rotation. The tool only serializes official COLLADA1.5/PVCollada2.0
+    geometry and PV semantics; native project, variant and PAN bytes are never modified.
+    Except for the explicit dual-plane candidate above, source requirements stay one Grid
+    pvSystem/subarray/ordinary fixed plane; all modes exclude shading scene/module layout,
+    load, storage, P50/P90
     or saved horizon, complete grid counts and a northern-hemisphere site record. Module
     width and height come from a readable loose PAN in metres when available; matching
     Commercial/root aliases must agree and only XML pv:module uses millimetres. For a
@@ -1696,7 +1707,7 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
     return create_house_pv_scene(store, component_store, project=project, variant=variant,
                                  output_name=output_name, house=house.model_dump(),
-                                 layout=layout.model_dump(), dry_run=dry_run,
+                                 layout=layout.model_dump(exclude_none=True), dry_run=dry_run,
                                  module_geometry=(module_geometry.model_dump()
                                                   if module_geometry is not None else None))
 

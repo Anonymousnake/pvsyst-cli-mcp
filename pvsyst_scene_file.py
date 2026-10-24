@@ -381,25 +381,41 @@ def layout_profile(layout, modules, total, source_tilt, *, placed=False):
 
 
 def table_profiles(layout, house, modules, source):
-    """Reuse the one-table contract, validating source counts once across named regions."""
+    """Keep legacy tables unchanged; two source groups require one explicit table each."""
+    groups = {item["id"]: item for item in source.get("orientations", [])}
     if not isinstance(layout, dict) or "tables" not in layout:
+        if groups:
+            raise ValueError("Two source orientations require two named tables with orientation_id")
         return [layout_profile(layout, modules, source["module_total"], source["tilt_deg"],
                                placed=house["kind"] == "mesh")]
     if (house["kind"] != "mesh" or set(layout) != {"tables"}
             or not isinstance(layout["tables"], list) or not 1 <= len(layout["tables"]) <= MAX_TABLES):
         raise ValueError(f"Named tables require a mesh house and 1..{MAX_TABLES} table entries")
-    result, names, errors = [], set(), []
+    if groups and len(layout["tables"]) != 2:
+        raise ValueError("Grouped authoring requires exactly one table per orientation")
+    result, names, errors, assigned = [], set(), [], set()
     for index, entry in enumerate(layout["tables"]):
         path = f"layout.tables[{index}]"
         try:
-            if not isinstance(entry, dict) or set(entry) != set(PLACED_LAYOUT_KEYS) | {"name"}:
-                raise ValueError("Each named table requires name and all placed-layout fields")
+            keys = set(PLACED_LAYOUT_KEYS) | {"name"} | ({"orientation_id"} if groups else set())
+            if not isinstance(entry, dict) or set(entry) != keys:
+                raise ValueError("Each named table requires exactly its name, placement and source orientation fields")
             name = _name(entry["name"])
             if name.casefold() in names:
                 raise ValueError("PV table names must be unique, ignoring case")
             names.add(name.casefold())
-            profile = layout_profile({key: entry[key] for key in PLACED_LAYOUT_KEYS}, modules, None,
-                                     source["tilt_deg"], placed=True)
+            group = source
+            if groups:
+                identifier = entry["orientation_id"]
+                if type(identifier) is not int or identifier not in groups or identifier in assigned:
+                    raise ValueError("orientation_id must select each of source orientations 1/2 exactly once")
+                assigned.add(identifier)
+                group = groups[identifier]
+            profile = layout_profile({key: entry[key] for key in PLACED_LAYOUT_KEYS}, modules,
+                                     group["module_total"] if groups else None, group["tilt_deg"], placed=True)
+            if groups:
+                profile.update(orientation_id=identifier, azimuth_deg=group["azimuth_deg"],
+                               rotation_deg=source["azimuth_deg"] - group["azimuth_deg"])
             result.append(profile | {"name": name})
         except (ValueError, KeyError) as exc:
             errors.append(_diagnostic("pv_table_input", path, str(exc),
@@ -414,13 +430,23 @@ def table_profiles(layout, house, modules, source):
     return result
 
 
+def _rotate_z(point, degrees):
+    angle = math.radians(degrees)
+    x, y, z = point
+    return (x * math.cos(angle) - y * math.sin(angle), x * math.sin(angle) + y * math.cos(angle), z)
+
+
+def _placed_points(table):
+    points, _ = rack_mesh(table)
+    return [_rotate_z(point, table["rotation_deg"]) for point in points] if "rotation_deg" in table else points
+
+
 def check_tables(house, tables):
     errors = []
     for index, table in enumerate(tables):
         path = f"layout.tables[{index}]" if "name" in table else "layout"
         try:
-            points, _ = rack_mesh(table)
-            check_fit(house, table, _rack_origin(house, table), points)
+            check_fit(house, table, _rack_origin(house, table), _placed_points(table))
         except ValueError as exc:
             errors.append(_diagnostic("pv_roof_fit", path, str(exc),
                 repair_hint="Check this table's roof_mesh, origin_m and footprint against the source PV plane."))
@@ -429,6 +455,15 @@ def check_tables(house, tables):
         down = table["slope_span_m"] * math.cos(math.radians(table["tilt_deg"]))
         for other_index, other in enumerate(tables[:index]):
             b = _rack_origin(house, other)
+            if "orientation_id" in table:
+                corners_a = [[a[k] + p[k] for k in range(3)] for p in _placed_points(table)]
+                corners_b = [[b[k] + p[k] for k in range(3)] for p in _placed_points(other)]
+                if all(min(max(p[k] for p in corners_a), max(p[k] for p in corners_b))
+                       - max(min(p[k] for p in corners_a), min(p[k] for p in corners_b)) > TOL for k in (0, 1)):
+                    errors.append(_diagnostic("pv_group_footprints", f"layout.tables[{index}]",
+                        "Grouped authoring requires disjoint XY bounding footprints, not a physical intersection test",
+                        repair_hint="Use separate projected regions; native 3D interference remains a separate check."))
+                continue
             other_down = other["slope_span_m"] * math.cos(math.radians(other["tilt_deg"]))
             offset = (a[2] - b[2]) - math.tan(math.radians(table["tilt_deg"])) * (a[1] - b[1])
             overlap_x = min(a[0] + table["column_span_m"], b[0] + other["column_span_m"]) - max(a[0], b[0])
@@ -453,12 +488,11 @@ def _block_of(lines, bounds):
     return root
 
 
-def source_profile(store, lines, arrays, system):
-    """Reuse the bounded subset and verify every claimed gate instead of only documenting it."""
-    if system is None or len(arrays) != 1:
-        raise ValueError("Requires one pvSystem and one subarray")
-    system_root = _block_of(lines, system)
-    if system_root.one("SystemType")[1] != "Grid":
+def source_profile(store, lines, arrays, system, *, allow_groups=False):
+    """The native bridge stays single-plane; only the authoring path opts into two groups."""
+    if system is None or len(arrays) not in ((1, 2) if allow_groups else (1,)):
+        raise ValueError("Requires one pvSystem and one subarray, or two explicitly grouped authoring subarrays")
+    if _block_of(lines, system).one("SystemType")[1] != "Grid":
         raise ValueError("SystemType must be Grid")
     blocks = objects(_view(lines))
     root = next(block for block in blocks if not block.path)
@@ -472,28 +506,44 @@ def source_profile(store, lines, arrays, system):
         raise ValueError("Loads and storage are outside this batch")
     if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
         raise ValueError("P50/P90 and saved horizon objects are outside this batch")
-    bounds = next(iter(arrays.values()))
-    sub_root = _block_of(lines, bounds)
-    series = _finite(float(sub_root.one("NModSerie")[1]), "NModSerie", positive=True)
-    strings = _finite(float(sub_root.one("NStringCh")[1]), "NStringCh", positive=True)
-    if not series.is_integer() or not strings.is_integer():
-        raise ValueError("Source module counts must be integers")
-    orientation_id = sub_root.one("NoOrientation")[1]
-    if not orientation_id.isdigit():
-        raise ValueError("NoOrientation must be a positive integer")
     store._orientation_list(lines)
-    if sum(block.object_type == "pvOrient" for block in blocks) != 1:
-        raise ValueError("Requires exactly one ordinary fixed-plane orientation")
-    plane = store._orientation(lines, int(orientation_id))
-    store._ordinary_fixed_plane(lines, plane)
-    plane_root = _block_of(lines, plane)
-    tilt = _finite(float(plane_root.one("FieldTilt")[1]), "FieldTilt", minimum=0.0, maximum=90.0)
-    if tilt >= 90.0:
-        raise ValueError("FieldTilt must stay below 90 degrees")
-    azimuth = _finite(float(plane_root.one("FieldAzim")[1]), "FieldAzim", minimum=-180.0, maximum=180.0)
+    if sum(block.object_type == "pvOrient" for block in blocks) != len(arrays):
+        raise ValueError("Requires one ordinary fixed plane per subarray")
     store._require_no_geometry(lines)
     if grid_inventory(lines, arrays)["counts_valid"] is not True:
         raise ValueError("Requires complete consistent native grid counts")
+    profiles, models = [], []
+    for identifier, bounds in sorted(arrays.items()):
+        sub_root = _block_of(lines, bounds)
+        series = _finite(float(sub_root.one("NModSerie")[1]), "NModSerie", positive=True)
+        strings = _finite(float(sub_root.one("NStringCh")[1]), "NStringCh", positive=True)
+        if not series.is_integer() or not strings.is_integer():
+            raise ValueError("Source module counts must be integers")
+        orientation_id = sub_root.one("NoOrientation")[1]
+        if not orientation_id.isdigit():
+            raise ValueError("NoOrientation must be a positive integer")
+        plane = store._orientation(lines, int(orientation_id))
+        store._ordinary_fixed_plane(lines, plane)
+        plane_root = _block_of(lines, plane)
+        tilt = _finite(float(plane_root.one("FieldTilt")[1]), "FieldTilt", minimum=0.0, maximum=90.0)
+        if tilt >= 90.0:
+            raise ValueError("FieldTilt must stay below 90 degrees")
+        azimuth = _finite(float(plane_root.one("FieldAzim")[1]), "FieldAzim", minimum=-180.0, maximum=180.0)
+        models.append((sub_root.one("PVModule")[1], sub_root.one("GInverter")[1] if len(arrays) == 2 else ""))
+        if len(arrays) == 2:
+            branches, owned = store._subarray_branches(lines, arrays, identifier)
+            store._require_plane_branch_mode(owned, branches)
+            if (owned.one("Version")[1] not in ("8.1.0", "8.1.6")
+                    or owned.one("NStrOrient1")[1] != owned.one("NStringCh")[1]
+                    or any(key.startswith("NStrOrient") and key != "NStrOrient1" and owned.one(key)[1] != "0"
+                           for key in owned.fields)):
+                raise ValueError("Grouped authoring requires verified single-orientation exclusive branches")
+        profiles.append({"id": int(orientation_id), "module_total": int(series * strings), "tilt_deg": tilt,
+                         "field_azimuth_deg": azimuth, "azimuth_deg": (180.0 + azimuth) % 360.0})
+    if len(arrays) == 2 and ({p["id"] for p in profiles} != {1, 2}
+                            or len({tuple(name.casefold() for name in pair) for pair in models}) != 1):
+        raise ValueError("Two authoring groups require distinct orientations 1/2 and the same PAN/OND")
+    profiles.sort(key=lambda item: item["id"])
     sit = next((block for block in blocks if block.object_type == "pvSite"
                 and block.path == "PVObject_SiteSimul"), None)
     if sit is None:
@@ -504,11 +554,13 @@ def source_profile(store, lines, arrays, system):
     if latitude <= 0:
         raise ValueError("The azimuth conversion (180 + FieldAzim) % 360 is only verified for the northern "
                          "hemisphere; a non-positive site latitude stops here")
-    if not any(block.object_type == "pvOrient" for block in blocks):
-        raise ValueError("Requires one fixed-plane orientation record")
-    return {"module_total": int(series * strings), "tilt_deg": tilt, "field_azimuth_deg": azimuth,
-            "azimuth_deg": (180.0 + azimuth) % 360.0, "pan_name": sub_root.one("PVModule")[1],
-            "site": {"latitude": latitude, "longitude": longitude, "altitude": altitude}}
+    first = profiles[0]
+    result = {key: first[key] for key in ("tilt_deg", "field_azimuth_deg", "azimuth_deg")}
+    result.update(module_total=sum(p["module_total"] for p in profiles), pan_name=models[0][0],
+                  site={"latitude": latitude, "longitude": longitude, "altitude": altitude})
+    if len(profiles) == 2:
+        result["orientations"] = profiles
+    return result
 
 
 def house_mesh(profile):
@@ -696,7 +748,7 @@ def build_scene(house, tables, modules, source, created, recipe=None):
                            ("module_columns", str(layout["module_columns"])),
                            ("module_orientation", layout["orientation"]),
                            ("tilt", _num(layout["tilt_deg"])),
-                           ("azimuth", _num(source["azimuth_deg"])), ("module_id", "ModuleModel1")):
+                           ("azimuth", _num(layout.get("azimuth_deg", source["azimuth_deg"]))), ("module_id", "ModuleModel1")):
             ET.SubElement(rack_tag, _tag(PV, name)).text = text
         table_node = ET.SubElement(nodes, _tag(NS, "node"), {"id": f"TableModel{index}"})
         instance = ET.SubElement(table_node, _tag(NS, "instance_geometry"), {"url": f"#Rack{index}"})
@@ -717,14 +769,17 @@ def build_scene(house, tables, modules, source, created, recipe=None):
         pv_node = ET.SubElement(shared, _tag(NS, "node"), {"id": f"PVTable{index}",
                                 "name": layout.get("name", "PV table")})
         ET.SubElement(pv_node, _tag(NS, "translate")).text = " ".join(_num(value) for value in origin)
+        if "rotation_deg" in layout:
+            ET.SubElement(pv_node, _tag(NS, "rotate")).text = "0 0 1 " + _num(layout["rotation_deg"])
         pv_instance = ET.SubElement(pv_node, _tag(NS, "instance_node"), {"url": f"#TableModel{index}"})
         table_instance = ET.SubElement(_pv_extra(pv_instance), _tag(PV, "instance_table"),
                                       {"id": f"Table{index}"})
         array = ET.SubElement(table_instance, _tag(PV, "instance_racks_array"))
         ET.SubElement(array, _tag(PV, "instance_rack_ref"),
                       {"id": f"rackRef{index}", "url": f"#rackInst{index}"})
-        points, _ = rack_mesh(layout)
+        points = _placed_points(layout)
         summaries.append({"name": layout.get("name", "PV table"), "origin_m": origin,
+                          **({"orientation_id": layout["orientation_id"]} if "orientation_id" in layout else {}),
                           "module_total": layout["module_rows"] * layout["module_columns"],
                           "corners_m": [[origin[axis] + point[axis] for axis in range(3)]
                                         for point in points]})
@@ -756,13 +811,17 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             original = store._read(source_path)
             text, lines = store._text(original)
             arrays, system = store._sections(lines)
-            source = source_profile(store, lines, arrays, system)
+            source = source_profile(store, lines, arrays, system, allow_groups=True)
             modules, pan_snapshot = resolve_modules(components, source["pan_name"], module_geometry)
             pocket = house_profile(house)
             tables = table_profiles(layout, pocket, modules, source)
             check_tables(pocket, tables)
-            recipe = {"version": 1, "source": {"project": project, "variant": variant,
-                      "pan": source["pan_name"], "module_total": source["module_total"]},
+            declared = {"project": project, "variant": variant, "pan": source["pan_name"],
+                        "module_total": source["module_total"]}
+            if "orientations" in source:
+                declared["orientations"] = [{"id": item["id"], "module_total": item["module_total"]}
+                                             for item in source["orientations"]]
+            recipe = {"version": 2 if "orientations" in source else 1, "source": declared,
                       "house": {"kind": "mesh"} if pocket["kind"] == "mesh" else house,
                       "layout": layout}
             created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -784,7 +843,8 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                                   "field_tilt_deg": source["tilt_deg"],
                                   "field_azimuth_deg": source["field_azimuth_deg"],
                                   "collada_azimuth_deg": source["azimuth_deg"],
-                                  "latitude": source["site"]["latitude"]},
+                                  "latitude": source["site"]["latitude"],
+                                   **({"orientations": source["orientations"]} if "orientations" in source else {})},
                           modules=modules,
                           house=({"kind": "mesh", "part_count": len(pocket["meshes"])}
                                  if pocket["kind"] == "mesh" else pocket),
@@ -797,8 +857,14 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                 "check; writing this file does not verify a manufacturer model.")
             result["warnings"].append(
                 "Azimuth uses the COLLADA convention (north = 0, clockwise) and is only verified for a "
+                "northern-hemisphere site. House and table origins use the orientation1 anchor frame; "
+                "grouped PV nodes additionally inherit their own source-relative Z rotation."
+                if "orientations" in source else
+                "Azimuth uses the COLLADA convention (north = 0, clockwise) and is only verified for a "
                 "northern-hemisphere site. House and table share one parent rotation, so the table translation "
                 "is expressed in the house local frame.")
+            if "orientations" in source:
+                result["warnings"].append("Two-orientation authoring is candidate-only; native automatic import remains needs_context.")
             if pocket["kind"] == "mesh":
                 result["warnings"].append(
                     "House geometry is AI/caller-authored, not reconstructed from a fixed roof template. "
