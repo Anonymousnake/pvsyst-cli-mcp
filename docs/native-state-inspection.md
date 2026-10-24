@@ -9,7 +9,7 @@
 | `transformers` | 每个原生TransformerNode的七项存储字段、层级深度与嵌套关系；`count`是序列化层数，不是变压器台数。不换算电压、参考功率或铁铜损 |
 | `system_unavailability` | pvSystem自身SystemUnavail的模式、目标比例/段数/时长/种子和存储时段；与WeakGrid电网可用性分开，不从种子生成或重新安排时段 |
 | `peak_shaving` | 已记录PeakShaving的AfterSunset或小时窗、功率/SOC/效率原始字段；使用既有owner解析跳过嵌套对象，不把子对象同名字段当主字段。不计算调度或端点包含关系 |
-| `shading_scene` | owner标志、ListeObjets内物体计数和类型、owner存储标量；原生分组位于该列表之后，不计入物体。坐标、几何和遮挡不解码 |
+| `shading_scene` | owner标志、ListeObjets内物体计数和类型、owner存储标量；原生分组位于该列表之后，不计入物体。后续新增[保存PV表关联](native-scene-bindings.md)与原生坐标声明读取；不解码一般网格/遮挡，不把原生坐标当房屋坐标或源几何认证 |
 | `ageing.template` | 已验证模板的11个原生模式、保留/分配/RMS和保修列表字段；保修数组保持存储文本，旧年数/均值编辑范围不变 |
 | `subarrays[].iam` | 组件缓存、ASHRAE、FresnelSmooth、UserProfile的有效/存储模型分开报告；后两类可读存储点值，不计算曲线 |
 | `p50_p90` | 对已记录四种root flags读取实际存在的14字段块；没有块仍报none，不构造概率页或推算概率 |
