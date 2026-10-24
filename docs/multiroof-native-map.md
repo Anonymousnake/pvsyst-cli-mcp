@@ -44,7 +44,7 @@
 
 ## 产品桥仍有边界
 
-source_profile当前只接受1子阵/1pvOrient；table_profiles的每个区都取源倾角与方位，PlacedPVTableLayout没有朝向身份/角度字段。SceneRoot使用一个共同旋转。原生回读验证要求每张pvShdArrayTable.NoOrient=1，因此单纯给电气源添平面不会自动打开多屋面流程。
+自动原生桥的source_profile默认仍只接受1子阵/1pvOrient，原生回读验证仍要求每张pvShdArrayTable.NoOrient=1。后续[有限双朝向作者](grouped-house-scenes.md)只让创建路径显式读取2组，并扩命名表orientation_id/每PV相对旋转与版本2严格回读，Grouped文件自动导入返回needs_context；不是解除原生身份/完整几何验证门槛，因此单纯添电气平面仍不自动打开多屋面交付。
 
 现有`_link_orientation`从Shift+Ctrl+O进入TOrientManageForm，验证录制尺寸，按坐标在TVirtualStringTree拖拽导入组/源组；只读取TActionSelectionForm当前组合框文字并要求“修改光伏场区的参数”，不枚举多系统的树节点身份。删除空组的行号仍依1..2区录制布局计算。本次研究没有解除这些生产门禁，也不放松reader的完整重建/规范化比较。
 
@@ -79,4 +79,4 @@ GUI研究的其他停点也保留：预检辅助脚本误把ready_to_open期待�
 
 `multiplane-electrical-map [magpie/mw/deepseek-v4.1-flash-sg]`与`multiroof-native-link-map [magpie/mw/deepseek-v4.1-flash-sg]`完成首批限定盘点；父不采纳“总硬件守恒没有路径”及套用旧三子阵-2.1833kWh到新二子阵的推断。后续`native-multiroof-identity-map [magpie/mw/deepseek-v4.1-flash-sg]`实际加载ponytail/reverse-engineering后只读检查新持久化证据，未执行GUI或测试。采纳身份/几何等价缺口；不把拖拽前快照当重载后尚未修复，也不采纳“多根只是两个旋转字段”的过度简化。当前接口还需要来源分组、数量/分配、几何/身份及严格回读契约。
 
-本批只有文档变化，无产品代码或新增永久测试；未跑全量发现、旧smoke、哈希测试或no-hash探针。生产输入守卫正常保留。下一批基于上述已证入口实现有限双朝向连接，家具、五金、材质及已暂停Module Layout不增加，未知拓扑/版本继续停止。
+上述原生研究批次只有文档变化，无产品代码或新增永久测试；未跑全量发现、旧smoke、哈希测试或no-hash探针。生产输入守卫正常保留。之后候选作者/回读实现及公开契约另见[有限双朝向场景](grouped-house-scenes.md)，自动原生连接尚待对应验证；家具、五金、材质及已暂停Module Layout不增加，未知拓扑/版本继续停止。

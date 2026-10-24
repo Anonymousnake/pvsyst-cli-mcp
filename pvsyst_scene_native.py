@@ -522,6 +522,9 @@ def _preflight(components, cli, scene_name, module_geometry):
     if scene.get("status") != "ready":
         return {"status": "needs_context", "scene": scene,
                 "reason": "The scene readback is not ready; fix the recipe first."}
+    if scene.get("source", {}).get("orientations"):
+        return {"status": "needs_context", "scene": scene,
+                "reason": "Grouped authoring is a candidate only; per-table native identity/geometric verification is not bridged"}
     args = scene["create_arguments"]
     geometry = scene["geometry"]
     tables = int(geometry["pv_table_count"])
