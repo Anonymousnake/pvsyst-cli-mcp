@@ -152,10 +152,12 @@ def read_house_pv_scene(components, scene_name):
                     _fail("asset/subject", "Unrecognized scene authoring metadata")
                 recipe = json.loads(subject[0].text or "")
                 if (not isinstance(recipe, dict) or set(recipe) != {"version", "source", "house", "layout"}
-                        or type(recipe["version"]) is not int or recipe["version"] != 1):
-                    _fail("asset/subject", "Only the complete version 1 recipe is supported")
+                        or type(recipe["version"]) is not int or recipe["version"] not in (1, 2)):
+                    _fail("asset/subject", "Only complete version 1 or 2 recipes are supported")
+                grouped = recipe["version"] == 2
                 declared = recipe["source"]
-                if (not isinstance(declared, dict) or set(declared) != {"project", "variant", "pan", "module_total"}
+                keys = {"project", "variant", "pan", "module_total"} | ({"orientations"} if grouped else set())
+                if (not isinstance(declared, dict) or set(declared) != keys
                         or type(declared["module_total"]) is not int or declared["module_total"] < 1):
                     _fail("asset/subject#source", "Source declarations require a strict positive module total")
                 project_name(declared["project"])
@@ -164,6 +166,29 @@ def read_house_pv_scene(components, scene_name):
                 house = {"kind": "mesh", "meshes": parts} if recipe["house"] == {"kind": "mesh"} else recipe["house"]
                 pocket = house_profile(house)
                 layout = recipe["layout"]
+                if grouped:
+                    groups = declared["orientations"]
+                    if (not isinstance(groups, list) or len(groups) != 2 or len(racks) != 2
+                            or any(not isinstance(item, dict) or set(item) != {"id", "module_total"}
+                                   or type(item["id"]) is not int or type(item["module_total"]) is not int
+                                   or item["module_total"] < 1 for item in groups)
+                            or [item["id"] for item in groups] != [1, 2]
+                            or sum(item["module_total"] for item in groups) != declared["module_total"]):
+                        _fail("asset/subject#source", "Version 2 requires complete source groups 1/2 and their exact total")
+                    if (not isinstance(layout, dict) or set(layout) != {"tables"}
+                            or not isinstance(layout["tables"], list) or len(layout["tables"]) != 2):
+                        _fail("asset/subject#layout", "Version 2 requires two named source-oriented tables")
+                    profiles = []
+                    for index, entry in enumerate(layout["tables"]):
+                        identifier = entry.get("orientation_id") if isinstance(entry, dict) else None
+                        if type(identifier) is not int or identifier not in (1, 2):
+                            _fail("asset/subject#layout", "Table orientation identity must be a strict source ID")
+                        plane = _source(asset, _one(racks[index], "n:extra/n:technique/pv:rack"))
+                        profiles.append(dict(plane, id=identifier, module_total=groups[identifier - 1]["module_total"]))
+                    profiles.sort(key=lambda item: item["id"])
+                    if [item["id"] for item in profiles] != [1, 2]:
+                        _fail("asset/subject#layout", "Each source orientation must be assigned exactly once")
+                    source = dict(profiles[0], orientations=profiles)
                 source["module_total"] = declared["module_total"]
                 tables = table_profiles(layout, pocket, modules, source)
                 check_tables(pocket, tables)
