@@ -108,6 +108,8 @@ MCP 状态另记“已有受限入口 / 尚无专用配置入口 / 已验收实�
 
 后续[保存PV区域关联读取](native-scene-bindings.md)复用已有参数读取与对象解析器，暴露原生PV坐标/原文字段、每表NoOrient引用及逐组组件数，状态区分stored_consistent/needs_review/unsupported。真实单双朝向保存配置只读核对、输入保持及损坏声明公共契约已证；零CLI/GUI/仿真，几何/原生消费标志仍false。移动坐标但不改引用/数量仍可能stored_consistent，故它是保存声明的可观察性/差异核对，不是上述通用身份验证器。
 
+再后续[原生GUI身份入口实测](native-scene-identity-map.md)：8.1.6rev49278/CN/DPI96、已保存2PV配置，实际UIAutomation对朝向管理器左右VTV均为无名称Pane/0后代/0模式，WM_GETOBJECT客户端0；属性TTableFieldForm可读取实际名称、18组件及28/0、28/90，但位置摘要只有低精度原生值，框架参考7选项也不直接等于序列化枚举。WM_PRINT空EMF未得到文字。整个实际Popen会话零导入/另存/仿真/阴影表计算，取消已知确认后正常退出/恢复INI、19输入字节不变。身份/源坐标缺口仍保留，不写桌面框架或自动升级分组导入。
+
 ### 房屋一次性建模补齐：R45
 
 | 功能组 | 入口 / 当前状态 | 本批证据与剩余边界 |
