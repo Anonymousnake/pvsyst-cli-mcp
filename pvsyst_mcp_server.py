@@ -484,8 +484,16 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     units depend on the native mode (kW or kVA). Nested owning object fields are
     excluded; this does not widen write support.
     Read-only transformers, system_unavailability, peak_shaving and shading_scene expose
-    stored native layers, outage periods, strategy and scene declarations. These values
-    are not computed electrical quantities, dispatch or decoded geometry. Ageing reports
+    stored native layers, outage periods, strategy and scene declarations. Active
+    shading_scene.pv_bindings additionally exposes one/two native8.1.6 PVCollada PV-table
+    declarations: raw automatic labels/creation counters, stored orientation IDs, module
+    counts and native DOrigine metres (NOT house/PVCollada coordinates). Cross-checks
+    ordinary fixed-plane references, three angle fields and per-plane saved module totals.
+    stored_consistent means these declarations agree, not source geometry/identity,
+    circuit topology or native consumption verified. Unsupported/malformed records retain
+    the scene's active declaration and report an issue, never an empty/verified scene.
+    Generic meshes are not decoded. These are not computed electrical quantities or
+    dispatch. Ageing reports
     its stored template fields; IAM includes native FresnelSmooth/UserProfile point tables
     without evaluating them. A broader readable P50 root state does not widen writing."""
     return variant_call("inspect_parameters", project, variant)
