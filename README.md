@@ -30,8 +30,6 @@ cd path\to\pvsyst-cli-mcp
 py -m pip install -r requirements.txt
 $env:PVSYST_CLI = 'C:\Program Files\PVsyst8.1.6\PVsystCLI.exe'
 $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
-py -m unittest discover -s tests -v
-py tests\smoke_stdio.py   # real CLI: capability, license, project queries only
 ```
 
 Configure a local stdio MCP client, substituting the Python executable and paths on your machine:
@@ -52,6 +50,8 @@ Configure a local stdio MCP client, substituting the Python executable and paths
 ```
 
 Restart the client after editing its MCP configuration. The server requires Python MCP SDK 2.x (`requirements.txt`).
+
+After connecting, call `pvsyst_capabilities` and `pvsyst_license_info` to read the installed CLI's supported commands and license/quota. These queries do not run a simulation.
 
 ## MCP tools by workflow
 
@@ -694,6 +694,14 @@ Batch mode differs from a regular run: set `batch_params_name` and `batch_rvt_na
 Batch automatic output directories and predicted CSV targets use the same resolved workspace boundary checks as explicit MCP paths. External directory links, junctions and escaping file links are rejected before simulation launch, including `UserHourly` and `UserBatch` outputs.
 
 ## Validation
+
+Verification is separate from installation. Use only the explicitly named non-hash public contract files for the current change, with their required fixtures configured explicitly. Full test discovery and legacy smoke scripts are not the default acceptance procedure. A missing-fixture `skip` is not a pass or native acceptance; report protocol boundary checks and native execution evidence separately.
+
+Cross-machine reproduction requires the user's own legally available PVsyst installation and local project, component and weather assets. Follow each selected contract's fixture directory and declared JSON input requirements; where a native-export fixture is required, create it through the native workflow documented in the linked phase record. The repository does not distribute those assets or completed native case workspaces.
+
+For a handoff, record the code revision, PVsyst version/build, workspace layout and fixture-generation steps, GUI language/DPI where applicable, weather time basis, retained review items and the exact inputs/outputs used. Share only permitted request/response records, manifests and reports; keep original commercial and private assets local. `prepared`, execution completion and engineering/source review are distinct states. See the [native entry map](docs/native-entry-map.md) and each workflow's acceptance evidence for their boundaries.
+
+The records below describe historical runs in their stated environments. They are not a fresh verification of another installation or a requirement to rerun the listed legacy scripts.
 
 - 8.0.6: existing demo project full-year hourly simulation; generated SFI with 8760 numeric rows.
 - 8.1.6: full-year simulation with 8760 rows, date-limited simulation with 48 rows and PDF report, official `create-site` generated a SIT, vendor sample CSV+MEF+SIT converted to MET, and a short simulation/results query through a real MCP stdio client.
