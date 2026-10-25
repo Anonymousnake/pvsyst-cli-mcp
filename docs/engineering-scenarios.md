@@ -32,15 +32,23 @@ compare_engineering_scenarios(
 
 未给运行清单，或旧清单缺少完整绑定时，仍可查看数值差异，但返回 `needs_review`、`historical_input_binding_verified=false`；条件比较明确标为当前保存状态。显式提供完整新清单却发现漂移、错误引用或未完成运行时停止，不静默退回“已绑定”。需要比较改动前后配置时，保留独立基准和候选工程，不覆盖旧VC后再把当前配置归给旧CSV。
 
+逐时负荷的保存摘要省略原生 `Day_*` 缓存内容，因此不能只凭相同FileName/摘要宣布相同负荷。只有双方运行绑定均已核实 `load_binding.embedded_snapshot_matches=true`，年份、固定时基、UTC偏移、行数及源/profile名称相同，且 `load_manifest/load_source/load_profile` 三项绑定资产完全相同，才将同FileName下的绝对 `UserHourlyParams` 目录位置差异单列为 `normalized_location_differences`。这仅处理 `PathName` 及其交接副本/位置标识，不忽略文件名、其它负荷字段或真实缓存输入差异；原始值仍保留。缺少该证明时负荷不列入已确认共同条件，保留复核。
+
 ## 指标与解释
 
 结果复用已有严格CSV读取和 `compare_results`：时间轴必须逐行一致、严格递增且唯一；共同列必须有相同的明确单位。缺测按缺失计数，既不填0，也不根据别列推算。没有共同可比较列时停止。不同方案独有的原生列在各自摘要中保留，并明确其它方案缺失。
 
-既有AC光储列如 `EFrGrid/E_Grid/E_User/E_Miss/EBatCh/EBatDis/SOC_Beg/SOC_End` 以及实际出现的 `EToGrid/SOC` 分别报告，不擅自合并或改名。W/kW在稳定时间步下积分为kWh；完整电量只在该列全部样本有限时给出，部分观测电量单独披露。SOC保留原生ratio或%，不积分为可用电量；原生电池侧列不冒称AC端口额定功率。PR与辐照不套用电池调度模型，也不对光储直接应用纯并网PR公式。
+既有AC光储列如 `EFrGrid/E_Grid/E_User/E_Miss/EBatCh/EBatDis/SOC_Beg/SOC_End` 以及实际出现的 `EToGrid/SOC` 分别报告，不擅自合并或改名。W/kW在稳定时间步下积分为kWh；完整电量只在该列全部样本有限时给出，部分观测电量单独披露。`EArray/EUseful/EDirUse/E_Solar/EUnused` 均从软件直接列读取，分别显示双方时段电量与差值；缺少原生列时不由其它列相减补造。直接利用、有效供能和太阳能供能保留各自原生定义，不自动视为同一个自用指标。
+
+`EBatCh/EBatDis` 明确为电池DC侧输出，不能冒称AC充电器输入、电池逆变器输出或端口额定功率；本比较也不按效率反推另一侧。SOC和 `SolFrac` 只接受原生ratio或%，不积分为kWh。SolFrac仅报告原生配对样本平均差，不将普通小时比例平均冒充年电量加权比例。PR与辐照不套用电池调度模型，也不对光储直接应用纯并网PR公式。
+
+每方案 `result_summary.columns` 记录首时段 `first_value`、最小/最大值及其时刻；首样本缺测保持null，不改取后一个有限值。`metrics[].soc_changes` 给出双方SOC首样本、各自时段最小/最大值和差值；最低/最高差值可以来自不同时刻，不是逐时配对最大差。`SOC_Beg` 的首样本是原生首时段开始SOC，`SOC_End` 首样本是首时段结束SOC，不能在没有SOC_Beg时当作初始SOC。观测极值不证明触及保存的配置限值，也不换算可用电量。
 
 摘要说明候选减基准的上网、购电、未供负荷和削峰等原生变化，保留共同条件、有意改动和未声明差异。关键时段给出每个共同指标最大绝对差的时间、基准值、候选值和单位。多条件同时变化时不分摊因果。短时输出只解释所给时段，不外推全年；完整8760/8784小时年仍不等于来源、物理或设计认证。
 
 ## 输出与状态
+
+`EDirUse` 和 `EUseful` 沿用原生通道含义，不能自动等同直接供用户负荷或用户自用率；本例 `EDirUse` 年值大于用户负荷，报告保留原生名称与数值，不按名称擅自重新归类。
 
 `output_name` 是不含目录的 `.json` 文件名；输出在Results下使用相同stem的JSON、CSV和中文Markdown。CSV为每方案指标与候选减基准的长表，空单元格表示缺失或不可积分；Markdown包含条件、指标、关键时段、假设与复核。JSON保留运行时和当前交接、条件依据、缺列、覆盖率、差异及产物路径。原始商业模型和天气不复制到报告中。
 
