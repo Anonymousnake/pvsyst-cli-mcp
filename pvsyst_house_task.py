@@ -4,16 +4,14 @@ from __future__ import annotations
 import csv
 import json
 import math
-import os
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 import time
 
 from pvsyst_cli import VAR_GROUPS, build_sfi, iter_result_csv, result_units, validate_report_pages
 from pvsyst_component_editor import objects
-from pvsyst_paths import safe_filename, variant_id, workspace_file
+from pvsyst_paths import safe_filename, variant_id, workspace_file, write_json as _save
 from pvsyst_results import annual_summary, fingerprint
 from pvsyst_scene_file import create_house_pv_scene, house_profile, table_profiles, check_tables
 from pvsyst_scene_reader import read_house_pv_scene
@@ -21,25 +19,6 @@ import pvsyst_scene_native as native
 from pvsyst_native_project import _open, _processes, open_native_project
 
 PHASES = ("initialized", "project_created", "scene_created", "prepared", "native_saved", "gui_closed", "simulated", "completed")
-
-
-def _save(path, record, first=False):
-    payload = json.dumps(record, ensure_ascii=True, allow_nan=False, indent=2) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if first:
-        with path.open("x", encoding="utf-8") as stream:
-            stream.write(payload)
-        return
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                         prefix=".house-task-", delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(payload)
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def _public(record):
@@ -271,6 +250,18 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
             if position() >= PHASES.index("native_saved"):
                 native._verify_new(paths["native_variant"], store._read(paths["working_variant"]),
                                    plan["house_parts"], plan["pv_tables"], plan["source"]["module_total"])
+            if record["phase"] == "prepared":
+                # This task creates only VC0; another VC may be an unrecorded native SaveAs.
+                candidates = [variant_id(member) for member in cli.list_variants(request["new_project"])
+                              if member.upper() != "VC0"]
+                if candidates:
+                    return {**_public(record), "status": "needs_attention", "stage": "native_save_reconciliation",
+                            "native_consumption_verified": False,
+                            "unrecorded_native_variants": [
+                                {"variant": member, "file": str(store._path(request["new_project"], member))}
+                                for member in candidates],
+                            "issues": ["Unrecorded native variants exist; inspect them before resuming. "
+                                       "The bridge did not reopen, reimport or modify the checkpoint."]}
             if position() < PHASES.index("gui_closed"):
                 ready = open_native_project(store, cli, project=request["source_project"], dry_run=True)
                 if ready["status"] != "ready_to_open":
