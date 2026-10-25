@@ -45,6 +45,7 @@ from pvsyst_weather import inspect_weather_csv
 from pvsyst_weather_acquisition import download_weather, search_locations
 from pvsyst_weather_flow import prepare_weather
 from pvsyst_weather_review import review_weather
+from pvsyst_engineering_brief import EngineeringBriefRequest, review_engineering_brief
 
 # Strict numbers reject booleans and numeric strings, so a JSON true or "20" never
 # becomes a design number. Defined before the first tool signature that uses it.
@@ -91,7 +92,7 @@ TOOL_GROUPS = {
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
                    "pvsyst_simulate_design", "pvsyst_prepare_sourced_design", "pvsyst_run_house_task", "pvsyst_run_sourced_house_task"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
-    "Engineering": ("pvsyst_project_handoff", "pvsyst_run_engineering_task",
+    "Engineering": ("pvsyst_review_engineering_brief", "pvsyst_project_handoff", "pvsyst_run_engineering_task",
                     "pvsyst_compare_engineering_scenarios", "pvsyst_export_engineering_delivery"),
 }
 TOOL_CATEGORY = {name: category for category, names in TOOL_GROUPS.items() for name in names}
@@ -112,7 +113,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
                           "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system",
-                          "pvsyst_project_handoff", "pvsyst_run_engineering_task",
+                          "pvsyst_review_engineering_brief", "pvsyst_project_handoff", "pvsyst_run_engineering_task",
                           "pvsyst_compare_engineering_scenarios", "pvsyst_export_engineering_delivery")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
@@ -2767,6 +2768,20 @@ class EngineeringScenario(BaseModel):
     year: StrictInt | None = None
     nominal_dc_power_kw: StrictNum | None = None
     assumptions: list[StrictStr] | None = None
+
+
+@categorized_tool()
+def pvsyst_review_engineering_brief(brief: EngineeringBriefRequest) -> dict:
+    """Review caller-structured cited engineering facts before a native project exists.
+    Aggregate same-scope conflicts, whole-string and block quantities, declared DC/AC
+    arithmetic, nameplate Pmax versus Vmp*Imp and missing exact PAN/OND/hourly weather.
+    Use explicit count/W/kW/kWh/V/A/deg/m units and PDF physical page citations; no
+    automatic unit conversion, chapter selection, equipment or topology inference.
+    Readonly with no files, PDF, native executable, license, network, GUI or INI access.
+    Source quotes remain caller declarations. Returns blocked or needs_review only;
+    even consistent facts do not certify equipment, physics or engineering readiness.
+    """
+    return review_engineering_brief(brief)
 
 
 @categorized_tool()
