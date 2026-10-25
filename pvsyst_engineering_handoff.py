@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
+import ntpath
 
 from pvsyst_component_editor import objects
-from pvsyst_paths import project_name, variant_id, workspace_file
+from pvsyst_paths import project_name, safe_filename, variant_id, workspace_file
 from pvsyst_tracking import _view
 
 
@@ -27,7 +28,7 @@ def _root_values(block, names):
 def _load_records(blocks):
     records = []
     for block in blocks:
-        if "load" not in block.object_type.casefold():
+        if block.object_type.casefold() != "pvload":
             continue
         values, omitted = {}, []
         for name in sorted(block.fields):
@@ -139,17 +140,30 @@ def build_project_handoff(store, *, project, variant, declarations=None):
                                         "action": "确认该子阵保存的唯一设备引用。"})
             load = _load_records(blocks)
             for row in load["objects"]:
-                for field, value in row["values"].items():
-                    if "file" in field.casefold() and value.lower().endswith(".csv"):
-                        try:
-                            file = workspace_file(store.workspace, "UserData", value, ".csv")
-                            resolution = "workspace" if file.is_file() else "missing"
-                        except (ValueError, OSError):
-                            resolution = "invalid"
-                        dependency("load", value, resolution, "确认负荷来源、年份、单位与时基；外部CSV路径本身不证明原生缓存已消费。")
-                        if resolution != "workspace":
-                            missing.append({"field": "load." + field, "reason": resolution,
-                                            "action": "补充该负荷源文件及年份、单位、时间基准说明；保留原生已存缓存，不推断其消费结果。"})
+                values = row["values"]
+                if values.get("HourlyLoad") != "THourlyParams":
+                    continue
+                name, saved_path = values.get("FileName"), values.get("PathName")
+                matches = False
+                try:
+                    safe_filename(name, ".csv")
+                    file = workspace_file(store.workspace, "UserHourlyParams", name, ".csv")
+                    resolution = "workspace" if file.is_file() else "missing"
+                    matches = isinstance(saved_path, str) and bool(saved_path) and (
+                        ntpath.normcase(ntpath.normpath(saved_path)) == ntpath.normcase(ntpath.normpath(str(file.parent))))
+                except (ValueError, OSError):
+                    resolution = "invalid"
+                row["hourly_source"] = {"file_name": name, "saved_path": saved_path,
+                    "workspace_folder": "UserHourlyParams", "workspace_file": resolution == "workspace",
+                    "runtime_binding_verified": False}
+                action = "确认负荷来源、年份、单位与时基，并由运行入口核对原生小时快照；保存路径或同名CSV不证明已经消费。"
+                item = dependency("load", name, resolution, action)
+                item.update(saved_path=saved_path, workspace_folder="UserHourlyParams", path_matches_workspace=matches)
+                if resolution != "workspace":
+                    missing.append({"field": "load.FileName", "reason": resolution,
+                                    "action": "在UserHourlyParams提供该负荷源文件及年份、单位、时间基准说明；不读取保存路径指向的外部文件。"})
+                if not matches:
+                    review.append("小时负荷保存的PathName与当前工作区UserHourlyParams不一致；这里只列同名工作区文件，不跟随外部路径。")
             review.extend(str(item) for item in structure.get("issues", []))
             review.extend(str(item) for item in structure.get("warnings", []))
             review.extend("未完成的保存结构检查：" + str(item) for item in structure.get("unchecked_checks", []))

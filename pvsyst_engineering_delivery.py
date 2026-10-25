@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+from copy import deepcopy
 from pathlib import Path
 import zipfile
 
@@ -29,11 +30,23 @@ def _json_block(value):
 
 def _summary(task, handoff, manifest_name, comparison=None, delivery_review_required=False):
     metrics = task.get("metrics") or {}
-    names = (("grid_energy_kwh", "年并网电量", "kWh"), ("array_energy_kwh", "年阵列有效电量", "kWh"),
-             ("clipping_loss_kwh", "逆变器超额功率损失 IL_Pmax", "kWh"),
-             ("pr_percent", "标准 PR", "%"), ("nominal_dc_power_kw", "铭牌直流容量", "kWp"),
-             ("incident_irradiation_kwh_m2", "阵列面年辐照", "kWh/m²"))
+    storage = any(key in metrics for key in ("grid_import_kwh", "load_energy_kwh", "battery_charge_kwh", "initial_soc"))
+    if storage:
+        names = (("grid_import_kwh", "年电网购电", "kWh"), ("grid_export_kwh", "年上网电量", "kWh"),
+                 ("load_energy_kwh", "年用户负荷", "kWh"), ("unmet_load_kwh", "年未供负荷", "kWh"),
+                 ("battery_charge_kwh", "年电池侧充电", "kWh"), ("battery_discharge_kwh", "年电池侧放电", "kWh"),
+                 ("unused_energy_kwh", "年未用电量", "kWh"))
+    else:
+        names = (("grid_energy_kwh", "年并网电量", "kWh"), ("array_energy_kwh", "年阵列有效电量", "kWh"),
+                 ("clipping_loss_kwh", "逆变器超额功率损失 IL_Pmax", "kWh"),
+                 ("pr_percent", "标准 PR", "%"), ("nominal_dc_power_kw", "铭牌直流容量", "kWp"),
+                 ("incident_irradiation_kwh_m2", "阵列面年辐照", "kWh/m²"))
     metric_rows = [(label, metrics[key], unit) for key, label, unit in names if key in metrics]
+    if storage:
+        metric_rows.extend([(label, metrics[key], "ratio") for key, label in
+                            (("initial_soc", "首小时SOC"), ("soc_begin_min", "小时开始SOC最小值"),
+                             ("soc_begin_max", "小时开始SOC最大值"), ("soc_end_min", "小时结束SOC最小值"),
+                             ("soc_end_max", "小时结束SOC最大值")) if key in metrics])
     changes = task.get("changes") or []
     warnings = list(task.get("warnings") or []) + list(handoff.get("review_items") or [])
     if comparison:
@@ -52,16 +65,24 @@ def _summary(task, handoff, manifest_name, comparison=None, delivery_review_requ
                          for row in changes[:6]]) if changes else "本任务没有记录参数变更；以 inputs.md 中的实际保存输入为准。")
     lines.extend(["", "## 年度结果", "",
                   _table(("指标", "原生结果汇总", "单位"), metric_rows) if metric_rows else "运行清单未提供上述年度指标。"])
+    if storage:
+        lines.extend(["", "电池充放电按原生电池侧导出量展示，不能直接当作AC侧功率限值；SOC采用0..1分数。"])
+        if metrics.get("missing_metrics"):
+            lines.append("未导出的指标保留未记录：" + _cell(metrics["missing_metrics"]) + "。")
     if comparison:
         lines.extend(["", "## 方案比较", "", "比较记录状态：" + _cell(comparison["status"]), ""])
         lines.extend("- " + _cell(item) for item in (comparison.get("summary") or [])[:4])
         deltas = []
         for row in comparison.get("metrics") or []:
-            energy = row.get("summary", {}).get("E_Grid")
-            if isinstance(energy, dict):
-                deltas.append((row.get("baseline_label"), row.get("target_label"), energy.get("delta_energy_kwh")))
+            order = (("EFrGrid", "电网购电"), ("E_Miss", "未供负荷"), ("EBatCh", "电池侧充电"),
+                     ("EBatDis", "电池侧放电"), ("E_Grid", "上网电量"), ("E_User", "用户负荷"),
+                     ("EUnused", "未用电量")) if storage else (("E_Grid", "并网电量"),)
+            for column, label in order:
+                energy = row.get("summary", {}).get(column)
+                if isinstance(energy, dict):
+                    deltas.append((row.get("baseline_label"), row.get("target_label"), label, energy.get("delta_energy_kwh")))
         if deltas:
-            lines.extend(["", _table(("基准", "候选", "候选减基准的完整并网电量差(kWh)"), deltas)])
+            lines.extend(["", _table(("基准", "候选", "指标", "候选减基准的完整电量差(kWh)"), deltas)])
         lines.extend(["", "各方案的明确变更、关键时段和限制见 comparison.md；逐项数据见 comparison.csv，工程与原生结果已一并收录。"])
     lines.extend(["", "## 交接事项", ""])
     lines.extend("- " + _cell(item) for item in warnings[:5])
@@ -128,6 +149,16 @@ def _stamp(path):
     return stat.st_size, stat.st_mtime_ns, stat.st_ino
 
 
+def _saved_inputs(saved):
+    saved = deepcopy(saved)
+    if isinstance(saved, dict):
+        for row in saved.get("load", {}).get("objects", []):
+            if isinstance(row, dict) and isinstance(row.get("hourly_source"), dict):
+                # Older run records included this workspace-location observation among saved inputs.
+                row["hourly_source"].pop("path_matches_workspace", None)
+    return saved
+
+
 def _comparison_report(store, comparison_name, load_run):
     safe_filename(comparison_name, ".json")
     path = _result_path(store, comparison_name, ".json")
@@ -168,7 +199,7 @@ def _comparison_report(store, comparison_name, load_run):
         csv_name = safe_filename(scenario["csv_name"], ".csv")
         task = load_run(store, manifest, project=project, variant=variant, csv_name=csv_name)
         if (not isinstance(scenario.get("input_handoff"), dict)
-                or scenario["input_handoff"].get("saved") != task["input_handoff"].get("saved")):
+                or _saved_inputs(scenario["input_handoff"].get("saved")) != _saved_inputs(task["input_handoff"].get("saved"))):
             raise ValueError("Comparison scenario inputs differ from its recorded native run")
         bindings.append({"run_manifest_name": manifest, "project": project, "variant": variant,
                          "csv_name": csv_name, "label": scenario.get("label", project + "/" + variant), "task": task})
@@ -223,7 +254,7 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
                         or handoff.get("variant", "").upper() != variant):
                     raise ValueError("Runtime input handoff does not identify this working project and variant")
                 current = build_project_handoff(store, project=project, variant=variant, declarations=handoff.get("declarations"))
-                if current["status"] == "blocked" or current["saved"] != handoff.get("saved"):
+                if current["status"] == "blocked" or _saved_inputs(current["saved"]) != _saved_inputs(handoff.get("saved")):
                     raise ValueError("Saved inputs differ from the run-time handoff; no mismatched delivery was created")
                 project_path, variant_path = store._path(project), store._path(project, variant)
                 csv_path = _result_path(store, run["artifacts"]["csv"], ".csv")
