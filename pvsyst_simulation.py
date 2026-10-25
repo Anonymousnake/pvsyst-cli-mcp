@@ -7,24 +7,27 @@ import math
 import subprocess
 from pathlib import Path
 
-from pvsyst_cli import PVsystError, VAR_GROUPS, build_sfi, validate_report_pages
+from pvsyst_cli import PVsystError, VAR_GROUPS, build_sfi, validate_report_pages, iter_result_csv, result_units
 from pvsyst_components import electrical_inventory
 from pvsyst_sizing import plan_capacity
 from pvsyst_paths import project_path, variant_id, workspace_file
 from pvsyst_pan import validation_fields as pan_validation_fields
 from pvsyst_weather_flow import load_weather_manifest, compare_native_weather, inspect_met_calendar
 from pvsyst_results import annual_summary, fingerprint
+from pvsyst_tracking import create_tracking_variant
 
 
 def simulate_template(cli, store, *, template_project="", variant="", new_project="",
                       pan_name="", ond_name="", site_name="", met_name="",
                       tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
-                      report_pages=None):
+                      report_pages=None, tracking=None, tracking_variant="",
+                      nominal_dc_power_kw=None, tracking_power_source=""):
     # ponytail: one workspace lock; separate workspaces for parallel native runs.
     with store.lock:
         return _simulate_template(cli, store, template_project, variant, new_project,
                                   pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses,
-                                  report_pages=report_pages)
+                                  report_pages=report_pages, tracking=tracking, tracking_variant=tracking_variant,
+                                  nominal_dc_power_kw=nominal_dc_power_kw, tracking_power_source=tracking_power_source)
 
 
 def prepare_template(cli, store, **kwargs):
@@ -36,7 +39,9 @@ def prepare_template(cli, store, **kwargs):
 def _simulate_template(cli, store, template_project="", variant="", new_project="",
                        pan_name="", ond_name="", site_name="", met_name="", tilt=None, year=None,
                        dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
-                       *, report_pages=None, prepare_only=False, preparation_context=None):
+                       *, report_pages=None, prepare_only=False, preparation_context=None,
+                       tracking=None, tracking_variant="", nominal_dc_power_kw=None, tracking_power_source=""):
+    tracking_mode = tracking is not None
     request = dict(template_project=template_project, variant=variant, new_project=new_project,
                    pan_name=pan_name, ond_name=ond_name, site_name=site_name, met_name=met_name,
                    tilt=tilt, year=year)
@@ -62,6 +67,26 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
 
     def issue(field, message):
         result["issues"].append({"field": field, "message": str(message)})
+
+    if tracking_mode:
+        request.pop("tilt")
+        request.update(tracking=({key: str(value) if isinstance(value, float) and not math.isfinite(value) else value
+                                  for key, value in tracking.items()} if isinstance(tracking, dict) else tracking),
+                       tracking_variant=tracking_variant,
+                       nominal_dc_power_kw=(str(nominal_dc_power_kw) if isinstance(nominal_dc_power_kw, float)
+                                            and not math.isfinite(nominal_dc_power_kw) else nominal_dc_power_kw),
+                       tracking_power_source=tracking_power_source)
+        result.update(scope="existing_unlim_tracking_grid", native_consumption_verified=False,
+                      component_resolution="native_database_uninspected", review_required=True)
+        if (isinstance(nominal_dc_power_kw, bool) or not isinstance(nominal_dc_power_kw, (int, float))
+                or not math.isfinite(nominal_dc_power_kw) or nominal_dc_power_kw <= 0):
+            issue("nominal_dc_power_kw", "Tracking flow requires explicit positive finite nameplate kWp, cross-checked with native PR after the run")
+        if not isinstance(tracking_power_source, str) or not tracking_power_source.strip() or not tracking_power_source.isprintable():
+            issue("tracking_power_source", "Declare the nameplate power source; no database model or nameplate is inferred")
+        if prepare_only or any(value is not None for value in (tilt, azimuth, capacity, losses)):
+            issue("tracking", "Tracking flow preserves source equipment/counts/losses and forbids fixed angles, capacity/loss edits or preparation-only mode")
+    elif tracking_variant or nominal_dc_power_kw is not None or tracking_power_source:
+        issue("tracking", "Tracking-only variant/power/source inputs require explicit tracking controls")
 
     for field, value in request.items():
         if value is None or value == "":
@@ -104,6 +129,13 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
 
     assets = {}
     components = {}
+
+    def require_database_references():
+        for kind, name in (("PAN", pan_name), ("OND", ond_name)):
+            libraries = ("workspace", "builtin") if store.components.builtin else ("workspace",)
+            if any(store.components._path(kind, name, library).exists() for library in libraries):
+                raise ValueError("Tracking database-reference profile blocks a loose model/shadow: " + name)
+
     original = parameters = structure = None
     paths = {}
     try:
@@ -128,14 +160,28 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             raise ValueError("Template must explicitly declare PRCorrTemp=False for standard annual PR")
         array_id = parameters["subarrays"][0]["id"]
         orientation_id = parameters["orientations"][0]["id"]
-        preview = store.update_parameters(template_project, variant, parameters["sha256"],
-                                          array_id, orientation_id, orientation_updates=angles,
-                                          subarray_updates=subarray_losses or None,
-                                          main_array_updates=main_losses or None,
-                                          dry_run=True)
+        if tracking_mode:
+            tracking_variant = variant_id(tracking_variant)
+            preview = create_tracking_variant(store, project=template_project, source_variant=variant,
+                                              new_variant=tracking_variant, tracking=tracking, dry_run=True)
+            if preview["status"] != "ready" or preview.get("field_type") != "UnlimTracking":
+                raise ValueError("Require the existing verified UnlimTracking template profile: " + "; ".join(preview["issues"]))
+            references = store.inspect(template_project, variant)["subarrays"][0]["references"]
+            if any(len(references[kind]) != 1 or references[kind][0].casefold() != name.casefold()
+                   for kind, name in (("PAN", pan_name), ("OND", ond_name))):
+                raise ValueError("Tracking flow must retain the exact source PAN/OND references")
+            require_database_references()
+            result["inherited_component_references"] = references
+            effective_angles = preview["tracking"]
+        else:
+            preview = store.update_parameters(template_project, variant, parameters["sha256"],
+                                              array_id, orientation_id, orientation_updates=angles,
+                                              subarray_updates=subarray_losses or None,
+                                              main_array_updates=main_losses or None, dry_run=True)
+            effective_angles = angles
         result["configuration_preview"] = preview
         result["configuration_summary"] = {
-            "orientation": {**parameters["orientations"][0]["values"], **angles},
+            "orientation": {**parameters["orientations"][0]["values"], **effective_angles},
             "requested_losses": losses or {},
             "template_subarray_fields": {key: value for key, value in parameters["subarrays"][0]["values"].items()
                                          if key in ("LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI", "PQualityModP", "Flags")},
@@ -148,6 +194,8 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
         issue("template", exc)
 
     for kind, name in (("PAN", pan_name), ("OND", ond_name)):
+        if tracking_mode:
+            continue
         try:
             library = "workspace"
             path = store.components._path(kind, name, library)
@@ -196,27 +244,36 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             paths.update(csv=workspace_file(cli.workspace, "Results", prefix + ".csv", ".csv"),
                          pdf=workspace_file(cli.workspace, "Results", prefix + ".pdf", ".pdf"),
                          sfi=workspace_file(cli.workspace, "Models", prefix + ".SFI", ".SFI"))
+        if tracking_mode:
+            paths.update(project=store._path(new_project), variant=store._path(new_project, tracking_variant))
         if any(path.exists() for path in paths.values()):
             raise FileExistsError("An output/SFI/manifest already exists; choose a new working project")
         result["artifacts"] = {key: str(path) for key, path in paths.items()}
+        if tracking_mode:
+            result["recovery"] = [{"action": "archive_isolated_tracking_task", "automatic": False,
+                "project": new_project, "artifacts": dict(result["artifacts"]),
+                "reason": "Original template is retained. Review/archive the new project, all its cloned variants and outputs before retrying under a new name; no automatic rollback/deletion or reuse of stale restore commands."}]
     except (ValueError, OSError) as exc:
         issue("outputs", exc)
     if not result["issues"]:
         try:
-            store._replace(data, {"PAN": pan_name, "OND": ond_name}, array_id)
-            pan = components["PAN"]["physical_fields"]
-            if float(pan["GRef"][0]) != 1000:
-                raise ValueError("Standard annual PR requires PAN GRef=1000 W/m2")
-            count = structure["grid_circuit"]["subarrays"][0]["declared_module_count"]
-            if capacity is not None:
-                plan = plan_capacity(store, lines, array_id, pan, components["OND"]["electrical"], capacity)
-                result["capacity_plan"] = plan
-                if plan["status"] != "ready":
-                    result["issues"].extend(plan["issues"])
-                    result["inputs"] = assets
-                    return result
-                count = plan["module_count"]
-            nominal = count * float(pan["PNom"][0]) / 1000
+            if tracking_mode:
+                nominal = nominal_dc_power_kw
+            else:
+                store._replace(data, {"PAN": pan_name, "OND": ond_name}, array_id)
+                pan = components["PAN"]["physical_fields"]
+                if float(pan["GRef"][0]) != 1000:
+                    raise ValueError("Standard annual PR requires PAN GRef=1000 W/m2")
+                count = structure["grid_circuit"]["subarrays"][0]["declared_module_count"]
+                if capacity is not None:
+                    plan = plan_capacity(store, lines, array_id, pan, components["OND"]["electrical"], capacity)
+                    result["capacity_plan"] = plan
+                    if plan["status"] != "ready":
+                        result["issues"].extend(plan["issues"])
+                        result["inputs"] = assets
+                        return result
+                    count = plan["module_count"]
+                nominal = count * float(pan["PNom"][0]) / 1000
             if not math.isfinite(nominal) or nominal <= 0:
                 raise ValueError("Template/module combination has invalid nominal DC power")
             result["nominal_dc_power_kw"] = nominal
@@ -229,6 +286,8 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                 raise ValueError("PVsystCLI reports no remaining trial executions")
             result["license"] = license_state
             result["cli_version"] = cli.version()
+            if tracking_mode and result["cli_version"] != "PVsystCLI 8.1.6 (rev. 49278)":
+                raise ValueError("Tracking flow requires the verified native8.1.6rev49278 executable")
         except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
             issue("simulation", cli._redact(str(exc)))
     result["inputs"] = assets
@@ -236,8 +295,10 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
         ("Template string/inverter counts are retained; voltage/current sizing and optimal design are not verified."
          if capacity is None else "Counts satisfy the supplied design envelope; MPPT topology/mode are retained. Envelope accuracy, native model sizing and energy/cost optimality are not certified."),
         "Requested SIT/MET filenames and simulation year are checked in native output; geographic/time-reference compatibility is not certified.",
-        "PAN/OND checks cover static fields, not internal model fitting; native results retain a conservative anomaly screen.",
-        "Recovery is reverse-order whole-file restoration with fresh-state guards; not a cross-process lock or crash-atomic job.",
+        ("Tracking database PAN/OND are inherited references, not loose-file parameter inspection. Nameplate kWp/source are caller-declared and native-PR cross-checked, not inferred from filenames or cached sizing. Native database contents are not snapshotted or engineering-certified; review remains required."
+         if tracking_mode else "PAN/OND checks cover static fields, not internal model fitting; native results retain a conservative anomaly screen."),
+        ("Tracking recovery retains the isolated clone/new VC/outputs for review and manual archiving; no automatic rollback or resume."
+         if tracking_mode else "Recovery is reverse-order whole-file restoration with fresh-state guards; not a cross-process lock or crash-atomic job."),
     ])
     if result["issues"]:
         return result
@@ -260,11 +321,13 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
 
     def transaction(tool, response, recovery=None):
         result["transactions"].append({"tool": tool, "result": response})
-        if recovery:
+        if recovery and not tracking_mode:
             result["recovery"].insert(0, recovery)
         save()
 
     def check_inputs():
+        if tracking_mode:
+            require_database_references()
         for label, asset in assets.items():
             if label in ("PAN", "OND") and asset["library"] == "builtin":
                 name = pan_name if label == "PAN" else ond_name
@@ -287,13 +350,14 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             "tool": "pvsyst_restore_project_sources", "arguments": {
                 "project": new_project, "backups": sources["backups"],
                 "expected_files": sources["files"], "confirm": True}})
-        stage("components")
-        edited = store.update(new_project, variant, {"PAN": pan_name, "OND": ond_name},
-                              store.inspect(new_project, variant)["sha256"], array_id)
-        transaction("pvsyst_update_variant_components", edited, {
-            "tool": "pvsyst_restore_variant", "arguments": {
-                "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
-                "expected_sha256": edited["sha256"], "confirm": True}})
+        if not tracking_mode:
+            stage("components")
+            edited = store.update(new_project, variant, {"PAN": pan_name, "OND": ond_name},
+                                  store.inspect(new_project, variant)["sha256"], array_id)
+            transaction("pvsyst_update_variant_components", edited, {
+                "tool": "pvsyst_restore_variant", "arguments": {
+                    "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
+                    "expected_sha256": edited["sha256"], "confirm": True}})
         if capacity is not None:
             stage("capacity")
             for updates in result["capacity_plan"]["steps"]:
@@ -308,15 +372,26 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             if any(int(actual[key]) != planned[value] for key, value in (
                     ("NModSerie", "series_modules"), ("NStringCh", "string_count"), ("NInverter", "inverter_count"))):
                 raise ValueError("Configured counts do not match the accepted capacity plan")
-        stage("parameters")
-        edited = store.update_parameters(new_project, variant, edited["sha256"], array_id, orientation_id,
-                                         orientation_updates=angles,
-                                          subarray_updates=subarray_losses or None,
-                                          main_array_updates=main_losses or None)
-        transaction("pvsyst_update_variant_parameters", edited, {
-            "tool": "pvsyst_restore_variant", "arguments": {
-                "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
-                "expected_sha256": edited["sha256"], "confirm": True}} if edited.get("backup_name") else None)
+        if tracking_mode:
+            stage("tracking")
+            created = create_tracking_variant(store, project=new_project, source_variant=variant,
+                                               new_variant=tracking_variant, tracking=tracking, dry_run=False)
+            transaction("pvsyst_create_tracking_variant", created)
+            if created["status"] != "created":
+                raise ValueError("Tracking variant was not created: " + "; ".join(created["issues"]))
+            variant = tracking_variant
+            result["working_variant"] = variant
+            result["warnings"].extend(created["warnings"])
+        else:
+            stage("parameters")
+            edited = store.update_parameters(new_project, variant, edited["sha256"], array_id, orientation_id,
+                                             orientation_updates=angles,
+                                              subarray_updates=subarray_losses or None,
+                                              main_array_updates=main_losses or None)
+            transaction("pvsyst_update_variant_parameters", edited, {
+                "tool": "pvsyst_restore_variant", "arguments": {
+                    "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
+                    "expected_sha256": edited["sha256"], "confirm": True}} if edited.get("backup_name") else None)
         result["working_files"] = store.inspect_project(new_project)["files"]
         if store.validate_structure(new_project, variant)["valid"] is not True:
             raise ValueError("Configured working variant failed structural validation")
@@ -331,6 +406,8 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             stage("simulation")
             check_inputs()
             variables = list(VAR_GROUPS["all_common"])
+            if tracking_mode:
+                variables.append("viGlobShd")
             if weather_report is not None:
                 variables.extend(["viGlobHor", "viDiffHor", "viT_Amb"])
             build_sfi(paths["sfi"], variables)
@@ -360,6 +437,16 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                 raise ValueError("Native CSV did not consume the requested project/variant/site/weather: " + str(context))
             result["native_context"] = context
             result["metrics"] = annual_summary(paths["csv"], year, nominal)
+            if tracking_mode:
+                rows = 0
+                for headers, row in iter_result_csv(paths["csv"], strict=True):
+                    if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in row[1:]):
+                        raise ValueError("Native tracking output contains missing/nonfinite numeric data")
+                    rows += 1
+                units = result_units(paths["csv"], strict=True)
+                if units.get("GlobShd") != "W/m\u00b2":
+                    raise ValueError("Native UnlimTracking output lacks GlobShd in W/m2")
+                result["tracking_output"] = {"hourly_rows": rows, "numeric_columns": headers[1:], "units": units}
             if result["metrics"]["sha256"] != output_snapshot:
                 raise ValueError("Native output changed between context and annual validation")
             if weather_report is not None:
@@ -375,7 +462,7 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                 raise ValueError("Native output changed across result validation stages")
             flags = result["metrics"]["diagnostic_flags"]
             result["warnings"].extend(flags)
-            review = flags or weather_warnings or result.get("weather_comparison", {}).get("needs_review", False)
+            review = tracking_mode or flags or weather_warnings or result.get("weather_comparison", {}).get("needs_review", False)
             result.update(status="needs_review" if review else "completed", stage="completed")
     except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
         result.update(status="failed", error=cli._redact(str(exc))[-12000:])
@@ -389,5 +476,7 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
         result.update(status="failed", error=cli._redact(str(exc)))
     if prepare_only and result["status"] == "failed":
         result["prepared"] = False
+    if tracking_mode:
+        result["native_consumption_verified"] = result["status"] in ("completed", "needs_review") and result["stage"] == "completed"
     save()
     return result
