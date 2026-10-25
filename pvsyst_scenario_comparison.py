@@ -146,7 +146,7 @@ def _run_binding(store, scenario, reviews):
     record = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(record, dict):
         raise ValueError("Run manifest must be a JSON object")
-    if record.get("operation") != "engineering_revision" or not RUN_FIELDS.issubset(record):
+    if record.get("operation") not in ("engineering_revision", "engineering_house") or not RUN_FIELDS.issubset(record):
         reviews.append(f"{scenario['label']}：旧运行清单缺少完整输入/结果绑定，只提供数值对照。")
         return None
     from pvsyst_engineering_task import load_engineering_run
@@ -474,6 +474,13 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                     scenario["bound_run"] = {key: binding[key] for key in ("operation", "status", "stage", "year")}
                     if "load_binding" in binding:
                         scenario["bound_run"]["load_binding"] = binding["load_binding"]
+                    if binding["operation"] == "engineering_house":
+                        imported = binding["native_import"]
+                        scenario["bound_run"]["house"] = {
+                            "geometry": binding.get("geometry"),
+                            "native_geometry_verified": imported.get("native_geometry_verified"),
+                            "native_reload_verified": imported.get("native_reload_verified"),
+                            "verification": imported.get("verification"), "native_reload": imported.get("native_reload")}
                 result["scenarios"].append(scenario)
                 inputs.append(path)
                 bindings.append(binding)
