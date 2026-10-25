@@ -2091,7 +2091,11 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
                              capacity: CapacityRequest | None = None,
                              weather_manifest_name: StrictStr = "",
                              losses: LossRequest | None = None,
-                             report_pages: list[StrictStr] | None = None) -> dict:
+                             report_pages: list[StrictStr] | None = None,
+                             tracking: TrackingControls | None = None,
+                             tracking_variant: StrictStr = "",
+                             nominal_dc_power_kw: StrictNum | None = None,
+                             tracking_power_source: StrictStr = "") -> dict:
     """Preflight or execute one template-to-full-year grid simulation without GUI.
     Supply an existing valid PRJ/VC, loose text PAN/OND, workspace SIT/MET, tilt,
     year and a NEW project filename. Missing inputs return field-specific issues.
@@ -2125,7 +2129,21 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
     angles and losses; no loss is fitted, inferred or defaulted.
     Optional report_pages is a nonempty list of native page names (for example
     ["summary", "losses"]); omit it for the default complete report. Invalid pages
-    stop in preflight, and the request/manifest records the selection."""
+    stop in preflight, and the request/manifest records the selection.
+    Explicit tracking + tracking_variant selects an existing verified native8.1.6
+    UnlimTracking template flow instead: omit tilt/azimuth/capacity/losses; exact source
+    PAN/OND database references and equipment counts stay inherited. This branch requires
+    explicit positive nominal_dc_power_kw and printable tracking_power_source; these are
+    declarations cross-checked against native PR, not guessed from names/cached sizing.
+    Loose workspace/builtin model shadows stop; database internals are not inspected or
+    snapshotted. Only CLI8.1.6rev49278, and completed consumption retains needs_review.
+    Reuses create_tracking_variant to
+    create a NEW VC in the isolated clone, then the same yearly native load/report/
+    context/integrity checks plus finite actual columns and GlobShd. No type conversion,
+    arbitrary geometry or other tracker families. native_consumption_verified becomes
+    true only after validated completion, not engineering certification. Its recovery is
+    review/manual archive of the entire new clone/VC/outputs; no stale per-file undo,
+    automatic retry/resume, deletion or repeat on an existing project/output."""
     current = cli()
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -2135,7 +2153,9 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
         capacity=capacity.model_dump(exclude_none=True) if capacity is not None else None,
         weather_manifest_name=weather_manifest_name,
         losses=losses.model_dump(exclude_none=True) if losses is not None else None,
-        report_pages=report_pages)
+        report_pages=report_pages, tracking=tracking.model_dump(exclude_none=True) if tracking is not None else None,
+        tracking_variant=tracking_variant, nominal_dc_power_kw=nominal_dc_power_kw,
+        tracking_power_source=tracking_power_source)
 
 
 @categorized_tool()
