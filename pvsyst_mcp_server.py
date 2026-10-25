@@ -91,6 +91,8 @@ TOOL_GROUPS = {
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
                    "pvsyst_simulate_design", "pvsyst_prepare_sourced_design", "pvsyst_run_house_task", "pvsyst_run_sourced_house_task"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
+    "Engineering": ("pvsyst_project_handoff", "pvsyst_run_engineering_task",
+                    "pvsyst_compare_engineering_scenarios", "pvsyst_export_engineering_delivery"),
 }
 TOOL_CATEGORY = {name: category for category, names in TOOL_GROUPS.items() for name in names}
 if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
@@ -109,7 +111,9 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_create_dome_allocation_variant", "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
                           "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
-                          "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system")
+                          "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system",
+                          "pvsyst_project_handoff", "pvsyst_run_engineering_task",
+                          "pvsyst_compare_engineering_scenarios", "pvsyst_export_engineering_delivery")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
 
@@ -2718,6 +2722,111 @@ def pvsyst_read_batch_results(summary_name: str,
     if not requested:
         raise ValueError("Select at least one batch result column")
     return parse_batch_results(target, requested)
+
+
+class EngineeringChanges(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tilt: StrictNum | None = None
+    azimuth: StrictNum | None = None
+    losses: LossRequest | None = None
+    tracking: TrackingControls | None = None
+
+
+class EngineeringRevisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_project: StrictStr
+    source_variant: StrictStr
+    new_project: StrictStr
+    new_variant: StrictStr
+    objective: StrictStr
+    year: StrictInt
+    nominal_dc_power_kw: StrictNum
+    power_source: StrictStr
+    changes: EngineeringChanges
+    declarations: dict[StrictStr, Any] | None = None
+    report_pages: list[StrictStr] | None = None
+
+
+class EngineeringScenario(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: StrictStr
+    project: StrictStr
+    variant: StrictStr
+    csv_name: StrictStr
+    declared_changes: list[StrictStr]
+    run_manifest_name: StrictStr = ""
+    year: StrictInt | None = None
+    nominal_dc_power_kw: StrictNum | None = None
+    assumptions: list[StrictStr] | None = None
+
+
+@categorized_tool()
+def pvsyst_project_handoff(project: StrictStr, variant: StrictStr,
+                           declarations: dict[StrictStr, Any] | None = None) -> dict:
+    """Read saved equipment, counts, orientation/circuit relationships and input dependencies.
+    Includes explicit caller declarations, inherited values, missing inputs and engineering
+    review items. Fixed/tracking and existing AC storage use the native saved records.
+    Readonly: no GUI, license query, simulation, repairs or writes. ready/needs_review
+    describe the handoff only; native_consumption_verified remains false.
+    """
+    from pvsyst_engineering_handoff import build_project_handoff
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return build_project_handoff(store, project=project, variant=variant, declarations=declarations)
+
+
+@categorized_tool()
+def pvsyst_run_engineering_task(spec: EngineeringRevisionRequest, dry_run: StrictBool = True) -> dict:
+    """Preview or execute an isolated revision of an existing fixed/UnlimTracking grid project.
+    State the engineering objective, nameplate kWp/source and explicit supported changes.
+    Existing equipment/counts/weather stay inherited; no model fitting or sizing inference.
+    Preview writes nothing. Execution creates a NEW project/VC, reloads via native CLI,
+    runs one complete hourly year, produces native CSV/PDF and records the actual run
+    inputs for comparison and delivery. Existing names stop; failure retains evidence
+    without automatic retry/rollback. Inspect stage and native_consumption_verified as
+    well as status: needs_review can mean a completed run still requiring engineering review.
+    """
+    from pvsyst_engineering_task import run_engineering_task
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return run_engineering_task(cli(), store, **spec.model_dump(exclude_none=True), dry_run=dry_run)
+
+
+@categorized_tool()
+def pvsyst_compare_engineering_scenarios(objective: StrictStr, scenarios: list[EngineeringScenario],
+                                        output_name: StrictStr, dry_run: StrictBool = True) -> dict:
+    """Organize two or three native result scenarios around an explicit engineering question.
+    First scenario is baseline with no declared changes. Each candidate declares its
+    intended changed saved-input groups/paths. Completed engineering run manifests bind
+    historical inputs to CSVs; unbound historical results retain needs_review. Compare
+    only actual native columns with aligned timestamps/units; missing columns stay missing.
+    Returns Chinese explanations and key-hour differences without claiming optimality
+    or a single cause for simultaneous changes. Preview is readonly; execution writes
+    new JSON/CSV/Markdown comparison files under Results without rerunning PVsyst.
+    """
+    from pvsyst_scenario_comparison import compare_engineering_scenarios
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return compare_engineering_scenarios(store, objective=objective,
+        scenarios=[scenario.model_dump(exclude_none=True) for scenario in scenarios],
+        output_name=output_name, dry_run=dry_run)
+
+
+@categorized_tool()
+def pvsyst_export_engineering_delivery(manifest_name: StrictStr, output_name: StrictStr,
+                                      dry_run: StrictBool = True, comparison_name: StrictStr = "") -> dict:
+    """Package a completed engineering run as a NEW local Results ZIP.
+    Reads one workspace run manifest and checks its input/output binding. Includes the
+    selected native PRJ/VC, original CSV/PDF, Chinese summary and input handoff. Optional
+    comparison_name includes its bound scenarios and Chinese comparison report. Commercial
+    component/weather files remain external dependencies. Export does not certify the
+    design or upgrade a review status. Preview writes nothing; existing ZIPs stop.
+    """
+    from pvsyst_engineering_delivery import export_engineering_delivery
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return export_engineering_delivery(store, manifest_name=manifest_name,
+        output_name=output_name, dry_run=dry_run, comparison_name=comparison_name)
 
 
 if set(_strict_arguments) != set(STRICT_ARGUMENT_TOOLS):
