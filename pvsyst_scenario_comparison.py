@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import io
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 
 from pvsyst_cli import iter_result_csv, result_units
@@ -20,7 +20,9 @@ VARIABLES = {
     "E_Grid": "原生上网功率", "EToGrid": "原生上网功率（EToGrid）",
     "EFrGrid": "电网购电功率", "E_User": "用户负荷", "E_Miss": "未供负荷",
     "EArray": "阵列有效功率", "E_Avail": "原生可用功率",
-    "EBatCh": "原生电池充电功率", "EBatDis": "原生电池放电功率",
+    "EBatCh": "电池DC侧充电功率（EBatCh）", "EBatDis": "电池DC侧放电功率（EBatDis）",
+    "EUseful": "原生有效供能（EUseful）", "EDirUse": "原生直接能量通道（EDirUse）",
+    "E_Solar": "原生太阳能供能（E_Solar）", "SolFrac": "原生太阳能供给比例（SolFrac）",
     "EUnused": "原生未利用功率", "CL_Chrg": "充电器损失", "CL_InvB": "电池逆变器损失",
     "CL_Over": "原生过载损失", "IL_Pmax": "逆变器超功率损失",
     "SOC": "原生SOC", "SOC_Beg": "时段初SOC", "SOC_End": "时段末SOC",
@@ -94,6 +96,45 @@ def _covers(declaration, field):
     return field == declaration or field.startswith(declaration + ".")
 
 
+def _same_bound_load(before, after):
+    if before is None or after is None:
+        return False
+    bindings = (before.get("load_binding"), after.get("load_binding"))
+    if any(not isinstance(item, dict) or item.get("embedded_snapshot_matches") is not True for item in bindings):
+        return False
+    keys = ("year", "time_basis", "utc_offset_hours", "rows", "normalized_csv_name", "source_csv_name")
+    if any(key not in bindings[0] or bindings[0][key] != bindings[1].get(key) for key in keys):
+        return False
+    for label in ("load_manifest", "load_source", "load_profile"):
+        left, right = before["input_assets"].get(label), after["input_assets"].get(label)
+        if (not isinstance(left, dict) or not isinstance(right, dict) or not left.get("sha256")
+                or any(left.get(key) != right.get(key) for key in ("folder", "name", "library", "sha256"))):
+            return False
+    return True
+
+
+def _load_location_difference(difference, before, after):
+    match = re.fullmatch(r"load\.objects\.(\d+)\.(values\.PathName|hourly_source\.(?:saved_path|path_matches_workspace))",
+                         difference["field"])
+    if not match:
+        return False
+    objects = (before["load"]["objects"][int(match[1])], after["load"]["objects"][int(match[1])])
+    names = [item.get("values", {}).get("FileName") for item in objects]
+    if not isinstance(names[0], str) or not names[0] or names[0] != names[1]:
+        return False
+    for item in objects:
+        value = item.get("values", {}).get("PathName")
+        if not isinstance(value, str):
+            return False
+        path = PureWindowsPath(value)
+        if not path.is_absolute() or path.name.casefold() != "userhourlyparams":
+            return False
+        source = item.get("hourly_source", {})
+        if source and (source.get("saved_path") != value or source.get("file_name") != names[0]):
+            return False
+    return True
+
+
 def _run_binding(store, scenario, reviews):
     name = scenario.get("run_manifest_name")
     if not name:
@@ -119,7 +160,7 @@ def _scan_result(path, units, year):
         raise ValueError("Native CSV contains no supported energy/power result column")
     for name in selected:
         if ((name.startswith(("E", "CL_", "IL_")) and units[name] not in ("W", "kW"))
-                or (name.startswith("SOC") and units[name] not in ("ratio", "%"))):
+                or ((name.startswith("SOC") or name == "SolFrac") and units[name] not in ("ratio", "%"))):
             raise ValueError(f"{name}: unsupported native unit {units[name]!r}")
     stats = {name: {"unit": units[name], "samples": 0, "sum": 0.0, "min": None, "max": None,
                     "min_at": None, "max_at": None} for name in selected}
@@ -148,6 +189,8 @@ def _scan_result(path, units, year):
         count += 1
         for name, index in indices.items():
             value = row[index]
+            if count == 1:
+                stats[name]["first_value"] = value if math.isfinite(value) else None
             if not math.isfinite(value):
                 continue
             state = stats[name]
@@ -203,23 +246,55 @@ def _key_periods(baseline, target, comparison):
 
 def _explanations(result):
     lines = [f"比较目的：{result['objective']}。结果只描述给定原生输出的差异，不自动判断因果或最优方案。"]
-    for item in result["metrics"]:
+    for index, item in enumerate(result["metrics"], start=1):
+        baseline = result["scenarios"][0]["result_summary"]["columns"]
+        target = result["scenarios"][index]["result_summary"]["columns"]
         lines.append(f"{item['target_label']} 相对 {item['baseline_label']}：{item['rows']}个配对时段，"
                      f"{item['first']} 至 {item['last']}。")
-        for name in ("E_Grid", "EToGrid", "EFrGrid", "E_User", "E_Miss", "IL_Pmax"):
+        for name in ("E_Grid", "EToGrid", "EFrGrid", "E_User", "E_Miss", "EArray", "E_Avail",
+                     "EUseful", "EDirUse", "E_Solar", "EBatCh", "EBatDis", "EUnused", "IL_Pmax"):
             state = item["summary"].get(name)
             if state is None:
                 continue
             energy = state["delta_energy_kwh"]
             if energy is not None:
                 direction = "增加" if energy > 0 else "减少" if energy < 0 else "不变"
-                lines.append(f"{VARIABLES[name]}对应时段电量{direction}，差值{energy:.6g} kWh（候选减基准）。")
+                lines.append(f"{VARIABLES[name]}对应时段电量：基准{baseline[name]['energy_kwh']:.6g} kWh，"
+                             f"候选{target[name]['energy_kwh']:.6g} kWh，{direction}，"
+                             f"差值{energy:.6g} kWh（候选减基准）。")
             else:
                 lines.append(f"{VARIABLES[name]}：完整差值电量不可用；配对覆盖率{state['paired_coverage']:.2%}，"
                              f"原生单位{state['unit']}。缺测不按0处理。")
+        for name, state in item["soc_changes"].items():
+            label = {"SOC_Beg": "首时段开始SOC", "SOC_End": "首时段结束SOC（不是开始SOC）",
+                     "SOC": "首个原生SOC样本"}[name]
+            for field, description in (("first_value", label), ("min", "各自时段最低SOC"), ("max", "各自时段最高SOC")):
+                values = state[field]
+                if values["delta"] is None:
+                    lines.append(f"{name} {description}：至少一方缺失，不推断数值。")
+                else:
+                    lines.append(f"{name} {description}：基准{values['baseline']:.6g}、候选{values['target']:.6g}、"
+                                 f"差值{values['delta']:.6g}（原生单位{state['unit']}）。")
+        fraction = item["summary"].get("SolFrac")
+        if fraction is not None and fraction["mean_delta"] is not None:
+            lines.append(f"原生SolFrac配对样本平均差{fraction['mean_delta']:.6g} {fraction['unit']}；"
+                         "这是所给样本比例的平均差，不是按年电量重算的太阳能供给比例。")
+        unmet = target.get("E_Miss")
+        if unmet is not None and unmet["energy_kwh"] is not None:
+            if unmet["energy_kwh"] > 0:
+                lines.append(f"候选仍有{unmet['energy_kwh']:.6g} kWh原生未供负荷；"
+                             "不能因上网或电池放电增加就认定供电需求已满足。")
+            elif unmet["energy_kwh"] == 0:
+                lines.append("候选在所给时段的原生未供负荷积分为0；该结果的范围限于本次输入和时段。")
+        if any(name in item["summary"] for name in ("EUseful", "EDirUse", "E_Solar")):
+            lines.append("阵列输出、直接利用、有效供能和太阳能供能是不同原生出口；"
+                         "不把它们或电池DC放电量相加作为负荷供给，也不从上网变化推算自用变化。")
     if not result["historical_input_binding_verified"]:
         lines.append("至少一项未验证历史输入绑定；保存条件差异只作当前状态提示，不能解释为该次原生运行的因果。")
-    lines.append("购电、上网、未供负荷及电池功率分别报告，不互相抵消；SOC为原生状态量，不换算为可用电量。")
+    lines.append("EDirUse及EUseful沿用原生通道定义，不能自动等同直接供用户负荷或用户自用率。")
+    lines.append("购电、上网、未供负荷及原生供能列分别报告，不互相抵消；EBatCh/EBatDis为电池DC侧输出，"
+                 "不代表AC充电器输入或电池逆变器输出额定功率。SOC为原生观测状态量，不换算为可用电量；"
+                 "最低/最高值不证明任意时段触及配置限值。")
     return lines
 
 
@@ -240,12 +315,15 @@ def _markdown(result):
         lines.append(f"- {cell(item['target_label'])}：声明改动 {cell(', '.join(item['declared_changes']))}；"
                      f"共同条件 {cell(', '.join(item['common_groups']))}；"
                      f"未声明差异 {cell(', '.join(item['undeclared_fields']) or '无')}。")
-    lines.extend(["", "## 原生指标", "", "| 方案 | 变量 | 单位 | 有限样本/行数 | 时段电量kWh | 最小值 | 最大值 |",
-                  "|---|---|---|---:|---:|---:|---:|"])
+        if item["normalized_location_differences"]:
+            lines.append("- 已核对相同负荷资料、逐时profile与原生内嵌快照；仅将以下保存路径位置差异单列："
+                         + cell(", ".join(value["field"] for value in item["normalized_location_differences"])) + "。")
+    lines.extend(["", "## 原生指标", "", "| 方案 | 变量 | 单位 | 有限样本/行数 | 时段电量kWh | 首时段值 | 最小值 | 最大值 |",
+                  "|---|---|---|---:|---:|---:|---:|---:|"])
     for item in result["scenarios"]:
         for name, state in item["result_summary"]["columns"].items():
             values = (item["label"], name, state["unit"], f"{state['samples']}/{item['result_summary']['rows']}",
-                      state["energy_kwh"], state["min"], state["max"])
+                      state["energy_kwh"], state["first_value"], state["min"], state["max"])
             lines.append("| " + " | ".join("缺失/不可积分" if value is None else cell(value) for value in values) + " |")
     lines.extend(["", "## 最大逐时差异", "", "| 候选 | 变量 | 时间 | 基准 | 候选 | 差值 | 单位 |",
                   "|---|---|---|---:|---:|---:|---|"])
@@ -265,7 +343,7 @@ def _comparison_csv(result):
     stream = io.StringIO(newline="")
     writer = csv.writer(stream)
     writer.writerow(["kind", "scenario", "baseline", "column", "unit", "rows", "finite_pairs_or_samples",
-                     "coverage", "energy_kwh", "observed_energy_kwh", "min_or_min_delta", "max_or_max_delta"])
+                     "coverage", "energy_kwh", "observed_energy_kwh", "min_or_min_delta", "max_or_max_delta", "first_value"])
 
     def safe(value):
         if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
@@ -276,13 +354,13 @@ def _comparison_csv(result):
         for name, state in item["result_summary"]["columns"].items():
             writer.writerow([safe(value) for value in ("scenario", item["label"], "", name, state["unit"],
                 item["result_summary"]["rows"], state["samples"], state["coverage"], state["energy_kwh"],
-                state["observed_energy_kwh"], state["min"], state["max"])])
+                state["observed_energy_kwh"], state["min"], state["max"], state["first_value"])])
     for item in result["metrics"]:
         for name, state in item["summary"].items():
             writer.writerow([safe(value) for value in ("target_minus_baseline", item["target_label"],
                 item["baseline_label"], name, state["unit"], item["rows"], state["paired_samples"],
                 state["paired_coverage"], state["delta_energy_kwh"], state["observed_delta_energy_kwh"],
-                state["min_delta"], state["max_delta"])])
+                state["min_delta"], state["max_delta"], "")])
     return stream.getvalue()
 
 
@@ -394,6 +472,8 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                                 input_handoff=historical, current_handoff=current, result_summary=period)
                 if binding is not None:
                     scenario["bound_run"] = {key: binding[key] for key in ("operation", "status", "stage", "year")}
+                    if "load_binding" in binding:
+                        scenario["bound_run"]["load_binding"] = binding["load_binding"]
                 result["scenarios"].append(scenario)
                 inputs.append(path)
                 bindings.append(binding)
@@ -405,8 +485,12 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                     result["review_items"].append(f"{item['label']}：原生未提供列 {', '.join(item['missing_columns'])}；不补0。")
             for index in range(1, len(inputs)):
                 candidate = result["scenarios"][index]
-                differences = []
+                same_load = _same_bound_load(bindings[0], bindings[index])
+                differences, locations = [], []
                 for difference in _differences(conditions[0], conditions[index]):
+                    if same_load and _load_location_difference(difference, conditions[0], conditions[index]):
+                        locations.append(difference)
+                        continue
                     if len(differences) >= 200:
                         raise ValueError("More than 200 saved-condition differences; narrow the scenario before comparison")
                     difference["declared"] = any(_covers(field, difference["field"])
@@ -421,9 +505,17 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                 result["changes"].append({"target_label": candidate["label"],
                     "declared_changes": candidate["declared_changes"], "differences": differences,
                     "undeclared_fields": undeclared,
+                    "normalized_location_differences": locations, "load_input_equivalence_verified": same_load,
                     "historically_bound": bindings[0] is not None and bindings[index] is not None,
                     "common_groups": [key for key in GROUPS if conditions[0][key] is not None
-                                      and conditions[0][key] == conditions[index][key]]})
+                                      and not any(_covers(key, item["field"]) for item in differences)]})
+                load_present = any(isinstance(item["load"], dict) and item["load"].get("present")
+                                   for item in (conditions[0], conditions[index]))
+                if load_present and not same_load:
+                    if "load" in result["changes"][-1]["common_groups"]:
+                        result["changes"][-1]["common_groups"].remove("load")
+                    result["review_items"].append(f"{candidate['label']}：相同逐时负荷输入/缓存未由双方绑定记录确认，"
+                                                  "保存字段相同不代表完整负荷相同。")
                 if bindings[0] is not None and bindings[index] is not None:
                     assets = list(_differences(bindings[0]["input_assets"], bindings[index]["input_assets"], "input_assets"))
                     result["changes"][-1]["input_asset_differences"] = assets
@@ -440,6 +532,19 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                     raise ValueError("Native result changed between context inspection and comparison")
                 comparison.update(baseline_label=baseline["label"], target_label=candidate["label"],
                                   key_periods=_key_periods(inputs[0], inputs[index], comparison))
+                comparison["soc_changes"] = {}
+                for name in ("SOC", "SOC_Beg", "SOC_End"):
+                    if name not in comparison["summary"]:
+                        continue
+                    left, right = (item["result_summary"]["columns"][name] for item in (baseline, candidate))
+                    values = {"unit": left["unit"]}
+                    for field in ("first_value", "min", "max"):
+                        a, b = left[field], right[field]
+                        values[field] = {"baseline": a, "target": b,
+                                         "delta": b - a if a is not None and b is not None else None,
+                                         "baseline_at": baseline["result_summary"]["first"] if field == "first_value" else left[field + "_at"],
+                                         "target_at": candidate["result_summary"]["first"] if field == "first_value" else right[field + "_at"]}
+                    comparison["soc_changes"][name] = values
                 result["metrics"].append(comparison)
             for index, path in enumerate(inputs):
                 if fingerprint(path) != snapshots[index]:

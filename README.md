@@ -75,7 +75,7 @@ Expected input, missing/existing-file and adapter `PVsystError` exceptions retai
 | Tools | Purpose |
 |---|---|
 | `pvsyst_project_handoff` | Read saved equipment/counts, electrical/orientation relationships, weather/load/storage and explicit engineering declarations; show missing inputs and follow-up actions without simulation or writes |
-| `pvsyst_run_engineering_task` | Preview or execute an isolated existing fixed/UnlimTracking project revision, native hourly annual CSV/PDF and a run-time input binding; retain source, review state and failure evidence |
+| `pvsyst_run_engineering_task` | Preview or execute an isolated existing fixed/UnlimTracking or [native AC-storage](docs/engineering-storage.md) revision, native hourly annual CSV/PDF and a run-time input binding; storage binds its actual prepared load, time basis, SOC and AC limits without the PV-only PR formula |
 | `pvsyst_compare_engineering_scenarios` | Organize two or three existing native results around an engineering question; distinguish common conditions, intended/unintended differences and historical input binding, with Chinese explanations and comparison exports |
 | `pvsyst_export_engineering_delivery` | Package a bound native run as one new local ZIP containing the selected PRJ/VC, CSV/PDF and Chinese input/summary documents; external models/weather remain dependencies |
 

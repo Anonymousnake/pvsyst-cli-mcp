@@ -16,8 +16,9 @@ weather or site design conditions.
    Fixed planes accept explicit tilt, azimuth and existing supported loss parameters.
    Existing verified UnlimTracking templates accept their supported tracking controls.
    Equipment, counts, electrical topology and site/weather stay inherited. The initial
-   revision flow is PV-only, one complete Grid subarray/orientation without an active
-   scene or module layout. Existing storage tools and scenario reading remain available.
+   revision flow uses one complete Grid subarray/orientation without an active
+   scene or module layout. Existing native AC storage also composes a bound prepared
+   load and its supported scalar edits; see [storage engineering](engineering-storage.md).
 3. Repeat the accepted request with `dry_run=false` to create a new project and a new VC,
    reload through native CLI, run one hourly calendar year and generate native CSV/PDF.
    The task captures its input handoff and existing production input/file protections
@@ -92,9 +93,9 @@ historical input record from today's saved project. See [engineering scenarios](
 
 The existing-project revision/delivery milestone is complete for the supported fixed
 and tracking flows below. Purposeful comparison, Chinese interpretation and a multi-run
-delivery package are implemented and demonstrated on the fixed pair. The AC-storage
-comparison topic and the public finite two-roof task are still required next milestones;
-they are not completed by this PV-only revision flow.
+delivery package are demonstrated on fixed and native AC-storage pairs. The public
+finite two-roof task remains the third required milestone; it is not completed by these
+single-orientation engineering flows.
 
 ## Verification evidence
 
