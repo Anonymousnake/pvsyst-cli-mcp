@@ -92,7 +92,7 @@ TOOL_GROUPS = {
     "Simulation": ("pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_template",
                    "pvsyst_simulate_design", "pvsyst_prepare_sourced_design", "pvsyst_run_house_task", "pvsyst_run_sourced_house_task"),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
-    "Engineering": ("pvsyst_review_engineering_brief", "pvsyst_project_handoff", "pvsyst_run_engineering_task",
+    "Engineering": ("pvsyst_prepare_block_project", "pvsyst_review_engineering_brief", "pvsyst_project_handoff", "pvsyst_run_engineering_task",
                     "pvsyst_compare_engineering_scenarios", "pvsyst_export_engineering_delivery"),
 }
 TOOL_CATEGORY = {name: category for category, names in TOOL_GROUPS.items() for name in names}
@@ -113,7 +113,7 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_create_house_pv_scene",
                           "pvsyst_create_peak_shaving_variant",
                           "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system",
-                          "pvsyst_review_engineering_brief", "pvsyst_project_handoff", "pvsyst_run_engineering_task",
+                          "pvsyst_prepare_block_project", "pvsyst_review_engineering_brief", "pvsyst_project_handoff", "pvsyst_run_engineering_task",
                           "pvsyst_compare_engineering_scenarios", "pvsyst_export_engineering_delivery")
 _strict_arguments: dict[str, frozenset[str]] = {}
 
@@ -2768,6 +2768,37 @@ class EngineeringScenario(BaseModel):
     year: StrictInt | None = None
     nominal_dc_power_kw: StrictNum | None = None
     assumptions: list[StrictStr] | None = None
+
+
+class EngineeringBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: Annotated[StrictStr, Field(min_length=1, max_length=100)]
+    source_subarray_id: Annotated[StrictInt, Field(ge=1, le=2147483647)]
+    count: Annotated[StrictInt, Field(ge=1, le=100)]
+
+
+@categorized_tool()
+def pvsyst_prepare_block_project(source_project: StrictStr, source_variant: StrictStr,
+                                 new_project: StrictStr,
+                                 blocks: Annotated[list[EngineeringBlock], Field(min_length=1, max_length=100)],
+                                 dry_run: StrictBool = True) -> dict:
+    """Prepare one NEW project from explicit counts of fully defined native block types.
+    Each block names a unique source_subarray_id and count INCLUDING the original.
+    Cover every source subarray exactly once, at most 100 blocks in total. Copy whole
+    exclusive inverter/MPPT/string branches with their source equipment, counts and
+    ordinary fixed-plane orientation. Do not infer internal wiring, resize hardware,
+    choose models or change angles. Only the selected source VC and PRJ are published.
+    Preview builds in memory without writes; execution never overwrites or backs up
+    an existing project. No native run, GUI, INI, weather acquisition or certification.
+    Unsupported shading, sharing and common load/storage/transformer/limit/auxiliary
+    systems stop; inherited weather/losses/electrical suitability require review.
+    Prepared mapping and serialized counts do not prove native consumption.
+    """
+    from pvsyst_block_project import prepare_block_project
+    component_store = components()
+    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    return prepare_block_project(store, source_project=source_project, source_variant=source_variant,
+        new_project=new_project, blocks=[block.model_dump() for block in blocks], dry_run=dry_run)
 
 
 @categorized_tool()
