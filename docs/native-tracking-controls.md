@@ -1,5 +1,7 @@
 # 原生跟踪控制
 
+原有新VC编辑接口不变。后续[跟踪模板完整年度任务](tracking-template-flow.md)在既有`pvsyst_simulate_template`上组合受保护克隆、此编辑器、原生全年及报告/恢复，仅扩展已证UnlimTracking数据库引用形状；其他八类仍只有各自低层编辑/消费证据，未由该高层任务升级。
+
 ## 入口与支持域
 
 `pvsyst_create_tracking_variant`预览或创建一个新VC，修改已存在的原生跟踪记录。原R38域是UnlimTracking五控制，下述示例保持有效；R53扩展九种已证原生类型、所属控件及公共回读，见末节。没有固定平面转跟踪类型、跨类型转换、任意几何、3D或Module Layout编辑，不计算跟踪角/回溯/辐照。其它原有门禁保持。
