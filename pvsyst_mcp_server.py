@@ -2730,6 +2730,7 @@ class EngineeringChanges(BaseModel):
     azimuth: StrictNum | None = None
     losses: LossRequest | None = None
     tracking: TrackingControls | None = None
+    storage: GridStorageUpdates | None = None
 
 
 class EngineeringRevisionRequest(BaseModel):
@@ -2745,6 +2746,8 @@ class EngineeringRevisionRequest(BaseModel):
     changes: EngineeringChanges
     declarations: dict[StrictStr, Any] | None = None
     report_pages: list[StrictStr] | None = None
+    load_manifest_name: StrictStr = ""
+    availability: GridAvailabilityProfile | None = None
 
 
 class EngineeringScenario(BaseModel):
@@ -2777,9 +2780,13 @@ def pvsyst_project_handoff(project: StrictStr, variant: StrictStr,
 
 @categorized_tool()
 def pvsyst_run_engineering_task(spec: EngineeringRevisionRequest, dry_run: StrictBool = True) -> dict:
-    """Preview or execute an isolated revision of an existing fixed/UnlimTracking grid project.
+    """Preview or execute an isolated revision of a fixed/UnlimTracking or existing AC-storage project.
     State the engineering objective, nameplate kWp/source and explicit supported changes.
     Existing equipment/counts/weather stay inherited; no model fitting or sizing inference.
+    Existing AC storage accepts storage scalar updates and a prepared load_manifest_name;
+    WeakGrid additionally requires the complete availability declaration. The stored load
+    must match its prepared snapshot and site standard UTC offset. Native annual results
+    verify actual load/SOC/AC limits; storage never uses the PV-only E_Grid PR formula.
     Preview writes nothing. Execution creates a NEW project/VC, reloads via native CLI,
     runs one complete hourly year, produces native CSV/PDF and records the actual run
     inputs for comparison and delivery. Existing names stop; failure retains evidence

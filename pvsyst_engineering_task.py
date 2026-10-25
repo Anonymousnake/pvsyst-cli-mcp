@@ -16,8 +16,9 @@ from pvsyst_weather_flow import inspect_met_calendar
 
 
 ASSET_FOLDERS = {"Sites": ".SIT", "Meteo": ".MET", "ComposPV/PVmodules": ".PAN",
-                 "ComposPV/Inverters": ".OND"}
-COMPONENT_KINDS = {"ComposPV/PVmodules": "PAN", "ComposPV/Inverters": "OND"}
+                 "ComposPV/Inverters": ".OND", "ComposPV/Batteries": ".BTR",
+                 "UserData": ".csv", "UserHourlyParams": ".csv", "Results": ".json"}
+COMPONENT_KINDS = {"ComposPV/PVmodules": "PAN", "ComposPV/Inverters": "OND", "ComposPV/Batteries": "BTR"}
 
 
 def _asset_path(store, asset):
@@ -44,7 +45,7 @@ def _check_assets(store, record):
             raise ValueError("A bound run input has changed: " + asset["name"])
     for reference in record.get("database_references", []):
         kind, name = reference["kind"], reference["name"]
-        if kind not in ("PAN", "OND"):
+        if kind not in ("PAN", "OND", "BTR"):
             raise ValueError("Unsupported database reference")
         safe_filename(name, "." + kind)
         libraries = ("workspace", "builtin") if store.components.builtin else ("workspace",)
@@ -126,7 +127,8 @@ def _context(path, project, variant, site, meteo):
 
 def run_engineering_task(cli, store, *, source_project, source_variant, new_project, new_variant,
                          objective, year, nominal_dc_power_kw, power_source, changes,
-                         declarations=None, report_pages=None, dry_run=True):
+                         declarations=None, report_pages=None, dry_run=True,
+                         load_manifest_name="", availability=None):
     """One isolated revision and one native annual execution; no automatic retry."""
     from pvsyst_engineering_handoff import build_project_handoff
 
@@ -148,7 +150,7 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             if (type(nominal_dc_power_kw) not in (int, float)
                     or not math.isfinite(nominal_dc_power_kw) or nominal_dc_power_kw <= 0):
                 raise ValueError("Declare a positive finite nominal DC power in kWp")
-            if not isinstance(changes, dict) or set(changes) - {"tilt", "azimuth", "losses", "tracking"}:
+            if not isinstance(changes, dict) or set(changes) - {"tilt", "azimuth", "losses", "tracking", "storage"}:
                 raise ValueError("Use supported explicit orientation, loss or tracking changes")
             if report_pages is not None:
                 validate_report_pages(report_pages)
@@ -172,15 +174,37 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             _, lines = store._text(data)
             store._require_no_geometry(lines)
             blocks = objects(_view(lines))
-            if any(block.object_type in ("pvLoad", "pvGridStorage") for block in blocks):
-                raise ValueError("Load/storage revisions use their existing native tools; this task is PV-only")
+            storage_mode = any(block.object_type == "pvGridStorage" for block in blocks)
+            if not storage_mode and (any(block.object_type == "pvLoad" for block in blocks)
+                                     or load_manifest_name or availability is not None or "storage" in changes):
+                raise ValueError("Load/profile declarations require an existing native AC storage system")
             root = next(block for block in blocks if not block.path)
-            if root.one("PRCorrTemp")[1] != "False":
+            if not storage_mode and root.one("PRCorrTemp")[1] != "False":
                 raise ValueError("Standard annual grid PR requires PRCorrTemp=False")
             array = parameters["subarrays"][0]
             orientation = parameters["orientations"][0]
             tracking_mode = orientation["values"].get("FieldType") == "UnlimTracking"
-            if tracking_mode:
+            storage_preparation = None
+            if storage_mode:
+                from pvsyst_engineering_storage import prepare_storage_revision
+                if set(changes) != {"storage"} or orientation["values"].get("FieldType") != "FixedPlane":
+                    raise ValueError("Existing AC storage revisions accept explicit storage updates only on a fixed plane")
+                storage_preparation = prepare_storage_revision(store, source_project, source_variant,
+                    new_variant, changes["storage"], load_manifest_name, year, availability=availability)
+                if storage_preparation["status"] != "ready":
+                    raise ValueError("Storage preparation: " + str(storage_preparation["issues"]))
+                preview = storage_preparation["preview"]
+                before, after = storage_preparation["before"], storage_preparation["after"]
+                record["changes"] = [{"field": "storage." + key, "before": before.get(key), "after": value}
+                                     for key, value in after.items() if before.get(key) != value]
+                record["scope"] = "existing_native_ac_storage"
+                record["load_binding"] = {"manifest_name": load_manifest_name, "year": year,
+                    "time_basis": storage_preparation["time_basis"], "utc_offset_hours": storage_preparation["utc_offset_hours"],
+                    "rows": len(storage_preparation["load_values"]), "embedded_snapshot_matches": True,
+                    "normalized_csv_name": Path(storage_preparation["load_record"]["artifacts"]["csv"]).name,
+                    "source_csv_name": storage_preparation["load_record"]["source"]["name"]}
+                record["warnings"].extend(storage_preparation["warnings"])
+            elif tracking_mode:
                 if set(changes) != {"tracking"}:
                     raise ValueError("UnlimTracking revisions require explicit tracking controls only")
                 preview = create_tracking_variant(store, project=source_project, source_variant=source_variant,
@@ -226,6 +250,9 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                 asset["sha256"] = fingerprint(_asset_path(store, asset))
                 assets[label] = asset
             record["input_assets"], record["database_references"] = assets, []
+            if storage_preparation is not None:
+                assets.update(storage_preparation["input_assets"])
+                record["database_references"].extend(storage_preparation["database_references"])
             component_refs = store.inspect(source_project, source_variant)["subarrays"][0]["references"]
             for kind, folder in (("PAN", "ComposPV/PVmodules"), ("OND", "ComposPV/Inverters")):
                 if len(component_refs[kind]) != 1:
@@ -244,6 +271,11 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             if calendar["issues"]:
                 raise ValueError("Weather calendar: " + "; ".join(calendar["issues"]))
             record["warnings"].extend(calendar["warnings"])
+            if storage_preparation is not None:
+                site_blocks = objects(_asset_path(store, assets["site"]).read_text(encoding="utf-8-sig"))
+                sites = [block for block in site_blocks if block.object_type == "pvSite" and not block.path]
+                if len(sites) != 1 or float(sites[0].one("TimeZone")[1]) != storage_preparation["utc_offset_hours"]:
+                    raise ValueError("Storage site standard UTC offset differs from the declared hourly load")
             prefix = f"{Path(new_project).stem}_engineering_{year}"
             paths = {kind: workspace_file(store.workspace, folder, prefix + extension, extension)
                      for kind, folder, extension in (("manifest", "Results", ".json"), ("csv", "Results", ".csv"),
@@ -265,6 +297,8 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                           source_files=original["files"], configuration_preview=preview,
                           artifacts={kind: str(path) for kind, path in paths.items()},
                           cli_version=version, license=license_state, report_pages=report_pages)
+            if storage_mode:
+                record.update(load_manifest_name=load_manifest_name, availability=availability)
             record["warnings"].append("Nameplate/source are declared; equipment limits, fitted models and site climate are not certified.")
             if record["database_references"]:
                 record["warnings"].append("Inherited native database model contents are uninspected; engineering review remains required.")
@@ -288,7 +322,16 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             _check_assets(store, record)
             store.clone_project(source_project, new_project)
             save("revision")
-            if tracking_mode:
+            if storage_mode:
+                if changes["storage"] or availability is not None:
+                    from pvsyst_grid_storage import create_grid_storage_variant
+                    edited = create_grid_storage_variant(store, project=new_project, source_variant=source_variant,
+                        new_variant=new_variant, updates=changes["storage"], availability=availability, dry_run=False)
+                    if edited["status"] != "created":
+                        raise ValueError("Storage revision failed: " + str(edited["issues"]))
+                else:
+                    edited = store.clone(new_project, source_variant, new_variant)
+            elif tracking_mode:
                 edited = create_tracking_variant(store, project=new_project, source_variant=source_variant,
                     new_variant=new_variant, tracking=changes["tracking"], dry_run=False)
                 if edited["status"] != "created":
@@ -308,7 +351,7 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                 raise ValueError("Revised input handoff is blocked")
             save("simulation")
             _check_assets(store, record)
-            variables = list(VAR_GROUPS["all_common"])
+            variables = list(VAR_GROUPS["grid_storage" if storage_mode else "all_common"])
             if tracking_mode:
                 variables.append("viGlobShd")
             build_sfi(paths["sfi"], variables)
@@ -321,7 +364,13 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             output_snapshot = fingerprint(paths["csv"])
             record["native_context"] = _context(paths["csv"], new_project, new_variant,
                                                 assets["site"]["name"], assets["meteo"]["name"])
-            record["metrics"] = annual_summary(paths["csv"], year, nominal_dc_power_kw)
+            if storage_mode:
+                from pvsyst_engineering_storage import read_storage_year
+                record.update(read_storage_year(paths["csv"], paths["pdf"], year,
+                    storage_preparation["load_record"], storage_preparation["load_values"], storage_preparation["after"]))
+                record["metrics"]["sha256"] = output_snapshot
+            else:
+                record["metrics"] = annual_summary(paths["csv"], year, nominal_dc_power_kw)
             if record["metrics"]["sha256"] != output_snapshot:
                 raise ValueError("Native CSV changed between context and annual interpretation")
             count = 0
@@ -341,11 +390,13 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             if record["result_files"]["csv"] != record["metrics"]["sha256"]:
                 raise ValueError("Native CSV changed during result interpretation")
             record["warnings"].extend(run.get("warnings", []))
-            record["warnings"].extend(record["metrics"]["diagnostic_flags"])
+            record["warnings"].extend(record["metrics"].get("diagnostic_flags", []))
+            record["warnings"].extend(record.get("storage_output", {}).get("review_items", []))
             record.update(stage="completed", native_consumption_verified=True,
                           hourly_rows=count, numeric_columns=headers[1:])
             review = (record["database_references"] or run.get("warnings") or calendar["warnings"]
-                      or record["metrics"]["diagnostic_flags"] or source_handoff.get("review_items")
+                      or record["metrics"].get("diagnostic_flags") or record.get("storage_output", {}).get("review_items")
+                      or source_handoff.get("review_items")
                       or source_handoff.get("missing_items"))
             record["status"] = "needs_review" if review else "completed"
         except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
