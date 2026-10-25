@@ -55,7 +55,7 @@ After connecting, call `pvsyst_capabilities` and `pvsyst_license_info` to read t
 
 ## MCP tools by workflow
 
-The server exposes 81 tools across eight groups. The approved house/native migration is consolidated in the [acceptance summary and explicit limits](docs/native-migration-acceptance.md). Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
+The server exposes 82 tools across eight groups. The approved house/native migration is consolidated in the [acceptance summary and explicit limits](docs/native-migration-acceptance.md). Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
 
 First CLI initialization is serialized inside the MCP process, so concurrent initial requests share one client and the same workspace `RLock` used by CLI, component and variant operations. This is process-local coordination, not an OS/cross-process lock; SHA checks remain optimistic and external editors still require coordination. See [concurrent initialization verification](docs/grid-capacity-verification.md#single-client-concurrent-initialization).
 
@@ -70,11 +70,12 @@ Expected input, missing/existing-file and adapter `PVsystError` exceptions retai
 | `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | Confirmed license changes |
 | `pvsyst_export_logs` | Diagnostic ZIP under Results |
 
-### Engineering (5)
+### Engineering (6)
 
 | Tools | Purpose |
 |---|---|
 | `pvsyst_project_handoff` | Read saved equipment/counts, electrical/orientation relationships, weather/load/storage and explicit engineering declarations; show missing inputs and follow-up actions without simulation or writes |
+| `pvsyst_prepare_block_project` | Prepare a NEW selected PRJ/VC from explicit counts of complete fixed native subarray block types; preserve source wiring/equipment/orientations, return per-block mapping and integer totals, preview without writes. No sizing or simulation. See [block project preparation](docs/block-project-preparation.md) |
 | `pvsyst_review_engineering_brief` | Read caller-structured cited facts before a PRJ exists; aggregate quantity conflicts, whole strings, block schedules and missing exact models/weather, without files/native execution or certification. See [engineering brief review](docs/engineering-brief.md) |
 | `pvsyst_run_engineering_task` | Preview or execute an isolated existing fixed/UnlimTracking or [native AC-storage](docs/engineering-storage.md) revision, native hourly annual CSV/PDF and a run-time input binding; storage binds its actual prepared load, time basis, SOC and AC limits without the PV-only PR formula |
 | `pvsyst_compare_engineering_scenarios` | Organize two or three existing native results around an engineering question; distinguish common conditions, intended/unintended differences and historical input binding, with Chinese explanations and comparison exports |
