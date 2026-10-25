@@ -1,6 +1,8 @@
 # 场景逐区身份入口：原生GUI实测
 
-**当前仍没有通用逐区身份/源坐标验证器，分组自动import继续needs_context。** 本批确认了可用的物体属性入口，也实测了虚拟树语义和绘制文本入口的停点；不为一次失败读取补建桌面框架，不把属性摘要当高精度源坐标。
+**当前受限双屋面公共任务已完成原生验收。**后续单栋anchor0案例复用直接PV表朝向组合框#1/#2、原生SHD导出与Ctrl+B归位，完成严格保存/重载空间核对、一次2024年8784h及成套交付；任务仍保留needs_review，见[工程交付阶段3](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)。这不是通用逐区身份/任意源坐标验证器，不能扩展至非零anchor或任意多组。
+
+以下为此前40构件研究会话的历史停点：当时分组自动import继续needs_context。本批确认了可用的物体属性入口，也实测了虚拟树语义和绘制文本入口的停点；不把属性摘要当高精度源坐标，也不因树读取失败补建桌面框架。
 
 版本/环境：中文PVsyst8.1.6rev49278、目标DPI96；使用既有线程物理坐标上下文，未改产品/进程/OS的DPI设置。隔离克隆SCENE_IDENTITY_REVIEW.PRJ:VC2，读取已有40构件/2PV/2系统朝向配置；新会话实际Popen由父持有，GUI/INI串行。没有导入、另存、能量仿真或阴影系数表计算。
 
@@ -34,4 +36,4 @@ UIAutomation复用系统已有UIAutomationClient/Types，不安装comtypes/pywin
 
 本机pvsyst-native-identity-study/round1保存static-parent-check.json、native-preparation.json、native-owner-r4/state.json及Win32/UIA/PNG/空EMF证据、original-inputs和CLOSED交接。所有者与辅助临时代码完成清理，重要失败输入/环境/动作序列保留。纯入口证据批次没有新增产品代码/永久测试，没有运行测试发现、旧smoke、哈希或no-hash探针；仅文档差异检查，不新增全年成本。
 
-下一步仍需独立的源空间对应/高精度身份入口；没有证据前不自动拖拽到目标组，不扩大MCP写入。此停点不阻止推进其它已证原生入口的固定项目任务闭环；先复用既有读取/参数事务/结果与恢复，不让桌面适配探索占据整条业务路线。
+该历史会话结束时仍缺独立的源空间对应/高精度身份入口；没有证据就不自动拖拽到目标组。后续受限路径改由原生PV表属性关联、SHD坐标及原生归位建立对应，当前验收状态见页首；旧UIA/绘制停点不被抹去，也不外推为任意VCL树均不可读。

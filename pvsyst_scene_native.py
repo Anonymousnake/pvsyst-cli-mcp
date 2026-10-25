@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as w
+import math
 import re
 import sys
 import time
@@ -21,6 +22,7 @@ from pathlib import Path
 
 from pvsyst_component_editor import objects
 from pvsyst_native_project import _project_matches
+from pvsyst_native_scene_mapping import verify_grouped_hardware, verify_house_geometry, verify_pv_geometry
 from pvsyst_paths import safe_filename, workspace_file
 from pvsyst_scene_file import (_num, check_tables, house_profile, resolve_modules,
                                source_profile, table_profiles)
@@ -365,12 +367,12 @@ def _combo_items(hwnd):
     return [_combo_text(hwnd, i) for i in range(_combo_count(hwnd))]
 
 
-def _combo_select(hwnd, index):
+def _combo_select(hwnd, index, *, notify_timeout=2000):
     u, _ = _libs()
     parent = int(u.GetParent(w.HWND(hwnd)) or 0)
     _send(hwnd, CB_SETCURSEL, index)
     _send(parent, WM_COMMAND,
-          ((1 << 16) | (u.GetDlgCtrlID(w.HWND(hwnd)) & 0xFFFF)), hwnd, 2000)
+          ((1 << 16) | (u.GetDlgCtrlID(w.HWND(hwnd)) & 0xFFFF)), hwnd, notify_timeout)
     time.sleep(0.30)
 
 
@@ -504,7 +506,7 @@ def _check_cli(cli):
     return text.strip()
 
 
-def _source_snapshot(store, components, project, variant, module_geometry):
+def _source_snapshot(store, components, project, variant, module_geometry, *, allow_groups=False):
     """Validate the source variant read-only, reusing the production helpers."""
     with store.lock:
         store._check_project(project)
@@ -512,18 +514,57 @@ def _source_snapshot(store, components, project, variant, module_geometry):
         original = store._read(path)
         _, lines = store._text(original)
         arrays, system = store._sections(lines)
-        source = source_profile(store, lines, arrays, system)
+        source = source_profile(store, lines, arrays, system, allow_groups=allow_groups)
         modules, pan_snapshot = resolve_modules(components, source["pan_name"], module_geometry)
     return {"path": path, "bytes": original, "source": source, "modules": modules,
             "pan_snapshot": pan_snapshot}
 
 
-def _preflight(components, cli, scene_name, module_geometry):
+def _prepare_source(store, components, scene, *, allow_groups=False):
+    """Bind lossless scene geometry to the current source, without driving the GUI."""
+    args = scene["create_arguments"]
+    snap = _source_snapshot(store, components, args["project"], args["variant"],
+                            args["module_geometry"], allow_groups=allow_groups)
+    recorded, current = scene["source"], snap["source"]
+    if recorded["pan"].casefold() != current["pan_name"].casefold():
+        _fail("The scene PAN reference differs from the current source variant")
+    if recorded["module_total"] != current["module_total"]:
+        _fail("The scene module total differs from the current source variant")
+    if (_num(recorded["tilt_deg"]) != _num(current["tilt_deg"])
+            or _num(recorded["collada_azimuth_deg"]) != _num(current["azimuth_deg"])
+            or any(_num(recorded["site"][key]) != _num(current["site"][key])
+                   for key in ("latitude", "longitude", "altitude"))):
+        _fail("The scene PV plane or site differs from the current source variant")
+    declared_groups = recorded.get("orientations", [])
+    current_groups = current.get("orientations", [])
+    if bool(declared_groups) != bool(current_groups):
+        _fail("The scene orientation structure differs from the current source variant")
+    if declared_groups:
+        actual_groups = recorded.get("orientation_geometry", [])
+        if ([item["id"] for item in declared_groups] != [item["id"] for item in current_groups]
+                or [item["id"] for item in actual_groups] != [item["id"] for item in current_groups]):
+            _fail("The scene must retain each current source orientation identity")
+        for declared, actual, plane in zip(declared_groups, actual_groups, current_groups):
+            if (declared["module_total"] != plane["module_total"]
+                    or actual["module_total"] != plane["module_total"]
+                    or _num(actual["tilt_deg"]) != _num(plane["tilt_deg"])
+                    or _num(actual["collada_azimuth_deg"]) != _num(plane["azimuth_deg"])):
+                _fail("Scene orientation %d differs from the current source plane" % plane["id"])
+    pocket = house_profile(args["house"])
+    tables = table_profiles(args["layout"], pocket, snap["modules"], current)
+    check_tables(pocket, tables)
+    if len(tables) != int(scene["geometry"]["pv_table_count"]):
+        _fail("Recipe table count disagrees with the scene readback")
+    return {"snapshot": snap, "house": pocket, "table_profiles": tables}
+
+
+def _preflight(components, cli, scene_name, module_geometry, *, store=None, allow_groups=False):
     scene = read_house_pv_scene(components, scene_name)
     if scene.get("status") != "ready":
         return {"status": "needs_context", "scene": scene,
                 "reason": "The scene readback is not ready; fix the recipe first."}
-    if scene.get("source", {}).get("orientations"):
+    grouped = bool(scene.get("source", {}).get("orientations"))
+    if grouped and not allow_groups:
         return {"status": "needs_context", "scene": scene,
                 "reason": "Grouped authoring is a candidate only; per-table native identity/geometric verification is not bridged"}
     args = scene["create_arguments"]
@@ -534,8 +575,27 @@ def _preflight(components, cli, scene_name, module_geometry):
         return {"status": "needs_context", "scene": scene,
                 "reason": "Only %d..%d PV tables are bridged by this path"
                           % (1, MAX_TABLES_BRIDGED)}
-    return {"status": "preflight_stage2", "scene": scene, "args": args,
-            "tables": tables, "parts": parts}
+    result = {"status": "preflight_stage2", "scene": scene, "args": args,
+              "tables": tables, "parts": parts, "grouped": grouped}
+    if store is not None:
+        result.update(_prepare_source(store, components, scene, allow_groups=allow_groups))
+        if grouped:
+            source = result["snapshot"]["source"]
+            planes = source["orientations"]
+            if (source["field_azimuth_deg"] != 0 or abs((planes[1]["field_azimuth_deg"]
+                    - planes[0]["field_azimuth_deg"] + 180) % 360 - 180) < 1):
+                _fail("Grouped native import requires anchor azimuth zero and two distinct source planes")
+            for table in result["table_profiles"]:
+                for value in (-table["origin_m"][0], -table["origin_m"][1], table["origin_m"][2]):
+                    _placement_text(float(_num(value)))
+            for suffix in ("imported", "placed", "linked", "reload"):
+                target = workspace_file(components.workspace, "Shadings", Path(scene_name).stem + "_" + suffix + ".SHD", ".SHD")
+                if target.exists():
+                    _fail("Grouped native scene evidence already exists: " + target.name)
+    elif grouped:
+        return {"status": "needs_context", "scene": scene,
+                "reason": "Grouped preflight requires the current source variant for per-orientation comparison"}
+    return result
 
 
 def import_house_pv_scene(store, components, cli, scene_name, variant_name,
@@ -561,28 +621,13 @@ def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry
         if type(dry_run) is not bool or type(confirm) is not bool:
             raise ValueError("Use strict booleans")
         result["cli_version"] = _check_cli(cli)
-        pre = _preflight(components, cli, scene_name, None)
+        pre = _preflight(components, cli, scene_name, None, store=store, allow_groups=True)
         result["preflight"] = {key: pre[key] for key in ("status", "tables", "parts") if key in pre}
         if pre["status"] != "preflight_stage2":
             result.update(status=pre["status"], issues=[pre.get("reason", "")])
             return result
         args = pre["args"]
-        snap = _source_snapshot(store, components, args["project"], args["variant"],
-                                args["module_geometry"])
-        recorded = pre["scene"]["source"]
-        current = snap["source"]
-        if recorded["pan"].casefold() != current["pan_name"].casefold():
-            _fail("The scene PAN reference differs from the current source variant")
-        if (_num(recorded["tilt_deg"]) != _num(current["tilt_deg"])
-                or _num(recorded["collada_azimuth_deg"]) != _num(current["azimuth_deg"])
-                or any(_num(recorded["site"][key]) != _num(current["site"][key])
-                       for key in ("latitude", "longitude", "altitude"))):
-            _fail("The scene PV plane or site differs from the current source variant")
-        pocket = house_profile(args["house"])
-        tables = table_profiles(args["layout"], pocket, snap["modules"], snap["source"])
-        check_tables(pocket, tables)
-        if len(tables) != pre["tables"]:
-            _fail("Recipe table count disagrees with the scene readback")
+        snap = pre["snapshot"]
         result["source"] = {"project": args["project"], "variant": args["variant"],
                             "pan": snap["source"]["pan_name"],
                             "module_total": snap["source"]["module_total"],
@@ -627,7 +672,19 @@ def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry
                                     pre["tables"], pre["parts"])
             result["native_actions"].append("import_pvc2")
             result["import_summary"] = summary[:2000]
-            _link_orientation(pre["tables"])
+            if pre["grouped"]:
+                prefix = Path(scene_name).stem
+                imported_scene = _export_scene(components, prefix + "_imported.SHD")
+                result["native_placement"] = _place_grouped_tables(pre, imported_scene)
+                placed_scene = _export_scene(components, prefix + "_placed.SHD")
+                result["placed_geometry"] = _verify_scene_geometry(placed_scene, pre)
+                _remove_empty_import_orientation()
+                linked_scene = _export_scene(components, prefix + "_linked.SHD")
+                result["linked_geometry"] = _verify_scene_geometry(linked_scene, pre, orientations=True)
+                result["artifacts"].update(imported_scene=str(imported_scene), placed_scene=str(placed_scene),
+                                            linked_scene=str(linked_scene))
+            else:
+                _link_orientation(pre["tables"])
             result["native_actions"].append("link_orientation")
             validity = _validate_scene()
             result["native_validity"] = validity
@@ -656,7 +713,36 @@ def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry
                 if components._read(path) != before:
                     _fail("Source PAN changed during the native import")
             verification = _verify_new(created, snap["bytes"], pre["parts"], pre["tables"],
-                                       snap["source"]["module_total"])
+                                       snap["source"]["module_total"],
+                                       **({"scene_context": _scene_context(pre)} if pre["grouped"] else {}))
+            if pre["grouped"]:
+                result["stage"] = "native_reload"
+                saved_bytes = created.read_bytes()
+                root = _wait("TProjectForm")
+                _select_source_variant(root, args["variant"], notify_timeout=30000)
+                _select_source_variant(root, created.suffix[1:], notify_timeout=30000)
+                _click(_find(root, "TPngBitBtn", "近处遮挡"))
+                shading = _wait("TShadingsForm")
+                _click(_find(shading, "TPngBitBtn", "建模 / 透视图"))
+                _wait("TPerspectiveForm")
+                reload_scene = _export_scene(components, Path(scene_name).stem + "_reload.SHD")
+                reloaded = _verify_scene_geometry(reload_scene, pre, orientations=True)
+                reload_validity = _validate_scene()
+                if not reload_validity["valid"]:
+                    _fail("Reloaded native scene is invalid")
+                view = _wait("TPerspectiveForm")
+                _click(_find(view, "TPngBitBtn", "取消"))
+                shading = _wait("TShadingsForm")
+                _click(_find(shading, "TPngBitBtn", "取消"))
+                _wait("TProjectForm")
+                if created.read_bytes() != saved_bytes or snap["path"].read_bytes() != snap["bytes"]:
+                    _fail("Native saved variant changed during reload")
+                _verify_new(created, snap["bytes"], pre["parts"], pre["tables"],
+                            snap["source"]["module_total"], scene_context=_scene_context(pre))
+                result.update(native_reload_verified=True, native_reload={"source_variant": args["variant"],
+                    "saved_variant": created.suffix[1:].upper(), "exported_scene_file": str(reload_scene),
+                    "verification": reloaded, "native_validity": reload_validity})
+                result["native_actions"].extend(["reload_saved_variant", "export_reloaded_scene", "verify_reloaded_geometry"])
             result.update(status="imported", stage="completed", imported=True, native_geometry_verified=True,
                           verification=verification)
             return result
@@ -671,7 +757,7 @@ def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry
         return result
 
 
-def _select_source_variant(root, variant):
+def _select_source_variant(root, variant, *, notify_timeout=2000):
     variant = variant.upper()
     combos = [h for h in _kids(root) if _class_of(h) == "TComboBox"
               and any(t.split() and t.split()[0] == variant for t in _combo_items(h))]
@@ -680,10 +766,13 @@ def _select_source_variant(root, variant):
     caption = _string_of(root)
     items = _combo_items(combos[0])
     _combo_select(combos[0], next(i for i, t in enumerate(items)
-                                  if t.split() and t.split()[0] == variant))
+                                  if t.split() and t.split()[0] == variant), notify_timeout=notify_timeout)
     again = _wait("TProjectForm", timeout=10.0)
     if _string_of(again) != caption:
         _fail("Project caption changed while selecting the source variant")
+    selected = _get_text(combos[0]).split()
+    if not selected or selected[0] != variant:
+        _fail("Native variant selection did not retain the requested identifier")
 
 
 def _check_size(hwnd, cls):
@@ -737,6 +826,183 @@ def _check_summary(body, tables, parts):
     extra = [line.strip() for line in section[1].splitlines() if line.strip()]
     if any(BETA_MARK not in line for line in extra):
         _fail("Import summary contains warnings beyond the fixed beta notice")
+
+
+def _export_scene(components, name):
+    """Use the native SHD export; never patch a native scene record."""
+    path = workspace_file(components.workspace, "Shadings", name, ".SHD")
+    if path.exists():
+        _fail("Native scene export already exists: " + name)
+    view = _wait("TPerspectiveForm")
+    _check_size(view, "TPerspectiveForm")
+    _key(VK_S, (VK_MENU,))
+    _key(VK_S)
+    form = _wait("TSaveObjPVForm")
+    edits = [h for h in _kids(form) if _class_of(h) == "TEdit"]
+    if len(edits) != 2:
+        _fail("Scene export requires the recorded description and filename fields")
+    _set_text(max(edits, key=lambda h: _rect_of(h)[1]), path.stem)
+    _click(_find(form, "TPngBitBtn", "保存"))
+    _wait("TPerspectiveForm")
+    deadline = time.monotonic() + 10
+    while not path.is_file() and time.monotonic() < deadline:
+        time.sleep(.1)
+    if not path.is_file():
+        _fail("Native scene export did not create the requested SHD")
+    return path
+
+
+def _scene_records(path):
+    text = path.read_text(encoding="utf-8-sig").replace("End of TOrientGroup", "End of PVObject pvOrient")
+    return objects(text), text.splitlines(True)
+
+
+def _scene_context(pre):
+    return {"house": pre["house"], "tables": pre["table_profiles"],
+            "modules": pre["snapshot"]["modules"], "source": pre["snapshot"]["source"]}
+
+
+def _verify_scene_geometry(path, pre, *, orientations=False):
+    blocks, lines = _scene_records(path)
+    context = _scene_context(pre)
+    result = {**verify_house_geometry(blocks, lines, context["house"], context["source"]),
+              **verify_pv_geometry(blocks, context["tables"], context["modules"], context["source"])}
+    if orientations:
+        saved = [block for block in blocks if block.object_type == "pvOrient"]
+        if len(saved) != 2 or {block.one("NoOrient")[1] for block in saved} != {"1", "2"}:
+            _fail("Native scene does not preserve exactly the two source orientation groups")
+        for plane in context["source"]["orientations"]:
+            block = next(block for block in saved if block.one("NoOrient")[1] == str(plane["id"]))
+            if (block.one("FieldType")[1] != "FixedPlane"
+                    or float(block.one("FieldTilt")[1]) != plane["tilt_deg"]
+                    or float(block.one("FieldAzim")[1]) != plane["field_azimuth_deg"]
+                    or any(block.one(key)[1] != "False" for key in ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"))):
+                _fail("Native scene source orientation parameters changed")
+        result["source_orientations_preserved"] = True
+    return result
+
+
+def _select_pv_leaf(index):
+    view = _wait("TPerspectiveForm")
+    _check_size(view, "TPerspectiveForm")
+    left, top = _rect_of(view)[:2]
+    _click(_find(view, "TPageControl"), left + 1140, top + 144)
+    trees = [h for h in _kids(view) if _class_of(h) == "TVirtualStringTree"
+             and _rect_of(h)[1] == top + 188]
+    if len(trees) != 1 or index not in (0, 1):
+        _fail("The recorded two-table object tree is unavailable")
+    _click(trees[0], left + 1230, top + 235 + 24 * index)
+    return view, trees[0]
+
+
+def _open_pv_leaf(index, expected_name):
+    view, tree = _select_pv_leaf(index)
+    left, top = _rect_of(view)[:2]
+    _click(tree, left + 1230, top + 235 + 24 * index)
+    form = _wait("TTableFieldForm", timeout=20, activate=False)
+    u, _ = _libs()
+    deadline = time.monotonic() + 10
+    while int(u.GetForegroundWindow() or 0) != form and time.monotonic() < deadline:
+        time.sleep(.1)
+    _activate(form)
+    x, y, right, bottom = _rect_of(form)
+    if (right - x, bottom - y) != (1025, 801):
+        _fail("PV properties do not match the recorded native layout")
+    deadline = time.monotonic() + 10
+    while True:
+        x, y = _rect_of(form)[:2]
+        page = _find(form, "TPageControl")
+        if int(u.WindowFromPoint(w.POINT(x + 694, y + 119)) or 0) == page:
+            _click(page, x + 694, y + 119)
+        if any(_class_of(h) == "TGroupBox" and _string_of(h) == "描述" for h in _kids(form)):
+            break
+        if time.monotonic() >= deadline:
+            _fail("PV properties did not finish loading the requested basic parameters")
+        time.sleep(.2)
+    description = _find(form, "TGroupBox", "描述")
+    name = _get_text(_find(description, "TEdit"))
+    if name != expected_name:
+        _fail("The selected native PV leaf differs from the exported scene identity")
+    return form
+
+
+def _place_grouped_tables(pre, imported_scene):
+    """Assign each imported plane and explicitly place it through native controls.
+
+    Import angles identify candidates only. Successful geometry acceptance uses
+    the strict saved-coordinate verifier after placement, never this angle range.
+    """
+    blocks, _ = _scene_records(imported_scene)
+    records = [block for block in blocks if block.object_type == "pvShdArrayTable"]
+    source = pre["snapshot"]["source"]
+    if len(records) != 2 or source["field_azimuth_deg"] != 0:
+        _fail("Native grouped placement requires two regions and anchor azimuth zero")
+    assignments, used = [], set()
+    for index, block in enumerate(records):
+        tilt, azimuth = (float(block.one(key)[1]) for key in ("DInclin", "DAzimut"))
+        candidates = [plane for plane in source["orientations"]
+                      if math.isfinite(tilt) and math.isfinite(azimuth)
+                      and abs(tilt - plane["tilt_deg"]) < .1
+                      and abs((azimuth - plane["field_azimuth_deg"] + 180) % 360 - 180) < .1]
+        if len(candidates) != 1 or candidates[0]["id"] in used:
+            _fail("Imported planes cannot be assigned uniquely to the declared source regions")
+        identifier = candidates[0]["id"]
+        used.add(identifier)
+        profile = next(table for table in pre["table_profiles"] if table["orientation_id"] == identifier)
+        form = _open_pv_leaf(index, block.one("Comment")[1])
+        combo = _find(_find(form, "TGroupBox", "朝向"), "TComboBox")
+        choices = [i for i, label in enumerate(_combo_items(combo)) if label.startswith("#%d:" % identifier)]
+        if len(choices) != 1:
+            _fail("PV properties lack the requested native system orientation")
+        _combo_select(combo, choices[0])
+        _click(_find(form, "TPngBitBtn", "关闭物体"))
+        view, _ = _select_pv_leaf(index)
+        _key(0x42, (VK_CONTROL,))
+        position = _find(view, "TGroupBox", "位置")
+        edits = sorted((h for h in _kids(position) if _class_of(h) == "TEdit"), key=lambda h: _rect_of(h)[1])
+        if len(edits) != 3:
+            _fail("Native placement requires the recorded XYZ controls")
+        x, y, z = (float(_num(value)) for value in profile["origin_m"])
+        target = (-x, -y, z)
+        for edit, value in zip(edits, target):
+            # VCL compares rounded display values. An explicit intermediate move
+            # forces the final requested coordinate to be committed at full precision.
+            for coordinate in (value + 1, value):
+                _click(edit)
+                _set_text(edit, _placement_text(coordinate, check=coordinate == value))
+                _key(VK_RETURN)
+        assignments.append({"source_table": profile["name"], "orientation_id": identifier,
+                            "native_name": block.one("Comment")[1],
+                            "imported_origin_m": block.one("DOrigine")[1],
+                            "requested_native_origin_m": list(target)})
+    return assignments
+
+
+def _placement_text(value, *, check=True):
+    # The recorded native position editor consumes seven text characters even
+    # though WM_GETTEXT can return more. Round before entry, then require the
+    # existing geometry precision; do not silently accept native truncation.
+    for decimals in range(6, -1, -1):
+        text = f"{value:.{decimals}f}".rstrip("0").rstrip(".") if decimals else f"{value:.0f}"
+        if len(text) <= 7:
+            if check and abs(float(text) - value) > 2e-5:
+                _fail("Requested coordinate exceeds the recorded native editor precision")
+            return text
+    _fail("Requested coordinate exceeds the recorded native editor range")
+
+
+def _remove_empty_import_orientation():
+    _key(VK_O, (VK_CONTROL, VK_SHIFT))
+    manager = _wait("TOrientManageForm")
+    _check_size(manager, "TOrientManageForm")
+    left, top = _rect_of(manager)[:2]
+    toolbar = _find(manager, "TActionToolBar", "OrientsActionToolBar")
+    tree = max((h for h in _kids(manager) if _class_of(h) == "TVirtualStringTree"),
+               key=lambda h: _rect_of(h)[2] - _rect_of(h)[0])
+    _click(tree, left + 240, top + 497)
+    _click(toolbar, left + 273, top + 245)
+    _click(_find(manager, "TPngBitBtn", "关闭"))
+    _wait("TPerspectiveForm")
 
 
 def _link_orientation(tables):
@@ -839,10 +1105,11 @@ def _save_new(project, variant_name):
     return created.pop()
 
 
-def _verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules):
+def _verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules, *, scene_context=None):
     def parsed(raw):
         return objects(raw.decode("utf-8-sig").replace("End of TOrientGroup", "End of PVObject pvOrient"))
-    blocks = parsed(Path(path).read_bytes())
+    target_bytes = Path(path).read_bytes()
+    blocks = parsed(target_bytes)
     tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
     generic = [block for block in blocks if block.object_type == "pvShdGenObject"]
     modules = sum(int(block.one("NModInHeight")[1]) * int(block.one("NModInWidth")[1]) for block in tables)
@@ -851,6 +1118,20 @@ def _verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules)
               % (len(generic), len(tables), expect_parts, expect_tables))
     if modules != expect_modules:
         _fail("New variant module total is %d, expected %d" % (modules, expect_modules))
+    if scene_context is not None and scene_context["source"].get("orientations"):
+        source_text, target_text = (raw.decode("utf-8-sig").replace(
+            "End of TOrientGroup", "End of PVObject pvOrient") for raw in (source_bytes, target_bytes))
+        try:
+            hardware = verify_grouped_hardware(parsed(source_bytes), blocks, source_text.splitlines(True),
+                                               target_text.splitlines(True), scene_context["source"])
+            house_geometry = verify_house_geometry(blocks, target_text.splitlines(True), scene_context["house"],
+                                                    scene_context["source"])
+            pv_geometry = verify_pv_geometry(blocks, scene_context["tables"], scene_context["modules"],
+                                             scene_context["source"])
+        except ValueError as exc:
+            _fail(str(exc))
+        return {"objects": len(generic) + len(tables), "house": len(generic), "tables": len(tables),
+                "modules": modules, **hardware, **house_geometry, **pv_geometry}
     if len([block for block in blocks if block.object_type == "pvOrient"]) != 1 or any(
             block.one("NoOrient")[1] != "1" for block in tables):
         _fail("New variant does not reference a single orientation")
