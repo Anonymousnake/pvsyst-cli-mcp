@@ -111,7 +111,12 @@ def _prepare(store, components, request):
              "manifest": workspace_file(store.workspace, "Results", prefix + "_task.json", ".json")}
     source_bytes = store._read(paths["source_variant"])
     _, lines = store._text(source_bytes)
-    snap = native._source_snapshot(store, components, project, variant, request.get("module_geometry"))
+    entries = request["layout"].get("tables") if isinstance(request["layout"], dict) else None
+    grouped = (isinstance(entries, list) and len(entries) == 2
+               and all(isinstance(item, dict) and type(item.get("orientation_id")) is int for item in entries)
+               and {item["orientation_id"] for item in entries} == {1, 2})
+    snap = native._source_snapshot(store, components, project, variant, request.get("module_geometry"),
+                                   **({"allow_groups": True} if grouped else {}))
     source_site = store._embedded_reference(lines, "PVObject_SiteSimul=pvSite", "End of PVObject pvSite")
     source_met = store._embedded_reference(lines, "PVObject_MeteoSimul=pvMeteo", "End of PVObject pvMeteo")
     project_text = store._read(paths["source_project"]).decode("utf-8-sig")
@@ -124,8 +129,17 @@ def _prepare(store, components, request):
                  met=workspace_file(store.workspace, "Meteo", source_met, ".met"))
     if not paths["site"].is_file() or not paths["met"].is_file():
         raise ValueError("Source SIT/MET must exist in the workspace")
+    component_libraries = {}
     if snap["pan_snapshot"] is not None:
         paths["pan"] = snap["pan_snapshot"][0]
+        for library in ("workspace", "builtin"):
+            if library == "builtin" and components.builtin is None:
+                continue
+            if components._path("PAN", snap["source"]["pan_name"], library).resolve() == paths["pan"].resolve():
+                component_libraries["PAN"] = library
+                break
+        if "PAN" not in component_libraries:
+            raise ValueError("Resolved PAN is outside the supported component libraries")
     sub = next(block for block in objects("".join(lines).replace("End of TOrientGroup", "End of PVObject pvOrient"))
                if block.object_type == "pvSubArray")
     for library in ("workspace", "builtin"):
@@ -134,6 +148,7 @@ def _prepare(store, components, request):
         ond = components._path("OND", sub.one("GInverter")[1], library)
         if ond.is_file():
             paths["ond"] = ond
+            component_libraries["OND"] = library
             break
     pocket = house_profile(request["house"])
     if pocket["kind"] != "mesh":
@@ -154,12 +169,27 @@ def _prepare(store, components, request):
             "nominal_dc_kw": nominal,
             "house_parts": len(pocket["meshes"]), "pv_tables": len(tables),
             "source": snap["source"], "modules": snap["modules"],
+            "tables": tables, "component_libraries": component_libraries,
+            "component_references": {"PAN": snap["source"]["pan_name"], "OND": sub.one("GInverter")[1]},
             "inherited_parameters": store.inspect_parameters(project, variant),
             "inherited_project_parameters": {key: project_root.one(key)[1]
                 for key in ("DesignTempMin", "TempOper", "TempOperMin", "TempOperMax", "TranspositionAlgorithm", "ACLossesRef")
                 if key in project_root.fields},
             "inherited_scope": "Hardware/counts/angles/losses and bound SIT/MET remain from the selected source; no sizing/climate/design certification."}
     return paths, plan
+
+
+def _engineering_assets(paths, plan, guards):
+    assets = {}
+    for label, key, folder, library in (
+            ("site", "site", "Sites", "workspace"), ("meteo", "met", "Meteo", "workspace"),
+            ("scene", "scene", "UserData", "workspace"), ("sfi", "sfi", "Models", "workspace"),
+            ("PAN", "pan", "ComposPV/PVmodules", plan["component_libraries"].get("PAN")),
+            ("OND", "ond", "ComposPV/Inverters", plan["component_libraries"].get("OND"))):
+        if key in paths:
+            assets[label] = {"folder": folder, "name": paths[key].name,
+                             "library": library, "sha256": guards[key]}
+    return assets
 
 
 def run_house_task(store, components, cli, *, request, dry_run=True, confirm=False,
@@ -233,6 +263,51 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     raise ValueError("Checkpoint input/artifact guards are incomplete or unexpected")
                 if any(fingerprint(path) != record["guards"][key] for key, path in bindings.items()):
                     raise ValueError("A protected source or prepared artifact changed; no resume action was taken")
+                if record.get("operation") == "engineering_house":
+                    handoff = record.get("input_handoff")
+                    if (type(record.get("schema_version")) is not int or record["schema_version"] != 1 or not isinstance(handoff, dict)
+                            or not isinstance(handoff.get("saved"), dict) or not handoff["saved"]
+                            or record.get("working_project") != request["new_project"]
+                            or record.get("working_variant") != record.get("variant")
+                            or record.get("year") != request["year"]
+                            or handoff.get("input_snapshot", {}).get("variant_sha256") != record["guards"].get("native_variant")
+                            or record.get("input_assets") != _engineering_assets(paths, plan, record["guards"])
+                            or store.inspect_project(request["new_project"])["files"] != record.get("working_files")):
+                        raise ValueError("Bound native-house inputs or complete working file set changed")
+            def bind_engineering_inputs():
+                if record.get("operation") == "engineering_house":
+                    return
+                # A legacy completed/attempted run cannot acquire a retrospective input handoff.
+                if record["phase"] not in ("native_saved", "gui_closed") or record["runs"]:
+                    return
+                if "input_handoff" in record or record.get("operation") is not None:
+                    raise ValueError("Incomplete native-house binding cannot be replaced")
+                from pvsyst_engineering_handoff import build_project_handoff
+                handoff = build_project_handoff(store, project=request["new_project"], variant=record["variant"])
+                if handoff["status"] == "blocked" or not handoff.get("saved"):
+                    raise ValueError("Saved native-house engineering handoff is blocked: " + str(handoff["issues"]))
+                assets = _engineering_assets(paths, plan, record["guards"])
+                database = [{"kind": kind, "name": name, "resolution": "native_database_or_unavailable"}
+                            for kind, name in plan["component_references"].items() if kind not in assets]
+                record.update(operation="engineering_house", schema_version=1,
+                    working_project=request["new_project"], working_variant=record["variant"], year=request["year"],
+                    objective="原生住宅交付：" + request["variant_name"], nominal_dc_power_kw=plan["nominal_dc_kw"],
+                    input_handoff=handoff, working_files=store.inspect_project(request["new_project"])["files"],
+                    input_assets=assets, database_references=database,
+                    changes=[{"field": "geometry", "before": None,
+                        "after": {"scene_name": plan["scene_name"], "house_parts": plan["house_parts"],
+                        "geometry": record["geometry"],
+                        "pv_regions": record["geometry"].get("tables", [
+                            {"name": item.get("name", "PV table"), "orientation_id": item.get("orientation_id", 1),
+                             "module_total": item["module_rows"] * item["module_columns"]}
+                            for item in plan["tables"]]),
+                        "native_saved_verification": record.get("native_import", {}).get("verification", {})},
+                        "reason": "将已声明住宅网格和PV区域原生导入、关联、校验并另存为新变体；保存验证单独保留。"}])
+                version = record.get("native_import", {}).get("cli_version")
+                if isinstance(version, str) and version:
+                    record["cli_version"] = version
+                unchanged()
+                _save(paths["manifest"], record)
             def stage(phase, keys=()):
                 for key in keys:
                     bindings[key] = paths[key]
@@ -248,8 +323,14 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                         or arguments.get("layout") != request["layout"]):
                     raise ValueError("Stored scene does not recover the declared house/layout/source")
             if position() >= PHASES.index("native_saved"):
+                if (plan["source"].get("orientations")
+                        and record.get("native_import", {}).get("native_reload_verified") is not True):
+                    raise ValueError("Grouped house checkpoint lacks verified native reload evidence")
                 native._verify_new(paths["native_variant"], store._read(paths["working_variant"]),
-                                   plan["house_parts"], plan["pv_tables"], plan["source"]["module_total"])
+                    plan["house_parts"], plan["pv_tables"], plan["source"]["module_total"],
+                    **({"scene_context": {"house": house_profile(request["house"]), "tables": plan["tables"],
+                        "modules": plan["modules"], "source": plan["source"]}}
+                       if plan["source"].get("orientations") else {}))
             if record["phase"] == "prepared":
                 # This task creates only VC0; another VC may be an unrecorded native SaveAs.
                 candidates = [variant_id(member) for member in cli.list_variants(request["new_project"])
@@ -304,12 +385,15 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 _save(paths["manifest"], record)
                 if imported["status"] != "imported" or not imported["native_geometry_verified"]:
                     raise ValueError("Native house import stopped; current owned window/artifacts are retained")
+                if plan["source"].get("orientations") and imported.get("native_reload_verified") is not True:
+                    raise ValueError("Grouped house import requires verified native reload before input binding")
                 record["variant"] = variant_id(imported["variant"])
                 paths["native_variant"] = store._path(request["new_project"], record["variant"])
                 record["artifacts"]["native_variant"] = str(paths["native_variant"])
                 stage("native_saved", ("native_variant",))
             if record["phase"] == "native_saved":
                 unchanged()
+                bind_engineering_inputs()
                 if proc is not None:
                     record["native_cleanup"] = _close_owned(proc, cli)
                     _save(paths["manifest"], record)
@@ -323,6 +407,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 stage("gui_closed")
             if record["phase"] == "gui_closed":
                 unchanged()
+                bind_engineering_inputs()
                 if record["runs"] and not retry_simulation:
                     raise ValueError("Previous simulation attempt is retained; explicit retry_simulation=true creates new outputs")
                 number = len(record["runs"]) + 1
@@ -356,9 +441,19 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 if {"csv": fingerprint(csv_path), "pdf": fingerprint(pdf_path)} != record["output_guards"]:
                     raise ValueError("Native outputs changed during validation")
                 record.update(verified, native_consumption_verified=True,
-                              status="needs_review" if attempt["native"]["warnings"] or verified["metrics"]["diagnostic_flags"] else "completed",
+                               status="needs_review" if (attempt["native"]["warnings"] or verified["metrics"]["diagnostic_flags"]
+                                   or record.get("input_handoff", {}).get("status") == "needs_review") else "completed",
                               phase="completed", stage="completed")
                 record["artifacts"].update(csv=str(csv_path), pdf=str(pdf_path))
+                if record.get("operation") == "engineering_house":
+                    record["result_files"] = dict(record["output_guards"])
+                    # Retire a capability notice emitted by the earlier scene-author
+                    # stage, only after genuine native save/reload/year verification.
+                    obsolete = "Two-orientation authoring is candidate-only; native automatic import remains needs_context."
+                    record["warnings"] = [
+                        "Two-orientation authoring and native consumption are separate stages; this task's saved/reloaded geometry and annual evidence are recorded below."
+                        if warning == obsolete and record.get("native_import", {}).get("native_reload_verified") is True
+                        else warning for warning in record.get("warnings", [])]
                 _save(paths["manifest"], record)
             return _public(record)
         except (OSError, ValueError, RuntimeError, KeyError, StopIteration, TypeError, subprocess.TimeoutExpired) as exc:

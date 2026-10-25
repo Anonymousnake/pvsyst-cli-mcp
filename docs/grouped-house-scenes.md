@@ -1,12 +1,14 @@
-# 有限双朝向场景作者
+# 有限双朝向场景与住宅任务
 
-既有 `pvsyst_create_house_pv_scene` 和 `pvsyst_read_house_pv_scene` 新增候选文件的双固定朝向分组，不新增工具、PV/阴影计算或自动桌面流程。原单朝向、命名多区、单表和旧版本1输入保持。**双组自动原生导入明确返回 needs_context，住宅交付任务仍保持原单源边界。**
+**当前阶段3已完成受限公共原生验收：**一栋18×10m共脊双坡、ID1/2、同PAN/OND及anchor0的任务完成逐表关联、原生归位、严格保存/重载空间核对、一次2024年8784h原生运行及成套ZIP。保存VC1、9房屋mesh/2PV/36组件，任务stage完成、native_consumption_verified=true，仍保留缺工程依据与保存阴影复核的needs_review。真实结果和门槛集中见[工程交付阶段3](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)，不放开非零anchor、任意多组或异构/共享拓扑，也不宣称工程认证。
+
+本页下述作者与40构件研究记录按其历史批次保留。初始 `pvsyst_create_house_pv_scene` / `pvsyst_read_house_pv_scene` 批次只增加双固定朝向候选文件和严格回读；当时双组自动导入返回needs_context，住宅任务仍限单源。原单朝向、命名多区、单表和旧版本1输入保持，不借后续成果回写当时验收。
 
 ## 声明现有来源分组
 
 仅允许2个pvSubArray分别引用普通非平均固定pvOrient1/2；同一PAN/OND、完整一致电路计数，现有8.1.0/8.1.6独占完整分支门禁和单朝向字符串分配。每组恰好一个命名PV区域，区域模块数须等于对应NModSerie×NStringCh，不只核对总和。无活动场景/布局、负荷/储能、P50/P90、保存地平线；北半球限定和PAN尺寸元数据规则延续。不是任意共享父、异构设备或拓扑设计入口。
 
-下面是本机实际案例的 `layout` 片段，不是完整请求；调用仍需完整AI命名网格 `house`、源project/variant、output_name及原有module_geometry上下文。相应屋面必须存在于调用方网格中，示例不生成房型。
+下面是历史两体量研究案例的 `layout` 片段，不是一栋双屋面住宅或完整请求；调用仍需完整AI命名网格 `house`、源project/variant、output_name及原有module_geometry上下文。相应屋面必须存在于调用方网格中，示例不生成房型。本轮单栋住宅使用新的共脊网格，不复用70m间隔体量作单栋声明。
 
 ```json
 {
@@ -29,7 +31,7 @@
 
 单源仍写版本1；新双组写版本2，source声明增加每组id/模块数。读取器从实际rack取角度、从XML读取网格并核对组声明、逐组计数和完整ID集合，重建全部支持内容后与原XML规范化比较。额外节点、改动PV旋转却未匹配完整输入、损坏组清单均停止；不放松canonicalize以吞掉未知内容。
 
-`ready` 表示文件方言/几何输入可重建，不代表工程来源已认证。读取始终 `source_verified=false`，元数据是文件声明；用返回create_arguments重建时会再次读取当前原生源并执行全部源门禁。把合法文件声明换成其它project/variant不是来源认证。生产导入对双组提前 needs_context，native_actions为空，不进入GUI，不根据文件声明推断工程已匹配；现有接口仍会读取CLI版本。无需额外框架或Reader偷偷打开原工程。
+`ready` 表示文件方言/几何输入可重建，不代表工程来源已认证。读取始终 `source_verified=false`，元数据是文件声明；用返回create_arguments重建时会再次读取当前原生源并执行全部源门禁。把合法文件声明换成其它project/variant不是来源认证。初始作者批次的生产导入对双组提前needs_context，native_actions为空，不进入GUI，不根据文件声明推断工程已匹配；该历史停点不等于本轮受限任务已验收。无需额外框架或Reader偷偷打开原工程。
 
 创建只写新的UserData/*.pvc2，不覆盖现有文件；项目、变体、PAN保持，模块几何深度仍为调用方声明。所有导入/原生消费标志均false。先前[双根原生研究](multiroof-native-map.md)证明原生入口可执行，但不是本批每PV节点新形状的消费证据；本批没有新GUI或仿真。
 
@@ -41,7 +43,7 @@
 
 `grouped-house-scene-review [magpie/mw/deepseek-v4.1-flash-sg]` 无阻断。父裁决：reader不是工程认证器，重建creator重新校验源；reader已有两处完整ID1/2校验；_num只折叠负零，不把-180变零，因此未按错误建议更改正确代码。子审查自报越出给定片段读取pvsyst_grid.py短段及额外variants/MCP片段，已记录范围偏差，不作为这些范围的新增验收；父验证仅以明确公开契约和源码为依据。
 
-下一步仍需通用的逐区原生表身份/源几何核对入口，再扩自动导入/任务。既有单固定无阴影、同朝向住宅流程继续可用；候选作者完成不等于业务全链路交付。下节记录后续新候选的实际原生研究，不回写前批的执行状态。
+该作者批次结束时，自动导入/任务尚缺逐区原生表身份与源几何核对入口。后续研究及本轮受限任务分别记录；候选作者完成不等于业务全链路交付，通用身份验证器仍未由此建立。既有单固定无阴影、同朝向住宅流程继续可用，不回写前批执行状态。
 
 ## 新候选的原生空间与两日复核
 
@@ -61,7 +63,7 @@
 
 原生普通物体的Sommets/TPoly3D头声明点数，Point_1..N名字从1开始，但实存Faces包含0，因此面顶点索引是0..N-1；-1分隔多边形。复用现有objects取所属字段，再核对头点数、Point集合、面整数个数NPElements/面数NElements和索引范围，不把曲线Profile.points当3D网格读取器。仅在本案例所有普通物体局部角度0的前提下，加DOrigine得到原生世界点；按空间候选建立顶点一一对应，比较保留绕序的面循环（允许起点/面次序不同，不反转），保留残差和非自动字段差异。对两张表按NoOrient连接真实pvOrient并同时比原点、角度、尺寸及模块元数据。不是哈希/名称签名，也未形成长期私有格式框架。
 
-**证据→结论→下一步**：native-owner-r2的原生操作/PNG/另存重载记录→新形状持久化已证；native-spatial-comparison.json→仅此参考与新配置的空间/连接观测；native-48h-control.json及原生命令/CSV/PDF→新配置两日消费已证。参考和目标原生文件、全部输入副本留本机pvsyst-grouped-native-study/round1，商业/派生资产不上传。产品writer/read仍不把单案例结果作为每次输出的imported/native_consumption_verified，自动import仍needs_context；跨任意网格/角度/版本的身份验证器未因此实现。
+**证据→结论→下一步**：native-owner-r2的原生操作/PNG/另存重载记录→新形状持久化已证；native-spatial-comparison.json→仅此参考与新配置的空间/连接观测；native-48h-control.json及原生命令/CSV/PDF→新配置两日消费已证。参考和目标原生文件、全部输入副本留本机pvsyst-grouped-native-study/round1，商业/派生资产不上传。该批产品writer/read不把单案例结果作为每次输出的imported/native_consumption_verified，当时自动import仍needs_context；跨任意网格/角度/版本的身份验证器未因此实现。
 
 ### 停点与裁决
 

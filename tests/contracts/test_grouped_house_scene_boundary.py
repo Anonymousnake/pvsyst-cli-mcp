@@ -105,11 +105,6 @@ class GroupedHouseSceneBoundary(unittest.TestCase):
                     self.assertEqual(recovered["create_arguments"]["layout"], args["layout"])
                     replay = dict(recovered["create_arguments"], output_name="GroupedRecreated.pvc2", dry_run=False)
                     self.assertEqual((await call(create, replay))["status"], "created")
-                    native = await call("pvsyst_import_house_pv_scene", {"scene_name": path.name,
-                                        "variant_name": "Grouped candidate", "dry_run": True})
-                    self.assertEqual(native["status"], "needs_context", native)
-                    self.assertEqual(native["native_actions"], [])
-                    self.assertFalse(native["native_consumption_verified"])
                     variant_file = root / "Projects" / "DUAL_ROOF_INPUT.VC1"
                     original_variant = variant_file.read_bytes()
                     needle = b"GInverter=Generic_9kW.OND"

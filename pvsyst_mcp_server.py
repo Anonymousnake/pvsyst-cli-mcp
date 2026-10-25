@@ -1624,11 +1624,15 @@ def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
                             confirm: StrictBool = False, resume: StrictBool = False,
                             retry_simulation: StrictBool = False) -> dict:
     """Deliver one AI-authored residential project through existing native entries.
-    Source must be the existing bounded single fixed PV-only northern-site template,
+    Source must be the existing bounded fixed PV-only northern-site template,
     with identical bound workspace SIT/MET in PRJ/VC. Hardware/counts/angles/losses,
     source engineering defaults and weather remain inherited and disclosed, never sized
     or guessed. AI supplies a complete mesh house and one/two placed PV regions in spec;
     all module counts/source-PAN metadata and native8.1.6CN/DPI96 boundaries remain.
+    Two source orientations require one explicitly named region per orientation1/2,
+    the same PAN/OND, anchor azimuth zero and distinct source planes. Native table
+    properties assign each plane and place its declared coordinates; SHD exports,
+    saved VC and actual GUI reload verify every mesh/region before the annual run.
     Preview writes nothing/does not activate or launch GUI; cold execution requires
     dry_run=false and confirm=true, configured DataPath and NO preexisting native GUI.
     It exclusively creates a working PRJ/VC0, PVC2 and SFI, opens one owned GUI, imports/
@@ -1777,7 +1781,9 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
     dialects stop rather than patching private VC data or guessing control positions.
     dry_run reads state only: no activation, key/mouse input or clipboard access.
     Execute with dry_run=false AND confirm=true, then leave the native desktop alone:
-    selects the clean source variant, imports PVC2, assigns its regions to orientation1,
+    selects the clean source variant, imports PVC2 and assigns its regions to the
+    declared source orientation(s). The bounded two-orientation path explicitly places
+    each table and verifies native SHD/saved VC geometry and a real GUI reload. It then
     runs PVsyst's scene-validity check and shading table, and saves a NEW native variant
     with the explicit display title variant_name (1..80 printable UTF-8 bytes).
     Native warnings beyond the expected beta notice stop; invalid geometry is returned
@@ -2825,6 +2831,7 @@ def pvsyst_export_engineering_delivery(manifest_name: StrictStr, output_name: St
     """Package a completed engineering run as a NEW local Results ZIP.
     Reads one workspace run manifest and checks its input/output binding. Includes the
     selected native PRJ/VC, original CSV/PDF, Chinese summary and input handoff. Optional
+    house runs additionally include their genuine task manifest, authored PVC2 and SFI.
     comparison_name includes its bound scenarios and Chinese comparison report. Commercial
     component/weather files remain external dependencies. Export does not certify the
     design or upgrade a review status. Preview writes nothing; existing ZIPs stop.

@@ -864,7 +864,7 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                 "northern-hemisphere site. House and table share one parent rotation, so the table translation "
                 "is expressed in the house local frame.")
             if "orientations" in source:
-                result["warnings"].append("Two-orientation authoring is candidate-only; native automatic import remains needs_context.")
+                result["warnings"].append("Two-orientation authoring does not certify native geometry: the bounded native path separately assigns, places, saves and reloads both regions before simulation.")
             if pocket["kind"] == "mesh":
                 result["warnings"].append(
                     "House geometry is AI/caller-authored, not reconstructed from a fixed roof template. "
