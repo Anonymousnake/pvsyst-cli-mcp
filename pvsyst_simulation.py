@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import json
 import math
 import subprocess
 from pathlib import Path
@@ -10,7 +9,7 @@ from pathlib import Path
 from pvsyst_cli import PVsystError, VAR_GROUPS, build_sfi, validate_report_pages, iter_result_csv, result_units
 from pvsyst_components import electrical_inventory
 from pvsyst_sizing import plan_capacity
-from pvsyst_paths import project_path, variant_id, workspace_file
+from pvsyst_paths import project_path, variant_id, workspace_file, write_json
 from pvsyst_pan import validation_fields as pan_validation_fields
 from pvsyst_weather_flow import load_weather_manifest, compare_native_weather, inspect_met_calendar
 from pvsyst_results import annual_summary, fingerprint
@@ -308,12 +307,9 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
         return result
 
     manifest = paths["manifest"]
-    manifest.parent.mkdir(parents=True, exist_ok=True)
 
     def save(first=False):
-        with manifest.open("x" if first else "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(result, stream, ensure_ascii=True, indent=2, allow_nan=False)
-            stream.write("\n")
+        write_json(manifest, result, first=first)
 
     def stage(name):
         result.update(status="running", stage=name)
@@ -462,7 +458,8 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                 raise ValueError("Native output changed across result validation stages")
             flags = result["metrics"]["diagnostic_flags"]
             result["warnings"].extend(flags)
-            review = tracking_mode or flags or weather_warnings or result.get("weather_comparison", {}).get("needs_review", False)
+            review = (tracking_mode or run.get("warnings") or flags or weather_warnings
+                      or result.get("weather_comparison", {}).get("needs_review", False))
             result.update(status="needs_review" if review else "completed", stage="completed")
     except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
         result.update(status="failed", error=cli._redact(str(exc))[-12000:])

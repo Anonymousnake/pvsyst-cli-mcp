@@ -44,6 +44,10 @@
 
 恢复使用相同 `spec`、`resume=true`；执行仍需明确 confirm。每次重建受限路径并检查原有生产输入守卫、已生成场景读回及已保存 VC。坏 JSON 根、坏 schema/request/证据、缺失/变化的资产在写入前停止；只读预览和错误请求不改写检查点。原生返回了文件但尚未通过检查时先人工查看，避免重复导入。已完成任务恢复会重验文件/结果，不再跑 GUI/仿真，即使附带 `retry_simulation=true` 也不增跑。
 
+工作工程最初只创建 VC0。若检查点仍为 `prepared`，但工程已有其他 VC，可能是原生已另存而宿主尚未登记结果就中断。恢复预检会返回 `needs_attention`、`stage=native_save_reconciliation` 及 `unrecorded_native_variants` 的编号和路径，不重开 GUI、不重导入、不改写检查点。先人工核对并明确处置这些候选，不能用重复调用推定它们不存在。此规则仅用于导入前的 `prepared`；已登记变体的 `native_saved` 及后续阶段按原有恢复路径继续。
+
+`status` 是本次调用结论，`phase/stage` 是任务进度，`native_consumption_verified` 单独表示已验证的原生消费。来源住宅也可能在补资料或等待复核时返回 `needs_review`；不能跨入口仅凭该状态判断全年已交付。完成任务的只读预览沿用 `ready` 与消费标志 false，不据此重新运行。
+
 仿真失败保留原始输出和尝试编号。默认恢复只报停点；明确 `retry_simulation=true` 才用下一组新 CSV/PDF 名称继续，既不重建住宅也不覆盖残留。检查点不是认证凭据、进程租约或跨进程事务；中断/不完整元数据和锁外编辑可能需要查看保留产物，不自动删除或回滚用户资料。
 
 ## 已测调用示例
@@ -75,6 +79,10 @@ async def deliver_fixture(session, execute=False):
 ```
 
 ## 证据与裁决
+
+本次身份/恢复维护执行了既有 `test_native_project_boundary.py` 和 `test_house_task_boundary.py` 各一项公开契约，均通过且无 skip。临时隔离验证确认：相似后缀的错误工程在编辑前停止；`prepared` 中已有未登记 VC 时，预览及显式重试均停止且清单保持；正常完成态预览不被新规则拦截；清单替换失败保留旧记录，首次独占创建不覆盖已有文件。这些验证使用窗口替身、不可执行 CLI 和本机既有导出夹具，不计为新的原生 GUI 或全年验收。
+
+临时脚本首次把错工程的状态预期误写为 `blocked`，实际接口按既有语义返回 `needs_attention` 且没有编辑动作；仅更正脚本预期后继续通过，未为断言修改产品状态。临时文件已清理，未新增永久测试、备份层或哈希探针，未运行全量发现、旧 smoke 或新年度计算。
 
 本机 `pvsyst-house-delivery-study` 保留原始请求、公共响应、失败停点和恢复记录；商业输入/派生产物不上传。以下为受限真实路径，不外推其它版本/拓扑或工程认证：
 

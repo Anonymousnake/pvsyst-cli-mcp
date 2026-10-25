@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from pvsyst_component_editor import objects
+from pvsyst_native_project import _project_matches
 from pvsyst_paths import safe_filename, workspace_file
 from pvsyst_scene_file import (_num, check_tables, house_profile, resolve_modules,
                                source_profile, table_profiles)
@@ -595,7 +596,7 @@ def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry
             result["native_pid"] = _PID
             root = _wait("TProjectForm", timeout=10.0, activate=False)
             _dpi(root)
-            if not _string_of(root).casefold().endswith(args["project"].casefold()):
+            if not _project_matches(sys.modules[__name__], root, args["project"]):
                 _fail("The open project caption does not match the scene recipe")
             modals = [h for h in _tops() if _pid_of(h) == _PID
                       and _class_of(h) in ("TMessageForm", "TSaveObjPVForm", "#32770",
