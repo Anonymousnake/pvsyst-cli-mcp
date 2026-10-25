@@ -1133,6 +1133,121 @@ class VariantStore:
                     "issues": issues, "warnings": warnings,
                     "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids)}
 
+    def _clone_subarray_data(self, data, source_subarray_id, *, clone_orientation=False,
+                             share_inverter=False, reserved_ids=()):
+        """Build one cloned subarray in memory; never read or write workspace files."""
+        if not isinstance(source_subarray_id, int) or isinstance(source_subarray_id, bool):
+            raise ValueError("source_subarray_id must be an integer")
+        if not isinstance(clone_orientation, bool) or not isinstance(share_inverter, bool):
+            raise ValueError("clone_orientation and share_inverter must be booleans")
+        if share_inverter and clone_orientation:
+            raise ValueError("Shared-parent cloning requires the existing common orientation")
+        _, lines = self._text(data)
+        arrays, system = self._sections(lines)
+        if source_subarray_id not in arrays or system is None:
+            raise ValueError("Source subarray and grid system are required")
+        system_type = self._field_indices(lines, system, "SystemType")
+        if len(system_type) != 1 or FIELD.fullmatch(lines[system_type[0]].rstrip("\r\n"))[2] != "Grid":
+            raise ValueError("Only a grid system is supported")
+        self._require_no_geometry(lines, require_shading_section=True)
+        bounds = arrays[source_subarray_id]
+        orientation_fields = self._field_indices(lines, bounds, "NoOrientation")
+        if len(orientation_fields) != 1:
+            raise ValueError("Source subarray requires one orientation")
+        orientation_id = FIELD.fullmatch(lines[orientation_fields[0]].rstrip("\r\n"))[2]
+        if not orientation_id.isdigit():
+            raise ValueError("Source orientation is invalid")
+        orientation = self._orientation(lines, int(orientation_id))
+        field_type = self._field_indices(lines, orientation, "FieldType")
+        if len(field_type) != 1 or FIELD.fullmatch(lines[field_type[0]].rstrip("\r\n"))[2] != "FixedPlane":
+            raise ValueError("Only a fixed-plane orientation is supported")
+        matches, root = self._subarray_branches(lines, arrays, source_subarray_id)
+        if share_inverter:
+            from pvsyst_grid import positive_integer
+            flags = root.one("Flags")[1]
+            if (root.one("Version")[1] not in ("8.1.0", "8.1.6") or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags)
+                    or not int(flags[1:], 16) & 0x400 or root.one("NInverter")[1] != "1"
+                    or root.one("NInvMPPT")[1] != "1" or root.one("PowerSharingInverterId")[1] != "-1"
+                    or grid_inventory(lines, arrays)["counts_valid"] is not True or len(matches) != 1):
+                raise ValueError("Shared-parent cloning requires one verified independent unshared input/inverter")
+            inverter = matches[0][2][0]
+            if (positive_integer(inverter.one("NElements", "1"), "inverter multiplicity") != 1
+                    or len(inverter.children) != 1 or inverter.children[0].kind != "MPPTNode"
+                    or positive_integer(inverter.children[0].one("NElements", "1"), "MPPT multiplicity") != 1):
+                raise ValueError("Shared-parent cloning requires one direct explicit MPPT input")
+            if root.one("NStrOrient1")[1] != root.one("NStringCh")[1] or any(
+                    key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0" for key in root.fields):
+                raise ValueError("Shared-parent cloning requires all strings in one orientation")
+        current_ids = set(arrays) | set(reserved_ids)
+        new_id = max(current_ids) + 1
+        if new_id > 2147483647:
+            raise ValueError("No available subarray ID")
+        new_name = f"Sub-array #{new_id}"
+        new_array = lines[bounds[0]:bounds[1] + 1].copy()
+        for key, value in (("SubArrayId", str(new_id)), ("Comment", new_name)):
+            index = root.one(key)[0]
+            new_array[index] = replace_value(new_array[index], value)
+        new_orientation_id = int(orientation_id)
+        insertions = [(bounds[1] + 1, new_array)]
+        if clone_orientation:
+            self._require_plane_branch_mode(root, matches)
+            if grid_inventory(lines, arrays)["counts_valid"] is not True:
+                raise ValueError("Independent orientation cloning requires complete consistent grid counts")
+            if (root.one("NStrOrient1")[1] != root.one("NStringCh")[1] or any(
+                    key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0"
+                    for key in root.fields)):
+                raise ValueError("Independent orientation cloning requires all strings in one orientation")
+            self._ordinary_fixed_plane(lines, orientation)
+            header, groups = self._orientation_list(lines)
+            if [identifier for _, _, identifier in groups] != list(range(1, len(groups) + 1)):
+                raise ValueError("Independent orientation cloning requires sequential ordered IDs")
+            new_orientation_id = len(groups) + 1
+            if new_orientation_id > 2147483647:
+                raise ValueError("No available orientation ID")
+            new_plane = lines[orientation[0]:orientation[1] + 1].copy()
+            index = self._field_indices(lines, orientation, "NoOrient")[0] - orientation[0]
+            new_plane[index] = replace_value(new_plane[index], str(new_orientation_id))
+            index = root.one("NoOrientation")[0]
+            new_array[index] = replace_value(new_array[index], str(new_orientation_id))
+            lines[header] = re.sub(r"(?<==)[0-9]+", str(len(groups) + 1), lines[header], count=1)
+            insertions.append((groups[-1][1] + 1, new_plane))
+        for start, end, members in matches:
+            if share_inverter:
+                inverter = members[0]
+                port = inverter.children[0]
+                start, end, members = port.line - 1, port.end_line - 1, members[1:]
+                lines[inverter.field_lines["SubArrayId"][0]] = replace_value(lines[inverter.field_lines["SubArrayId"][0]], "0")
+                index = inverter.field_lines["SubArrayName"][0]
+                lines[index] = replace_value(lines[index], root.one("Comment")[1] + "; " + new_name)
+            branch = lines[start:end + 1].copy()
+            for member in members:
+                for key, value in (("SubArrayId", str(new_id)), ("SubArrayName", new_name)):
+                    index = member.field_lines[key][0] - start
+                    branch[index] = replace_value(branch[index], value)
+            insertions.append((end + 1, branch))
+        for offset, block in sorted(insertions, key=lambda item: item[0], reverse=True):
+            lines[offset:offset] = block
+        candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
+        _, checked = self._text(candidate)
+        checked_arrays, _ = self._sections(checked)
+        if new_id not in checked_arrays or len(checked_arrays) != len(arrays) + 1:
+            raise ValueError("Subarray structure validation failed")
+        if share_inverter:
+            inventory = grid_inventory(checked, checked_arrays)
+            groups = [group for group in inventory["inverter_groups"] if group.get("subarray_ids") == [source_subarray_id, new_id]]
+            if inventory["counts_valid"] is not True or len(groups) != 1:
+                raise ValueError("Shared-parent clone failed complete allocation validation")
+        else:
+            new_matches, _ = self._subarray_branches(checked, checked_arrays, new_id)
+            if len(new_matches) != len(matches):
+                raise ValueError("Subarray inverter groups were not completely copied")
+        if clone_orientation:
+            self._orientation_list(checked)
+            self._orientation(checked, new_orientation_id)
+        return candidate, {"subarray_id": new_id, "orientation_id": new_orientation_id,
+                           "orientation_cloned": clone_orientation, "inverter_group_count": len(matches),
+                           "shared_parent_created": share_inverter}
+
     def clone_subarray(self, project: str, variant: str, source_subarray_id: int,
                        expected_sha256: str, clone_orientation: bool = False, share_inverter: bool = False) -> dict:
         """Duplicate a grid subarray with all its exclusively owned inverter groups."""
@@ -1147,115 +1262,17 @@ class VariantStore:
             path = self._path(project, variant)
             data = self._read(path)
             self._check_hash(data, expected_sha256)
-            _, lines = self._text(data)
-            arrays, system = self._sections(lines)
-            if source_subarray_id not in arrays or system is None:
-                raise ValueError("Source subarray and grid system are required")
-            system_type = self._field_indices(lines, system, "SystemType")
-            if len(system_type) != 1 or FIELD.fullmatch(lines[system_type[0]].rstrip("\r\n"))[2] != "Grid":
-                raise ValueError("Only a grid system is supported")
-            self._require_no_geometry(lines, require_shading_section=True)
-            bounds = arrays[source_subarray_id]
-            orientation_fields = self._field_indices(lines, bounds, "NoOrientation")
-            if len(orientation_fields) != 1:
-                raise ValueError("Source subarray requires one orientation")
-            orientation_id = FIELD.fullmatch(lines[orientation_fields[0]].rstrip("\r\n"))[2]
-            if not orientation_id.isdigit():
-                raise ValueError("Source orientation is invalid")
-            orientation = self._orientation(lines, int(orientation_id))
-            field_type = self._field_indices(lines, orientation, "FieldType")
-            if len(field_type) != 1 or FIELD.fullmatch(lines[field_type[0]].rstrip("\r\n"))[2] != "FixedPlane":
-                raise ValueError("Only a fixed-plane orientation is supported")
-            matches, root = self._subarray_branches(lines, arrays, source_subarray_id)
-            if share_inverter:
-                from pvsyst_grid import positive_integer
-                flags = root.one("Flags")[1]
-                if (root.one("Version")[1] not in ("8.1.0", "8.1.6") or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags)
-                        or not int(flags[1:], 16) & 0x400 or root.one("NInverter")[1] != "1"
-                        or root.one("NInvMPPT")[1] != "1" or root.one("PowerSharingInverterId")[1] != "-1"
-                        or grid_inventory(lines, arrays)["counts_valid"] is not True or len(matches) != 1):
-                    raise ValueError("Shared-parent cloning requires one verified independent unshared input/inverter")
-                inverter = matches[0][2][0]
-                if (positive_integer(inverter.one("NElements", "1"), "inverter multiplicity") != 1
-                        or len(inverter.children) != 1 or inverter.children[0].kind != "MPPTNode"
-                        or positive_integer(inverter.children[0].one("NElements", "1"), "MPPT multiplicity") != 1):
-                    raise ValueError("Shared-parent cloning requires one direct explicit MPPT input")
-                if root.one("NStrOrient1")[1] != root.one("NStringCh")[1] or any(
-                        key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0" for key in root.fields):
-                    raise ValueError("Shared-parent cloning requires all strings in one orientation")
-            current_ids = set(arrays)
+            reserved_ids = set()
             for item in self._root().iterdir():
                 if (item.stem.casefold() == project[:-4].casefold()
                         and re.fullmatch(r"\.VC[A-Za-z0-9]+", item.suffix, re.I)):
                     other_path = self._path(project, item.suffix[1:])
                     _, other_lines = self._text(self._read(other_path))
                     other_arrays, _ = self._sections(other_lines)
-                    current_ids.update(other_arrays)
-            new_id = max(current_ids) + 1
-            if new_id > 2147483647:
-                raise ValueError("No available subarray ID")
-            new_name = f"Sub-array #{new_id}"
-            new_array = lines[bounds[0]:bounds[1] + 1].copy()
-            for key, value in (("SubArrayId", str(new_id)), ("Comment", new_name)):
-                index = root.one(key)[0]
-                new_array[index] = replace_value(new_array[index], value)
-            new_orientation_id = int(orientation_id)
-            insertions = [(bounds[1] + 1, new_array)]
-            if clone_orientation:
-                self._require_plane_branch_mode(root, matches)
-                if grid_inventory(lines, arrays)["counts_valid"] is not True:
-                    raise ValueError("Independent orientation cloning requires complete consistent grid counts")
-                if (root.one("NStrOrient1")[1] != root.one("NStringCh")[1] or any(
-                        key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0"
-                        for key in root.fields)):
-                    raise ValueError("Independent orientation cloning requires all strings in one orientation")
-                self._ordinary_fixed_plane(lines, orientation)
-                header, groups = self._orientation_list(lines)
-                if [identifier for _, _, identifier in groups] != list(range(1, len(groups) + 1)):
-                    raise ValueError("Independent orientation cloning requires sequential ordered IDs")
-                new_orientation_id = len(groups) + 1
-                if new_orientation_id > 2147483647:
-                    raise ValueError("No available orientation ID")
-                new_plane = lines[orientation[0]:orientation[1] + 1].copy()
-                index = self._field_indices(lines, orientation, "NoOrient")[0] - orientation[0]
-                new_plane[index] = replace_value(new_plane[index], str(new_orientation_id))
-                index = root.one("NoOrientation")[0]
-                new_array[index] = replace_value(new_array[index], str(new_orientation_id))
-                lines[header] = re.sub(r"(?<==)[0-9]+", str(len(groups) + 1), lines[header], count=1)
-                insertions.append((groups[-1][1] + 1, new_plane))
-            for start, end, members in matches:
-                if share_inverter:
-                    inverter = members[0]
-                    port = inverter.children[0]
-                    start, end, members = port.line - 1, port.end_line - 1, members[1:]
-                    lines[inverter.field_lines["SubArrayId"][0]] = replace_value(lines[inverter.field_lines["SubArrayId"][0]], "0")
-                    index = inverter.field_lines["SubArrayName"][0]
-                    lines[index] = replace_value(lines[index], root.one("Comment")[1] + "; " + new_name)
-                branch = lines[start:end + 1].copy()
-                for member in members:
-                    for key, value in (("SubArrayId", str(new_id)), ("SubArrayName", new_name)):
-                        index = member.field_lines[key][0] - start
-                        branch[index] = replace_value(branch[index], value)
-                insertions.append((end + 1, branch))
-            for offset, block in sorted(insertions, key=lambda item: item[0], reverse=True):
-                lines[offset:offset] = block
-            candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
-            _, checked = self._text(candidate)
-            checked_arrays, _ = self._sections(checked)
-            if new_id not in checked_arrays or len(checked_arrays) != len(arrays) + 1:
-                raise ValueError("Subarray structure validation failed")
-            if share_inverter:
-                inventory = grid_inventory(checked, checked_arrays)
-                groups = [group for group in inventory["inverter_groups"] if group.get("subarray_ids") == [source_subarray_id, new_id]]
-                if inventory["counts_valid"] is not True or len(groups) != 1:
-                    raise ValueError("Shared-parent clone failed complete allocation validation")
-            else:
-                new_matches, _ = self._subarray_branches(checked, checked_arrays, new_id)
-                if len(new_matches) != len(matches):
-                    raise ValueError("Subarray inverter groups were not completely copied")
-            if clone_orientation:
-                self._orientation_list(checked)
-                self._orientation(checked, new_orientation_id)
+                    reserved_ids.update(other_arrays)
+            candidate, details = self._clone_subarray_data(
+                data, source_subarray_id, clone_orientation=clone_orientation,
+                share_inverter=share_inverter, reserved_ids=reserved_ids)
             if self._read(path) != data:
                 raise ValueError("Variant changed while preparing the edit")
             backup = self._backup(path, data)
@@ -1268,9 +1285,7 @@ class VariantStore:
                 os.replace(temporary, path)
             finally:
                 temporary.unlink(missing_ok=True)
-            return {"project": project, "variant": variant.upper(), "subarray_id": new_id,
-                    "orientation_id": new_orientation_id, "orientation_cloned": clone_orientation,
-                    "inverter_group_count": len(matches), "shared_parent_created": share_inverter,
+            return {"project": project, "variant": variant.upper(), **details,
                     "backup_name": backup, "sha256": hashlib.sha256(candidate).hexdigest()}
 
     def remove_subarray(self, project: str, variant: str, subarray_id: int,
