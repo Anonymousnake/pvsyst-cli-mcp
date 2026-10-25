@@ -55,7 +55,7 @@ After connecting, call `pvsyst_capabilities` and `pvsyst_license_info` to read t
 
 ## MCP tools by workflow
 
-The server exposes 76 tools across seven groups. The approved house/native migration is consolidated in the [acceptance summary and explicit limits](docs/native-migration-acceptance.md). Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
+The server exposes 80 tools across eight groups. The approved house/native migration is consolidated in the [acceptance summary and explicit limits](docs/native-migration-acceptance.md). Existing tool names and arguments remain compatible. `pvsyst_review_weather` and `pvsyst_prepare_sourced_design` have passed real MCP acceptance; their engineering/source boundaries are documented in [weather engineering review](docs/weather-engineering-review.md). The Components entry, `pvsyst_build_sourced_component`, previews or creates a NEW user-defined PAN/OND from an exact complete template and cited scalar values. It discloses inherited model fields and curves, requires explicit acknowledgement before creation, and does not refit or certify the model. See [sourced component creation](docs/sourced-components.md). Restart an existing MCP server to load the latest tools/schema. Each description starts with its category label, so flat-list clients can still identify the workflow group.
 
 First CLI initialization is serialized inside the MCP process, so concurrent initial requests share one client and the same workspace `RLock` used by CLI, component and variant operations. This is process-local coordination, not an OS/cross-process lock; SHA checks remain optimistic and external editors still require coordination. See [concurrent initialization verification](docs/grid-capacity-verification.md#single-client-concurrent-initialization).
 
@@ -69,6 +69,17 @@ Expected input, missing/existing-file and adapter `PVsystError` exceptions retai
 | `pvsyst_license_info` | License state and quota without key or Host ID |
 | `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | Confirmed license changes |
 | `pvsyst_export_logs` | Diagnostic ZIP under Results |
+
+### Engineering (4)
+
+| Tools | Purpose |
+|---|---|
+| `pvsyst_project_handoff` | Read saved equipment/counts, electrical/orientation relationships, weather/load/storage and explicit engineering declarations; show missing inputs and follow-up actions without simulation or writes |
+| `pvsyst_run_engineering_task` | Preview or execute an isolated existing fixed/UnlimTracking project revision, native hourly annual CSV/PDF and a run-time input binding; retain source, review state and failure evidence |
+| `pvsyst_compare_engineering_scenarios` | Organize two or three existing native results around an engineering question; distinguish common conditions, intended/unintended differences and historical input binding, with Chinese explanations and comparison exports |
+| `pvsyst_export_engineering_delivery` | Package a bound native run as one new local ZIP containing the selected PRJ/VC, CSV/PDF and Chinese input/summary documents; external models/weather remain dependencies |
+
+See [engineering revision and delivery](docs/engineering-delivery.md) and [scenario comparison](docs/engineering-scenarios.md) for supported inputs, original task/review states and verification evidence. Preview writes nothing. These tools reuse native PVsyst and the existing editors; declarations and a successful ZIP do not certify an engineering design.
 
 ### Projects & Variants (32)
 
