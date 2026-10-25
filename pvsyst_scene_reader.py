@@ -209,10 +209,16 @@ def read_house_pv_scene(components, scene_name):
                 required += ["project", "variant", "layout.roof_mesh"]
             else:
                 arguments.update(project=declared["project"], variant=declared["variant"])
+            recorded_source = dict(declared, provenance="not-recorded" if legacy else "file-declared",
+                                   site=source["site"], tilt_deg=source["tilt_deg"],
+                                   collada_azimuth_deg=source["azimuth_deg"])
+            if source.get("orientations"):
+                recorded_source["orientation_geometry"] = [
+                    {"id": plane["id"], "module_total": plane["module_total"],
+                     "tilt_deg": plane["tilt_deg"], "collada_azimuth_deg": plane["azimuth_deg"]}
+                    for plane in source["orientations"]]
             result.update(status="needs_context" if legacy else "ready", required_inputs=required,
-                          source=dict(declared, provenance="not-recorded" if legacy else "file-declared",
-                                      site=source["site"], tilt_deg=source["tilt_deg"],
-                                      collada_azimuth_deg=source["azimuth_deg"]),
+                          source=recorded_source,
                           geometry=counts, create_arguments=arguments)
         except (ValueError, OSError, UnicodeError, ET.ParseError, TypeError, KeyError, OverflowError) as exc:
             result["issues"].append(str(exc))

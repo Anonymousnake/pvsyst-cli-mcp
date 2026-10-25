@@ -28,7 +28,18 @@ def _json_block(value):
     return "```json\n" + json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + "\n```"
 
 
-def _summary(task, handoff, manifest_name, comparison=None, delivery_review_required=False):
+def _house_evidence(task):
+    imported = task.get("native_import") or {}
+    verification = imported.get("verification") or {}
+    reload = imported.get("native_reload") or {}
+    return {"regions": (task.get("geometry") or {}).get("tables"),
+            "native_geometry_verified": imported.get("native_geometry_verified"),
+            "house_mapping": verification.get("house_mapping"), "pv_mapping": verification.get("pv_mapping"),
+            "native_reload_verified": imported.get("native_reload_verified"),
+            "native_reload": reload if reload else None}
+
+
+def _summary(task, handoff, manifest_name, comparison=None, delivery_review_required=False, house_runs=()):
     metrics = task.get("metrics") or {}
     storage = any(key in metrics for key in ("grid_import_kwh", "load_energy_kwh", "battery_charge_kwh", "initial_soc"))
     if storage:
@@ -69,6 +80,16 @@ def _summary(task, handoff, manifest_name, comparison=None, delivery_review_requ
         lines.extend(["", "电池充放电按原生电池侧导出量展示，不能直接当作AC侧功率限值；SOC采用0..1分数。"])
         if metrics.get("missing_metrics"):
             lines.append("未导出的指标保留未记录：" + _cell(metrics["missing_metrics"]) + "。")
+    for house in house_runs or ([task] if task.get("operation") == "engineering_house" else []):
+        evidence = _house_evidence(house)
+        lines.extend(["", "## 住宅保存与重载记录", "",
+            "工程/方案：" + _cell(house["working_project"] + "/" + house["working_variant"]), "",
+            _table(("记录项", "本次运行清单记录"), [
+                ("PV区域", evidence["regions"]), ("原生保存几何已验证", evidence["native_geometry_verified"]),
+                ("住宅物体映射", evidence["house_mapping"]), ("PV表映射", evidence["pv_mapping"]),
+                ("原生GUI重载已验证", evidence["native_reload_verified"])]),
+            "", "以上仅转述该次运行记录；未记录的映射或重载项保持未记录。实际证据和重载有效性见 inputs.md。",
+            "包内所选原生VC保留其内嵌几何，另附绑定的场景、SFI和原始任务清单；接收方仍需准备合法的组件及天气依赖。"])
     if comparison:
         lines.extend(["", "## 方案比较", "", "比较记录状态：" + _cell(comparison["status"]), ""])
         lines.extend("- " + _cell(item) for item in (comparison.get("summary") or [])[:4])
@@ -125,6 +146,14 @@ def _inputs(handoff, task):
                   "", "## 完整变更记录", "", _json_block(task.get("changes") or []),
                   "", "## 保留的复核事项", ""])
     lines.extend("- " + _cell(item) for item in list(task.get("warnings") or []) + list(handoff.get("review_items") or []))
+    if task.get("operation") == "engineering_house":
+        lines.extend(["", "## 住宅屋面映射、保存与重载证据", "", _json_block(_house_evidence(task)),
+            "", "## 随包提供的受控住宅复演资料", "",
+            _table(("类别", "目录", "文件名"), [(kind, task["input_assets"][kind]["folder"],
+                task["input_assets"][kind]["name"]) for kind in ("scene", "sfi")]
+                + [("原始任务清单", "Results", Path(task["artifacts"]["manifest"]).name)]),
+            "", "这些文件是该次运行绑定的原文件。清单中的本机绝对路径作为历史记录保留；在接收方建立工作区时需按包内目录映射，"
+            "不据此读取包外路径。商业组件、站点及气象原件不随包分发；缺少这些依赖时不能声称已复演。"])
     lines.extend(["", "本交接整理保存状态与运行清单，不观察未保存GUI状态，不认证资料真实性、设备拟合或全工况工程设计。", ""])
     return "\n".join(lines)
 
@@ -228,7 +257,7 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
             if output.exists():
                 raise FileExistsError("Delivery already exists; use a new output_name")
             # Local import keeps the run producer independent of its delivery consumer.
-            from pvsyst_engineering_task import load_engineering_run
+            from pvsyst_engineering_task import _asset_path, load_engineering_run
             comparison, comparison_files, comparison_bytes = None, {}, None
             if comparison_name:
                 comparison, comparison_files, comparison_bytes, bindings = _comparison_report(
@@ -259,7 +288,13 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
                 project_path, variant_path = store._path(project), store._path(project, variant)
                 csv_path = _result_path(store, run["artifacts"]["csv"], ".csv")
                 pdf_path = _result_path(store, run["artifacts"]["pdf"], ".pdf")
-                for folder, path in (("Projects", project_path), ("Projects", variant_path), ("Results", csv_path), ("Results", pdf_path)):
+                files = [("Projects", project_path), ("Projects", variant_path), ("Results", csv_path), ("Results", pdf_path)]
+                if run.get("operation") == "engineering_house":
+                    files.append(("Results", _result_path(store, run["artifacts"]["manifest"], ".json")))
+                    for kind in ("scene", "sfi"):
+                        asset = run["input_assets"][kind]
+                        files.append((asset["folder"], _asset_path(store, asset)))
+                for folder, path in files:
                     name = folder + "/" + path.name
                     existing = next((key for key in sources if key.casefold() == name.casefold()), None)
                     if existing is not None:
@@ -269,6 +304,12 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
                     sources[name] = path
                     if folder == "Projects":
                         payloads[name] = store._read(path)
+                    elif (run.get("operation") == "engineering_house"
+                          and name.casefold() == ("Results/" + binding["run_manifest_name"]).casefold()):
+                        raw_manifest = path.read_bytes()
+                        if json.loads(raw_manifest) != run:
+                            raise ValueError("House task manifest changed before it was packaged")
+                        payloads[name] = raw_manifest
                 for dependency in handoff.get("external_dependencies", []):
                     if dependency not in external_dependencies:
                         external_dependencies.append(dependency)
@@ -281,7 +322,8 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
             review = (any(item["task"]["status"] == "needs_review" or item["task"]["input_handoff"].get("status") == "needs_review"
                           for item in bindings)
                       or bool(comparison and (comparison["status"] == "needs_review" or comparison.get("review_items"))))
-            summary = _summary(task, handoff, manifest_name, comparison, review)
+            summary = _summary(task, handoff, manifest_name, comparison, review,
+                house_runs=[binding["task"] for binding in bindings if binding["task"].get("operation") == "engineering_house"])
             inputs = _inputs(handoff, task)
             documented = {manifest_name.casefold()}
             for binding in bindings:
@@ -298,7 +340,8 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
                                      for binding in bindings],
                           artifact={"zip": str(output)}, summary_markdown=summary, inputs_markdown=inputs,
                           source_manifest=manifest_name,
-                          scope="Recorded engineering runs and an optional bound comparison; selected variants only; model, weather and load files are external dependencies")
+                          scope="Recorded engineering runs and an optional bound comparison; selected variants retain embedded geometry. "
+                                "House runs also include their bound scene, SFI and original manifest; model, weather and load files are external dependencies")
             if dry_run:
                 return result
             output.parent.mkdir(parents=True, exist_ok=True)

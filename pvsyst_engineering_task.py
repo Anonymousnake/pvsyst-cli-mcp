@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import calendar
 import json
 import math
 from pathlib import Path
@@ -15,25 +16,39 @@ from pvsyst_tracking import create_tracking_variant, _view
 from pvsyst_weather_flow import inspect_met_calendar
 
 
-ASSET_FOLDERS = {"Sites": ".SIT", "Meteo": ".MET", "ComposPV/PVmodules": ".PAN",
-                 "ComposPV/Inverters": ".OND", "ComposPV/Batteries": ".BTR",
-                 "UserData": ".csv", "UserHourlyParams": ".csv", "Results": ".json"}
+ASSET_FOLDERS = {"Sites": (".SIT",), "Meteo": (".MET",), "ComposPV/PVmodules": (".PAN",),
+                 "ComposPV/Inverters": (".OND",), "ComposPV/Batteries": (".BTR",),
+                 "UserData": (".csv", ".pvc2"), "UserHourlyParams": (".csv",),
+                 "Models": (".SFI",), "Results": (".json",)}
 COMPONENT_KINDS = {"ComposPV/PVmodules": "PAN", "ComposPV/Inverters": "OND", "ComposPV/Batteries": "BTR"}
+
+
+def _asset_extension(folder, name):
+    extensions = ASSET_FOLDERS.get(folder)
+    if extensions is None:
+        raise ValueError("Unsupported run input location")
+    if not isinstance(name, str):
+        raise ValueError("Run input asset name must be a filename")
+    extension = Path(name).suffix
+    if extension.casefold() not in {item.casefold() for item in extensions}:
+        raise ValueError(f"Unsupported {folder} asset extension: {name}")
+    return next(item for item in extensions if item.casefold() == extension.casefold())
 
 
 def _asset_path(store, asset):
     folder, name, library = asset["folder"], asset["name"], asset["library"]
     if folder not in ASSET_FOLDERS or library not in ("workspace", "builtin"):
         raise ValueError("Unsupported run input location")
-    safe_filename(name, ASSET_FOLDERS[folder])
+    extension = _asset_extension(folder, name)
+    safe_filename(name, extension)
     if folder in COMPONENT_KINDS:
         kind = COMPONENT_KINDS[folder]
         if library == "builtin" and store.components._path(kind, name).exists():
             raise ValueError("A workspace component now shadows the run input: " + name)
         return store.components._path(kind, name, library)
     if library != "workspace":
-        raise ValueError("Site and weather run inputs must be workspace assets")
-    return workspace_file(store.workspace, folder, name, ASSET_FOLDERS[folder])
+        raise ValueError("Non-component run inputs must be workspace assets")
+    return workspace_file(store.workspace, folder, name, extension)
 
 
 def _check_assets(store, record):
@@ -64,6 +79,90 @@ def _result_path(store, record, kind):
     return path
 
 
+def _check_house_run(store, record, path, project, variant):
+    request, plan, runs = record["request"], record["plan"], record["runs"]
+    year = record["year"]
+    if (type(record.get("schema")) is not int or record["schema"] != 1
+            or record.get("phase") != "completed" or not isinstance(request, dict)
+            or type(year) is not int or not 1969 <= year <= 2068
+            or request.get("new_project") != project or request.get("year") != year
+            or variant_id(record["variant"]) != variant
+            or not isinstance(runs, list) or not 1 <= len(runs) <= 99
+            or any(not isinstance(run, dict) for run in runs)):
+        raise ValueError("Require a completed house checkpoint for this project, variant and year")
+    attempt = runs[-1]
+    if (attempt.get("status") != "returned" or type(attempt.get("number")) is not int
+            or attempt["number"] != len(runs) or not isinstance(attempt.get("native"), dict)
+            or not isinstance(attempt["native"].get("warnings"), list)
+            or not isinstance(record.get("output_guards"), dict)
+            or set(record["output_guards"]) != {"csv", "pdf"}
+            or record.get("result_files") != record["output_guards"]):
+        raise ValueError("House run lacks a returned native attempt and matching output guards")
+    stem = Path(project).stem
+    expected = {"manifest": workspace_file(store.workspace, "Results", stem + "_house_task.json", ".json"),
+                "scene": workspace_file(store.workspace, "UserData", stem + "_house.pvc2", ".pvc2"),
+                "sfi": workspace_file(store.workspace, "Models", stem + "_house.SFI", ".SFI"),
+                "native_variant": store._path(project, variant)}
+    if expected["manifest"] != path:
+        raise ValueError("House manifest name does not identify its project task")
+    for kind, target in expected.items():
+        if Path(record["artifacts"][kind]).resolve() != target:
+            raise ValueError("House artifact does not match its controlled project path: " + kind)
+    for kind in ("csv", "pdf"):
+        name = stem + f"_house_run{len(runs):02d}." + kind
+        if attempt.get(kind) != name or _result_path(store, record, kind).name != name:
+            raise ValueError("House outputs do not identify the last recorded native attempt")
+    assets, guards = record["input_assets"], record["guards"]
+    for label, key, folder in (("site", "site", "Sites"), ("meteo", "met", "Meteo")):
+        if (assets[label].get("folder") != folder or assets[label].get("library") != "workspace"
+                or str(assets[label].get("name", "")).casefold() != plan[key].casefold()
+                or assets[label].get("sha256") != guards[key]):
+            raise ValueError("House weather input binding differs from its prepared native context")
+    for kind in ("scene", "sfi"):
+        if (kind not in assets or assets[kind].get("library") != "workspace"
+                or _asset_path(store, assets[kind]) != expected[kind]
+                or assets[kind]["sha256"] != guards[kind]):
+            raise ValueError("House scene/SFI input binding is incomplete or misidentified")
+    selected = Path(project).stem + "." + variant
+    handoff = record["input_handoff"]
+    if (guards["native_variant"] != record["working_files"][selected]
+            or guards["working_project"] != record["working_files"][project]
+            or handoff["input_snapshot"].get("project_file") != project
+            or handoff["input_snapshot"].get("variant_file") != selected
+            or handoff["input_snapshot"].get("variant_sha256") != guards["native_variant"]):
+        raise ValueError("House runtime handoff does not match its guarded native saved variant")
+    imported = record["native_import"]
+    if (not isinstance(imported, dict) or imported.get("status") != "imported"
+            or imported.get("native_geometry_verified") is not True
+            or not isinstance(imported.get("verification"), dict)
+            or variant_id(imported["variant"]) != variant
+            or Path(imported["file"]).resolve() != expected["native_variant"]):
+        raise ValueError("House checkpoint lacks a verified native save for this variant")
+    grouped = bool(plan["source"].get("orientations")) or len(handoff["saved"].get("orientations", [])) > 1
+    if grouped:
+        reload = imported.get("native_reload")
+        if (imported.get("native_reload_verified") is not True or not isinstance(reload, dict)
+                or variant_id(reload["source_variant"]) != "VC0" or variant_id(reload["saved_variant"]) != variant
+                or not isinstance(reload.get("verification"), dict) or not reload["verification"]
+                or not isinstance(reload.get("native_validity"), dict)
+                or reload["native_validity"].get("valid") is not True):
+            raise ValueError("Grouped house run lacks verified native reload evidence")
+    expected_rows = 8784 if calendar.isleap(year) else 8760
+    if (record.get("hourly_rows") != expected_rows or record["metrics"].get("rows") != expected_rows
+            or record["metrics"].get("year") != year or record["metrics"].get("complete_year") is not True
+            or record["metrics"].get("sha256") != record["result_files"]["csv"]):
+        raise ValueError("House annual result evidence is incomplete or differs from the recorded CSV")
+    expected_context = {"Project": project, "Simulation variant": selected,
+                        "Geographical Site": plan["site"], "Weather data": plan["met"]}
+    context = record.get("native_context")
+    if (not isinstance(context, dict) or set(context) != set(expected_context)
+            or any(not isinstance(context[key], str) or context[key].casefold() != value.casefold()
+                   for key, value in expected_context.items())):
+        raise ValueError("House native context does not identify its bound project, variant and weather")
+    if not isinstance(record.get("changes"), list) or any(not isinstance(item, dict) for item in record["changes"]):
+        raise ValueError("House engineering changes must be a recorded change list")
+
+
 def load_engineering_run(store, manifest_name, *, project=None, variant=None, csv_name=None):
     """Read a completed run binding, refusing changed or misidentified inputs/outputs."""
     with store.lock:
@@ -74,10 +173,12 @@ def load_engineering_run(store, manifest_name, *, project=None, variant=None, cs
             raise ValueError("Engineering run manifest exceeds 32 MiB")
         record = json.loads(raw)
         try:
-            if (not isinstance(record, dict) or record.get("operation") != "engineering_revision"
-                    or record.get("schema_version") != 1 or record.get("stage") != "completed"
+            if (not isinstance(record, dict) or record.get("operation") not in ("engineering_revision", "engineering_house")
+                    or type(record.get("schema_version")) is not int or record["schema_version"] != 1
+                    or record.get("stage") != "completed"
                     or record.get("status") not in ("completed", "needs_review")
-                    or record.get("native_consumption_verified") is not True):
+                    or record.get("native_consumption_verified") is not True
+                    or (record.get("operation") == "engineering_house" and record.get("phase") != "completed")):
                 raise ValueError("Require a completed native engineering run binding")
             actual_project = project_name(record["working_project"])
             actual_variant = variant_id(record["working_variant"])
@@ -90,6 +191,8 @@ def load_engineering_run(store, manifest_name, *, project=None, variant=None, cs
                 raise ValueError("Run input handoff identifies a different or unreadable design")
             if store.inspect_project(actual_project)["files"] != record["working_files"]:
                 raise ValueError("The saved project has changed since this native run")
+            if record.get("operation") == "engineering_house":
+                _check_house_run(store, record, path, actual_project, actual_variant)
             _check_assets(store, record)
             for kind in ("csv", "pdf"):
                 target = _result_path(store, record, kind)
