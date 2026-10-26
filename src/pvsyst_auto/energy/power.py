@@ -54,9 +54,12 @@ def _owning(lines, system):
             raise ValueError(f"Require one owning {key}")
     if fields["SystemType"][1] != "Grid":
         raise ValueError("Require SystemType=Grid")
-    for key in ORDER:
-        total = sum(m is not None and m[2] == key for line in lines
-                    for m in [ASSIGNMENT.fullmatch(line.rstrip("\r\n"))])
+    totals = dict.fromkeys(ORDER, 0)
+    for line in lines:
+        match = ASSIGNMENT.fullmatch(line.rstrip("\r\n"))
+        if match is not None and match[2] in totals:
+            totals[match[2]] += 1
+    for key, total in totals.items():
         if total != (1 if key in fields else 0):
             raise ValueError(f"Require {key} only in the owning system")
     raw = fields["Flags"][1]

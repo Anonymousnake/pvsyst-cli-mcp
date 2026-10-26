@@ -92,7 +92,7 @@ def annual_summary(path, year, nominal_dc_power_kw):
             "clipping_scope": "IL_Pmax inverter overpower loss, not all curtailment or inverter losses"}
 
 
-def compare_results(baseline, target, columns):
+def compare_results(baseline, target, columns, *, include_key_periods=False):
     """Compare target minus baseline on identical, strictly increasing timestamps."""
     if not columns or len(columns) > 64 or len(set(columns)) != len(columns):
         raise ValueError("Select 1..64 distinct numeric columns")
@@ -106,6 +106,7 @@ def compare_results(baseline, target, columns):
                    "paired_baseline_sum": 0.0, "paired_target_sum": 0.0,
                    "paired_delta_sum": 0.0, "min_delta": None, "max_delta": None,
                    "max_abs_delta": None, "max_abs_delta_at": None} for name in columns}
+    key_periods = {}
     indices = None
     first = last = previous = step = None
     regular = True
@@ -151,6 +152,9 @@ def compare_results(baseline, target, columns):
                 state["max_delta"] = difference if state["max_delta"] is None else max(state["max_delta"], difference)
                 if state["max_abs_delta"] is None or abs(difference) > state["max_abs_delta"]:
                     state["max_abs_delta"], state["max_abs_delta_at"] = abs(difference), last
+                    if include_key_periods:
+                        key_periods[name] = {"column": name, "timestamp": last, "unit": units[0][name],
+                                             "baseline": va, "target": vb, "delta": difference}
     step = step if regular else None
     for name, state in stats.items():
         samples = state["paired_samples"]
@@ -172,10 +176,13 @@ def compare_results(baseline, target, columns):
                 state[key] = None
     if hashes != [fingerprint(path) for path in paths]:
         raise ValueError("Result file changed during comparison; retry with stable files")
-    return {"mode": "comparison", "direction": "target minus baseline",
+    result = {"mode": "comparison", "direction": "target minus baseline",
             "baseline": {"filename": paths[0].name, "sha256": hashes[0]},
             "target": {"filename": paths[1].name, "sha256": hashes[1]},
             "columns": list(columns), "rows": count, "first": first, "last": last,
             "step_minutes": step, "summary": stats,
             "scope": "Identical parsed timestamps and units; paired finite samples only. "
                      "Completeness covers rows present, not the intended simulation period or input equivalence."}
+    if include_key_periods:
+        result["key_periods"] = [key_periods[name] for name in columns if name in key_periods]
+    return result
