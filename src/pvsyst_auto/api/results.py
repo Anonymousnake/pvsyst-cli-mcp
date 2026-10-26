@@ -1,9 +1,8 @@
 """Results MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
-import math
 from mcp.server.mcpserver.exceptions import ToolError
-from pvsyst_auto.native.cli import iter_result_csv, parse_batch_results, result_units, summarize_results
+from pvsyst_auto.native.cli import parse_batch_results, read_result_page, summarize_results
 from pvsyst_auto.results import compare_results
 from pvsyst_auto.api.context import categorized_tool, result_path, workspace_path
 
@@ -43,23 +42,7 @@ def pvsyst_read_rows(csv_name: str, columns: str = "E_Grid,PR",
     if offset < 0 or not 1 <= limit <= 500:
         raise ValueError("Offset must be >= 0 and limit between 1 and 500")
     selected = [s.strip() for s in columns.split(",") if s.strip()]
-    indices = None
-    total = 0
-    page: list[list] = []
-    path = result_path(folder, csv_name)
-    for headers, row in iter_result_csv(path):
-        if indices is None:
-            if not selected or any(name not in headers[1:] for name in selected):
-                raise ValueError(f"Choose columns from {headers[1:]}")
-            indices = [headers.index(name) for name in selected]
-        if offset <= total < offset + limit:
-            page.append([str(row[0]), *(row[i] if math.isfinite(row[i]) else None
-                                        for i in indices)])
-        total += 1
-    units = result_units(path)
-    return {"total": total, "offset": offset, "columns": ["date", *selected],
-            "units": {name: units.get(name, "") for name in selected},
-            "rows": page}
+    return read_result_page(result_path(folder, csv_name), selected, offset, limit)
 
 @categorized_tool()
 def pvsyst_read_batch_results(summary_name: str,
