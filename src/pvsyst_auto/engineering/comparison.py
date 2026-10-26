@@ -223,27 +223,6 @@ def _scan_result(path, units, year):
             "complete_year": complete_year, "observed_year": first.year, "columns": stats}
 
 
-def _key_periods(baseline, target, comparison):
-    points = {state["max_abs_delta_at"] for state in comparison["summary"].values()
-              if state["max_abs_delta_at"] is not None}
-    values = []
-    for path in (baseline, target):
-        found = {}
-        for headers, row in iter_result_csv(path, strict=True):
-            stamp = str(row[0])
-            if stamp in points:
-                found[stamp] = {name: row[headers.index(name)] for name in comparison["columns"]}
-        values.append(found)
-    result = []
-    for name, state in comparison["summary"].items():
-        stamp = state["max_abs_delta_at"]
-        if stamp is not None:
-            left, right = values[0][stamp][name], values[1][stamp][name]
-            result.append({"column": name, "timestamp": stamp, "unit": state["unit"],
-                           "baseline": left, "target": right, "delta": right - left})
-    return result
-
-
 def _explanations(result):
     lines = [f"比较目的：{result['objective']}。结果只描述给定原生输出的差异，不自动判断因果或最优方案。"]
     for index, item in enumerate(result["metrics"], start=1):
@@ -533,12 +512,11 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                           and name in candidate["result_summary"]["columns"]]
                 if not common:
                     raise ValueError("Scenarios have no common supported native result columns")
-                comparison = compare_results(inputs[0], inputs[index], common)
+                comparison = compare_results(inputs[0], inputs[index], common, include_key_periods=True)
                 if (comparison["baseline"]["sha256"] != snapshots[0]
                         or comparison["target"]["sha256"] != snapshots[index]):
                     raise ValueError("Native result changed between context inspection and comparison")
-                comparison.update(baseline_label=baseline["label"], target_label=candidate["label"],
-                                  key_periods=_key_periods(inputs[0], inputs[index], comparison))
+                comparison.update(baseline_label=baseline["label"], target_label=candidate["label"])
                 comparison["soc_changes"] = {}
                 for name in ("SOC", "SOC_Beg", "SOC_End"):
                     if name not in comparison["summary"]:
