@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pvsyst_components import ComponentStore
+from pvsyst_auto.components.store import ComponentStore
 from test_components import OND, GEN
 
 

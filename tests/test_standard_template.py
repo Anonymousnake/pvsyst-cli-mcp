@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pvsyst_components import ComponentStore, electrical_inventory
-from pvsyst_grid import circuit_nodes, inventory as grid_inventory
-from pvsyst_standard_template import SEED_VARIANT, prepare_standard_template, standard_seed_texts
-from pvsyst_variants import VariantStore
+from pvsyst_auto.components.store import ComponentStore, electrical_inventory
+from pvsyst_auto.project.circuit import circuit_nodes, inventory as grid_inventory
+from pvsyst_auto.project.template import SEED_VARIANT, prepare_standard_template, standard_seed_texts
+from pvsyst_auto.project.variants import VariantStore
 
 PAN_NAME = "Generic_Mono_300W.PAN"
 OND_NAME = "Generic_7.5kW.OND"

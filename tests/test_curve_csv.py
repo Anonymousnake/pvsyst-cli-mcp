@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pvsyst_components import ComponentStore
-from pvsyst_curve_csv import HEADERS, MAX_CSV_BYTES, import_curve_csv
+from pvsyst_auto.components.store import ComponentStore
+from pvsyst_auto.components.curves import HEADERS, MAX_CSV_BYTES, import_curve_csv
 from test_component_editor import CURVED_OND, POINTS
 from test_battery_editor import CURVED_BTR, CAPACITY_POINTS
 

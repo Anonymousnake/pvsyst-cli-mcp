@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pvsyst_components import ComponentStore
-from pvsyst_variants import VariantStore
+from pvsyst_auto.components.store import ComponentStore
+from pvsyst_auto.project.variants import VariantStore
 
 
 GROUP = """InverterNode Start;

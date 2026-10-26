@@ -6,9 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import pvsyst_mcp_server as server
-import pvsyst_results as results
-from pvsyst_cli import PVsystCLI
+from pvsyst_auto.api import app as _registered_app, context as server
+import pvsyst_auto.api.results as api_results
+import pvsyst_auto.results as results
+from pvsyst_auto.native.cli import PVsystCLI
 
 
 class ResultComparisonTests(unittest.TestCase):
@@ -139,11 +140,11 @@ class ResultComparisonTests(unittest.TestCase):
         self.write(self.root / "UserHourly" / "base.csv", [1, 2])
         self.write(self.root / "Results" / "target.csv", [3, 4])
         with patch.object(server, "_cli", PVsystCLI(sys.executable, self.root)):
-            report = server.pvsyst_read_results("target.csv", "E_Grid", compare_to="base.csv", compare_folder="UserHourly")
+            report = api_results.pvsyst_read_results("target.csv", "E_Grid", compare_to="base.csv", compare_folder="UserHourly")
             self.assertEqual(report["summary"]["E_Grid"]["paired_delta_sum"], 4)
             self.assertEqual(report["baseline"]["folder"], "UserHourly")
-            self.assertEqual(server.pvsyst_read_results("target.csv", "E_Grid")["summary"]["E_Grid"]["sum"], 7)
+            self.assertEqual(api_results.pvsyst_read_results("target.csv", "E_Grid")["summary"]["E_Grid"]["sum"], 7)
             for kwargs in ({"compare_to": "../base.csv"}, {"compare_to": "base.csv", "compare_folder": "Projects"},
                            {"compare_folder": "UserHourly"}):
                 with self.assertRaises((ValueError, server.ToolError)):
-                    server.pvsyst_read_results("target.csv", "E_Grid", **kwargs)
+                    api_results.pvsyst_read_results("target.csv", "E_Grid", **kwargs)

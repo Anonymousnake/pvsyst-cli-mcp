@@ -12,10 +12,11 @@ from pathlib import Path
 from unittest.mock import patch
 from mcp.server.mcpserver.exceptions import ToolError
 
-from pvsyst_cli import PVsystCLI, PVsystError, build_monthly_weather_csv
-from pvsyst_weather_flow import load_weather_manifest, compare_native_weather
-from pvsyst_weather import inspect_weather_csv
-import pvsyst_mcp_server as server
+from pvsyst_auto.native.cli import PVsystCLI, PVsystError, build_monthly_weather_csv
+from pvsyst_auto.weather.preparation import load_weather_manifest, compare_native_weather
+from pvsyst_auto.weather.csv import inspect_weather_csv
+from pvsyst_auto.api import app as _registered_app, context as server
+import pvsyst_auto.api.weather as api_weather
 
 
 def weather_text(year=2023, separator=";", skip=None, diffuse=True, unit="W/m2", extra=None):
@@ -214,7 +215,7 @@ class WeatherTests(unittest.TestCase):
         self.assertIn("diffuse", " ".join(r["warnings"]))
 
     def test_change_during_inspection_and_large_input_fail(self):
-        import pvsyst_weather
+        import pvsyst_auto.weather.csv as pvsyst_weather
         self.path.write_text(weather_text(), encoding="utf-8")
         raw = self.path.read_bytes()
         with patch.object(pvsyst_weather, "read_bytes", side_effect=[raw, raw + b"\n"]):
@@ -257,18 +258,18 @@ class WeatherTests(unittest.TestCase):
             Path(arg('omf')).write_bytes(FAKE_MET_HEAD)
             return subprocess.CompletedProcess([], 0, 'The imported weather data are shifted by 25 minutes\nConversion ended successfully...', '')
         with patch.object(server, '_cli', cli):
-            preview = server.pvsyst_prepare_weather(**request)
+            preview = api_weather.pvsyst_prepare_weather(**request)
             self.assertEqual(preview['status'], 'ready', preview)
             # 只读预检不得写入任何文件
             self.assertEqual(untouched, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
             for changes in ({'time_basis': 'UTC'}, {'year': 2021}, {'country_code': ''}, {'csv_name': '../weather.csv'},
                             {'csv_name': 'gap.csv'}, {'csv_name': 'extra.csv'}, {'csv_name': 'nodhi.csv'}):
-                blocked = server.pvsyst_prepare_weather(**{**request, **changes})
+                blocked = api_weather.pvsyst_prepare_weather(**{**request, **changes})
                 self.assertEqual(blocked['status'], 'blocked', blocked)
                 self.assertTrue(blocked['issues'], blocked)
                 self.assertEqual(untouched, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
             with patch.object(cli, '_run', side_effect=native):
-                prepared = server.pvsyst_prepare_weather(**request, dry_run=False)
+                prepared = api_weather.pvsyst_prepare_weather(**request, dry_run=False)
             self.assertEqual(prepared['status'], 'needs_review', prepared)
             self.assertFalse(prepared['native_met_verified'])
             self.assertTrue(prepared['source_preserved'])
@@ -292,14 +293,14 @@ class WeatherTests(unittest.TestCase):
             self.assertFalse(comparison['needs_review'])
             self.assertEqual(comparison['rows'], 8784)
             before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
-            self.assertEqual(server.pvsyst_prepare_weather(**request, dry_run=False)['status'], 'blocked')
+            self.assertEqual(api_weather.pvsyst_prepare_weather(**request, dry_run=False)['status'], 'blocked')
             self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
             self.path.write_bytes(raw + b'\n')
             with self.assertRaisesRegex(ValueError, 'changed'):
                 load_weather_manifest(self.root, 'New_weather.json', 2020, 'New.SIT', 'New.MET')
             self.path.write_bytes(raw)
             with patch.object(cli, '_run', side_effect=PVsystError('Native site failure')):
-                failed = server.pvsyst_prepare_weather(**{**request, 'sit_name': 'Fail.SIT', 'met_name': 'Fail.MET'}, dry_run=False)
+                failed = api_weather.pvsyst_prepare_weather(**{**request, 'sit_name': 'Fail.SIT', 'met_name': 'Fail.MET'}, dry_run=False)
             self.assertEqual((failed['status'], failed['stage']), ('failed', 'site'))
             self.assertTrue(failed['source_preserved'])
             self.assertIn('normalized_csv', failed['created_files'])
@@ -318,8 +319,8 @@ class WeatherTests(unittest.TestCase):
         native = native_weather_commands(
             conversion='The imported weather data are shifted by 25 minutes\nConversion ended successfully...')
         with patch.object(server, '_cli', cli), patch.object(cli, '_run', side_effect=native):
-            watts = server.pvsyst_prepare_weather(csv_name='watts.csv', sit_name='W.SIT', met_name='W.MET', **request)
-            joules = server.pvsyst_prepare_weather(csv_name='joules.csv', sit_name='J.SIT', met_name='J.MET', **request)
+            watts = api_weather.pvsyst_prepare_weather(csv_name='watts.csv', sit_name='W.SIT', met_name='W.MET', **request)
+            joules = api_weather.pvsyst_prepare_weather(csv_name='joules.csv', sit_name='J.SIT', met_name='J.MET', **request)
         for prepared in (watts, joules):
             self.assertEqual(prepared['status'], 'needs_review', prepared)
             self.assertTrue(prepared['source_preserved'])
@@ -350,7 +351,7 @@ class WeatherTests(unittest.TestCase):
         self.assertTrue(assets['weather_source']['path'].endswith('watts.csv'))
 
     def test_prepare_weather_artifact_hash_error_retains_failed_manifest(self):
-        import pvsyst_weather_flow
+        import pvsyst_auto.weather.preparation as pvsyst_weather_flow
         cli = PVsystCLI(sys.executable, self.root)
         cli._help_cache['create-site'] = '\n'.join(
             '--' + name + ':' for name in ('site-name', 'altitude', 'timezone', 'country-code'))
@@ -366,7 +367,7 @@ class WeatherTests(unittest.TestCase):
 
         with patch.object(server, '_cli', cli), patch.object(cli, '_run', side_effect=native_weather_commands()), \
                 patch.object(pvsyst_weather_flow, 'fingerprint', side_effect=unreadable):
-            failed = server.pvsyst_prepare_weather(csv_name='weather.csv', year=2020, sit_name='K.SIT',
+            failed = api_weather.pvsyst_prepare_weather(csv_name='weather.csv', year=2020, sit_name='K.SIT',
                                                    met_name='K.MET', country_code='CN',
                                                    time_basis='local_standard_interval_start', dry_run=False)
         self.assertEqual(failed['status'], 'failed', failed)
@@ -433,10 +434,10 @@ class WeatherTests(unittest.TestCase):
     def test_mcp_paths_and_expected_year(self):
         self.path.write_text(weather_text(), encoding="utf-8")
         with patch.object(server, "_cli", PVsystCLI(sys.executable, self.root)):
-            self.assertTrue(server.pvsyst_inspect_weather_csv("weather.csv", 2023)["valid"])
+            self.assertTrue(api_weather.pvsyst_inspect_weather_csv("weather.csv", 2023)["valid"])
             for name in ("../weather.csv", "weather.MET", "C:\\outside.csv"):
                 with self.assertRaisesRegex(ToolError, "filename"):
-                    server.pvsyst_inspect_weather_csv(name)
+                    api_weather.pvsyst_inspect_weather_csv(name)
         for year in (True, 0, 9999, "2023", 2023.0):
             with self.assertRaises(ValueError):
                 inspect_weather_csv(self.path, year)

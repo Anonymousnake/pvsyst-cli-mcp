@@ -10,10 +10,11 @@ from unittest.mock import patch
 import test_components
 import test_pvsyst
 import test_variants
-import pvsyst_mcp_server as server
-from pvsyst_cli import PVsystCLI, summarize
-from pvsyst_components import ComponentStore
-from pvsyst_variants import VariantStore
+from pvsyst_auto.api import app as _registered_app, context as server
+import pvsyst_auto.api.results as api_results
+from pvsyst_auto.native.cli import PVsystCLI, summarize
+from pvsyst_auto.components.store import ComponentStore
+from pvsyst_auto.project.variants import VariantStore
 
 
 @contextmanager
@@ -38,7 +39,7 @@ class AuditRegressions(unittest.TestCase):
             longer = "much_longer_component_filename.PAN"
             source.with_name(longer).write_bytes(source.read_bytes())
             for clone in (False, True):
-                with self.subTest(clone=clone), patch("pvsyst_variants.MAX_PROJECT_BYTES", len(before) + 1):
+                with self.subTest(clone=clone), patch("pvsyst_auto.project.variants.MAX_PROJECT_BYTES", len(before) + 1):
                     with self.assertRaisesRegex(ValueError, "exceeds 32 MB"):
                         if clone:
                             case.store.clone("Example.PRJ", "VC0", "VC1", {"PAN": longer})
@@ -51,7 +52,7 @@ class AuditRegressions(unittest.TestCase):
     def test_parameter_growth_rejected_before_backup(self):
         with fixture(test_variants.VariantTests) as case:
             before = case.original.read_bytes()
-            with patch("pvsyst_variants.MAX_PROJECT_BYTES", len(before)):
+            with patch("pvsyst_auto.project.variants.MAX_PROJECT_BYTES", len(before)):
                 with self.assertRaisesRegex(ValueError, "exceeds 32 MB"):
                     case.store.update_parameters("Example.PRJ", "VC0", digest(before), 1, 1,
                                                  orientation_updates={"FieldTilt": 25})
@@ -62,7 +63,7 @@ class AuditRegressions(unittest.TestCase):
         with fixture(test_variants.VariantTests) as case:
             case._prepare_grid_variant()
             before = case.original.read_bytes()
-            with patch("pvsyst_variants.MAX_PROJECT_BYTES", len(before)):
+            with patch("pvsyst_auto.project.variants.MAX_PROJECT_BYTES", len(before)):
                 with self.assertRaisesRegex(ValueError, "exceeds 32 MB"):
                     case.store.clone_subarray("Example.PRJ", "VC0", 1, digest(before))
             self.assertEqual(case.original.read_bytes(), before)
@@ -292,7 +293,7 @@ class AuditRegressions(unittest.TestCase):
                     middle = "01/01/90 01:00" + (";" + missing if missing is not None else "")
                     path.write_text("date;E_Grid\n;kW\n01/01/90 00:00;10\n" + middle + "\n01/01/90 02:00;10\n")
                     direct = summarize(path)
-                    report = server.pvsyst_read_results(path.name, "E_Grid")
+                    report = api_results.pvsyst_read_results(path.name, "E_Grid")
                     state = report["summary"]["E_Grid"]
                     self.assertEqual(direct, {"column": "E_Grid", "rows": report["rows"],
                                               "step_minutes": report["step_minutes"], **state})
@@ -314,7 +315,7 @@ class AuditRegressions(unittest.TestCase):
                 with self.subTest(data=data):
                     path.write_text("date;E_Grid\n;kW\n" + "\n".join("01/01/90 " + row for row in data.splitlines()) + "\n")
                     direct = summarize(path)
-                    report = server.pvsyst_read_results(path.name, "E_Grid")
+                    report = api_results.pvsyst_read_results(path.name, "E_Grid")
                     self.assertEqual(direct["samples"], samples)
                     self.assertEqual(direct["sum"], total)
                     self.assertEqual(direct["complete"], complete)
