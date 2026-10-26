@@ -6,9 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pvsyst_components import ComponentStore, MAX_PROJECT_BYTES
-from pvsyst_cli import PVsystCLI
-import pvsyst_mcp_server as server
+from pvsyst_auto.components.store import ComponentStore, MAX_PROJECT_BYTES
+from pvsyst_auto.native.cli import PVsystCLI
+from pvsyst_auto.api import app as _registered_app, context as server
+import pvsyst_auto.api.components as api_components
 
 
 PAN = """PVObject_=pvModule
@@ -397,12 +398,12 @@ class ComponentTests(unittest.TestCase):
         server._cli = PVsystCLI(executable, self.workspace)
         self.addCleanup(setattr, server, "_cli", None)
         with patch.dict(os.environ, {"PVSYST_BUILTIN_COMPONENTS": ""}):
-            self.assertEqual(server.pvsyst_list_components("OND", "builtin")["total"], 1)
-            self.assertEqual(server.pvsyst_copy_component(
+            self.assertEqual(api_components.pvsyst_list_components("OND", "builtin")["total"], 1)
+            self.assertEqual(api_components.pvsyst_copy_component(
                 "OND", "official.OND", "imported.OND", "builtin")["type"], "OND")
             second = install / "DataRO" / "PVsyst8.0_Data" / "ComposPV"
             second.mkdir(parents=True)
             with self.assertRaisesRegex(ValueError, "Multiple DataRO component libraries"):
                 server.components()
         with patch.dict(os.environ, {"PVSYST_BUILTIN_COMPONENTS": str(official.parent)}):
-            self.assertEqual(server.pvsyst_list_components("OND", "builtin")["total"], 1)
+            self.assertEqual(api_components.pvsyst_list_components("OND", "builtin")["total"], 1)

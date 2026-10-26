@@ -17,8 +17,8 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfoNotFoundError
 
-import pvsyst_weather_acquisition as acquisition
-from pvsyst_weather_acquisition import WeatherAcquisitionError, download_weather, search_locations
+import pvsyst_auto.weather.acquisition as acquisition
+from pvsyst_auto.weather.acquisition import WeatherAcquisitionError, download_weather, search_locations
 
 HASH_KEYS = ("sha256", "hash", "fingerprint", "md5", "checksum")
 

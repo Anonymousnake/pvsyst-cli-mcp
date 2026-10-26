@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pvsyst_components import ComponentStore
+from pvsyst_auto.components.store import ComponentStore
 from test_component_editor import CURVED_OND, POINTS
 from test_battery_editor import CURVED_BTR, CAPACITY_POINTS
 

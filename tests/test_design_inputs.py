@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pvsyst_design_inputs import SELECTION_RULE, discover_design_inputs
+from pvsyst_auto.engineering.inputs import SELECTION_RULE, discover_design_inputs
 
 GRID = {"valid": True, "system_type": "Grid", "issues": [], "unchecked_checks": []}
 
@@ -131,9 +131,9 @@ class DesignInputTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         (self.root / "Projects").mkdir()
-        self.electrical = patch("pvsyst_design_inputs.electrical_inventory",
+        self.electrical = patch("pvsyst_auto.engineering.inputs.electrical_inventory",
                                 side_effect=lambda kind, text: {"fields": {"source": text}})
-        self.parameters = patch("pvsyst_design_inputs.pan_validation_fields",
+        self.parameters = patch("pvsyst_auto.engineering.inputs.pan_validation_fields",
                                 return_value={"Technol": ["mtSiMono"], "GRef": ["1000"], "TRef": ["25"]})
 
     def components(self, workspace, installed=None, builtin=None, unusable=()):
@@ -352,7 +352,7 @@ class DesignInputTests(unittest.TestCase):
         plans = [{"status": "ready", "inverter_count": 5, "steps": [], "capacity_error_pct": 0.0, "issues": []},
                  {"status": "ready", "inverter_count": 2, "steps": [{"NStringCh": 4}],
                   "capacity_error_pct": 0.0, "issues": []}]
-        with self.electrical, self.parameters, patch("pvsyst_design_inputs.plan_capacity", side_effect=plans):
+        with self.electrical, self.parameters, patch("pvsyst_auto.engineering.inputs.plan_capacity", side_effect=plans):
             result = discover_design_inputs(store, module_manufacturer="Lab", module_model="440W",
                                             inverter_manufacturer="Lab", inverter_model="50kW",
                                             capacity=capacity)
@@ -364,7 +364,7 @@ class DesignInputTests(unittest.TestCase):
 
         blocked_plan = {"status": "blocked", "issues": [{"field": "capacity.target_dc_kw",
                                                          "message": "No supported integral plan"}]}
-        with self.electrical, self.parameters, patch("pvsyst_design_inputs.plan_capacity", return_value=blocked_plan):
+        with self.electrical, self.parameters, patch("pvsyst_auto.engineering.inputs.plan_capacity", return_value=blocked_plan):
             blocked = discover_design_inputs(store, module_manufacturer="Lab", module_model="440W",
                                              inverter_manufacturer="Lab", inverter_model="50kW",
                                              capacity=capacity)

@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pvsyst_components import ComponentStore
-from pvsyst_variants import VariantStore
+from pvsyst_auto.components.store import ComponentStore
+from pvsyst_auto.project.variants import VariantStore
 from test_components import PAN, OND, BTR, GEN
 
 
@@ -658,7 +658,7 @@ class VariantTests(unittest.TestCase):
                         raise OSError("injected replacement failure")
                     return real_replace(source, target)
 
-                with patch("pvsyst_variants.os.replace", side_effect=fail_second_replace):
+                with patch("pvsyst_auto.project.variants.os.replace", side_effect=fail_second_replace):
                     with self.assertRaisesRegex(OSError, "injected replacement"):
                         if operation == "update":
                             self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", baseline)

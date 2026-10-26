@@ -14,8 +14,8 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from pvsyst_weather import inspect_weather_values
-from pvsyst_weather_review import review_weather
+from pvsyst_auto.weather.csv import inspect_weather_values
+from pvsyst_auto.weather.review import review_weather
 
 OFFSET = 8
 
@@ -634,7 +634,7 @@ class GeneratedMetContract(ReviewFixture):
         return path
 
     def check(self, text, *, time_zone=8):
-        from pvsyst_weather_flow import check_generated_met
+        from pvsyst_auto.weather.preparation import check_generated_met
         return check_generated_met(self.write_met(text), time_zone=time_zone)
 
     def test_local_legal_standard_basis_passes(self):
@@ -691,7 +691,7 @@ class GeneratedMetContract(ReviewFixture):
         self.assertTrue(any("no SiteMet HLeg" in issue for issue in report["issues"]), report["issues"])
 
     def test_prepare_template_declares_the_local_legal_reference(self):
-        from pvsyst_weather_flow import MEF_TEMPLATE
+        from pvsyst_auto.weather.preparation import MEF_TEMPLATE
         self.assertIn("RefTimeS=LegalTime", MEF_TEMPLATE)
         self.assertNotIn("SolarTime", MEF_TEMPLATE)
         self.assertIn("MeasureStep=60", MEF_TEMPLATE)
@@ -700,8 +700,8 @@ class GeneratedMetContract(ReviewFixture):
 
 class CompareStatsContract(ReviewFixture):
     def test_compare_native_weather_keeps_original_keys_and_adds_measures(self):
-        from pvsyst_weather import inspect_weather_values
-        from pvsyst_weather_flow import compare_native_weather
+        from pvsyst_auto.weather.csv import inspect_weather_values
+        from pvsyst_auto.weather.preparation import compare_native_weather
         self.write_native(glob_delta=0.25)
         source = self.root / "Meteo" / self.csv_name
         report = inspect_weather_values(source, self.year)

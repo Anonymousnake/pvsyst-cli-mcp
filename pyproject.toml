@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pvsyst-cli-mcp"
+version = "0.1.0"
+description = "Workspace-scoped MCP and Python adapter for installed PVsyst software"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "mcp>=2.0,<3.0",
+    "tzdata>=2025.2; sys_platform == 'win32'",
+]
+
+[project.scripts]
+pvsyst-mcp = "pvsyst_auto.api.app:main"
+
+[project.urls]
+Repository = "https://github.com/Anonymousnake/pvsyst-cli-mcp"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pvsyst_auto*"]

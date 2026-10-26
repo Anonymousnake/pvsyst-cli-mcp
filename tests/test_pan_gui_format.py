@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pvsyst_components import ComponentStore
+from pvsyst_auto.components.store import ComponentStore
 from test_components import PAN, GEN
 
 
