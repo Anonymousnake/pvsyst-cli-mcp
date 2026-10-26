@@ -17,7 +17,7 @@ PVsyst performs the physical calculations. This unofficial project does not bund
 | Evaluate existing native AC storage with hourly load | `pvsyst_run_engineering_task` | [Storage engineering](docs/engineering-storage.md) |
 | Compare bound native scenarios and package results | `pvsyst_compare_engineering_scenarios`, `pvsyst_export_engineering_delivery` | [Scenario comparison](docs/engineering-scenarios.md) |
 
-The server exposes **82 tools in eight groups**. Use the [complete tool reference](docs/tool-reference.md) for low-level components, project editing, weather, loads, controls, simulations and result APIs. Existing wire tool names and request schemas are unchanged by the package reorganization.
+By default, the server exposes **82 tools in eight groups**. Use the [complete tool reference](docs/tool-reference.md) for low-level components, project editing, weather, loads, controls, simulations and result APIs. Existing wire tool names and request schemas are unchanged by the package reorganization.
 
 ## Install
 
@@ -43,11 +43,11 @@ Configure the Python interpreter in which the package is installed. Module launc
 {
   "mcpServers": {
     "pvsyst": {
-      "command": "C:\path\to\pvsyst-cli-mcp\.venv\Scripts\python.exe",
+      "command": "C:/path/to/pvsyst-cli-mcp/.venv/Scripts/python.exe",
       "args": ["-m", "pvsyst_auto"],
       "env": {
-        "PVSYST_CLI": "C:\Program Files\PVsyst8.1.6\PVsystCLI.exe",
-        "PVSYST_WORKSPACE": "C:\path\to\PVsyst8.1_Data"
+        "PVSYST_CLI": "C:/Program Files/PVsyst8.1.6/PVsystCLI.exe",
+        "PVSYST_WORKSPACE": "C:/path/to/PVsyst8.1_Data"
       }
     }
   }
@@ -57,6 +57,12 @@ Configure the Python interpreter in which the package is installed. Module launc
 The installed `pvsyst-mcp` command launches the same stdio server. Existing clients targeting the checkout's `pvsyst_mcp_server.py` keep working through one thin compatibility launcher; old root-level implementation modules are not retained as forwarding files. Restart the MCP client after changing its environment or updating the package.
 
 After connecting, use `pvsyst_capabilities` and `pvsyst_license_info` to inspect the **CLI's** actual options and license/quota before a native run. These queries do not run simulations; GUI and CLI licenses can differ. Credentials and license material do not belong in source control.
+
+### Optional focused discovery
+
+By default all 82 tools remain available. To publish only the groups needed by one client, add `PVSYST_TOOL_GROUPS` to its existing `env`, for example `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`. This keeps the current 15 setup/engineering/result tools and avoids advertising the other groups. Omit the variable to keep the full catalog.
+
+Keys are case-sensitive: `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`. Empty, duplicate or unknown entries stop startup rather than silently choosing a different set. Selection is process-local and requires a restart; it changes discovery/call availability, not native execution or workspace/engineering requirements. See [measured performance and limits](docs/performance.md) for catalog sizes, CSV-reading gains and the cold-start measurements that remain inconclusive.
 
 ## Read results honestly
 
