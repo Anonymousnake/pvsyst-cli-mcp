@@ -15,8 +15,8 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pvsyst_cli import PVsystCLI, build_sfi, parse_result_csv, summarize
-from pvsyst_components import ComponentStore
+from pvsyst_auto.native.cli import PVsystCLI, build_sfi, parse_result_csv, summarize
+from pvsyst_auto.components.store import ComponentStore
 
 
 def fingerprint(path):

@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pvsyst_components import ComponentStore
-from pvsyst_commercial import commercial_inventory
+from pvsyst_auto.components.store import ComponentStore
+from pvsyst_auto.components.commercial import commercial_inventory
 from test_components import PAN, OND, BTR, GEN
 
 

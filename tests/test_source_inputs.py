@@ -5,9 +5,9 @@ so no file, hash, SDK or network access happens here.
 """
 import unittest
 
-from pvsyst_components import electrical_inventory
-from pvsyst_design_envelope import prepare_design_envelope
-from pvsyst_source_inputs import prepare_sourced_design
+from pvsyst_auto.components.store import electrical_inventory
+from pvsyst_auto.engineering.envelope import prepare_design_envelope
+from pvsyst_auto.workflows.sourced_design import prepare_sourced_design
 
 
 PAN_TEXT = """PVObject_=pvModule

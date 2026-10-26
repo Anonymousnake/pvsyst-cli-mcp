@@ -10,8 +10,8 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pvsyst_cli import PVsystCLI, parse_result_csv
-from pvsyst_components import ComponentStore
+from pvsyst_auto.native.cli import PVsystCLI, parse_result_csv
+from pvsyst_auto.components.store import ComponentStore
 
 
 def main():

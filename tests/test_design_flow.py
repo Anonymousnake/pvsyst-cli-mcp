@@ -13,9 +13,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import pvsyst_design_flow as flow
-from pvsyst_cli import PVsystError
-from pvsyst_sizing import NUMBERS as CAPACITY_NUMBERS
+import pvsyst_auto.workflows.design as flow
+from pvsyst_auto.native.cli import PVsystError
+from pvsyst_auto.engineering.sizing import NUMBERS as CAPACITY_NUMBERS
 
 
 def capacity(**overrides):

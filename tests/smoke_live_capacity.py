@@ -16,10 +16,10 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pvsyst_cli import parse_result_csv
-from pvsyst_variants import VariantStore
-from pvsyst_component_editor import objects, replace_value
-from pvsyst_grid import circuit_nodes
+from pvsyst_auto.native.cli import parse_result_csv
+from pvsyst_auto.project.variants import VariantStore
+from pvsyst_auto.components.editor import objects, replace_value
+from pvsyst_auto.project.circuit import circuit_nodes
 
 
 async def main(mode, prune_plane=2):

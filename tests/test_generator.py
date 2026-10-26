@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pvsyst_components import ComponentStore
-from pvsyst_variants import VariantStore
+from pvsyst_auto.components.store import ComponentStore
+from pvsyst_auto.project.variants import VariantStore
 from test_components import GEN
 from test_variants import VARIANT
 

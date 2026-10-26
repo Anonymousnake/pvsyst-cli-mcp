@@ -13,10 +13,11 @@ from time import sleep
 from pathlib import Path
 from unittest.mock import patch
 
-from pvsyst_cli import (PVsystCLI, PVsystError, build_monthly_weather_csv,
-                        build_sfi, parse_batch_results, parse_result_csv,
-                        result_units, summarize)
-import pvsyst_mcp_server as server
+from pvsyst_auto.native.cli import PVsystCLI, PVsystError, build_monthly_weather_csv, build_sfi, parse_batch_results, parse_result_csv, result_units, summarize
+from pvsyst_auto.api import app as _registered_app, context as server
+import pvsyst_auto.api.projects as api_projects
+import pvsyst_auto.api.results as api_results
+import pvsyst_auto.api.simulation as api_simulation
 
 CSV_TEXT = """PVSYST 8.0.6
 ;File;File date;Description
@@ -140,7 +141,7 @@ class PVsystTests(unittest.TestCase):
 
     def test_mcp_project_listing_and_path_confinement(self):
         server._cli = self.client
-        self.assertEqual(server.pvsyst_list_projects(), ["Example.PRJ"])
+        self.assertEqual(api_projects.pvsyst_list_projects(), ["Example.PRJ"])
         with self.assertRaises(ValueError):
             server.workspace_path("Results", "..\\secret.csv", ".csv")
         with self.assertRaises(ValueError):
@@ -159,12 +160,12 @@ class PVsystTests(unittest.TestCase):
 
         with patch.object(self.client, "license_info", return_value={"status": "UNSPECIFIED"}):
             with patch.object(self.client, "_run", side_effect=run) as command:
-                result = server.pvsyst_run_simulation(
+                result = api_simulation.pvsyst_run_simulation(
                     "Example.PRJ", "VC0", sfi_name="demo.sfi",
                     csv_name="ans_btr_curve1")
                 self.assertEqual(result["csv"], str(target))
                 with self.assertRaisesRegex(ValueError, "Output must be a new"):
-                    server.pvsyst_run_simulation(
+                    api_simulation.pvsyst_run_simulation(
                         "Example.PRJ", "VC0", sfi_name="demo.sfi",
                         csv_name="ans_btr_curve1.csv")
                 command.assert_called_once()
@@ -283,7 +284,7 @@ class PVsystTests(unittest.TestCase):
             command.assert_called_once()
         self.assertEqual(parse_batch_results(summary)["scenarios"][1]["values"]["PR"], 0.8)
         server._cli = self.client
-        self.assertEqual(len(server.pvsyst_read_batch_results(summary.name)["scenarios"]), 2)
+        self.assertEqual(len(api_results.pvsyst_read_batch_results(summary.name)["scenarios"]), 2)
 
     def test_batch_custom_result_variables_need_no_grid_or_pr(self):
         self.client._help_cache["run-simulation"] += "\n --batch-params-file|-bpf:"
@@ -333,7 +334,7 @@ class PVsystTests(unittest.TestCase):
 
         with patch.object(self.client, "license_info", return_value={"status": "UNSPECIFIED"}), patch.object(self.client, "_run", side_effect=run) as command:
             with ThreadPoolExecutor(max_workers=2) as executor:
-                futures = [executor.submit(server.pvsyst_run_simulation, "Example.PRJ", "VC0",
+                futures = [executor.submit(api_simulation.pvsyst_run_simulation, "Example.PRJ", "VC0",
                                            sfi_name="demo.sfi", csv_name="same.csv") for _ in range(2)]
                 outcomes = []
                 for future in futures:
@@ -386,11 +387,11 @@ class PVsystTests(unittest.TestCase):
         self.assertEqual(summarize(minute_file)["step_minutes"], 1)
         self.assertAlmostEqual(summarize(minute_file)["energy_kwh"], 3)
         server._cli = self.client
-        report = server.pvsyst_read_results("minute.csv")
+        report = api_results.pvsyst_read_results("minute.csv")
         self.assertEqual(report["step_minutes"], 1)
         self.assertAlmostEqual(report["summary"]["E_Grid"]["energy_kwh"], 3)
         with self.assertRaises(ValueError):
-            server.pvsyst_read_results("batch_hourly.csv", folder="../outside")
+            api_results.pvsyst_read_results("batch_hourly.csv", folder="../outside")
 
     def test_monthly_weather_and_create_site(self):
         self.client._help_cache["create-site"] = "--site-name|-sn:\n --weather-data-file|-wdf:"
@@ -451,11 +452,11 @@ class PVsystTests(unittest.TestCase):
         result = folder / "result.csv"
         result.write_text(CSV_TEXT, encoding="utf-8")
         server._cli = self.client
-        page = server.pvsyst_read_rows("result.csv", offset=1, limit=1)
+        page = api_results.pvsyst_read_rows("result.csv", offset=1, limit=1)
         self.assertEqual(page["rows"][0][1:], [4.5, 0.8])
         self.assertEqual(page["total"], 2)
         with self.assertRaises(ValueError):
-            server.pvsyst_read_rows("result.csv", limit=501)
+            api_results.pvsyst_read_rows("result.csv", limit=501)
 
 
 if __name__ == "__main__":

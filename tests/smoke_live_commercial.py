@@ -20,8 +20,8 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pvsyst_cli import parse_result_csv
-from pvsyst_components import KINDS
+from pvsyst_auto.native.cli import parse_result_csv
+from pvsyst_auto.components.store import KINDS
 from smoke_live_component_editor import fingerprint
 
 

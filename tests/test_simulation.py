@@ -10,16 +10,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from pvsyst_cli import PVsystCLI, PVsystError
-from pvsyst_components import ComponentStore
-from pvsyst_results import annual_summary
-from pvsyst_simulation import simulate_template
-from pvsyst_variants import VariantStore
-from pvsyst_weather_flow import prepare_weather
+from pvsyst_auto.native.cli import PVsystCLI, PVsystError
+from pvsyst_auto.components.store import ComponentStore
+from pvsyst_auto.results import annual_summary
+from pvsyst_auto.workflows.simulation import simulate_template
+from pvsyst_auto.project.variants import VariantStore
+from pvsyst_auto.weather.preparation import prepare_weather
 from test_components import PAN, OND
 from test_grid import grid_text, ARRAY
 from test_weather import native_weather_commands, weather_text
-import pvsyst_simulation
+import pvsyst_auto.workflows.simulation as pvsyst_simulation
 
 
 class SimulationTests(unittest.TestCase):
