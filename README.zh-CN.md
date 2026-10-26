@@ -17,7 +17,7 @@
 | 结合逐时负荷评估已有原生 AC 光储 | `pvsyst_run_engineering_task` | [光储工程](docs/engineering-storage.md) |
 | 比较已绑定原生方案并打包交付 | `pvsyst_compare_engineering_scenarios`、`pvsyst_export_engineering_delivery` | [方案比较](docs/engineering-scenarios.md) |
 
-服务提供 **8 组、82 个工具**。组件、工程编辑、气象、负荷、控制、仿真与结果等低层 API 见[完整工具参考](docs/tool-reference.md)。本次包结构整理保持既有 MCP 工具名和请求 Schema。
+默认提供 **8 组、82 个工具**。组件、工程编辑、气象、负荷、控制、仿真与结果等低层 API 见[完整工具参考](docs/tool-reference.md)。本次包结构整理保持既有 MCP 工具名和请求 Schema。
 
 ## 安装
 
@@ -43,11 +43,11 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 {
   "mcpServers": {
     "pvsyst": {
-      "command": "C:\path\to\pvsyst-cli-mcp\.venv\Scripts\python.exe",
+      "command": "C:/path/to/pvsyst-cli-mcp/.venv/Scripts/python.exe",
       "args": ["-m", "pvsyst_auto"],
       "env": {
-        "PVSYST_CLI": "C:\Program Files\PVsyst8.1.6\PVsystCLI.exe",
-        "PVSYST_WORKSPACE": "C:\path\to\PVsyst8.1_Data"
+        "PVSYST_CLI": "C:/Program Files/PVsyst8.1.6/PVsystCLI.exe",
+        "PVSYST_WORKSPACE": "C:/path/to/PVsyst8.1_Data"
       }
     }
   }
@@ -57,6 +57,12 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 安装后也可用 `pvsyst-mcp` 命令启动同一 stdio 服务。已有客户端若指向仓库中的 `pvsyst_mcp_server.py`，仍由一个薄兼容入口启动；旧根目录实现模块不逐个保留转发壳。更新包或环境配置后，重启 MCP 客户端。
 
 连接后先用 `pvsyst_capabilities` 和 `pvsyst_license_info` 查看 **CLI 自身**支持的参数与许可／配额，再安排原生运行。这些查询不执行仿真；GUI 与 CLI 的许可状态可能不同。凭据和许可资料不进入版本库。
+
+### 按任务精简工具发现
+
+默认仍提供全部 82 个工具。若某个客户端只做特定任务，可在其现有 `env` 中增加 `PVSYST_TOOL_GROUPS`，例如 `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`；当前只公开对应的 15 个设置／工程／结果工具，其余组不再出现在目录中。省略该变量保持完整工具集。
+
+组键区分大小写：`setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering`。空项、重复项或未知项会在启动时明确报错，不静默选择其它集合。选择仅作用于当前进程，修改后重启；它调整工具发现与调用可用性，不改变原生执行、工作区或工程要求。工具内容体积、CSV 读取收益及仍未得出稳定结论的冷启动数据，见[性能实测与边界](docs/performance.md)。
 
 ## 正确理解状态
 
