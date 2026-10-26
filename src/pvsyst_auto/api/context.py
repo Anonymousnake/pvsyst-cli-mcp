@@ -85,6 +85,25 @@ STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
                           "pvsyst_prepare_block_project", "pvsyst_review_engineering_brief", "pvsyst_project_handoff", "pvsyst_run_engineering_task",
                           "pvsyst_compare_engineering_scenarios", "pvsyst_export_engineering_delivery")
 
+GROUP_MODULES = {
+    "setup": "Setup & License", "projects": "Projects & Variants",
+    "components": "Components", "weather": "Sites & Weather",
+    "storage": "Loads & Storage", "simulation": "Simulation",
+    "results": "Results", "engineering": "Engineering",
+}
+_requested_groups = os.environ.get("PVSYST_TOOL_GROUPS")
+if _requested_groups is None:
+    ACTIVE_TOOL_GROUPS = tuple(GROUP_MODULES)
+else:
+    _groups = [group.strip() for group in _requested_groups.split(",")]
+    if (any(group not in GROUP_MODULES for group in _groups)
+            or len(set(_groups)) != len(_groups)):
+        raise ValueError("PVSYST_TOOL_GROUPS requires distinct nonempty keys from: "
+                         + ", ".join(GROUP_MODULES))
+    ACTIVE_TOOL_GROUPS = tuple(group for group in GROUP_MODULES if group in _groups)
+ACTIVE_TOOL_NAMES = frozenset(name for group in ACTIVE_TOOL_GROUPS
+                              for name in TOOL_GROUPS[GROUP_MODULES[group]])
+
 _strict_arguments: dict[str, frozenset[str]] = {}
 
 async def reject_unknown_tool_arguments(ctx: ServerRequestContext[Any, Any],
@@ -109,6 +128,8 @@ def categorized_tool():
     """Label MCP descriptions without changing established wire-level tool names."""
     def register(func):
         category = TOOL_CATEGORY[func.__name__]
+        if func.__name__ not in ACTIVE_TOOL_NAMES:
+            return func
         if func.__name__ in STRICT_ARGUMENT_TOOLS:
             # Typos are rejected against the published signature, so the whitelist cannot drift.
             _strict_arguments[func.__name__] = frozenset(inspect.signature(func).parameters)

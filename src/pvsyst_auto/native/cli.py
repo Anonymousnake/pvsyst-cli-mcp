@@ -607,6 +607,18 @@ def result_units(path: str | os.PathLike, *, strict: bool = False) -> dict[str, 
     raise ValueError("Missing SFI result header")
 
 
+_SFI_TIMESTAMP = re.compile(r"[0-9]{2}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}")
+
+
+def _result_timestamp(value):
+    # Preserve strptime's 1969..2068 year window and its noncanonical fallback.
+    if _SFI_TIMESTAMP.fullmatch(value):
+        century = "19" if value[6:8] >= "69" else "20"
+        return datetime.fromisoformat(
+            f"{century}{value[6:8]}-{value[3:5]}-{value[:2]}T{value[9:]}")
+    return datetime.strptime(value, "%d/%m/%y %H:%M")
+
+
 def iter_result_csv(path: str | os.PathLike, *, strict: bool = False) -> Iterator[tuple[list[str], list]]:
     """Yield SFI rows (semicolon or comma) without loading the full file."""
     with open(path, "r", encoding="utf-8-sig", errors="replace", newline="") as stream:
@@ -625,7 +637,7 @@ def iter_result_csv(path: str | os.PathLike, *, strict: bool = False) -> Iterato
             if not parts or not any(part.strip() for part in parts):
                 continue
             try:
-                stamp = datetime.strptime(parts[0].strip(), "%d/%m/%y %H:%M")
+                stamp = _result_timestamp(parts[0].strip())
             except ValueError:
                 if strict:
                     raise ValueError("Invalid timestamp or unexpected row after SFI header") from None
