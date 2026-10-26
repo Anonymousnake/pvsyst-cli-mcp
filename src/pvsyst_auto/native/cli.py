@@ -619,8 +619,8 @@ def _result_timestamp(value):
     return datetime.strptime(value, "%d/%m/%y %H:%M")
 
 
-def iter_result_csv(path: str | os.PathLike, *, strict: bool = False) -> Iterator[tuple[list[str], list]]:
-    """Yield SFI rows (semicolon or comma) without loading the full file."""
+def _iter_result_cells(path, *, strict=False):
+    """Validate every timestamp and row shape before projecting numeric cells."""
     with open(path, "r", encoding="utf-8-sig", errors="replace", newline="") as stream:
         for line in stream:
             if re.match(r"^\s*date[;,]", line, re.IGNORECASE):
@@ -645,16 +645,49 @@ def iter_result_csv(path: str | os.PathLike, *, strict: bool = False) -> Iterato
             if strict and len(parts) > len(headers):
                 raise ValueError("Result row contains more values than its header")
             parts += [""] * max(0, len(headers) - len(parts))
-            row = [stamp]
-            for value in parts[1:len(headers)]:
-                try:
-                    row.append(float(value.strip()))
-                except ValueError:
-                    row.append(math.nan)
             seen = True
-            yield headers, row
+            yield headers, stamp, parts[1:len(headers)]
     if not seen:
         raise ValueError("Result CSV contains no simulation rows")
+
+
+def _result_number(value):
+    try:
+        return float(value.strip())
+    except ValueError:
+        return math.nan
+
+
+def iter_result_csv(path: str | os.PathLike, *, strict: bool = False) -> Iterator[tuple[list[str], list]]:
+    """Yield complete numeric SFI rows without loading the full file."""
+    for headers, stamp, values in _iter_result_cells(path, strict=strict):
+        row = [stamp]
+        for value in values:
+            try:
+                row.append(float(value.strip()))
+            except ValueError:
+                row.append(math.nan)
+        yield headers, row
+
+
+def read_result_page(path, columns, offset, limit):
+    """Count all timestamped rows; convert only the requested page's columns."""
+    indices = None
+    total = 0
+    page = []
+    for headers, stamp, values in _iter_result_cells(path):
+        if indices is None:
+            if not columns or any(name not in headers[1:] for name in columns):
+                raise ValueError(f"Choose columns from {headers[1:]}")
+            indices = [headers.index(name) - 1 for name in columns]
+        if offset <= total < offset + limit:
+            selected = [_result_number(values[index]) for index in indices]
+            page.append([str(stamp), *(value if math.isfinite(value) else None
+                                       for value in selected)])
+        total += 1
+    units = result_units(path)
+    return {"total": total, "offset": offset, "columns": ["date", *columns],
+            "units": {name: units.get(name, "") for name in columns}, "rows": page}
 
 
 def parse_result_csv(path: str | os.PathLike) -> tuple[list[str], list[list]]:
@@ -673,23 +706,23 @@ def summarize_results(path: str | os.PathLike, columns: tuple[str, ...]) -> dict
     count = 0
     first = last = previous = step_minutes = None
     regular = True
-    for headers, row in iter_result_csv(path):
+    for headers, stamp, values in _iter_result_cells(path):
         if indices is None:
             if not columns or any(name not in headers[1:] for name in columns):
                 raise ValueError(f"Choose columns from {headers[1:]}")
-            indices = {name: headers.index(name) for name in columns}
-            first = str(row[0])
+            indices = {name: headers.index(name) - 1 for name in columns}
+            first = str(stamp)
         if previous is not None:
-            delta = (row[0] - previous).total_seconds() / 60
+            delta = (stamp - previous).total_seconds() / 60
             if delta <= 0 or (step_minutes is not None and delta != step_minutes):
                 regular = False
             elif step_minutes is None:
                 step_minutes = delta
-        previous = row[0]
+        previous = stamp
         count += 1
-        last = str(row[0])
+        last = str(stamp)
         for name, index in indices.items():
-            value = row[index]
+            value = _result_number(values[index])
             if math.isfinite(value):
                 stats[name]["samples"] += 1
                 stats[name]["sum"] += value
