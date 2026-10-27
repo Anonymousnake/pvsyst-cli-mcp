@@ -146,6 +146,18 @@ class DesignEnvelopeTests(unittest.TestCase):
         for name in CAPACITY_NUMBERS:
             self.assertIsInstance(capacity[name], (int, float))
 
+    def test_reference_above_operating_band_skips_only_the_vmp_check(self):
+        request = base_request()
+        request["temperatures"] = dict(request["temperatures"], min_module_operating_c=30.0)
+        result = self.prepare(request)
+        # Cold Vmp is computed at 30 degC, below the 25 degC reference Vmp by construction;
+        # only the Voc check still applies because -10 <= 25 degC.
+        self.assertEqual(result["status"], "ready", result["issues"])
+        self.assertLess(result["capacity"]["cold_vmp_v"], 42.1)
+        self.assertIn("temperatures", warnings_of(result))
+        self.assertTrue(any("Vmp coverage check" in warning["message"]
+                            for warning in result["warnings"]))
+
     def test_explicit_envelope_overrides_coefficients(self):
         request = base_request(coefficients=None,
                                envelope={"cold_voc_v": 56.0, "cold_vmp_v": 45.0, "hot_vmp_v": 38.0})

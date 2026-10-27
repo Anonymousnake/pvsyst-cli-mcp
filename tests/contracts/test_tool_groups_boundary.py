@@ -55,6 +55,15 @@ class ToolGroupsBoundary(unittest.TestCase):
                             self.assertTrue(reply.is_error)
                             self.assertIn("Unknown argument", "\n".join(
                                 item.text for item in reply.content if hasattr(item, "text")))
+                        if groups is None:
+                            # A misspelt write option must be refused, never silently dropped.
+                            reply = await session.call_tool("pvsyst_update_variant_parameters", {
+                                "project": "SOURCE.PRJ", "variant": "VC0",
+                                "expected_sha256": "0" * 64, "dryrun": True})
+                            self.assertTrue(reply.is_error)
+                            self.assertIn("Unknown argument(s) for pvsyst_update_variant_parameters: dryrun",
+                                          "\n".join(item.text for item in reply.content
+                                                    if hasattr(item, "text")))
                 return tools
 
             full = await capture(None)

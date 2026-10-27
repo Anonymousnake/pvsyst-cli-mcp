@@ -119,6 +119,29 @@ class VariantTests(unittest.TestCase):
                          (self.workspace / "Projects" / ".mcp-variant-backups" /
                           changed["backup_name"]).read_bytes())
 
+    def test_update_and_restore_refuse_an_external_write_after_inspection(self):
+        initial = self.store.inspect("Example.PRJ", "VC0")
+        external = self.original.read_bytes() + b"\r\n"
+        backup = self.store._backup
+
+        def write_during_backup(path, data, transaction_id=None):
+            # Another process (for example the PVsyst GUI) saves after the hash check.
+            name = backup(path, data, transaction_id)
+            path.write_bytes(external)
+            return name
+
+        with patch.object(self.store, "_backup", side_effect=write_during_backup):
+            with self.assertRaisesRegex(ValueError, "changed while preparing"):
+                self.store.update("Example.PRJ", "VC0", {"GEN": "new.GEN"}, initial["sha256"])
+        self.assertEqual(self.original.read_bytes(), external)
+        self.original.write_bytes(external[:-2])
+        changed = self.store.update("Example.PRJ", "VC0", {"GEN": "new.GEN"}, initial["sha256"])
+        with patch.object(self.store, "_backup", side_effect=write_during_backup):
+            with self.assertRaisesRegex(ValueError, "changed while preparing"):
+                self.store.restore("Example.PRJ", "VC0", changed["backup_name"],
+                                   changed["sha256"], True)
+        self.assertEqual(self.original.read_bytes(), external)
+
     def test_missing_and_ambiguous_reference_rejected_without_write(self):
         before = self.original.read_bytes()
         with self.assertRaisesRegex(FileNotFoundError, "loose file"):

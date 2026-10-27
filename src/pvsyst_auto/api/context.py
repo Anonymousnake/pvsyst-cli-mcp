@@ -70,20 +70,8 @@ TOOL_CATEGORY = {name: category for category, names in TOOL_GROUPS.items() for n
 if len(TOOL_CATEGORY) != sum(map(len, TOOL_GROUPS.values())):
     raise RuntimeError("Duplicate tool category assignment")
 
-STRICT_ARGUMENT_TOOLS = ("pvsyst_prepare_weather", "pvsyst_resolve_location",
-                         "pvsyst_acquire_weather", "pvsyst_review_weather",
-                         "pvsyst_simulate_template", "pvsyst_simulate_design", "pvsyst_run_house_task", "pvsyst_run_sourced_house_task", "pvsyst_prepare_design_project", "pvsyst_review_project_inputs",
-                         "pvsyst_prepare_sourced_design", "pvsyst_build_sourced_component",
-                          "pvsyst_prepare_load_profile", "pvsyst_create_load_variant",
-                          "pvsyst_create_native_load_variant",
-                          "pvsyst_create_tracking_variant",
-                           "pvsyst_create_shed_geometry_variant", "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_ac_cabling_variant", "pvsyst_create_native_dc_cabling_variant", "pvsyst_open_native_project",
-                          "pvsyst_create_dome_allocation_variant", "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
-                          "pvsyst_create_house_pv_scene",
-                          "pvsyst_create_peak_shaving_variant",
-                          "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system",
-                          "pvsyst_prepare_block_project", "pvsyst_review_engineering_brief", "pvsyst_project_handoff", "pvsyst_run_engineering_task",
-                          "pvsyst_compare_engineering_scenarios", "pvsyst_export_engineering_delivery")
+# Every tool rejects unknown arguments: a misspelt option must never be dropped before a write.
+STRICT_ARGUMENT_TOOLS = tuple(TOOL_CATEGORY)
 
 GROUP_MODULES = {
     "setup": "Setup & License", "projects": "Projects & Variants",
@@ -108,7 +96,7 @@ _strict_arguments: dict[str, frozenset[str]] = {}
 
 async def reject_unknown_tool_arguments(ctx: ServerRequestContext[Any, Any],
                                         call_next: CallNext) -> HandlerResult:
-    """Refuse unknown top-level arguments for the strict entry points only."""
+    """Refuse unknown top-level arguments for every registered tool."""
     if ctx.method == "tools/call" and isinstance(ctx.params, Mapping):
         name = ctx.params.get("name")
         arguments = ctx.params.get("arguments")

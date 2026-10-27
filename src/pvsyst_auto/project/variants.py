@@ -877,6 +877,24 @@ class VariantStore:
             stream.write(data)
         return name
 
+    def _replace_checked(self, path: Path, data: bytes, candidate: bytes) -> None:
+        """Replace `path` only while it still holds the inspected bytes `data`.
+
+        The process lock does not cover the PVsyst GUI or other processes, so the file is
+        re-read before staging and again just before the atomic replace.
+        """
+        if self._read(path) != data:
+            raise ValueError("Variant changed while preparing the edit")
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("xb") as stream:
+                stream.write(candidate)
+            if self._read(path) != data:
+                raise ValueError("Variant changed while preparing the edit")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def _create_project_files(self, project, snapshots):
         if len(snapshots) > MAX_ARCHIVE_MEMBERS:
             raise ValueError("Project exceeds 128 PRJ/VC members")
@@ -977,13 +995,7 @@ class VariantStore:
             self._check_hash(data, expected_sha256)
             candidate = self._replace(data, updates, subarray_id)
             backup = self._backup(path, data)
-            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-            try:
-                with temporary.open("xb") as stream:
-                    stream.write(candidate)
-                os.replace(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            self._replace_checked(path, data, candidate)
             return {"project": project, "variant": variant.upper(), "backup_name": backup,
                     "sha256": hashlib.sha256(candidate).hexdigest()}
 
@@ -1930,12 +1942,6 @@ class VariantStore:
             _, lines = self._text(previous_data)
             self._sections(lines)
             previous_backup = self._backup(path, data)
-            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-            try:
-                with temporary.open("xb") as stream:
-                    stream.write(previous_data)
-                os.replace(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            self._replace_checked(path, data, previous_data)
             return {"project": project, "variant": variant.upper(), "backup_name": previous_backup,
                     "restored_from": backup_name, "sha256": hashlib.sha256(previous_data).hexdigest()}

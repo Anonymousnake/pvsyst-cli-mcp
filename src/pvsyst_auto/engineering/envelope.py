@@ -521,14 +521,20 @@ def prepare_design_envelope(module_electrical, inverter_electrical, request):
     if mppt_short < module_short:
         _issue(result, "mppt_limits.max_short_circuit_current_a", "The per-MPPT short-circuit rating must cover the module short-circuit envelope")
 
-    if tmin <= tref <= tmax_op:
+    # Each reference-point check uses the band its envelope was computed over: cold Vmp from the
+    # minimum operating temperature, cold Voc from the minimum ambient temperature.
+    if tmin_op <= tref <= tmax_op:
         if not hot_vmp <= vmp_ref <= cold_vmp:
             _issue(result, "envelope", "The computed operating-voltage envelope must cover the PAN reference Vmp while TRef is inside the operating band")
+    else:
+        _warn(result, "temperatures",
+              "The module reference temperature is outside the declared operating band; the Vmp coverage check of the reference point is skipped")
+    if tmin <= tref <= tmax_op:
         if cold_voc < voc_ref:
             _issue(result, "envelope.cold_voc_v", "The computed maximum Voc must cover the PAN reference Voc")
     else:
         _warn(result, "temperatures",
-              "The module reference temperature is outside the declared operating band; the coverage check of the reference point is skipped")
+              "The module reference temperature is outside the declared temperature range; the Voc coverage check of the reference point is skipped")
     if result["issues"]:
         return result
 

@@ -25,6 +25,18 @@ class GroupedHouseSceneBoundary(unittest.TestCase):
             self.skipTest("Set the explicit native scene fixture and CLI (version query only)")
         asyncio.run(self.check(Path(fixture), cli))
 
+    def test_single_orientation_grouped_preflight_is_blocked(self):
+        from unittest import mock
+        from pvsyst_auto.native import scene as native_scene
+        source = {"orientations": [{"id": 1, "field_azimuth_deg": 0.0}], "field_azimuth_deg": 0}
+        ready = {"status": "ready", "source": source, "create_arguments": {"variant": "VC1"},
+                 "geometry": {"pv_table_count": 1, "house_parts": 1}}
+        with mock.patch.object(native_scene, "read_house_pv_scene", return_value=ready), \
+                mock.patch.object(native_scene, "_prepare_source",
+                                  return_value={"snapshot": {"source": source}, "table_profiles": []}):
+            with self.assertRaisesRegex(native_scene.NativeBridgeError, "two distinct source planes"):
+                native_scene._preflight(None, None, "One.pvc2", {}, store=object(), allow_groups=True)
+
     async def check(self, fixture, cli):
         seed = json.loads((fixture / "geometry-candidates.json").read_text())
         single = copy.deepcopy(next(item["args"] for item in seed["calls"]

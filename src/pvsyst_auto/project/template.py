@@ -121,7 +121,10 @@ def _field_value(store, lines, bounds, key) -> str:
 
 
 def _subarray(lines, bounds):
-    return next(block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path)
+    block = next((block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path), None)
+    if block is None:
+        raise ValueError("Subarray has no root PVObject block")
+    return block
 
 
 def _explicit_line(lines: list[str], node) -> str:
@@ -220,7 +223,9 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
     if len(types) != 1 or lines[types[0]].split("=", 1)[1].strip() != "Grid":
         raise ValueError("The seed variant must declare SystemType=Grid")
     store._require_no_geometry(lines, require_shading_section=True)
-    child = next(index for index in range(1, len(lines)) if lines[index].strip().startswith("PVObject_"))
+    child = next((index for index in range(1, len(lines)) if lines[index].strip().startswith("PVObject_")), None)
+    if child is None:
+        raise ValueError("The seed variant has no child PVObject block")
     corrected = store._field_indices(lines, (0, child), "PRCorrTemp")
     if len(corrected) != 1 or lines[corrected[0]].split("=", 1)[1].strip() != "False":
         raise ValueError("The seed variant must explicitly declare PRCorrTemp=False")

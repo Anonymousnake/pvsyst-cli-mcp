@@ -185,7 +185,9 @@ def inventory(lines, arrays):
     for identifier, (start, end) in arrays.items():
         try:
             blocks = objects("".join(lines[start:end + 1]))
-            root = next(block for block in blocks if not block.path)
+            root = next((block for block in blocks if not block.path), None)
+            if root is None:
+                raise ValueError(f"Subarray {identifier} has no root PVObject block")
             values = {}
             for key in ("Comment", "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT",
                         "Version", "Flags", "PNomAC_InMPPT", "PowerSharingInverterId", "GInverter"):
@@ -375,7 +377,9 @@ def set_independent_mppt(lines, arrays, subarray_id, enabled):
     checked = inventory(lines, arrays)
     if checked["counts_valid"] is not True:
         raise ValueError("MPPT mode switching requires complete consistent grid counts")
-    row = next(row for row in checked["subarrays"] if row["id"] == subarray_id)
+    row = next((row for row in checked["subarrays"] if row["id"] == subarray_id), None)
+    if row is None:
+        raise ValueError(f"Unknown subarray id {subarray_id}")
     if row["shared_inverter_lines"] or not row["circuit"]["explicit_mppt_inputs"]:
         raise ValueError("MPPT mode switching requires exclusive explicit MPPT inputs")
     pending = circuit_nodes(lines)
@@ -386,7 +390,9 @@ def set_independent_mppt(lines, arrays, subarray_id, enabled):
             if not node.children or any(child.kind != "MPPTNode" for child in node.children):
                 raise ValueError("MPPT mode switching requires only direct explicit MPPT children")
     start, end = arrays[subarray_id]
-    root = next(block for block in objects("".join(lines[start:end + 1])) if not block.path)
+    root = next((block for block in objects("".join(lines[start:end + 1])) if not block.path), None)
+    if root is None:
+        raise ValueError(f"Subarray {subarray_id} has no root PVObject block")
     flags = root.one("Flags")[1]
     if root.one("Version")[1] not in ("8.1.0", "8.1.6") or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
         raise ValueError("MPPT mode switching requires verified Version=8.1.0/8.1.6 Flags")
@@ -433,7 +439,9 @@ def set_power_sharing(lines, arrays, subarray_id, enabled):
         if row["circuit"]["inverters"] != group["inverters"] or len(row["shared_inverter_lines"]) != 1:
             raise ValueError("Power-sharing members must reference only the selected shared parent")
         start, end = arrays[identifier]
-        root = next(block for block in objects("".join(lines[start:end + 1])) if not block.path)
+        root = next((block for block in objects("".join(lines[start:end + 1])) if not block.path), None)
+        if root is None:
+            raise ValueError(f"Subarray {identifier} has no root PVObject block")
         orientation = root.one("NoOrientation")[1]
         if plane is not None and plane != orientation:
             raise ValueError("Power-sharing members require the same fixed-plane orientation")
@@ -462,7 +470,9 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
     if before["counts_valid"] is not True:
         raise ValueError("Capacity editing requires consistent, fully checked grid counts")
     start, end = arrays[subarray_id]
-    root = next(block for block in objects("".join(lines[start:end + 1])) if not block.path)
+    root = next((block for block in objects("".join(lines[start:end + 1])) if not block.path), None)
+    if root is None:
+        raise ValueError(f"Subarray {subarray_id} has no root PVObject block")
     positive_integer(root.one("NoOrientation")[1], "NoOrientation")
     flags = root.one("Flags")[1] if "Flags" in root.fields else ""
     independent = target_mppt is not None or ((target_strings is not None or target_inverters is not None)
@@ -478,7 +488,9 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
                 or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) or not int(flags[1:], 16) & 0x400):
             field = "NInverter" if inverter_scaling else "NStringCh" if target_strings is not None else "NInvMPPT"
             raise ValueError(f"{field} editing requires verified Version={'/'.join(versions)} independent $0400 mode")
-        row = next(row for row in before["subarrays"] if row["id"] == subarray_id)
+        row = next((row for row in before["subarrays"] if row["id"] == subarray_id), None)
+        if row is None:
+            raise ValueError(f"Unknown subarray id {subarray_id}")
         if row["shared_inverter_lines"]:
             groups = [group for group in before["inverter_groups"] if subarray_id in group.get("subarray_ids", [])]
             if (target_mppt is not None or inverter_scaling or len(groups) != 1 or len(row["shared_inverter_lines"]) != 1
@@ -486,7 +498,9 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
                 raise ValueError("Shared-parent capacity editing supports member strings only")
             shared_line = groups[0]["line"]
             for identifier, bounds in arrays.items():
-                peer = next(block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path)
+                peer = next((block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path), None)
+                if peer is None:
+                    raise ValueError(f"Subarray {identifier} has no root PVObject block")
                 if identifier in groups[0]["subarray_ids"]:
                     if (peer.one("NoOrientation")[1] != root.one("NoOrientation")[1]
                             or peer.one("NStrOrient1")[1] != peer.one("NStringCh")[1]

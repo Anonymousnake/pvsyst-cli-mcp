@@ -591,6 +591,30 @@ class DesignFlowTests(unittest.TestCase):
         self.assertEqual(forwarded["variant"], "VC0")
         self.assertEqual(forwarded["new_project"], "Plant.PRJ")
 
+    def test_capacity_confirmed_template_cancels_the_seed_fallback(self):
+        sequence = [no_template(), discovery_ready(None)]
+        seen = []
+
+        def discovery(store, **kwargs):
+            seen.append(kwargs)
+            return copy.deepcopy(sequence[len(seen) - 1])
+
+        seed_calls = []
+
+        def seed(cli, store, **kwargs):
+            seed_calls.append(kwargs)
+            return {"status": "created", "files": {}, "warnings": [], "issues": []}
+
+        result, mocks = self.run_flow(spec(), dry_run=False, discovery=discovery,
+                                      seed=seed, simulate=simulation(artifacts={}))
+        self.assertEqual(result["status"], "completed", result["issues"])
+        self.assertEqual(seed_calls, [])
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(result["artifacts"]["seed"], {})
+        self.assertTrue(any("seed fallback is not used" in warning for warning in result["warnings"]))
+        forwarded = mocks["simulate_template"].call_args.kwargs
+        self.assertEqual(forwarded["template_project"], "Template.PRJ")
+
     def test_provider_failure_does_not_write_a_seed(self):
         plan = {"status": "ready", "standard_utc_offset_hours": 8, "location": {"country_code": "CN"},
                 "artifacts": {}, "warnings": [], "issues": []}

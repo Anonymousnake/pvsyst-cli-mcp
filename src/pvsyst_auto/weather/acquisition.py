@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import calendar
 import csv
+import http.client
 import io
 import json
 import math
@@ -177,7 +178,15 @@ def _provider_get(url, params, *, timeout=REQUEST_TIMEOUT_SECONDS):
     except TimeoutError:
         raise WeatherAcquisitionError(
             f"no response from {host} within {timeout} seconds") from None
-    raw_text = body.decode("utf-8")
+    except (http.client.HTTPException, OSError) as error:
+        # A body cut off mid-read (IncompleteRead, connection reset) is a transport failure too.
+        raise WeatherAcquisitionError(
+            f"transport failure for {host}: {type(error).__name__}: {error}") from None
+    try:
+        raw_text = body.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise WeatherAcquisitionError(
+            f"invalid UTF-8 from {host} at byte {error.start}") from None
     try:
         payload = json.loads(raw_text)
     except json.JSONDecodeError as error:
