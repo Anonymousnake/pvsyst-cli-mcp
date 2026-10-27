@@ -464,3 +464,14 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
             if write_enabled and paths is not None and paths["manifest"].is_file() and record is not None:
                 _save(paths["manifest"], record)
             return _public(result)
+        except BaseException as exc:
+            # An unanticipated error must not leave a written checkpoint "running"; it then propagates.
+            if write_enabled and paths is not None and record is not None:
+                record.update(status="needs_attention", stage="stopped", native_consumption_verified=False)
+                try:
+                    record.setdefault("issues", []).append(f"{type(exc).__name__}: {exc}")
+                    if paths["manifest"].is_file():
+                        _save(paths["manifest"], record)
+                except Exception:
+                    pass  # a failed save must not replace the original error
+            raise

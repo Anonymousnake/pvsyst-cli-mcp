@@ -348,7 +348,8 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
     result = {"operation": "engineering_scenario_comparison", "status": "blocked", "dry_run": dry_run,
               "objective": objective, "summary": [], "scenarios": [], "changes": [], "metrics": [],
               "review_items": [], "issues": [], "artifacts": {}, "report_files": {}, "written_artifacts": [],
-              "historical_input_binding_verified": False, "native_consumption_verified": False}
+              "historical_input_binding_verified": False, "native_consumption_verified": False,
+              "created": False}
     active_output = None
     with store.lock:
         try:
@@ -560,11 +561,14 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                 if path != paths["json"]:
                     raise ValueError("Comparison output folder changed during the operation")
                 active_output = "json"
-                write_json(path, {**result, "written_artifacts": [*result["written_artifacts"], "json"]}, first=True)
+                # status keeps needs_review for a written report; created records that all three exist.
+                write_json(path, {**result, "created": True,
+                                  "written_artifacts": [*result["written_artifacts"], "json"]}, first=True)
                 result["written_artifacts"].append("json")
+                result["created"] = True
                 active_output = None
             return result
-        except (ValueError, OSError, KeyError, OverflowError) as exc:
+        except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
             result["status"] = "blocked"
             result["issues"].append(str(exc))
             if active_output is not None:

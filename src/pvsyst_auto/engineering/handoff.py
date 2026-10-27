@@ -33,8 +33,8 @@ def _load_records(blocks):
         values, omitted = {}, []
         for name in sorted(block.fields):
             value = block.one(name)[1]
+            # A pvLoad ValHour_N is its declared daily profile, not an hourly cache, so it is kept.
             if (len(value) > 512 or name.casefold().startswith(("day_", "valday"))
-                    or (name.casefold().startswith("valhour") and block.object_type.casefold() != "pvload")
                     or name.casefold() in ("hourlyvalues", "hourlydata")):
                 omitted.append(name)
             else:

@@ -200,10 +200,8 @@ def prepare_block_project(store, source_project, source_variant, new_project, bl
             result.update(status="prepared", prepared=True,
                           artifacts={"project": str(target_prj), "variant": str(target_vc)},
                           created_files=list(created["files"]))
-    except (ValueError, FileNotFoundError, FileExistsError) as exc:
+    except (ValueError, OSError) as exc:
+        # Nothing is written before publishing, so an unreadable or locked source stays blocked.
         result["status"] = "failed" if publishing else "blocked"
-        result["issues"].append(str(exc))
-    except OSError as exc:
-        result["status"] = "failed"
         result["issues"].append(str(exc))
     return result

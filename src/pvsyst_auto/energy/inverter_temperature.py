@@ -87,14 +87,19 @@ def replace_inverter_temperature(lines, system, updates):
              "offset_c": None if mode == "ambient" else values[0],
              "fixed_c": None if mode == "ambient" else values[1]}
     if after != before:
-        lines[index] = replace_value(lines[index], FLAGS[mode])
+        candidate = list(lines)
+        candidate[index] = replace_value(candidate[index], FLAGS[mode])
         newline = "\r\n" if lines[system[0]].endswith("\r\n") else "\n"
         indent = lines[system[0]][:len(lines[system[0]]) - len(lines[system[0]].lstrip())] + "  "
         remove = {row[0] for key in FIELDS for row in fields.get(key, [])}
-        body = [lines[i] for i in range(system[0] + 1, system[1]) if i not in remove]
+        body = [candidate[i] for i in range(system[0] + 1, system[1]) if i not in remove]
         if mode != "ambient":
             body += [f"{indent}{key}={Decimal(str(value)):.1f}{newline}"
                      for key, value in zip(FIELDS, values)]
-        lines[system[0] + 1:system[1]] = body
+        candidate[system[0] + 1:system[1]] = body
+        # Commit only a candidate that reads back as the requested state.
+        if _read(candidate, (system[0], system[0] + len(body) + 1))[3] != after:
+            raise ValueError("Candidate inverter temperature state differs from the request")
+        lines[:] = candidate
     return {"before": before, "after": after,
             "scope": "Native whole-system inverter temperature control; no thermal or power model"}

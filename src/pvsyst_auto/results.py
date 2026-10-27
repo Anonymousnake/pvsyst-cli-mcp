@@ -94,7 +94,9 @@ def annual_summary(path, year, nominal_dc_power_kw):
 
 def compare_results(baseline, target, columns, *, include_key_periods=False):
     """Compare target minus baseline on identical, strictly increasing timestamps."""
-    if not columns or len(columns) > 64 or len(set(columns)) != len(columns):
+    # A bare string would otherwise be compared character by character as column names.
+    if (isinstance(columns, str) or not columns or len(columns) > 64
+            or len(set(columns)) != len(columns)):
         raise ValueError("Select 1..64 distinct numeric columns")
     paths = (Path(baseline), Path(target))
     hashes = [fingerprint(path) for path in paths]

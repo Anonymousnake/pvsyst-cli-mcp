@@ -200,7 +200,8 @@ def create_native_dc_cabling_variant(store, cli, *, project, source_variant, dc,
                         decoded, _ = store._text(raw)
                         state = _profile(store, decoded.splitlines(keepends=True))
                         break
-                    except (ValueError, ArithmeticError):
+                    except (ValueError, ArithmeticError, OSError):
+                        # PVsyst may still hold or be writing the new VC (e.g. a sharing violation).
                         if time.monotonic() >= deadline:
                             raise
                         time.sleep(0.2)
@@ -217,4 +218,7 @@ def create_native_dc_cabling_variant(store, cli, *, project, source_variant, dc,
                 result["native_actions"].append("native_confirm_save_as_verify_owners")
         except (ValueError, ArithmeticError, TypeError, KeyError, OSError, RuntimeError) as exc:
             result["issues"].append(str(exc))
+            if result["stage"] != "preflight":
+                # The GUI was driven and may have saved a variant: never report it as untouched.
+                result["status"] = "needs_attention"
     return result

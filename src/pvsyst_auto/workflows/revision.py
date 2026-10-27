@@ -502,13 +502,23 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                       or source_handoff.get("review_items")
                       or source_handoff.get("missing_items"))
             record["status"] = "needs_review" if review else "completed"
-        except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
+        except (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired) as exc:
             record.update(status="failed", native_consumption_verified=False, error=cli._redact(str(exc))[-12000:])
+        except BaseException as exc:
+            # An unanticipated error still leaves a terminal manifest, never "running"; it then propagates.
+            record.update(status="failed", native_consumption_verified=False,
+                          error=cli._redact(f"{type(exc).__name__}: {exc}")[-12000:])
+            if manifest_owned:
+                try:
+                    save()
+                except Exception:
+                    pass  # a failed save must not replace the original error
+            raise
         try:
             record["source_preserved"] = store.inspect_project(source_project)["files"] == original["files"]
             if not record["source_preserved"]:
                 record.update(status="failed", native_consumption_verified=False, error="Source changed during the engineering task")
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, KeyError, TypeError) as exc:
             record.update(status="failed", native_consumption_verified=False, error=str(exc))
         record["recovery"] = "Retain the isolated project and outputs for review; no automatic retry, overwrite, deletion or rollback. Use a new project name for a new execution."
         if manifest_owned:

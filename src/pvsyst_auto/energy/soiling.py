@@ -89,6 +89,15 @@ def replace_soiling(lines, bounds, updates):
         if scaled != scaled.to_integral_value():
             raise ValueError("Use 0.1 percentage-point increments, matching native GUI save precision")
     before, (begin, end), yearly_raw = _profile(lines, bounds)
+    scope = "Whole PV main array; native 8.1.6 constant/monthly soiling, not a loss model"
+    after = {"mode": mode}
+    if mode == "constant":
+        after["yearly_loss_pct"] = supplied[0]
+    elif mode == "monthly":
+        after["monthly_loss_pct"] = list(supplied)
+    if before == after:
+        # A same-value request keeps the stored block byte for byte.
+        return {"before": before, "after": before, "scope": scope}
     indent = lines[bounds[0]][:len(lines[bounds[0]]) - len(lines[bounds[0]].lstrip())]
     newline = "\r\n" if lines[bounds[0]].endswith("\r\n") else "\n"
     block = []
@@ -99,7 +108,11 @@ def replace_soiling(lines, bounds, updates):
         if mode == "monthly":
             body.append("  MonthlyValue=" + ",".join(map(fraction, supplied)) + ",")
         block = [indent + text + newline for text in (*body, "EndTags")]
-    lines[begin:end] = block
-    after_bounds = (bounds[0], bounds[1] + len(block) - (end - begin))
-    return {"before": before, "after": _profile(lines, after_bounds)[0],
-            "scope": "Whole PV main array; native 8.1.6 constant/monthly soiling, not a loss model"}
+    # Edit and re-read a copy; the caller's lines change only once the copy verifies.
+    candidate = list(lines)
+    candidate[begin:end] = block
+    checked = _profile(candidate, (bounds[0], bounds[1] + len(block) - (end - begin)))[0]
+    if checked != after:
+        raise ValueError("Candidate soiling state differs from the request")
+    lines[:] = candidate
+    return {"before": before, "after": checked, "scope": scope}

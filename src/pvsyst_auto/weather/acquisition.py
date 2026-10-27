@@ -36,6 +36,7 @@ import io
 import json
 import math
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -63,10 +64,13 @@ ACCEPTED_UNITS = {"shortwave_radiation": ("W/m\u00b2", "W/m2"),
                   "temperature_2m": ("\u00b0C", "degC")}
 TEMPERATURE_METHODS = ("endpoint_mean",)
 REQUEST_TIMEOUT_SECONDS = 60
+REQUEST_DEADLINE_SECONDS = 300   # whole-request budget; the timeout above bounds one socket wait
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_ERROR_BODY_BYTES = 64 * 1024
 MIN_YEAR = 1940          # ERA5 archive start, verified with a live request.
 MAX_YEAR = 2068          # same upper bound as the verified PVsyst import profile.
+PREPARED_MIN_YEAR = 1969  # prepare_weather/review_weather floor: native dates carry two-digit years
+PUBLICATION_LAG_DAYS = 5  # ERA5 is published roughly five days behind real time
 MIN_TIME_ZONE_HOURS = -12
 MAX_TIME_ZONE_HOURS = 12   # installed PVsyst CLI profile, verified as a create-site bound
 GEOCODING_COUNT = 10
@@ -87,9 +91,8 @@ class WeatherAcquisitionError(RuntimeError):
 
 def _number_text(value):
     """Stable decimal text without scientific notation or a negative zero."""
-    if value == 0:
-        return "0"
-    return f"{float(value):.6f}".rstrip("0").rstrip(".")
+    text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+    return "0" if text in ("", "-0") else text
 
 
 def _finite_number(value, label):
@@ -116,8 +119,13 @@ def _bounded_write(path, text):
         stream.write(text)
 
 
-def _read_bounded(response):
-    """Read at most MAX_RESPONSE_BYTES from one provider response."""
+def _read_bounded(response, deadline=None):
+    """Read at most MAX_RESPONSE_BYTES from one provider response, ending by `deadline`.
+
+    The socket timeout bounds a single wait only, so a body trickling in slowly is also cut
+    off at the monotonic `deadline`. A real HTTP response is read with ``read1`` (at most one
+    socket read per call) so the deadline is checked between socket reads.
+    """
     headers = getattr(response, "headers", None)
     declared = headers.get("Content-Length") if headers is not None else None
     if declared is not None:
@@ -128,9 +136,10 @@ def _read_bounded(response):
                     f"{MAX_RESPONSE_BYTES}-byte request limit")
         except ValueError:
             pass
+    read = response.read1 if isinstance(response, http.client.HTTPResponse) else response.read
     chunks, total = [], 0
     while True:
-        chunk = response.read(65536)
+        chunk = read(65536)
         if not chunk:
             break
         total += len(chunk)
@@ -138,6 +147,10 @@ def _read_bounded(response):
             raise WeatherAcquisitionError(
                 f"provider response exceeds the {MAX_RESPONSE_BYTES}-byte request limit")
         chunks.append(chunk)
+        if deadline is not None and time.monotonic() > deadline:
+            raise WeatherAcquisitionError(
+                f"provider response did not complete within the {REQUEST_DEADLINE_SECONDS}-second "
+                "request deadline")
     return b"".join(chunks)
 
 
@@ -167,9 +180,10 @@ def _provider_get(url, params, *, timeout=REQUEST_TIMEOUT_SECONDS):
     request_url = url + "?" + urllib.parse.urlencode(params)
     request = urllib.request.Request(
         request_url, headers={"User-Agent": "pvsyst-auto-weather/1.0 (stdlib urllib)"})
+    deadline = time.monotonic() + REQUEST_DEADLINE_SECONDS
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = _read_bounded(response)
+            body = _read_bounded(response, deadline)
     except urllib.error.HTTPError as error:
         raise WeatherAcquisitionError(
             f"HTTP {error.code} from {host}: {_error_reason(error)}") from None
@@ -622,6 +636,12 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
         if type(year) is not int or not MIN_YEAR <= year <= MAX_YEAR:
             raise WeatherAcquisitionError(
                 f"year must be an integer in {MIN_YEAR}..{MAX_YEAR} (ERA5 starts in 1940)")
+        if year < PREPARED_MIN_YEAR:
+            raise WeatherAcquisitionError(
+                f"year {year} is in the ERA5 archive, but prepare_weather and review_weather accept "
+                f"only {PREPARED_MIN_YEAR}..{MAX_YEAR} because native PVsyst dates carry two-digit "
+                "years; a CSV for this year could never be prepared, so it is blocked before any "
+                "request")
         if temperature_method not in TEMPERATURE_METHODS:
             raise WeatherAcquisitionError(
                 f"temperature_method must be one of {list(TEMPERATURE_METHODS)}")
@@ -634,14 +654,16 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
         hours = _year_hours(year)
         utc_start = datetime(year, 1, 1) - timedelta(hours=offset_hours)
         utc_end = utc_start + timedelta(hours=hours)
-        published_through = datetime.now(timezone.utc).date()
+        # The archive accepts end dates up to today, but the last few days are still null.
+        published_through = (datetime.now(timezone.utc).date()
+                             - timedelta(days=PUBLICATION_LAG_DAYS))
         if utc_end.date() > published_through:
             raise WeatherAcquisitionError(
                 f"the requested year {year} is not fully published by the provider: the local "
-                f"standard year ends at UTC {utc_end.date().isoformat()} while the archive "
-                f"endpoint only accepts end_date up to {published_through.isoformat()}. ERA5 runs "
-                "roughly five days behind and unpublished hours come back as null, which this "
-                "module never fills; choose a year that is already complete")
+                f"standard year ends at UTC {utc_end.date().isoformat()} while ERA5 runs roughly "
+                f"{PUBLICATION_LAG_DAYS} days behind, so only dates through about "
+                f"{published_through.isoformat()} are complete. Unpublished hours come back as "
+                "null, which this module never fills; choose a year that is already complete")
         params = _archive_params(site["latitude"], site["longitude"], utc_start.date(),
                                  utc_end.date())
         result.update(stage="plan", location=site, standard_utc_offset_hours=offset_hours,

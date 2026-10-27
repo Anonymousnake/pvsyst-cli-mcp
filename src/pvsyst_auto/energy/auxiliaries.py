@@ -138,12 +138,13 @@ def replace_auxiliaries(lines, system, updates):
         after = {"mode": mode, "operating_kw": values["operating_kw"] if enabled else 0.0,
                  "night_kw": values["night_kw"] if enabled else 0.0}
     if after != before:
+        candidate = list(lines)
         if bool(flags) != enabled:
-            lines[index] = replace_value(lines[index], "$00040000" if enabled else "$00")
+            candidate[index] = replace_value(candidate[index], "$00040000" if enabled else "$00")
         newline = "\r\n" if lines[system[0]].endswith("\r\n") else "\n"
         indent = lines[system[0]][:len(lines[system[0]]) - len(lines[system[0]].lstrip())] + "  "
         remove = {row[0] for key in OWNED_FIELDS for row in fields.get(key, [])}
-        body = [lines[i] for i in range(system[0] + 1, system[1]) if i not in remove]
+        body = [candidate[i] for i in range(system[0] + 1, system[1]) if i not in remove]
         write = [("AuxPower_Const", Decimal(str(values["operating_kw"])) * 1000),
                  ("AuxPower_Night", Decimal(str(values["night_kw"])) * 1000)]
         if mode == "profile":
@@ -151,7 +152,11 @@ def replace_auxiliaries(lines, system, updates):
                       ("AuxPower_Pout", Decimal(str(values["proportional_w_per_kw"]))),
                       ("AuxPower_PThresh", Decimal(str(values["proportional_threshold_kw"])))]
         body += [f"{indent}{key}={value:.3f}{newline}" for key, value in write if value != 0]
-        lines[system[0] + 1:system[1]] = body
+        candidate[system[0] + 1:system[1]] = body
+        # Commit only a candidate that reads back as the requested state.
+        if _read(candidate, (system[0], system[0] + len(body) + 1))[3] != after:
+            raise ValueError("Candidate auxiliary state differs from the request")
+        lines[:] = candidate
     scope = ("Native operating/night auxiliary powers with the constant threshold and proportional terms, "
              "restricted to the verified native families" if mode == "profile" else
              "Native whole-system operating/night auxiliary powers; thresholds and proportional term stay zero")

@@ -263,7 +263,9 @@ def replace_iam_model(lines, bounds, updates):
     if before.get("stored_model") in ("FresnelSmooth", "UserProfile"):
         raise ValueError("The stored IAM table is read-only in this entry point; "
                          "replace or regenerate it through the native software")
-    body = _body(lines, bounds, index, raw, block, _anchor(lines, bounds, fields), mode, b0)
+    # Only a newly inserted Ashrae block needs the WiringResistance insertion anchor.
+    anchor = _anchor(lines, bounds, fields) if mode == "ashrae" and block is None else None
+    body = _body(lines, bounds, index, raw, block, anchor, mode, b0)
     candidate = lines[:bounds[0] + 1] + body + lines[bounds[1]:]
     # the body may change the block height, so re-read the candidate with its own bounds
     after = _read(candidate, (bounds[0], bounds[0] + 1 + len(body)))[4]

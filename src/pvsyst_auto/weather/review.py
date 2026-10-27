@@ -6,8 +6,10 @@ still unverified?* It never writes, never runs a simulation and never fingerprin
 
 Contract of the returned report:
 
-* ``status`` is ``blocked`` / ``needs_review`` / ``completed``. ``completed`` means only
-  that no numeric-level review item is left; it is not a physical certification.
+* ``status`` is ``blocked`` or ``needs_review``; this profile never reports ``completed``.
+  The effective sun-position time shift cannot be verified from this evidence, so that
+  standing review item stays listed even when every numeric check agrees, and a readable
+  review is never a physical certification.
 * ``provider_to_csv`` compares the raw provider payload rebuilt with the very same
   converter the acquisition module uses. That is a same-converter consistency check, not
   an independent algorithm proof.
@@ -47,8 +49,8 @@ SCOPE = ("Read-only hourly-value, label and declared-field review of one prepare
          "native result. No simulation, no licence, no CLI call, no write and no hashing: the CSV is "
          "re-inspected through the hash-free inspector, so this report carries no checksum field. "
          "Hourly data and label agreement does not certify the effective sun-position time shift, the "
-         "clear-sky model or the ERA5 source quality, and ``completed`` would mean only that no "
-         "numeric-level review item is left, never a physical certification.")
+         "clear-sky model or the ERA5 source quality; that sun-position item always stays open, so a "
+         "readable review ends as needs_review, never as a physical certification.")
 
 
 def _read_declarations(path: Path, limit: int, root_fields: tuple[str, ...],
@@ -482,8 +484,7 @@ def review_weather(workspace, *, csv_name, native_csv_name, year, acquisition_ma
                         "zero. This states what this report cannot show, not that such a field is absent "
                         "everywhere.")
     result["review_items"] = review_items
-    # Every item above is a standing review obligation of this profile: the endpoint_mean temperature
-    # approximation and the unverified sun-position residual never disappear, so ``completed`` is
-    # reachable only if that set of obligations genuinely becomes empty.
-    result["status"] = "needs_review" if review_items else "completed"
+    # The unverified sun-position residual above is a standing review obligation of this profile that
+    # this evidence can never clear, so a readable review always ends as needs_review.
+    result["status"] = "needs_review"
     return result

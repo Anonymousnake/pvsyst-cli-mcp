@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 
 
 ASSIGNMENT = re.compile(r"^([ \t]*)([A-Za-z_][A-Za-z0-9_]*)([ \t]*=[ \t]*)(.*?)([ \t]*)$")
+# Every boundary str.splitlines honours; inside a value it would start a new record.
+LINE_BREAK = re.compile(r"[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
 CURVE_PATHS = frozenset(f"Converter/{name}" for name in
                         ("ProfilPIO", "ProfilPIOV1", "ProfilPIOV2", "ProfilPIOV3"))
 MAX_POINTS = 256
@@ -27,6 +29,8 @@ def replace_value(line: str, value: str) -> str:
     match = ASSIGNMENT.fullmatch(body)
     if not match:
         raise ValueError("Expected a component assignment")
+    if LINE_BREAK.search(value):
+        raise ValueError("A component value must not contain a line break")
     return body[:match.start(4)] + value + body[match.end(4):] + line[len(body):]
 
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from pvsyst_auto.native.cli import PVsystError, build_monthly_weather_csv, iter_result_csv, result_units
 from pvsyst_auto.components.editor import objects
-from pvsyst_auto.project.paths import workspace_file
+from pvsyst_auto.project.paths import workspace_file, write_json
 from pvsyst_auto.results import fingerprint
 from pvsyst_auto.weather.csv import DATE_COLUMNS, inspect_weather_csv, number, read_bytes
 
@@ -358,8 +358,9 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
         manifest = paths["manifest"]
         manifest.parent.mkdir(parents=True, exist_ok=True)
         def save(first=False):
-            with manifest.open("x" if first else "w", encoding="utf-8") as stream:
-                json.dump(result, stream, indent=2, ensure_ascii=True, allow_nan=False)
+            # The shared atomic writer serializes first and replaces later states only with a complete
+            # temporary copy, so a failed write never leaves a truncated manifest behind.
+            write_json(manifest, result, first=first)
         def unchanged():
             if fingerprint(source) != report["sha256"]:
                 raise ValueError("Source CSV changed after preflight")
@@ -430,7 +431,13 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
                     result["created_files"][key] = {"name": path.name, "hash_error": str(exc)}
                     result["issues"].append("Artifact hash collection failed: " + key)
                     result["status"] = "failed"
-            save()
+            try:
+                save()
+            except (OSError, TypeError, ValueError) as exc:
+                # Never replace an exception already in flight, and never report success while the
+                # manifest on disk still holds an earlier stage.
+                result["status"] = "failed"
+                result["issues"].append("Weather manifest write failed: " + str(exc))
         return result
 
 

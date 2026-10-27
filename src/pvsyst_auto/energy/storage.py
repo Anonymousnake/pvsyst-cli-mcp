@@ -27,6 +27,11 @@ KNOWN_PAIRS = frozenset({("PeakShaving", "PVToGridMin", "MinMaxHour"),
 STRATEGY_KEYS = ("strategy", "charging_strategy", "discharging_strategy")
 
 
+def decimal_text(value):
+    """Exact positional text of a float's shortest repr: 1e-05 is written 0.00001, never in E notation."""
+    return format(Decimal(str(value)), "f")
+
+
 def set_grid_export(lines, system, allow_grid_export):
     """Toggle only native TSysteme.IsNoGridInjection (bit27), when declared."""
     if allow_grid_export is None:
@@ -154,7 +159,7 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
                     edits.update(Strategy=STRATEGIES[value],ChargingStrategy="PVAvailable",DischStrategy="Immediate")
                 else:
                     key,low,high=NUMERIC_FIELDS[name]
-                    edits[key]=str(finite(value,name,low,high if high is not None else float("inf"),positive=name.endswith("kw") or name.endswith("pct")))
+                    edits[key]=decimal_text(finite(value,name,low,high if high is not None else float("inf"),positive=name.endswith("kw") or name.endswith("pct")))
             for key,value in edits.items():
                 index,_=one(fields,key)
                 lines[index]=replace_value(lines[index],value)
@@ -192,7 +197,9 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
                 if starts:
                     if starts[0].start()>=ends[0].end():
                         raise ValueError("Unmatched grid availability object")
-                    local = local[:starts[0].start()] + profile + local[ends[0].end():]
+                    # The profile ends with its own newline, so the replaced closing line's goes too.
+                    finish = ends[0].end() + local.startswith("\n", ends[0].end())
+                    local = local[:starts[0].start()] + profile + local[finish:]
                 else:
                     close = local.rindex("End of PVObject pvGridStorage")
                     line_start = local.rfind("\n",0,close)+1

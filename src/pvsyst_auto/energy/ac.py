@@ -22,7 +22,7 @@ def _length(raw):
     except ArithmeticError:
         raise ValueError("AC length is outside the supported decimal range") from None
     if not 0 < value <= 100000 or value != stepped:
-        raise ValueError("AC length must be positive, at most100000m and exact0.1m steps (adapter domain)")
+        raise ValueError("AC length must be positive, at most 100000 m and in exact 0.1 m steps (adapter domain)")
     return value
 
 
@@ -131,7 +131,7 @@ def _profile(store, lines):
     if layout[5] or layout[1].one("MVNbTransfos")[1] != "0":
         raise ValueError("AC edits with MV/HV references are outside the verified profile")
     if layout[6].one("Version")[1] != "8.1.6" or layout[6].one("Flags")[1] != "$00":
-        raise ValueError("Requires native8.1.6 circuit Flags00")
+        raise ValueError("Requires native 8.1.6 circuit Flags=$00")
     return layout
 
 

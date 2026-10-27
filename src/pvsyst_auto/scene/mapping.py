@@ -57,11 +57,11 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
         if before.one("FieldType")[1] != "FixedPlane" or after.one("FieldType")[1] != "FixedPlane":
             raise ValueError("Saved source orientation is not an ordinary fixed plane")
         for key in ("FieldTilt", "FieldAzim", "BaseSlope"):
-            if _number(before.one(key)[1]) != _number(after.one(key)[1]):
+            if abs(_number(before.one(key)[1]) - _number(after.one(key)[1])) > ANGLE_TOL:
                 raise ValueError("Saved orientation %d changed %s" % (identifier, key))
-        if (_number(after.one("FieldTilt")[1]) != plane["tilt_deg"]
-                or _number(after.one("FieldAzim")[1]) != plane["field_azimuth_deg"]
-                or _number(after.one("BaseSlope")[1]) != 0):
+        if (abs(_number(after.one("FieldTilt")[1]) - plane["tilt_deg"]) > ANGLE_TOL
+                or abs(_number(after.one("FieldAzim")[1]) - plane["field_azimuth_deg"]) > ANGLE_TOL
+                or abs(_number(after.one("BaseSlope")[1])) > ANGLE_TOL):
             raise ValueError("Saved orientation differs from its source profile")
         for key in ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"):
             if before.one(key)[1] != "False" or after.one(key)[1] != "False":
@@ -97,8 +97,9 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
             values = [block.one(key)[1] if key in block.fields else default for block in (before, after)]
             if values[0].rstrip(",") != values[1].rstrip(","):
                 raise ValueError("Saved subarray %d changed %s" % (identifier, key))
-        if ("PNomAC_InMPPT" in before.fields or "PNomAC_InMPPT" in after.fields) and (
-                _number(before.one("PNomAC_InMPPT")[1]) != _number(after.one("PNomAC_InMPPT")[1])):
+        declared = ["PNomAC_InMPPT" in block.fields for block in (before, after)]
+        if declared[0] != declared[1] or (declared[0] and (
+                _number(before.one("PNomAC_InMPPT")[1]) != _number(after.one("PNomAC_InMPPT")[1]))):
             raise ValueError("Saved subarray changed its inverter input power declaration")
         hardware_mapping.append({"subarray_id": identifier,
                                  "orientation_id": _integer(after.one("NoOrientation")[1]),
@@ -127,9 +128,9 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
         table = tables[plane["id"]]
         if (_integer(table.one("NModInHeight")[1]) * _integer(table.one("NModInWidth")[1])
                 != plane["module_total"]
-                or _number(table.one("DInclin")[1]) != plane["tilt_deg"]
-                or _number(table.one("DAzimut")[1]) != plane["field_azimuth_deg"]
-                or _number(table.one("BaseSlope")[1]) != 0):
+                or abs(_number(table.one("DInclin")[1]) - plane["tilt_deg"]) > ANGLE_TOL
+                or abs(_number(table.one("DAzimut")[1]) - plane["field_azimuth_deg"]) > ANGLE_TOL
+                or abs(_number(table.one("BaseSlope")[1])) > ANGLE_TOL):
             raise ValueError("Native PV table differs from its source orientation/count")
     return {"source_hardware_preserved": True, "source_orientations_preserved": True,
             "source_circuit_preserved": True, "source_orientation_ids": [1, 2],

@@ -895,6 +895,24 @@ class VariantStore:
         finally:
             temporary.unlink(missing_ok=True)
 
+    @staticmethod
+    def _rollback(error: BaseException, steps, recovery: str) -> None:
+        """Attempt every undo step even after one fails, so a rollback never hides `error`.
+
+        Returns when every step succeeds and the caller re-raises `error`. Otherwise raises
+        an OSError chained from `error` naming what stayed unrecovered and how to recover;
+        an interrupt is still re-raised unchanged by the caller.
+        """
+        failed = []
+        for name, undo, *args in steps:
+            try:
+                undo(*args)
+            except Exception as exc:
+                failed.append(f"{name} ({type(exc).__name__})")
+        if failed and isinstance(error, Exception):
+            raise OSError(f"{type(error).__name__}: {error}; rollback incomplete for "
+                          f"{', '.join(failed)}; {recovery}") from error
+
     def _create_project_files(self, project, snapshots):
         if len(snapshots) > MAX_ARCHIVE_MEMBERS:
             raise ValueError("Project exceeds 128 PRJ/VC members")
@@ -908,9 +926,9 @@ class VariantStore:
                 with target.open("xb") as stream:
                     created.append(target)
                     stream.write(data)
-        except BaseException:
-            for target in reversed(created):
-                target.unlink(missing_ok=True)
+        except BaseException as exc:
+            self._rollback(exc, [(target.name, target.unlink, True) for target in reversed(created)],
+                           "delete those partial files before retrying")
             raise
         return {"project": project, "variants": [path.suffix[1:] for path, _ in snapshots[1:]],
                 "sha256": hashlib.sha256(snapshots[0][1]).hexdigest(),
@@ -980,8 +998,16 @@ class VariantStore:
             candidate = self._replace(data, updates, subarray_id) if updates else data
             if any(path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
                 raise FileExistsError(target.name)
-            with target.open("xb") as stream:
-                stream.write(candidate)
+            # Stage first so a failed write leaves no partial variant blocking this name.
+            # Like the former "xb" open, a Windows rename and a POSIX hard link both refuse
+            # a variant created meanwhile, where os.replace would overwrite it.
+            temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with temporary.open("xb") as stream:
+                    stream.write(candidate)
+                (os.rename if os.name == "nt" else os.link)(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
             return {"project": project, "variant": new_variant.upper(),
                     "source_project": source_project, "source_variant": source_variant.upper(),
                     "sha256": hashlib.sha256(candidate).hexdigest()}
@@ -1369,7 +1395,9 @@ class VariantStore:
                 parent = next(node for tree in circuit_nodes(lines) for node in walk(tree) if node.line == groups[0]["line"])
                 if parent.one("SubArrayId") != "0":
                     raise ValueError("Shared-member deletion requires explicit parent owner 0")
-                port = next(node for node in parent.children if node.one("SubArrayId") == str(subarray_id))
+                port = next((node for node in parent.children if node.one("SubArrayId") == str(subarray_id)), None)
+                if port is None:
+                    raise ValueError("Shared-member deletion requires a direct port with the exact SubArrayId")
                 owned = {bounds[0] + roots[subarray_id].one("SubArrayId")[0]}
                 owned.update(index for node in walk(port) for index in node.field_lines["SubArrayId"])
                 references = {i for i, line in enumerate(lines) if (field := FIELD.fullmatch(line.rstrip("\r\n")))
@@ -1629,12 +1657,11 @@ class VariantStore:
             for path, temporary in staged.items():
                 os.replace(temporary, path)
                 written.append(path)
-        except BaseException:
-            for path in reversed(written):
-                temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-                with temporary.open("xb") as stream:
-                    stream.write(originals[path])
-                os.replace(temporary, path)
+        except BaseException as exc:
+            # Undo only files still holding this transaction's bytes; keep any later edit.
+            self._rollback(exc, [(path.name, self._replace_checked, path, candidates[path], originals[path])
+                                 for path in reversed(written)],
+                           f"restore the originals from backup transaction {transaction_id}")
             raise
         finally:
             for temporary in staged.values():
@@ -1739,9 +1766,9 @@ class VariantStore:
                     self._replace_unique_field(lines, "NomF", met_name, (start + 1, child))
                     self._replace_unique_field(lines, "SiteM", site_identity, (start + 1, child))
                 candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
-                self._check_size(candidate)
-                if name != project:
-                    self._text(candidate)
+                if name == project:
+                    self._project_text(candidate)
+                else:
                     self._sections(self._text(candidate)[1])
                 originals[path] = data
                 candidates[path] = candidate
@@ -1801,10 +1828,10 @@ class VariantStore:
                 if hashlib.sha256(previous).hexdigest() != manifest["original_files"][name]:
                     raise ValueError(f"Project backup integrity check failed: {name}")
                 if name == project:
-                    lines = previous.decode("utf-8-sig").splitlines()
-                    if (not lines or lines[0].strip() != "PVObject_=pvProject"
-                            or lines[-1].strip() != "End of PVObject pvProject"):
-                        raise ValueError("Archived project snapshot is malformed")
+                    try:
+                        self._project_text(previous)
+                    except ValueError as exc:
+                        raise ValueError("Archived project snapshot is malformed") from exc
                 else:
                     _, lines = self._text(previous)
                     self._sections(lines)
@@ -1822,6 +1849,7 @@ class VariantStore:
                 raise ValueError("Project files changed since inspection or has no variants")
             if len(actual) > MAX_ARCHIVE_MEMBERS:
                 raise ValueError(f"Project archive exceeds {MAX_ARCHIVE_MEMBERS} members")
+            root = self._root()
             folder = self._archive_folder() / uuid.uuid4().hex
             folder.mkdir()
             moved = []
@@ -1829,14 +1857,16 @@ class VariantStore:
                 with (folder / "manifest.json").open("x", encoding="utf-8") as stream:
                     json.dump({"project": project, "files": actual}, stream)
                 for name in actual:
-                    path = self._root() / name
-                    os.replace(path, folder / name)
+                    os.replace(root / name, folder / name)
                     moved.append(name)
-            except BaseException:
-                for name in reversed(moved):
-                    os.replace(folder / name, self._root() / name)
-                (folder / "manifest.json").unlink(missing_ok=True)
-                folder.rmdir()
+            except BaseException as exc:
+                self._rollback(exc, [(name, os.replace, folder / name, root / name) for name in reversed(moved)],
+                               f"move them back from archive {folder.name}")
+                try:
+                    (folder / "manifest.json").unlink(missing_ok=True)
+                    folder.rmdir()
+                except OSError:
+                    pass  # An emptied leftover folder must not hide the original error.
                 raise
             return {"project": project, "archive_name": folder.name, "files": list(actual)}
 
@@ -1863,11 +1893,15 @@ class VariantStore:
                 with (target / "manifest.json").open("x", encoding="utf-8") as stream:
                     json.dump({"project": project, "files": {path.name: expected_sha256.lower()}}, stream)
                 os.replace(path, target / path.name)
-            except BaseException:
+            except BaseException as exc:
                 if (target / path.name).exists():
-                    os.replace(target / path.name, path)
-                (target / "manifest.json").unlink(missing_ok=True)
-                target.rmdir()
+                    self._rollback(exc, [(path.name, os.replace, target / path.name, path)],
+                                   f"move it back from archive {archive_name}")
+                try:
+                    (target / "manifest.json").unlink(missing_ok=True)
+                    target.rmdir()
+                except OSError:
+                    pass  # An emptied leftover folder must not hide the original error.
                 raise
             return {"project": project, "variant": variant.upper(), "archive_name": archive_name}
 
@@ -1880,8 +1914,15 @@ class VariantStore:
             folder = self._archive_folder() / archive_name
             if folder.is_symlink() or folder.resolve().parent != self._archive_folder():
                 raise ValueError("Archive resolves outside workspace")
-            with (folder / "manifest.json").open("r", encoding="utf-8") as stream:
-                manifest = json.load(stream)
+            manifest_path = folder / "manifest.json"
+            if not folder.is_dir() or manifest_path.is_symlink() or not manifest_path.is_file():
+                raise ValueError(f"Archive {archive_name} was not found or has no manifest")
+            try:
+                manifest = json.loads(self._read(manifest_path).decode("utf-8"))
+            except ValueError as exc:
+                raise ValueError("Invalid archive manifest") from exc
+            if not isinstance(manifest, dict):
+                raise ValueError("Invalid archive manifest")
             if manifest.get("project") != project or not isinstance(manifest.get("files"), dict):
                 raise ValueError("Archive belongs to another project")
             files = manifest["files"]
@@ -1902,8 +1943,10 @@ class VariantStore:
                 data = self._read(source)
                 self._check_hash(data, digest)
                 if name == project:
-                    if data.decode("utf-8-sig").splitlines()[0].strip() != "PVObject_=pvProject":
-                        raise ValueError("Archived project is malformed")
+                    try:
+                        self._project_text(data)
+                    except ValueError as exc:
+                        raise ValueError("Archived project is malformed") from exc
                 else:
                     _, lines = self._text(data)
                     self._sections(lines)
@@ -1913,11 +1956,13 @@ class VariantStore:
             moved = []
             try:
                 for source, target in sources:
-                    os.replace(source, target)
+                    # Validation can take a while; on Windows os.rename refuses (unlike
+                    # os.replace) a destination created since the existence check above.
+                    os.rename(source, target)
                     moved.append((source, target))
-            except BaseException:
-                for source, target in reversed(moved):
-                    os.replace(target, source)
+            except BaseException as exc:
+                self._rollback(exc, [(target.name, os.replace, target, source) for source, target in reversed(moved)],
+                               f"those stay in Projects while archive {archive_name} keeps the rest")
                 raise
             (folder / "manifest.json").unlink()
             folder.rmdir()

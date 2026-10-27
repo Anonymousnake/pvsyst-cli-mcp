@@ -372,6 +372,18 @@ def require_ordinary_mppt(root):
             raise ValueError("Independent MPPT flag is not ordinary NInvMPPT=1 mode")
 
 
+def _set_flag_bit(flags, bit, enabled):
+    """Set or clear one bit of a $hex Flags token, keeping its digit count and letter case."""
+    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
+        raise ValueError("Flags must be a hexadecimal value of at most 32 bits")
+    value = int(flags[1:], 16)
+    value = value | bit if enabled else value & ~bit
+    digits = format(value, f"0{len(flags) - 1}{'x' if flags[1:].islower() else 'X'}")
+    # Unchanged digits keep their own spelling, so even mixed case differs only where the bit lives.
+    old = flags[1:].rjust(len(digits), "0")
+    return "$" + "".join(a if a.lower() == b.lower() else b for a, b in zip(old, digits))
+
+
 def set_independent_mppt(lines, arrays, subarray_id, enabled):
     """Switch a verified explicit exclusive layout without redrawing its circuit."""
     checked = inventory(lines, arrays)
@@ -405,10 +417,9 @@ def set_independent_mppt(lines, arrays, subarray_id, enabled):
     was_enabled = bool(value & 0x400)
     if not was_enabled:
         require_ordinary_mppt(root)
-    value = value | 0x400 if enabled else value & ~0x400
     quantity = row["circuit"]["explicit_mppt_inputs"] if enabled else 1
     before_quantity = root.one("NInvMPPT")[1]
-    for key, rendered in (("Flags", f"${value:0{len(flags) - 1}X}"), ("NInvMPPT", str(quantity))):
+    for key, rendered in (("Flags", _set_flag_bit(flags, 0x400, enabled)), ("NInvMPPT", str(quantity))):
         index = start + root.one(key)[0]
         lines[index] = replace_value(lines[index], rendered)
     if inventory(lines, arrays)["counts_valid"] is not True:
@@ -450,9 +461,7 @@ def set_power_sharing(lines, arrays, subarray_id, enabled):
                 key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0" for key in root.fields):
             raise ValueError("Power sharing requires all member strings in one orientation")
         flags = root.one("Flags")[1]
-        value = int(flags[1:], 16)
-        value = value | 0x100 if enabled else value & ~0x100
-        for key, rendered in (("Flags", f"${value:0{len(flags) - 1}X}"), ("PowerSharingInverterId", "0" if enabled else "-1")):
+        for key, rendered in (("Flags", _set_flag_bit(flags, 0x100, enabled)), ("PowerSharingInverterId", "0" if enabled else "-1")):
             index = start + root.one(key)[0]
             edits[index] = replace_value(lines[index], rendered)
     for index, value in edits.items():

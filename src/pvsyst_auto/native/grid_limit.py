@@ -61,6 +61,7 @@ def grid_limit_state(lines, system):
 
 
 def replace_grid_limit(lines, system, updates):
+    """Edit a copy; `lines` changes in place only after the edited system re-reads cleanly."""
     if not isinstance(updates, dict) or updates.get("mode") not in ("none", "constant"):
         raise ValueError("Require grid-limit mode none or constant")
     enabled = updates["mode"] == "constant"
@@ -71,24 +72,27 @@ def replace_grid_limit(lines, system, updates):
         if Decimal(str(value)) * 10 != (Decimal(str(value)) * 10).to_integral_value():
             raise ValueError("Use 0.1 kW increments, matching native GUI save precision")
     fields, index, flags, before = _read(lines, system)
+    work = list(lines)
     new_flags = flags | 0x05000000 if enabled else flags & ~0x01000000
     if new_flags != flags:
-        lines[index] = replace_value(lines[index], f"${new_flags:08X}" if new_flags else "$00")
-    count = len(lines)
+        work[index] = replace_value(work[index], f"${new_flags:08X}" if new_flags else "$00")
+    count = len(work)
     if enabled:
-        newline = "\r\n" if lines[system[0]].endswith("\r\n") else "\n"
-        indent = lines[system[0]][:len(lines[system[0]]) - len(lines[system[0]].lstrip())] + "  "
+        newline = "\r\n" if work[system[0]].endswith("\r\n") else "\n"
+        indent = work[system[0]][:len(work[system[0]]) - len(work[system[0]].lstrip())] + "  "
         added = []
         for key, raw in (("PLimGrid", f"{value:.1f}"), ("LimGrSeparLoss", "True")):
             entry = one(fields, key, False)
             if entry:
-                lines[entry[0]] = replace_value(lines[entry[0]], raw)
+                work[entry[0]] = replace_value(work[entry[0]], raw)
             else:
                 added.append(f"{indent}{key}={raw}{newline}")
-        lines[system[1]:system[1]] = added
+        work[system[1]:system[1]] = added
     else:
         for i in sorted((row[0] for key in ("PLimGrid", "LimGrSeparLoss") for row in fields.get(key, [])), reverse=True):
-            del lines[i]
-    bounds = (system[0], system[1] + len(lines) - count)
-    return {"before": before, "after": _read(lines, bounds)[3],
+            del work[i]
+    bounds = (system[0], system[1] + len(work) - count)
+    after = _read(work, bounds)[3]
+    lines[:] = work
+    return {"before": before, "after": after,
             "scope": "Native 8.1.6 PV-only active kW limit at injection point; separate grid loss"}

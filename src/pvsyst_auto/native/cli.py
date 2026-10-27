@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from pvsyst_auto.project.paths import project_name, project_root, safe_filename, workspace_file, workspace_folder
+from pvsyst_auto.project.paths import project_name, project_root, safe_filename, variant_id, workspace_file, workspace_folder
 
 VERIFIED_VARIABLES = (
     "viGlobInc", "viGlobEff", "viEArray", "viE_Grid", "viPR",
@@ -70,7 +70,8 @@ class PVsystError(RuntimeError):
         """`diagnostics` is the complete redacted stdout+stderr transcript of the
         failing native command: always a `str` when a weather operation captured it
         (never truncated, stdout first then stderr, same shape as the `diagnostics`
-        string of that operation's successful details dict), otherwise `None`.
+        string of that operation's successful details dict) or when a command timed
+        out (its partial capture), otherwise `None`.
         """
         super().__init__(message)
         self.diagnostics = diagnostics
@@ -190,20 +191,28 @@ class PVsystCLI:
             return value.decode(locale.getpreferredencoding(False), errors="replace")
         return value or ""
 
-    def _weather_command(self, label: str, args: list[str]) -> str:
-        """Run one weather command and return its complete redacted output.
+    def _checked_run(self, label: str, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run one command; a timeout raises PVsystError, never the raw TimeoutExpired.
 
-        A timeout or non-zero exit raises PVsystError with that same output attached as
-        `diagnostics`, so the exception message stays short.
+        TimeoutExpired carries the complete command line, so only the redacted partial
+        capture leaves this adapter, attached as `diagnostics`.
         """
         try:
-            result = self._run(*args)
+            return self._run(*args)
         except subprocess.TimeoutExpired as exc:
             # subprocess.run fills TimeoutExpired stdout/stderr with the partial capture.
             captured = (self._captured_text(exc.stdout) + "\n"
                         + self._captured_text(exc.stderr))
             raise PVsystError(f"{label} timed out after {self.timeout}s",
                               diagnostics=self._redact(captured)) from None
+
+    def _weather_command(self, label: str, args: list[str]) -> str:
+        """Run one weather command and return its complete redacted output.
+
+        A timeout or non-zero exit raises PVsystError with that same output attached as
+        `diagnostics`, so the exception message stays short.
+        """
+        result = self._checked_run(label, *args)
         text = self._redact(self._output(result))
         if result.returncode != 0:
             raise PVsystError(f"{label} failed with exit code {result.returncode}",
@@ -212,7 +221,7 @@ class PVsystCLI:
 
     def command_help(self, command: str = "") -> str:
         if command not in self._help_cache:
-            result = self._run("help", *([command] if command else []))
+            result = self._checked_run("PVsystCLI help", "help", *([command] if command else []))
             text = self._output(result).strip()
             if result.returncode != 0 or "Unknown command" in text:
                 raise PVsystError(f"CLI does not support {command or 'help'}")
@@ -233,13 +242,16 @@ class PVsystCLI:
             raise PVsystError(f"Installed PVsystCLI lacks {command} --{option}")
 
     def version(self) -> str:
-        result = self._run("version")
+        result = self._checked_run("PVsystCLI version query", "version")
         if result.returncode != 0:
             raise PVsystError("PVsystCLI version query failed")
-        return self._output(result).strip().splitlines()[0]
+        lines = self._output(result).strip().splitlines()
+        if not lines:
+            raise PVsystError("PVsystCLI version query returned no output")
+        return lines[0]
 
     def license_info(self) -> dict:
-        result = self._run("lic-info")
+        result = self._checked_run("PVsystCLI license query", "lic-info")
         text = self._output(result)
         if result.returncode != 0:
             raise PVsystError("PVsystCLI license query failed")
@@ -287,7 +299,7 @@ class PVsystCLI:
         target = Path(folder).resolve()
         target.mkdir(parents=True, exist_ok=True)
         before = {p.name for p in target.glob("*.zip")}
-        result = self._run("export-logs", f"-t:{target}")
+        result = self._checked_run("Log export", "export-logs", f"-t:{target}")
         created = sorted((p for p in target.glob("*.zip") if p.name not in before),
                          key=lambda p: p.stat().st_mtime, reverse=True)
         if result.returncode != 0 or not created:
@@ -295,13 +307,14 @@ class PVsystCLI:
         return created[0]
 
     def list_projects(self) -> list[str]:
-        return sorted(p.name for p in (self.workspace / "Projects").glob("*.PRJ") if p.is_file())
+        return sorted(p.name for p in project_root(self.workspace).glob("*.PRJ") if p.is_file())
 
     def list_variants(self, project: str) -> list[str]:
+        # Canonical upper-case IDs, matching variant_id(), whatever the on-disk suffix case.
         stem = Path(self._project_name(project)).stem
-        return sorted(p.suffix[1:] for p in project_root(self.workspace).iterdir()
-                      if p.stem.casefold() == stem.casefold() and p.is_file()
-                      and re.fullmatch(r"VC[A-Za-z0-9]+", p.suffix[1:], re.I))
+        return sorted({p.suffix[1:].upper() for p in project_root(self.workspace).iterdir()
+                       if p.stem.casefold() == stem.casefold() and p.is_file()
+                       and re.fullmatch(r"VC[A-Za-z0-9]+", p.suffix[1:], re.I)})
 
     @staticmethod
     def _project_name(project: str) -> str:
@@ -330,7 +343,7 @@ class PVsystCLI:
             raise ValueError("Log level must be 0, 1, 2, or 3")
         return f"-ll:{value}"
 
-    def _batch_outputs(self, batch_params: Path) -> tuple[list[str], dict[str, tuple[int, int]]]:
+    def _batch_outputs(self, batch_params: Path) -> tuple[list[str], dict[str, tuple[int, int]], Path]:
         """Validate hourly output names before a batch can write workspace files."""
         if not batch_params.stem.lower().endswith("params"):
             raise ValueError("Batch parameters filename must end in Params.CSV")
@@ -357,7 +370,7 @@ class PVsystCLI:
             raise ValueError(f"Batch summary already exists: {summary.name}")
         before = {p.name: (p.stat().st_size, p.stat().st_mtime_ns)
                   for p in batch_dir.glob("*Results.CSV") if p.is_file()}
-        return names, before
+        return names, before, summary
 
     @_serialized
     def run_simulation(self, project: str, variant: str, *,
@@ -378,6 +391,7 @@ class PVsystCLI:
                        recompute_shading: bool | None = None,
                        log_level: int | None = None) -> dict:
         project = self._project_name(project)
+        variant = variant_id(variant)
         if project not in self.list_projects() or variant not in self.list_variants(project):
             raise ValueError("Project and variant must exist in the workspace")
         if batch_params and (out_csv is not None or report_pdf is not None):
@@ -446,9 +460,9 @@ class PVsystCLI:
             args.append(f"-ocf:{csv_target}")
         if pdf_target:
             args.append(f"-rpf:{pdf_target}")
-        batch_names, batch_before = (self._batch_outputs(self._input(batch_params, ".csv"))
-                                     if batch_params else ([], {}))
-        result = self._run(*args)
+        batch_names, batch_before, batch_summary = (self._batch_outputs(self._input(batch_params, ".csv"))
+                                                    if batch_params else ([], {}, None))
+        result = self._checked_run("Simulation", *args)
         text = self._output(result)
         if (result.returncode != 0
                 or (log_level in (None, 3) and "Simulation done in " not in text)
@@ -462,8 +476,10 @@ class PVsystCLI:
             changed = [p for p in workspace_folder(self.workspace, "UserBatch").glob("*Results.CSV")
                        if p.is_file() and batch_before.get(p.name) !=
                        (p.stat().st_size, p.stat().st_mtime_ns)]
-            if len(changed) != 1:
-                raise PVsystError("Batch simulation did not produce exactly one new summary CSV")
+            # Only the summary named after the parameters file belongs to this run.
+            if len(changed) != 1 or changed[0].name.casefold() != batch_summary.name.casefold():
+                raise PVsystError("Batch simulation did not produce exactly one new summary CSV: "
+                                  + batch_summary.name)
             summary = workspace_file(self.workspace, "UserBatch", changed[0].name, ".csv")
             hourly = [workspace_file(self.workspace, "UserHourly", name, ".csv") for name in batch_names]
             if any(not p.is_file() for p in hourly):

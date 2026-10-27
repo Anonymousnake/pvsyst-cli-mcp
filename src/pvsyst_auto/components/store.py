@@ -18,10 +18,10 @@ import uuid
 from pathlib import Path
 
 from pvsyst_auto.project.paths import project_name, project_path, variant_id
-from pvsyst_auto.components.editor import curve_inventory, replace_curves, replace_value, objects
+from pvsyst_auto.components.editor import OBJECT_CLOSE_ALIAS, curve_inventory, replace_curves, replace_value, objects
 from pvsyst_auto.components.battery import battery_curve_inventory, replace_battery_curve
 from pvsyst_auto.components.commercial import commercial_inventory, replace_commercial
-from pvsyst_auto.components.curves import export_curve_csv, import_curve_csv
+from pvsyst_auto.components.curves import NUMBER, export_curve_csv, import_curve_csv
 from pvsyst_auto.components.pan import ALIASES as PAN_ALIASES, CANONICAL as PAN_CANONICAL, DIMENSIONS as PAN_DIMENSIONS
 from pvsyst_auto.components.pan import pan_blocks, validation_fields as pan_validation_fields
 
@@ -196,6 +196,23 @@ class ComponentStore:
                 fields.setdefault(match[1], []).append(match[2])
         return fields
 
+    @staticmethod
+    def _owned_identity(text: str, fields: dict[str, list[str]]) -> dict[str, list[str]]:
+        """Take Manufacturer/Model from the Commercial form, else the root, like identity.py.
+
+        A same-named field in any other nested object is never the component identity.
+        """
+        blocks = objects(text)
+        owners = ([block for block in blocks if block.path == "PVObject_Commercial"]
+                  + [block for block in blocks if not block.path])
+        checked = dict(fields)
+        for key in ("Manufacturer", "Model"):
+            checked.pop(key, None)
+            owner = next((block for block in owners if key in block.fields), None)
+            if owner is not None:
+                checked[key] = [value for _, value in owner.fields[key]]
+        return checked
+
     def _inspect(self, kind: str, data: bytes) -> dict:
         if len(data) > MAX_BYTES:
             raise ValueError("Component file exceeds 2 MB limit")
@@ -216,11 +233,12 @@ class ComponentStore:
         for line in lines:
             start = re.fullmatch(r"PVObject_[A-Za-z0-9_]*\s*=\s*(pv[A-Za-z0-9_]+)", line)
             nested = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\s*=\s*(TConverter|TCubicProfile)", line)
-            end = re.fullmatch(r"End of (?:PVObject )?(pv[A-Za-z0-9_]+|TConverter|TCubicProfile)", line)
+            end = re.fullmatch(r"End of (?:PVObject )?(pv[A-Za-z0-9_]+|TConverter|TCubicProfile|TAgeing)", line)
             if start or nested:
                 stack.append((start or nested)[1])
             elif end:
-                if not stack or stack.pop() != end[1]:
+                # Same closing tags as editor.objects: native ageing closes with "End of TAgeing".
+                if not stack or stack.pop() != OBJECT_CLOSE_ALIAS.get(end[1], end[1]):
                     errors.append(f"Unmatched closing tag: {line}")
         if stack:
             errors.append("Unclosed nested object or curve")
@@ -231,9 +249,10 @@ class ComponentStore:
                               or fields.get("ProfilPIO") != ["TCubicProfile"]):
             errors.append("Expected TConverter and TCubicProfile subobjects")
         checked_fields = fields
-        if kind == "PAN" and not errors:
+        if not errors:
             try:
-                checked_fields = pan_validation_fields(text)
+                checked_fields = (pan_validation_fields(text) if kind == "PAN"
+                                  else self._owned_identity(text, fields))
             except ValueError as exc:
                 errors.append(str(exc))
         missing = [name for name in REQUIRED[kind] if name not in checked_fields]
@@ -277,9 +296,10 @@ class ComponentStore:
             for field in ("NCelS", "NCelP", "NDiode"):
                 if field in values and not values[field].is_integer():
                     errors.append(f"{field} must be an integer")
+            # The maximum-power point lies strictly inside the I-V curve; builder uses the same rule.
             for hi, lo in (("Voc", "Vmp"), ("ISC", "Imp")):
-                if hi in values and lo in values and values[hi] < values[lo]:
-                    errors.append(f"{hi} must be >= {lo}")
+                if hi in values and lo in values and values[hi] <= values[lo]:
+                    errors.append(f"{hi} must be greater than {lo}")
         if kind == "OND":
             if all(key in values for key in ("VMppMin", "VMPPMax", "VAbsMax")):
                 if not values["VMppMin"] < values["VMPPMax"] <= values["VAbsMax"]:
@@ -481,7 +501,8 @@ class ComponentStore:
             numeric_key = PAN_CANONICAL.get(key, key) if kind == "PAN" else key
             if numeric_key in NUMERIC:
                 try:
-                    if not math.isfinite(float(value)):
+                    # float() also takes "４４０" or "1_000", which PVsyst cannot read back.
+                    if not NUMBER.fullmatch(value) or not math.isfinite(float(value)):
                         raise ValueError()
                 except ValueError:
                     raise ValueError(f"{key} must be a finite number") from None

@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from pvsyst_auto.components.editor import objects
+from pvsyst_auto.native.cli import PVsystError
 from pvsyst_auto.native.project import _project_matches
 from pvsyst_auto.scene.mapping import verify_grouped_hardware, verify_house_geometry, verify_pv_geometry
 from pvsyst_auto.project.paths import safe_filename, workspace_file
@@ -499,7 +500,11 @@ def _check_cli(cli):
         _fail("The configured PVsystCLI executable is missing")
     if not hasattr(cli, "version"):
         _fail("The adapter cannot report the native CLI version")
-    text = cli.version() or ""
+    try:
+        text = cli.version() or ""
+    except PVsystError as exc:
+        # A failed/timed-out query is a bridge stop with a result, not an escaping CLI error.
+        _fail("The native CLI version query failed: %s" % exc)
     if "8.1.6" not in text or "49278" not in text:
         raise UnsupportedEnvironment("Unexpected native build: " + text.strip()[:120])
     return text.strip()
@@ -1069,7 +1074,7 @@ def _close_scene():
     _click(_find(shadings, "TPngBitBtn", "\u8868\u683c"))
     table = _wait("TShdFactorTableForm", timeout=60.0)
     _post_close(table)
-    _wait("TShadingsForm", timeout=20.0)
+    shadings = _wait("TShadingsForm", timeout=20.0)
     _click(_find(shadings, "TPngBitBtn", "\u786e\u5b9a"))
     _wait("TProjectForm", timeout=20.0)
 
@@ -1098,7 +1103,12 @@ def _save_new(project, variant_name):
         _fail("Unexpected confirmation dialog title during save")
     _click(_find(info, "TButton", "\u786e\u5b9a"))
     _wait("TProjectForm", timeout=20.0)
+    # The project form can return before PVsyst has written the new VC; poll like _export_scene.
+    deadline = time.monotonic() + 10
     created = set(projects.glob(pattern)) - before
+    while not created and time.monotonic() < deadline:
+        time.sleep(.1)
+        created = set(projects.glob(pattern)) - before
     if len(created) != 1:
         _fail("Expected exactly one new variant file, found %d" % len(created))
     return created.pop()

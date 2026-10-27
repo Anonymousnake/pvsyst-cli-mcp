@@ -179,7 +179,7 @@ def _check_pairs(fieldtype, values, source):
             hi = source.one(high)[1]
         if lo is None or hi is None:
             raise ValueError(f"{low} and {high} must both be readable to check their order")
-        if not Decimal(lo) < Decimal(hi):
+        if not _decimal(lo, low) < _decimal(hi, high):
             raise ValueError(f"{low} must stay below {high}")
 
 

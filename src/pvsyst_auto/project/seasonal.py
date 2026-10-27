@@ -67,8 +67,10 @@ def _read(lines, bounds):
     for i in range(bounds[0] + 1, bounds[1]):
         text = lines[i].strip()
         match = ASSIGNMENT.fullmatch(lines[i].rstrip("\r\n"))
+        # Comment is free text (as in direct_fields), never a T-class object start.
         if text.startswith(("End of ", "EndTags")) or (match and (
-                match[2] == "PVObject_" or re.fullmatch(r"T[A-Z]\w*", match[4]))):
+                match[2] == "PVObject_"
+                or match[2] != "Comment" and re.fullmatch(r"T[A-Z]\w*", match[4]))):
             raise ValueError("Nested objects are not supported in an orientation block")
     fields = direct_fields(lines, bounds)
     if any(len(entries) > 1 for entries in fields.values()):

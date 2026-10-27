@@ -8,10 +8,9 @@ built-in component database is never enumerated.
 """
 from __future__ import annotations
 
-import math
-
 from pvsyst_auto.components.store import electrical_inventory
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
+from pvsyst_auto.project.circuit import positive_integer
 from pvsyst_auto.project.paths import variant_id
 from pvsyst_auto.engineering.sizing import plan_capacity
 
@@ -254,8 +253,14 @@ def _preflight(store, project: str, variant: str, capacity, pan_text, ond_text) 
     if plan["status"] != "ready":
         report["reasons"].extend(f"{item['field']}: {item['message']}" for item in plan["issues"])
         return report
+    try:
+        # The ordering key compares against the template count; an unreadable count is never guessed.
+        current = positive_integer(counts.get("NInverter"), "Template NInverter")
+    except ValueError as exc:
+        report["reasons"].append(str(exc))
+        return report
     report["valid"] = True
-    report["_key"] = (abs(plan["inverter_count"] - int(counts.get("NInverter") or 0)), len(plan["steps"]),
+    report["_key"] = (abs(plan["inverter_count"] - current), len(plan["steps"]),
                       round(abs(plan["capacity_error_pct"]), 9), project.casefold(), variant)
     return report
 
@@ -270,6 +275,8 @@ def discover_design_inputs(store, *, pan_name="", ond_name="", module_manufactur
     when no eligible template leaves status blocked, so missing template input never hides resolved
     components; it is None while any component is ambiguous, unusable or missing. status is ready
     only when both components and one template are selected with an empty issue list.
+    tilt is accepted for the design-flow caller only and never filters, orders or blocks templates:
+    that caller validates it and its configuration step writes it onto the selected fixed plane.
     """
     components = getattr(store, "components", store)
     result = {"status": "blocked", "selected": None, "resolved_components": None,
@@ -281,9 +288,6 @@ def discover_design_inputs(store, *, pan_name="", ond_name="", module_manufactur
 
     if not hasattr(store, "_root"):
         issue("store", "Discovery requires a VariantStore for workspace projects and component paths")
-    if tilt is not None and (isinstance(tilt, bool) or not isinstance(tilt, (int, float))
-                             or not math.isfinite(tilt) or not 0 <= tilt <= 90):
-        issue("tilt", "Use a finite numeric tilt in 0..90 degrees")
 
     chosen = {}
     for kind, name, manufacturer, model in (("PAN", pan_name, module_manufacturer, module_model),

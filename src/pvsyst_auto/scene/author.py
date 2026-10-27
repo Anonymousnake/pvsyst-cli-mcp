@@ -548,7 +548,7 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
                 and block.path == "PVObject_SiteSimul"), None)
     if sit is None:
         raise ValueError("Requires an embedded pvSite record for geographic coverage")
-    latitude = _finite(float(sit.one("Latitude")[1]), "Latitude", minimum=0.0, maximum=90.0)
+    latitude = _finite(float(sit.one("Latitude")[1]), "Latitude", minimum=-90.0, maximum=90.0)
     longitude = _finite(float(sit.one("Longitude")[1]), "Longitude", minimum=-180.0, maximum=180.0)
     altitude = _finite(float(sit.one("Altitude")[1]), "Altitude")
     if latitude <= 0:
