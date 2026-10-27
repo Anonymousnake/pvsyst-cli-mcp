@@ -17,7 +17,7 @@ from pvsyst_auto.project.paths import project_path, project_root
 from pvsyst_auto.project import fileio
 from pvsyst_auto.components.generator import state as generator_state, replace_generator
 from pvsyst_auto.project.circuit import inventory as grid_inventory, resize_capacity, circuit_nodes, require_ordinary_mppt, set_power_sharing, set_independent_mppt, transformer_state
-from pvsyst_auto.components.editor import objects, replace_value, root_block
+from pvsyst_auto.components.editor import has_object, objects, replace_value, root_block
 from pvsyst_auto.energy.soiling import soiling_state, replace_soiling
 from pvsyst_auto.native.grid_limit import grid_limit_state, replace_grid_limit
 from pvsyst_auto.energy.auxiliaries import auxiliary_state, replace_auxiliaries
@@ -697,7 +697,7 @@ class VariantStore:
                         or main is None or len(arrays) != 1 or len(kinds) != 1
                         or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
                         or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] != "8.1.6" for v in versions)
-                        or any("pvGridStorage" in line for line in lines)):
+                        or has_object(lines, "pvGridStorage")):
                     raise ValueError(f"{control} editing requires a native 8.1.6 PV-only single-subarray Grid variant")
                 for key, accepted in (("Flags", ("$00100400", "$01900400")),
                                       ("Flags2", ("$082A",))):
@@ -720,7 +720,7 @@ class VariantStore:
                     auxiliary_change = replace_auxiliaries(lines, system, auxiliary_updates)
                 else:
                     if (orientation_id != 1 or [g[2] for g in self._orientation_list(lines)[1]] != [1]
-                            or any("pvLoad" in line for line in lines)
+                            or has_object(lines, "pvLoad")
                             or (seasonal_updates is not None or inverter_temperature_updates is not None or power_factor_updates is not None or p50_p90_updates is not None or power_controls_updates is not None
                                 or string_mismatch_updates is not None
                                 or ageing_transaction or iam_updates is not None

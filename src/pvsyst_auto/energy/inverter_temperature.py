@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
-from pvsyst_auto.components.editor import replace_value
+from pvsyst_auto.components.editor import has_object, replace_value
 from pvsyst_auto.components.generator import direct_fields, finite, one
 
 FIELDS = ("TempShift", "TempFixed")
@@ -35,7 +35,7 @@ def _read(lines, system):
     first = next((i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_")), len(lines) - 1)
     if one(direct_fields(lines, (0, first)), "Version")[1] != "8.1.6":
         raise ValueError("Inverter temperature editing requires variant Version=8.1.6")
-    if any("pvLoad" in line or "pvGridStorage" in line for line in lines):
+    if has_object(lines, "pvLoad", "pvGridStorage"):
         raise ValueError("Inverter temperature editing currently verifies PV-only variants")
     if any(line.strip().startswith("PVObject_") or line.strip() == "EndTags" for line in lines[system[0] + 1:system[1]]):
         raise ValueError("Require a flat native grid system")

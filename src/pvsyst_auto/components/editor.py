@@ -147,6 +147,19 @@ def root_block(text_or_lines: str | list[str], bounds: tuple[int, int] | None = 
     return root
 
 
+def has_object(lines, *object_types: str) -> bool:
+    """Whether any line opens an object of one of `object_types` (for example pvLoad).
+
+    Only an object-start assignment counts, so a name or comment that merely mentions
+    the type never does.
+    """
+    for line in lines:
+        match = ASSIGNMENT.fullmatch(line.rstrip("\r\n"))
+        if match and match[2].startswith("PVObject_") and match[4] in object_types:
+            return True
+    return False
+
+
 def require_flat(block, lines):
     """Every non-blank line inside the owner must be one of its own assignments; blanks are allowed."""
     known = {index for entries in block.fields.values() for index, _ in entries}

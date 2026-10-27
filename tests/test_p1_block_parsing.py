@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 import pvsyst_auto
-from pvsyst_auto.components.editor import OBJECT_CLOSE_ALIAS, objects, root_block
+from pvsyst_auto.components.editor import OBJECT_CLOSE_ALIAS, has_object, objects, root_block
 
 SRC = Path(pvsyst_auto.__file__).resolve().parent
 
@@ -133,6 +133,26 @@ class NoPrivateOrientationViews(unittest.TestCase):
                       and any(isinstance(arg, ast.Constant) and isinstance(arg.value, str)
                               and any(tag in arg.value for tag in self.NATIVE) for arg in node.args)):
                     offenders.append(f"{where}:{node.lineno} rewrites a native orientation closing tag")
+        self.assertEqual(offenders, [])
+
+
+class ObjectPresenceTests(unittest.TestCase):
+    def test_only_an_object_start_counts_as_present(self):
+        named = ["PVObject_=pvVCalcul\r\n", "  Comment=pvLoad and pvGridStorage study\r\n",
+                 "  NomFLoad=old_pvLoad.csv\r\n", "End of PVObject pvVCalcul\r\n"]
+        self.assertFalse(has_object(named, "pvLoad", "pvGridStorage"))
+        for start in ("  PVObject_UserNeeds=pvLoad\r\n", "  PVObject_UserNeeds = pvLoad\n"):
+            with self.subTest(start=start):
+                self.assertTrue(has_object(named[:2] + [start] + named[2:], "pvLoad"))
+        self.assertTrue(has_object(["  PVObject_GridStorage=pvGridStorage"], "pvLoad", "pvGridStorage"))
+        self.assertFalse(has_object(["  PVObject_GridStorage=pvGridStorage"], "pvLoad"))
+
+    def test_no_scope_guard_matches_object_names_as_substrings(self):
+        guard = re.compile(r"""["']pv(?:Load|GridStorage)["'] in """)
+        offenders = [f"{path.relative_to(SRC).as_posix()}:{number}"
+                     for path in sorted(SRC.rglob("*.py"))
+                     for number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1)
+                     if guard.search(line)]
         self.assertEqual(offenders, [])
 
 
