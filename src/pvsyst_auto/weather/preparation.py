@@ -13,7 +13,8 @@ from pathlib import Path
 
 from pvsyst_auto.native.cli import PVsystError, build_monthly_weather_csv, iter_result_csv, result_units
 from pvsyst_auto.components.editor import objects
-from pvsyst_auto.project.paths import workspace_file, write_json
+from pvsyst_auto.project.fileio import write_json
+from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.results import fingerprint
 from pvsyst_auto.weather.csv import DATE_COLUMNS, inspect_weather_csv, number, read_bytes
 

@@ -140,7 +140,7 @@ def _prepare(store, components, request):
                 break
         if "PAN" not in component_libraries:
             raise ValueError("Resolved PAN is outside the supported component libraries")
-    sub = next(block for block in objects("".join(lines).replace("End of TOrientGroup", "End of PVObject pvOrient"))
+    sub = next(block for block in objects("".join(lines))
                if block.object_type == "pvSubArray")
     for library in ("workspace", "builtin"):
         if library == "builtin" and components.builtin is None:

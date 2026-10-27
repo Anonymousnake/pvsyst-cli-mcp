@@ -1,31 +1,8 @@
-"""Shared workspace paths and atomic JSON checkpoint updates."""
-import json
-import os
+"""Shared workspace paths; atomic JSON checkpoints are written by project.fileio."""
 from pathlib import Path
 import re
-import tempfile
 
-
-def write_json(path: Path, record, first=False):
-    payload = json.dumps(record, ensure_ascii=True, allow_nan=False, indent=2) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if first:
-        with path.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(payload)
-        return
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=path.parent,
-                                         prefix=".pvsyst-task-", delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(payload)
-            # Persist the bytes before the rename, so a crash cannot leave an empty checkpoint.
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+from pvsyst_auto.project.fileio import write_json  # noqa: F401  (re-exported for existing importers)
 
 
 def safe_filename(name: str, extension: str, max_length: int = 255) -> str:

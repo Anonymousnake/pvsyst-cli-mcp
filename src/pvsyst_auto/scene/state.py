@@ -92,9 +92,7 @@ def _pv_bindings(lines, types):
         if (any(kind not in ("pvShdArrayTable", "pvShdGenObject") for kind in types)
                 or not 1 <= types.count("pvShdArrayTable") <= 2):
             raise ValueError("Stored binding review supports one/two PV tables and generic objects only")
-        text = "\n".join("End of PVObject pvOrient" if line.strip() == "End of TOrientGroup"
-                         else line.rstrip("\r\n") for line in lines)
-        blocks = objects(text)
+        blocks = objects("\n".join(line.rstrip("\r\n") for line in lines))
         tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
         if len(tables) != types.count("pvShdArrayTable"):
             raise ValueError("PV table records must belong to the declared shading list")

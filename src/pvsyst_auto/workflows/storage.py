@@ -14,7 +14,6 @@ from pvsyst_auto.energy.storage import create_grid_storage_variant, storage_stat
 from pvsyst_auto.energy.load import hourly_load_block, load_snapshot
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.results import fingerprint
-from pvsyst_auto.project.tracking import _view
 
 
 def _load_signature(text):
@@ -53,7 +52,7 @@ def prepare_storage_revision(store, project, variant, new_variant, updates,
             _, lines = store._text(original)
             _, system = store._sections(lines)
             before, _, _ = storage_state(lines, system)
-            blocks = objects(_view(lines))
+            blocks = objects("".join(lines))
             root = next(block for block in blocks if not block.path)
             flags = root.one("Flags")[1]
             if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", flags) or not int(flags[1:], 16) & 0x00080000:

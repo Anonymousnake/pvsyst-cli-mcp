@@ -19,8 +19,10 @@ MAX_POINTS = 256
 MAIN_CURVE = "Converter/ProfilPIO"
 AUTO_CURVE_MASK = 0x10
 THREE_VOLTAGE_MASK = 0x1000
-# Native ageing closes with its Delphi class name rather than its PV object name.
-OBJECT_CLOSE_ALIAS = {"TAgeing": "pvAgeing"}
+# Native records that close with their Delphi class name rather than their PV object name.
+OBJECT_CLOSE_ALIAS = {"TAgeing": "pvAgeing", "TOrientGroup": "pvOrient", "TDomeOrientGroup": "pvDomeOrient"}
+OBJECT_CLOSE = re.compile(r"\s*End of (?:PVObject )?(pv\w+|TConverter|TCubicProfile|%s)\s*"
+                          % "|".join(map(re.escape, OBJECT_CLOSE_ALIAS)))
 
 
 def replace_value(line: str, value: str) -> str:
@@ -91,11 +93,15 @@ class Profile(ObjectBlock):
 
 
 def objects(text: str) -> list[ObjectBlock]:
-    """Keep each field in its owning object, including root and nested Flags."""
+    """Keep each field in its owning object, including root and nested Flags.
+
+    Native closing tags are read as saved: `End of TOrientGroup` closes pvOrient and
+    `End of TDomeOrientGroup` closes pvDomeOrient, so no rewritten view is needed.
+    """
     stack: list[tuple[str, ObjectBlock]] = []
     result = []
     for index, line in enumerate(text.splitlines()):
-        end = re.fullmatch(r"\s*End of (?:PVObject )?(pv\w+|TConverter|TCubicProfile|TAgeing)\s*", line)
+        end = OBJECT_CLOSE.fullmatch(line)
         if end:
             kind = OBJECT_CLOSE_ALIAS.get(end[1], end[1])
             if not stack or stack[-1][1].object_type != kind:
@@ -123,6 +129,22 @@ def objects(text: str) -> list[ObjectBlock]:
     if stack:
         raise ValueError("Unclosed component object")
     return result
+
+
+def root_block(text_or_lines: str | list[str], bounds: tuple[int, int] | None = None) -> ObjectBlock:
+    """The top-level object of a text, or of lines[bounds[0]:bounds[1] + 1].
+
+    Line numbers stay relative to the parsed text or slice. A missing root is a
+    ValueError, never a StopIteration leaking out of a bare next().
+    """
+    lines = text_or_lines.splitlines(keepends=True) if isinstance(text_or_lines, str) else text_or_lines
+    if bounds is not None:
+        lines = lines[bounds[0]:bounds[1] + 1]
+    root = next((block for block in objects("".join(lines)) if not block.path), None)
+    if root is None:
+        owner = "Project file" if bounds is None else "Section"
+        raise ValueError(f"{owner} has no root PVObject block")
+    return root
 
 
 def require_flat(block, lines):

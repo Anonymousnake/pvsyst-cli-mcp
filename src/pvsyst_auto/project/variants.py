@@ -14,9 +14,10 @@ from pathlib import Path
 
 from pvsyst_auto.components.store import ComponentStore, FIELD, MAX_PROJECT_BYTES
 from pvsyst_auto.project.paths import project_path, project_root
+from pvsyst_auto.project import fileio
 from pvsyst_auto.components.generator import state as generator_state, replace_generator
 from pvsyst_auto.project.circuit import inventory as grid_inventory, resize_capacity, circuit_nodes, require_ordinary_mppt, set_power_sharing, set_independent_mppt, transformer_state
-from pvsyst_auto.components.editor import objects, replace_value
+from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.energy.soiling import soiling_state, replace_soiling
 from pvsyst_auto.native.grid_limit import grid_limit_state, replace_grid_limit
 from pvsyst_auto.energy.auxiliaries import auxiliary_state, replace_auxiliaries
@@ -171,10 +172,7 @@ class VariantStore:
                       or re.match(r"\s*PrintSettings\s*=", lines[i])), len(lines) - 1)
         indices = VariantStore._field_indices(lines, (0, child), "Comment")
         if complete:
-            # Normalize the orientation alias only in the parser view, never saved bytes.
-            view = re.sub(r"(?m)^([ \t]*)End of TOrientGroup([ \t]*)(?=\r?$)",
-                          r"\1End of PVObject pvOrient\2", "".join(lines))
-            root = next(block for block in objects(view) if not block.path)
+            root = root_block(lines)
             if len(indices) != 1 or indices != [i for i, _ in root.fields.get("Comment", [])]:
                 raise ValueError("Display name requires one owning header Comment")
         return indices
@@ -841,15 +839,8 @@ class VariantStore:
                     generator_component=generator["component"], warnings=generator["warnings"])
             if dry_run or candidate == data:
                 return result
-            if self._read(path) != data:
-                raise ValueError("Variant changed while preparing the edit")
-            backup = self._backup(path, data)
-            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-            try:
-                with temporary.open("xb") as stream:
-                    stream.write(candidate)
-                if self._read(path) != data:
-                    raise ValueError("Variant changed while preparing the edit")
+
+            def generator_unchanged():
                 if generator is not None and generator["component"] is not None:
                     component = generator["component"]
                     if (component["library"] == "builtin" and
@@ -858,9 +849,9 @@ class VariantStore:
                     target = self.components._path("GEN", component["filename"], component["library"])
                     if hashlib.sha256(self.components._read(target)).hexdigest() != component["sha256"]:
                         raise ValueError("Generator component changed while preparing the edit")
-                os.replace(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
+
+            backup = self._replace_checked(path, data, candidate, prepare=lambda: self._backup(path, data),
+                                           verify=generator_unchanged)
             return {**result, "backup_name": backup}
 
     def _backup_folder(self) -> Path:
@@ -877,23 +868,17 @@ class VariantStore:
             stream.write(data)
         return name
 
-    def _replace_checked(self, path: Path, data: bytes, candidate: bytes) -> None:
+    def _replace_checked(self, path: Path, data: bytes, candidate: bytes, *, prepare=None, verify=None):
         """Replace `path` only while it still holds the inspected bytes `data`.
 
         The process lock does not cover the PVsyst GUI or other processes, so the file is
-        re-read before staging and again just before the atomic replace.
+        re-read before staging and again just before the atomic replace. `prepare` (a backup)
+        runs only once the first check passed and its result is returned; `verify` adds checks
+        just before the replace.
         """
-        if self._read(path) != data:
-            raise ValueError("Variant changed while preparing the edit")
-        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            with temporary.open("xb") as stream:
-                stream.write(candidate)
-            if self._read(path) != data:
-                raise ValueError("Variant changed while preparing the edit")
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        return fileio.replace_checked(path, data, candidate, self._read,
+                                      "Variant changed while preparing the edit",
+                                      prepare=prepare, verify=verify)
 
     @staticmethod
     def _rollback(error: BaseException, steps, recovery: str) -> None:
@@ -998,16 +983,9 @@ class VariantStore:
             candidate = self._replace(data, updates, subarray_id) if updates else data
             if any(path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
                 raise FileExistsError(target.name)
-            # Stage first so a failed write leaves no partial variant blocking this name.
-            # Like the former "xb" open, a Windows rename and a POSIX hard link both refuse
-            # a variant created meanwhile, where os.replace would overwrite it.
-            temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-            try:
-                with temporary.open("xb") as stream:
-                    stream.write(candidate)
-                (os.rename if os.name == "nt" else os.link)(temporary, target)
-            finally:
-                temporary.unlink(missing_ok=True)
+            # Staged, so a failed write leaves no partial variant blocking this name; like the
+            # former "xb" open, the publish never overwrites a variant created meanwhile.
+            fileio.publish_new(target, candidate)
             return {"project": project, "variant": new_variant.upper(),
                     "source_project": source_project, "source_variant": source_variant.upper(),
                     "sha256": hashlib.sha256(candidate).hexdigest()}
@@ -1309,18 +1287,7 @@ class VariantStore:
             candidate, details = self._clone_subarray_data(
                 data, source_subarray_id, clone_orientation=clone_orientation,
                 share_inverter=share_inverter, reserved_ids=reserved_ids)
-            if self._read(path) != data:
-                raise ValueError("Variant changed while preparing the edit")
-            backup = self._backup(path, data)
-            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-            try:
-                with temporary.open("xb") as stream:
-                    stream.write(candidate)
-                if self._read(path) != data:
-                    raise ValueError("Variant changed while preparing the edit")
-                os.replace(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            backup = self._replace_checked(path, data, candidate, prepare=lambda: self._backup(path, data))
             return {"project": project, "variant": variant.upper(), **details,
                     "backup_name": backup, "sha256": hashlib.sha256(candidate).hexdigest()}
 
@@ -1473,18 +1440,7 @@ class VariantStore:
                 raise ValueError("Remaining grouped grid counts failed validation")
             if remove_orientation:
                 self._orientation_list(checked)
-            if self._read(path) != data:
-                raise ValueError("Variant changed while preparing the edit")
-            backup = self._backup(path, data)
-            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-            try:
-                with temporary.open("xb") as stream:
-                    stream.write(candidate)
-                if self._read(path) != data:
-                    raise ValueError("Variant changed while preparing the edit")
-                os.replace(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            backup = self._replace_checked(path, data, candidate, prepare=lambda: self._backup(path, data))
             return {"project": project, "variant": variant.upper(), "removed_subarray_id": subarray_id,
                     "removed_orientation_id": int(orientation) if remove_orientation else None,
                     "orientation_id_map": orientation_id_map, "remaining_member_id": remaining_member,
@@ -1646,10 +1602,7 @@ class VariantStore:
             for path, data in candidates.items():
                 if data == originals[path]:
                     continue
-                temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-                staged[path] = temporary
-                with temporary.open("xb") as stream:
-                    stream.write(data)
+                staged[path] = fileio.stage(path, data)
             expected = {path.name: hashlib.sha256(data).hexdigest()
                         for path, data in originals.items()}
             if self.inspect_project(project)["files"] != expected:

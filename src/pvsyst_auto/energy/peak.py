@@ -5,14 +5,12 @@ import difflib
 import re
 from decimal import Decimal, InvalidOperation
 
-from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, require_flat
+from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, require_flat, root_block
 from pvsyst_auto.components.generator import direct_fields
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.energy.storage import storage_state, validate_storage
 
 BOM = b"\xef\xbb\xbf"
-# Parser view only: the saved bytes keep the original orientation closing tag.
-ORIENT_CLOSE = re.compile(r"(?m)^([ \t]*)End of TOrientGroup([ \t]*)(?=\r?$)")
 EDITABLE = ("DischStrategy", "HourBegDisch", "HourEndDisch")
 # Adapter bounds only; the native GUI limits are not measured.
 HOUR_LIMIT = 23
@@ -27,19 +25,6 @@ STORAGE_TEXT = {"Flags": "$00", "Strategy": "PeakShaving", "ChargingStrategy": "
 STORAGE_NUMBER = ("BattSoCInit", "SOCChDecl", "SOCDischDecl", "SOCDischSelf", "PMaxCharge", "PMaxDisch",
                   "BattRectMaxEffic", "BattRectEuroEffic", "BattInvMaxEffic", "BattInvEuroEffic")
 WINDOW = "MinMaxHour"
-
-
-def _view(lines):
-    return ORIENT_CLOSE.sub(r"\1End of PVObject pvOrient\2", "".join(lines))
-
-
-def _root_block(lines):
-    return next(block for block in objects(_view(lines)) if not block.path)
-
-
-def _block_of(lines, bounds):
-    blocks = objects(_view(lines[bounds[0]:bounds[1] + 1]))
-    return next(block for block in blocks if not block.path)
 
 
 def _decimal(text, label):
@@ -108,7 +93,7 @@ def _require_profile(system_root):
 
 def peak_block(lines):
     """Return the one directly owned PeakShaving record, or stop on any unknown shape."""
-    blocks = objects(_view(lines))
+    blocks = objects("".join(lines))
     records = [block for block in blocks if block.object_type == "pvGridStorage"]
     if len(records) != 1:
         raise ValueError("Requires exactly one pvGridStorage record")
@@ -146,7 +131,7 @@ def peak_block(lines):
 
 def _require_scope(store, lines, arrays, system):
     """Verified native 8.1.6 PeakShaving profile: root bit19 without a load, storage system flags."""
-    root = _root_block(lines)
+    root = root_block(lines)
     if root.one("Version")[1] != "8.1.6":
         raise ValueError("Requires a native 8.1.6 variant")
     flags = root.one("Flags")[1]
@@ -154,18 +139,18 @@ def _require_scope(store, lines, arrays, system):
         raise ValueError("This PeakShaving profile requires root Flags=$00080000")
     if system is None or len(arrays) != 1:
         raise ValueError("Requires one pvSystem and one subarray")
-    if any(block.object_type == "pvLoad" for block in objects(_view(lines))):
+    if any(block.object_type == "pvLoad" for block in objects("".join(lines))):
         raise ValueError("This PeakShaving profile has no load and does not add one")
-    system_root = _block_of(lines, system)
+    system_root = root_block(lines, system)
     _require_profile(system_root)
     require_flat(system_root, lines[system[0]:system[1] + 1])
     main = store._main_array(lines)
     if main is None:
         raise ValueError("A pvMainArray section is required")
-    main_root = _block_of(lines, main)
+    main_root = root_block(lines, main)
     if main_root.one("Flags")[1] != "$01900400" or main_root.one("Flags2")[1] != "$082A":
         raise ValueError("Main array requires the verified Flags=$01900400 and Flags2=$082A")
-    sub_root = _block_of(lines, next(iter(arrays.values())))
+    sub_root = root_block(lines, next(iter(arrays.values())))
     if sub_root.one("Version")[1] != "8.1.6" or sub_root.one("Flags")[1] != "$019E1002":
         raise ValueError("Subarray requires the verified 8.1.6 declaration and 019E1002 flags")
     if sub_root.one("Flags2")[1] != "$20":

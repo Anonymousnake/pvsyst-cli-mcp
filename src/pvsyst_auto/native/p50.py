@@ -98,9 +98,7 @@ def _read(lines, require_template=False):
         raise ValueError("Require one SimulPlots marker after the whole P50_P90 block")
     eol = "\r\n" if lines[head].endswith("\r\n") else "\n"
     try:
-        prefix = re.sub(r"(?m)^([ \t]*)End of TOrientGroup([ \t]*)(?=\r?$)",
-                        r"\1End of PVObject pvOrient\2", "".join(lines[:head]))
-        blocks = objects(prefix + f"End of PVObject {ROOT_TYPE}{eol}")
+        blocks = objects("".join(lines[:head]) + f"End of PVObject {ROOT_TYPE}{eol}")
     except ValueError:
         raise ValueError("Root object prefix is unbalanced") from None
     roots = [block for block in blocks if not block.path]

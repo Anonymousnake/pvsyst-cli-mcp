@@ -6,7 +6,6 @@ import ntpath
 
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
-from pvsyst_auto.project.tracking import _view
 
 
 def _declarations(value):
@@ -68,7 +67,7 @@ def build_project_handoff(store, *, project, variant, declarations=None):
             parameters = store.inspect_parameters(project, variant)
             references = store.inspect(project, variant)
             structure = store.validate_structure(project, variant)
-            blocks = list(objects(_view(lines)))
+            blocks = objects("".join(lines))
             dependencies, missing, review = [], [], []
 
             def dependency(kind, name, resolution, action=None):

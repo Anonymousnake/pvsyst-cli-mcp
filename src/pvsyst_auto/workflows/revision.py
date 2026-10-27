@@ -12,7 +12,7 @@ from pvsyst_auto.native.cli import PVsystError, VAR_GROUPS, build_sfi, iter_resu
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file, write_json
 from pvsyst_auto.results import annual_summary, fingerprint
-from pvsyst_auto.project.tracking import create_tracking_variant, _view
+from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.weather.preparation import inspect_met_calendar
 
 
@@ -276,7 +276,7 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             data = store._read(store._path(source_project, source_variant))
             _, lines = store._text(data)
             store._require_no_geometry(lines)
-            blocks = objects(_view(lines))
+            blocks = objects("".join(lines))
             storage_mode = any(block.object_type == "pvGridStorage" for block in blocks)
             if not storage_mode and (any(block.object_type == "pvLoad" for block in blocks)
                                      or load_manifest_name or availability is not None or "storage" in changes):

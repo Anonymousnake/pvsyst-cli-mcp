@@ -22,7 +22,7 @@ from pathlib import Path
 import re
 
 from pvsyst_auto.native.cli import PVsystError
-from pvsyst_auto.components.editor import objects
+from pvsyst_auto.components.editor import root_block
 from pvsyst_auto.project.circuit import circuit_nodes, inventory as grid_inventory, positive_integer, resize_capacity, set_independent_mppt
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
 from pvsyst_auto.project.paths import project_path
@@ -118,13 +118,6 @@ def _field_value(store, lines, bounds, key) -> str:
     if len(indices) != 1:
         raise ValueError(f"The seed subarray must declare one {key}")
     return lines[indices[0]].split("=", 1)[1].strip()
-
-
-def _subarray(lines, bounds):
-    block = next((block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path), None)
-    if block is None:
-        raise ValueError("Subarray has no root PVObject block")
-    return block
 
 
 def _explicit_line(lines: list[str], node) -> str:
@@ -251,7 +244,7 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
         raise ValueError("The seed subarray must declare unshared PowerSharingInverterId=-1")
     if _field_value(store, lines, bounds, "NStrOrient1") != strings_before:
         raise ValueError("The seed subarray must keep all strings in one orientation")
-    block = _subarray(lines, bounds)
+    block = root_block(lines, bounds)
     if any(key.startswith("NStrOrient") and key != "NStrOrient1" and block.one(key)[1] != "0"
            for key in block.fields):
         raise ValueError("The seed subarray must keep all strings in one orientation")
@@ -274,7 +267,7 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
         raise ValueError("The derived seed does not declare the target OND input count exactly")
     flags_after = _field_value(store, lines, arrays[SEED_SUBARRAY], "Flags")
     strings_after = _field_value(store, lines, arrays[SEED_SUBARRAY], "NStringCh")
-    block = _subarray(lines, arrays[SEED_SUBARRAY])
+    block = root_block(lines, arrays[SEED_SUBARRAY])
     port = (scaled["mppt_groups"] or [{}])[0]
 
     data = bom + "".join(lines).encode("utf-8")

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
+from pvsyst_auto.components.editor import ASSIGNMENT, replace_value, root_block
 
 NODE = re.compile(r"([A-Za-z][A-Za-z0-9_]*Node) (Start|End);")
 KINDS = {"InjectionPointNode", "TransformerNode", "InverterNode", "MPPTNode", "StringNode"}
@@ -184,10 +184,7 @@ def inventory(lines, arrays):
     declared = {}
     for identifier, (start, end) in arrays.items():
         try:
-            blocks = objects("".join(lines[start:end + 1]))
-            root = next((block for block in blocks if not block.path), None)
-            if root is None:
-                raise ValueError(f"Subarray {identifier} has no root PVObject block")
+            root = root_block(lines, (start, end))
             values = {}
             for key in ("Comment", "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT",
                         "Version", "Flags", "PNomAC_InMPPT", "PowerSharingInverterId", "GInverter"):
@@ -402,9 +399,7 @@ def set_independent_mppt(lines, arrays, subarray_id, enabled):
             if not node.children or any(child.kind != "MPPTNode" for child in node.children):
                 raise ValueError("MPPT mode switching requires only direct explicit MPPT children")
     start, end = arrays[subarray_id]
-    root = next((block for block in objects("".join(lines[start:end + 1])) if not block.path), None)
-    if root is None:
-        raise ValueError(f"Subarray {subarray_id} has no root PVObject block")
+    root = root_block(lines, (start, end))
     flags = root.one("Flags")[1]
     if root.one("Version")[1] not in ("8.1.0", "8.1.6") or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
         raise ValueError("MPPT mode switching requires verified Version=8.1.0/8.1.6 Flags")
@@ -450,9 +445,7 @@ def set_power_sharing(lines, arrays, subarray_id, enabled):
         if row["circuit"]["inverters"] != group["inverters"] or len(row["shared_inverter_lines"]) != 1:
             raise ValueError("Power-sharing members must reference only the selected shared parent")
         start, end = arrays[identifier]
-        root = next((block for block in objects("".join(lines[start:end + 1])) if not block.path), None)
-        if root is None:
-            raise ValueError(f"Subarray {identifier} has no root PVObject block")
+        root = root_block(lines, (start, end))
         orientation = root.one("NoOrientation")[1]
         if plane is not None and plane != orientation:
             raise ValueError("Power-sharing members require the same fixed-plane orientation")
@@ -479,9 +472,7 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
     if before["counts_valid"] is not True:
         raise ValueError("Capacity editing requires consistent, fully checked grid counts")
     start, end = arrays[subarray_id]
-    root = next((block for block in objects("".join(lines[start:end + 1])) if not block.path), None)
-    if root is None:
-        raise ValueError(f"Subarray {subarray_id} has no root PVObject block")
+    root = root_block(lines, (start, end))
     positive_integer(root.one("NoOrientation")[1], "NoOrientation")
     flags = root.one("Flags")[1] if "Flags" in root.fields else ""
     independent = target_mppt is not None or ((target_strings is not None or target_inverters is not None)
@@ -507,9 +498,7 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
                 raise ValueError("Shared-parent capacity editing supports member strings only")
             shared_line = groups[0]["line"]
             for identifier, bounds in arrays.items():
-                peer = next((block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path), None)
-                if peer is None:
-                    raise ValueError(f"Subarray {identifier} has no root PVObject block")
+                peer = root_block(lines, bounds)
                 if identifier in groups[0]["subarray_ids"]:
                     if (peer.one("NoOrientation")[1] != root.one("NoOrientation")[1]
                             or peer.one("NStrOrient1")[1] != peer.one("NStringCh")[1]

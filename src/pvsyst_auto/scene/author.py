@@ -7,7 +7,7 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
-from pvsyst_auto.components.editor import objects
+from pvsyst_auto.components.editor import objects, root_block
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
@@ -17,7 +17,6 @@ PV = "https://pvcollada.org/2026/XMLSchema"
 # Adapter tolerance for paired declarations and roof parallelism, not a native limit.
 TOL = 1e-6
 SMALLEST = 5e-7
-ORIENT_CLOSE = "End of TOrientGroup"
 HOUSE_KEYS = ("length_m", "width_m", "eave_height_m", "roof")
 LAYOUT_KEYS = ("module_rows", "module_columns", "orientation", "row_spacing_m",
                "column_spacing_m", "clearance_m", "edge_margin_m")
@@ -476,25 +475,13 @@ def check_tables(house, tables):
         raise SceneValidationError(errors)
 
 
-def _view(lines):
-    return "".join(lines).replace(ORIENT_CLOSE, "End of PVObject pvOrient")
-
-
-def _block_of(lines, bounds):
-    blocks = objects(_view(lines[bounds[0]:bounds[1] + 1]))
-    root = next((block for block in blocks if not block.path), None)
-    if root is None:
-        raise ValueError("Missing owning record")
-    return root
-
-
 def source_profile(store, lines, arrays, system, *, allow_groups=False):
     """The native bridge stays single-plane; only the authoring path opts into two groups."""
     if system is None or len(arrays) not in ((1, 2) if allow_groups else (1,)):
         raise ValueError("Requires one pvSystem and one subarray, or two explicitly grouped authoring subarrays")
-    if _block_of(lines, system).one("SystemType")[1] != "Grid":
+    if root_block(lines, system).one("SystemType")[1] != "Grid":
         raise ValueError("SystemType must be Grid")
-    blocks = objects(_view(lines))
+    blocks = objects("".join(lines))
     root = next(block for block in blocks if not block.path)
     flags = root.one("Flags")[1]
     if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
@@ -514,7 +501,7 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
         raise ValueError("Requires complete consistent native grid counts")
     profiles, models = [], []
     for identifier, bounds in sorted(arrays.items()):
-        sub_root = _block_of(lines, bounds)
+        sub_root = root_block(lines, bounds)
         series = _finite(float(sub_root.one("NModSerie")[1]), "NModSerie", positive=True)
         strings = _finite(float(sub_root.one("NStringCh")[1]), "NStringCh", positive=True)
         if not series.is_integer() or not strings.is_integer():
@@ -524,7 +511,7 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
             raise ValueError("NoOrientation must be a positive integer")
         plane = store._orientation(lines, int(orientation_id))
         store._ordinary_fixed_plane(lines, plane)
-        plane_root = _block_of(lines, plane)
+        plane_root = root_block(lines, plane)
         tilt = _finite(float(plane_root.one("FieldTilt")[1]), "FieldTilt", minimum=0.0, maximum=90.0)
         if tilt >= 90.0:
             raise ValueError("FieldTilt must stay below 90 degrees")
