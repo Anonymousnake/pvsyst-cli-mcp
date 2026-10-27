@@ -17,7 +17,7 @@ PVsyst performs the physical calculations. This unofficial project does not bund
 | Evaluate existing native AC storage with hourly load | `pvsyst_run_engineering_task` | [Storage engineering](docs/engineering-storage.md) |
 | Compare bound native scenarios and package results | `pvsyst_compare_engineering_scenarios`, `pvsyst_export_engineering_delivery` | [Scenario comparison](docs/engineering-scenarios.md) |
 
-By default, the server exposes **82 tools in eight groups**. Use the [complete tool reference](docs/tool-reference.md) for low-level components, project editing, weather, loads, controls, simulations and result APIs. Existing wire tool names and request schemas are unchanged by the package reorganization.
+By default, the server exposes **82 tools in eight groups**. Use the [complete tool reference](docs/tool-reference.md) for low-level components, project editing, weather, loads, controls, simulations and result APIs.
 
 ## Install
 
@@ -62,7 +62,7 @@ After connecting, use `pvsyst_capabilities` and `pvsyst_license_info` to inspect
 
 By default all 82 tools remain available. To publish only the groups needed by one client, add `PVSYST_TOOL_GROUPS` to its existing `env`, for example `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`. This keeps the current 15 setup/engineering/result tools and avoids advertising the other groups. Omit the variable to keep the full catalog.
 
-Keys are case-sensitive: `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`. Empty, duplicate or unknown entries stop startup rather than silently choosing a different set. Selection is process-local and requires a restart; it changes discovery/call availability, not native execution or workspace/engineering requirements. See [measured performance and limits](docs/performance.md) for catalog sizes, CSV-reading gains and the cold-start measurements that remain inconclusive.
+Keys are case-sensitive: `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`. Empty, duplicate or unknown entries stop startup rather than silently choosing a different set. Selection is process-local and requires a restart; it changes discovery/call availability, not native execution or workspace/engineering requirements.
 
 ## Read results honestly
 
@@ -106,11 +106,11 @@ The public Python adapter is available as:
 from pvsyst_auto import PVsystCLI, PVsystError
 ```
 
-## Development and evidence
+## Development
 
-Install the editable package before using Python modules directly. Focus verification on named public contracts under `tests/contracts`; real-input contracts may need an explicit local fixture, and a skip is not native acceptance. This repository's current working agreement excludes full discovery, legacy smoke and hash tests for the active batches; existing production consistency checks remain. See [AGENTS.md](AGENTS.md).
+Install the editable package before using Python modules directly. Public interface tests are under `tests/contracts`; tests using native inputs require explicit fixtures and the documented software environment. A skipped fixture-dependent test does not demonstrate native compatibility.
 
-The structural reorganization does not expand native support or add annual runs. Detailed historical acceptance, current feature limits and failure/recovery records remain linked from the [tool reference](docs/tool-reference.md) and [engineering delivery](docs/engineering-delivery.md).
+For supported behavior and recovery options, see the [tool reference](docs/tool-reference.md) and [engineering delivery](docs/engineering-delivery.md).
 
 ## License
 

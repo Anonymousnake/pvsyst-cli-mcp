@@ -17,7 +17,7 @@
 | 结合逐时负荷评估已有原生 AC 光储 | `pvsyst_run_engineering_task` | [光储工程](docs/engineering-storage.md) |
 | 比较已绑定原生方案并打包交付 | `pvsyst_compare_engineering_scenarios`、`pvsyst_export_engineering_delivery` | [方案比较](docs/engineering-scenarios.md) |
 
-默认提供 **8 组、82 个工具**。组件、工程编辑、气象、负荷、控制、仿真与结果等低层 API 见[完整工具参考](docs/tool-reference.md)。本次包结构整理保持既有 MCP 工具名和请求 Schema。
+默认提供 **8 组、82 个工具**。组件、工程编辑、气象、负荷、控制、仿真与结果等低层 API 见[完整工具参考](docs/tool-reference.md)。
 
 ## 安装
 
@@ -62,7 +62,7 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 
 默认仍提供全部 82 个工具。若某个客户端只做特定任务，可在其现有 `env` 中增加 `PVSYST_TOOL_GROUPS`，例如 `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`；当前只公开对应的 15 个设置／工程／结果工具，其余组不再出现在目录中。省略该变量保持完整工具集。
 
-组键区分大小写：`setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering`。空项、重复项或未知项会在启动时明确报错，不静默选择其它集合。选择仅作用于当前进程，修改后重启；它调整工具发现与调用可用性，不改变原生执行、工作区或工程要求。工具内容体积、CSV 读取收益及仍未得出稳定结论的冷启动数据，见[性能实测与边界](docs/performance.md)。
+组键区分大小写：`setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering`。空项、重复项或未知项会在启动时明确报错，不静默选择其它集合。选择仅作用于当前进程，修改后重启；它调整工具发现与调用可用性，不改变原生执行、工作区或工程要求。
 
 ## 正确理解状态
 
@@ -98,7 +98,7 @@ src/pvsyst_auto/
 └── results.py    # 共享原生结果检查与汇总
 ```
 
-完整业务从 workflow 进入，领域修改找对应模块，软件执行查看 `native`；API 层调用这些已有实现。本次没有添加插件／依赖注入框架、调度仿真器或通用桌面引擎。见[结构与导入迁移说明](docs/architecture.md)。
+完整任务从 `workflows` 进入，领域读写位于对应模块，原生软件执行位于 `native`。API 层组织请求并调用这些实现，详见[软件包结构](docs/architecture.md)。
 
 公共 Python 适配器入口为：
 
@@ -106,11 +106,11 @@ src/pvsyst_auto/
 from pvsyst_auto import PVsystCLI, PVsystError
 ```
 
-## 开发与证据
+## 开发
 
-直接使用 Python 模块前先安装可编辑包。验证聚焦 `tests/contracts` 中明确指定的公共契约；真实输入契约可能要求显式本机夹具，skip 不计作原生验收。当前仓库工作约定不在活动批次执行全量发现、旧 smoke 或哈希测试，既有生产一致性检查保持，见 [AGENTS.md](AGENTS.md)。
+直接使用 Python 模块前先安装可编辑包。公开接口测试位于 `tests/contracts`；使用原生输入的测试需要明确的夹具和对应软件环境。依赖夹具的测试被跳过，不表示已证明原生兼容。
 
-本次结构整理不扩展原生支持范围，也不增加年度运行。详细历史验收、当前功能边界与失败恢复记录仍从[工具参考](docs/tool-reference.md)和[工程交付](docs/engineering-delivery.md)进入。
+支持行为和恢复方式见[工具参考](docs/tool-reference.md)和[工程交付](docs/engineering-delivery.md)。
 
 ## 许可
 
