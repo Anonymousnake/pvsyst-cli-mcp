@@ -765,6 +765,13 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             return _stop(result, "discovery")
         components = confirm["selected"]
         result["selected"] = confirm["selected"]
+        if fallback:
+            # The capacity-aware discovery found an eligible workspace template, so the seed is
+            # neither previewed nor written and the run uses the confirmed template instead.
+            fallback = False
+            result["warnings"].append(
+                "The capacity-confirmed discovery selected an eligible workspace template; the "
+                "standard-template seed fallback is not used")
         if confirm.get("warnings") != basic.get("warnings"):
             result["warnings"].extend(item for item in (confirm.get("warnings") or [])
                                       if item not in (basic.get("warnings") or []))

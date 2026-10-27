@@ -123,12 +123,18 @@ def _view(lines):
 
 
 def _root_block(lines):
-    return next(block for block in objects(_view(lines)) if not block.path)
+    root = next((block for block in objects(_view(lines)) if not block.path), None)
+    if root is None:
+        raise ValueError("Project file has no root PVObject block")
+    return root
 
 
 def _block_of(lines, bounds):
     blocks = objects(_view(lines[bounds[0]:bounds[1] + 1]))
-    return next(block for block in blocks if not block.path)
+    block = next((block for block in blocks if not block.path), None)
+    if block is None:
+        raise ValueError("Subarray has no root PVObject block")
+    return block
 
 
 def _decimal(text, label):

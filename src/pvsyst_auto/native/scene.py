@@ -581,7 +581,7 @@ def _preflight(components, cli, scene_name, module_geometry, *, store=None, allo
         if grouped:
             source = result["snapshot"]["source"]
             planes = source["orientations"]
-            if (source["field_azimuth_deg"] != 0 or abs((planes[1]["field_azimuth_deg"]
+            if (source["field_azimuth_deg"] != 0 or len(planes) != 2 or abs((planes[1]["field_azimuth_deg"]
                     - planes[0]["field_azimuth_deg"] + 180) % 360 - 180) < 1):
                 _fail("Grouped native import requires anchor azimuth zero and two distinct source planes")
             for table in result["table_profiles"]:

@@ -40,7 +40,10 @@ def _view(lines):
 
 def _block_of(lines, bounds):
     blocks = objects(_view(lines[bounds[0]:bounds[1] + 1]))
-    return next(block for block in blocks if not block.path)
+    block = next((block for block in blocks if not block.path), None)
+    if block is None:
+        raise ValueError("Subarray has no root PVObject block")
+    return block
 
 
 def allocation(value, label):
@@ -104,7 +107,9 @@ def dome_records(lines):
 def _require_scope(store, lines, arrays, system):
     """Verified native 8.1.6 two-face Dome profile with one subarray sharing both orientations."""
     blocks = objects(_view(lines))
-    root = next(block for block in blocks if not block.path)
+    root = next((block for block in blocks if not block.path), None)
+    if root is None:
+        raise ValueError("Project file has no root PVObject block")
     if root.one("Version")[1] != "8.1.6":
         raise ValueError("Requires a native 8.1.6 variant")
     flags = root.one("Flags")[1]

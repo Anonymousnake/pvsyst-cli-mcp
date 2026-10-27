@@ -108,7 +108,7 @@ def _read(lines, bounds):
 
 
 def replace_seasonal(lines, bounds, updates):
-    """Rewrite the owning orientation as native SeasonalTilt; edits `lines` in place."""
+    """Rewrite the owning orientation as native SeasonalTilt; commits to `lines` only on success."""
     if (not isinstance(updates, dict) or set(updates) - ALLOWED
             or not set(REQUIRED) <= set(updates)):
         raise ValueError("Seasonal updates: summer_tilt, winter_tilt, winter_months, orientation_name")
@@ -116,17 +116,18 @@ def replace_seasonal(lines, bounds, updates):
     winter = _angle(updates["winter_tilt"], "winter_tilt")
     months = _months(updates["winter_months"])
     name = _name(updates["orientation_name"]) if "orientation_name" in updates else None
-    fields, azim, before, base = _read(lines, bounds)
+    work = list(lines)
+    fields, azim, before, base = _read(work, bounds)
     if name is not None and before["orientation_name"] is None:
         raise ValueError("orientation_name requires an owning Comment")
     if base is not None:
         # The GUI drops BaseSlope when a FixedPlane orientation becomes SeasonalTilt.
         if before["base_slope"] != 0:
             raise ValueError("Non-zero BaseSlope is not a verified layout")
-        del lines[base[0]]
-        fields, azim, _, _ = _read(lines, (bounds[0], bounds[1] - 1))
-    ending = "\r\n" if lines[bounds[0]].endswith("\r\n") else "\n"
-    indent = re.match(r"[ \t]*", lines[azim[0]])[0]
+        del work[base[0]]
+        fields, azim, _, _ = _read(work, (bounds[0], bounds[1] - 1))
+    ending = "\r\n" if work[bounds[0]].endswith("\r\n") else "\n"
+    indent = re.match(r"[ \t]*", work[azim[0]])[0]
     target = {"FieldType": "SeasonalTilt", "FieldTilt": "0.0",
               "SummerTilt": format(summer, ".1f"), "WinterTilt": format(winter, ".1f"),
               "WinterMonths": "$%04X" % sum(1 << (month - 1) for month in months)}
@@ -136,11 +137,12 @@ def replace_seasonal(lines, bounds, updates):
         if entry is None:
             inserted.append(f"{indent}{key}={value}{ending}")
         elif entry[1] != value:
-            lines[entry[0]] = replace_value(lines[entry[0]], value)
+            work[entry[0]] = replace_value(work[entry[0]], value)
     if name is not None and before["orientation_name"] != name:
-        lines[fields["Comment"][0][0]] = replace_value(lines[fields["Comment"][0][0]], name)
+        work[fields["Comment"][0][0]] = replace_value(work[fields["Comment"][0][0]], name)
     if inserted:
-        lines[azim[0] + 1:azim[0] + 1] = inserted
+        work[azim[0] + 1:azim[0] + 1] = inserted
+    lines[:] = work
     return {"before": before,
             "after": {"field_type": "SeasonalTilt",
                       "orientation_name": name if name is not None else before["orientation_name"],

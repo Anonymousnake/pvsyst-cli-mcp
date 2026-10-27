@@ -121,6 +121,24 @@ class AcquisitionTests(unittest.TestCase):
         with patch.object(acquisition, "_provider_get", provider_callable):
             return download_weather(self.workspace, **options)
 
+    def test_provider_read_and_decode_failures_become_acquisition_errors(self):
+        import http.client
+
+        def response(read_effect):
+            stream = MagicMock()
+            stream.__enter__.return_value.read.side_effect = read_effect
+            return stream
+
+        cases = ((http.client.IncompleteRead(b"{"), "transport failure"),
+                 (ConnectionResetError("reset by peer"), "transport failure"),
+                 ([b"\xff\xfe", b""], "invalid UTF-8"))
+        for effect, message in cases:
+            with self.subTest(message=message, effect=type(effect).__name__):
+                with patch.object(acquisition.urllib.request, "urlopen",
+                                  return_value=response(effect)):
+                    with self.assertRaisesRegex(WeatherAcquisitionError, message):
+                        acquisition._provider_get(acquisition.ARCHIVE_URL, {"x": 1})
+
     def test_search_locations_returns_every_candidate(self):
         with patch.object(acquisition, "_provider_get", fake_provider()):
             result = search_locations("Beijing", country_code="CN")
