@@ -12,6 +12,7 @@ from pvsyst_auto.components.editor import ObjectBlock
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.energy import ac, auxiliaries, iam, inverter_temperature, soiling
 from pvsyst_auto.energy.load import create_load_variant
+from pvsyst_auto.energy.peak import peak_shaving_state
 from pvsyst_auto.energy.profiles import prepare_load_profile
 from pvsyst_auto.energy.storage import create_grid_storage_variant
 from pvsyst_auto.energy.system import create_grid_storage_system
@@ -176,6 +177,24 @@ class UnavailabilityTests(unittest.TestCase):
         state = self.state("    DateBeg=01/01/90 00:00\n    DateBeg=02/01/90 00:00\n    Duration=24\n", 2)
         self.assertEqual([period["duration"] for period in state["periods"]], [None, "24"])
         self.assertEqual(state["issues"], ["1 SystemUnavail period(s) lack a Duration within three lines of DateBeg"])
+
+    def test_spaced_owner_assignment_is_not_reported_absent(self):
+        lines = crlf("PVObject_System=pvSystem\n  SystemUnavail = TUnavailability\n    DefMode=Random\n"
+                     "    NbPeriods=0\n  End of PVObject pvUnavail\nEnd of PVObject pvSystem\n")
+        state = system_unavail_state(lines, (0, len(lines) - 1))
+        self.assertTrue(state["configured"], state)
+        self.assertEqual((state["mode"], state["period_count"]), ("Random", 0))
+
+
+class PeakStateTests(unittest.TestCase):
+    def test_spaced_owner_assignment_is_not_reported_absent(self):
+        record = (GRID_STORAGE.format(strategy="PeakShaving", unavail="")
+                  .replace("PVAvailable", "PVToGridMin").replace("DischStrategy=Immediate", "DischStrategy=AfterSunset"))
+        for owner in ("PVObject_GridStorage=pvGridStorage", "PVObject_GridStorage = pvGridStorage"):
+            with self.subTest(owner=owner):
+                state = peak_shaving_state(crlf(record.replace("PVObject_GridStorage=pvGridStorage", owner)))
+                self.assertEqual(state.get("mode"), "configured", state)
+                self.assertEqual(state["discharge"], {"mode": "after_sunset"})
 
 
 class AcMessageTests(unittest.TestCase):

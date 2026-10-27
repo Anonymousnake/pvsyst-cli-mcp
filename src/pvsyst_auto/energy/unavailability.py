@@ -18,7 +18,8 @@ def _value(line):
 def system_unavail_state(lines, system):
     if system is None:
         return {"configured": False, "reason": "no pvSystem section"}
-    starts = [i for i in range(system[0] + 1, system[1]) if lines[i].strip() == START]
+    # Same assignment grammar as the other readers, so spacing around "=" is not "absent".
+    starts = [i for i in range(system[0] + 1, system[1]) if _value(lines[i]) == tuple(START.split("="))]
     if not starts:
         return {"configured": False, "reason": None}
     if len(starts) != 1:
