@@ -42,5 +42,3 @@
   "excerpt": "共218690 块"
 }
 ```
-
-本次新增一个公开MCP契约，使用少量真实报告结构化摘录及单独的明确契约声明，覆盖聚合冲突／缺模型不短路、类型与引用错误、scope隔离、只读和不升级认证。2026-10-25 使用 Python 3.12、真实 stdio MCP 运行 `python -B -m unittest tests.contracts.test_engineering_brief_boundary`：1项公开契约通过。龙口报告24项引用声明、2种分块已通过公开MCP调用完成审查，返回blocked并同时保留数量／储能冲突和PAN/OND／原报告逐时天气缺项。原生年度仿真及性能回归未运行；此工具无物理或性能实现变更。报告与本机气象资产不入库。
