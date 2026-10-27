@@ -20,7 +20,7 @@ compare_engineering_scenarios(
 )
 ```
 
-以上为输入格式示例，不是本次原生运行或验收通过记录。工程、变体、CSV和运行清单必须由调用者提供真实文件。
+示例中的工程、变体、CSV和运行清单应替换为工作区中的真实文件。
 
 每项必须明确 `label/project/variant/csv_name/declared_changes`。基准的声明改动为空；候选以保存条件的组名或点路径声明有意变化，例如 `orientations`、`storage`、`subarrays.0.values.NModSerie`。可用组为 `project/system/main_array/orientations/subarrays/grid_circuit/sources/load/storage/shading_scene`。显示名称变化不作为工程条件变化。候选可选 `year`、`nominal_dc_power_kw` 和文字 `assumptions`；容量只用于所给时段的单位装机电量，不证明工程选型。
 
@@ -48,7 +48,7 @@ compare_engineering_scenarios(
 
 ## 输出与状态
 
-`EDirUse` 和 `EUseful` 沿用原生通道含义，不能自动等同直接供用户负荷或用户自用率；本例 `EDirUse` 年值大于用户负荷，报告保留原生名称与数值，不按名称擅自重新归类。
+`EDirUse`和`EUseful`沿用原生通道含义，不自动等同直接供用户负荷或用户自用率，也不按列名重新归类。
 
 `output_name` 是不含目录的 `.json` 文件名；输出在Results下使用相同stem的JSON、CSV和中文Markdown。CSV为每方案指标与候选减基准的长表，空单元格表示缺失或不可积分；Markdown包含条件、指标、关键时段、假设与复核。JSON保留运行时和当前交接、条件依据、缺列、覆盖率、差异及产物路径。原始商业模型和天气不复制到报告中。
 
@@ -57,7 +57,3 @@ compare_engineering_scenarios(
 实际CSV和Markdown写完后，持久JSON的 `report_files={csv, markdown}` 使用既有生产 `fingerprint` 绑定两个报告文件；JSON不自指纹。交付包先限定三个受控Results路径，再核对这两个值，并重新加载每个方案的运行清单；报告完整性不替代原生输入绑定。dry-run的 `report_files` 为空，不冒充已生成文件。
 
 `ready/created` 表示预览或报告写入成功；存在历史绑定缺项、继承的复核、缺测、缺列、非完整年或未声明差异时保持 `needs_review`。`blocked` 查看 `issues`。本入口始终 `native_consumption_verified=false`，因为它没有执行新的原生仿真；逐方案的历史绑定状态另列，不把数值对照升级为工程认证。
-
-验证按MAV聚焦公共结果、历史绑定、预览零写入和不覆盖边界；原生证据以对应运行清单为准，不要求覆盖率或全量发现。公共契约只使用显式提供的真实运行夹具并在系统临时工作区复演；缺夹具skip不算通过，也不冒称新的原生仿真。
-
-`tests/contracts/test_engineering_scenario_boundary.py` 使用显式 `PVSYST_ENGINEERING_RUN_FIXTURE` 指向已完成基准/候选运行的 `PVsyst8.1_Data`。它只复制所需PRJ/VC、输入资产、原生CSV/PDF/SFI和运行清单到系统临时目录，重定位清单路径并保留既有生产指纹。公共MCP契约检查绑定预览零写入、已记录能量差、缺绑定复核、临时副本的单位/时间轴反例、报告不覆盖，以及携比较的成套ZIP和报告漂移拒绝；不执行PVsyst、不在原案例工作区改文件。失败保留临时现场，成功清理。该契约文件的存在不表示本次已执行通过。
