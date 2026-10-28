@@ -21,6 +21,11 @@ class SoilingUpdates(BaseModel):
     yearly_loss_pct: StrictNum | None = None
     monthly_loss_pct: list[StrictNum] | None = None
 
+class SystemUnavailabilityUpdates(BaseModel):
+    """Remove existing native PV-system outages without generating a schedule."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["none"]
+
 class GridLimitUpdates(BaseModel):
     """Native constant active-power limit at the grid injection point."""
     model_config = ConfigDict(extra="forbid")

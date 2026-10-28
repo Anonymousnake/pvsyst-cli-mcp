@@ -32,7 +32,7 @@ from pvsyst_auto.native.p50 import p50_state, replace_p50
 from pvsyst_auto.energy.power import power_controls_state, replace_power_controls
 from pvsyst_auto.energy.peak import peak_shaving_state
 from pvsyst_auto.scene.state import shading_state
-from pvsyst_auto.energy.unavailability import system_unavail_state
+from pvsyst_auto.energy.unavailability import system_unavail_state, replace_system_unavailability
 from pvsyst_auto.project.tracking import WRITABLE as TRACKING_FIELDS
 from pvsyst_auto.project.sheds import WRITABLE as SHED_FIELDS, TYPES as SHED_TYPES
 from pvsyst_auto.energy.storage import grid_storage_state
@@ -427,7 +427,8 @@ class VariantStore:
                           string_mismatch_updates: dict | None = None,
                           ageing_updates: dict | None = None,
                           iam_updates: dict | None = None,
-                          ageing_enabled: bool | None = None) -> dict:
+                          ageing_enabled: bool | None = None,
+                          system_unavailability_updates: dict | None = None) -> dict:
         allowed_subarray = {"NModSerie": (1, 100), "NInverter": (1, 10000), "NStringCh": (1, 2147483647),
                             "NoOrientation": (1, 2147483647), "NInvMPPT": (1, 10000),
                             "VBkUpEncl_syst": (0, 1),
@@ -438,6 +439,13 @@ class VariantStore:
         requested = ((subarray_updates, allowed_subarray), (orientation_updates, allowed_orientation),
                      (main_array_updates, allowed_main_array))
         ageing_transaction = ageing_updates is not None or ageing_enabled is not None
+        if system_unavailability_updates is not None and any(value is not None for value in (
+                subarray_updates, orientation_updates, main_array_updates, generator_updates,
+                power_sharing_enabled, independent_mppt_enabled, soiling_updates, grid_limit_updates,
+                auxiliary_updates, seasonal_updates, horizon_updates, inverter_temperature_updates,
+                power_factor_updates, p50_p90_updates, power_controls_updates, string_mismatch_updates,
+                ageing_updates, iam_updates, ageing_enabled)):
+            raise ValueError("System-unavailability removal requires a separate transaction; variant_name may accompany it")
         if ageing_enabled is not None and type(ageing_enabled) is not bool:
             raise ValueError("ageing_enabled must be a strict boolean")
         if soiling_updates is not None and (any(changes for changes, _ in requested)
@@ -523,7 +531,8 @@ class VariantStore:
                 and seasonal_updates is None and horizon_updates is None and inverter_temperature_updates is None
                 and power_factor_updates is None and p50_p90_updates is None and power_controls_updates is None
                 and string_mismatch_updates is None
-                and ageing_updates is None and iam_updates is None and ageing_enabled is None) or any(
+                and ageing_updates is None and iam_updates is None and ageing_enabled is None
+                and system_unavailability_updates is None) or any(
                 changes is not None and (not isinstance(changes, dict) or
                                          any(key not in allowed for key in changes))
                 for changes, allowed in requested):
@@ -679,7 +688,8 @@ class VariantStore:
             string_mismatch_change = None
             ageing_change = None
             iam_change = None
-            if any(value is not None for value in (soiling_updates, grid_limit_updates, auxiliary_updates, seasonal_updates, horizon_updates, inverter_temperature_updates, power_factor_updates, p50_p90_updates, power_controls_updates, string_mismatch_updates, ageing_updates, iam_updates, ageing_enabled)):
+            unavailability_change = None
+            if any(value is not None for value in (soiling_updates, grid_limit_updates, auxiliary_updates, seasonal_updates, horizon_updates, inverter_temperature_updates, power_factor_updates, p50_p90_updates, power_controls_updates, string_mismatch_updates, ageing_updates, iam_updates, ageing_enabled, system_unavailability_updates)):
                 control = ("Soiling" if soiling_updates is not None else "Grid limit" if grid_limit_updates is not None
                            else "Auxiliary" if auxiliary_updates is not None else "Seasonal" if seasonal_updates is not None
                            else "Horizon" if horizon_updates is not None else "Inverter temperature" if inverter_temperature_updates is not None
@@ -687,6 +697,7 @@ class VariantStore:
                            else "Ageing model" if ageing_transaction
                            else "IAM model" if iam_updates is not None
                            else "String mismatch" if string_mismatch_updates is not None
+                           else "System unavailability" if system_unavailability_updates is not None
                            else "Combined power controls")
                 main = self._main_array(lines)
                 versions = [self._field_indices(lines, b, "Version") for b in arrays.values()]
@@ -723,12 +734,12 @@ class VariantStore:
                             or has_object(lines, "pvLoad")
                             or (seasonal_updates is not None or inverter_temperature_updates is not None or power_factor_updates is not None or p50_p90_updates is not None or power_controls_updates is not None
                                 or string_mismatch_updates is not None
-                                or ageing_transaction or iam_updates is not None
+                                or ageing_transaction or iam_updates is not None or system_unavailability_updates is not None
                                 or (auxiliary_updates is not None and auxiliary_updates.get("mode") == "profile"))
                             and any("PVObject_Horizon=" in line for line in lines)):
                         raise ValueError(f"{control} editing requires one orientation, no loads and a supported horizon state")
                     if (inverter_temperature_updates is None and power_factor_updates is None
-                            and power_controls_updates is None
+                            and power_controls_updates is None and system_unavailability_updates is None
                             and not (auxiliary_updates is not None and auxiliary_updates.get("mode") == "profile")):
                         flags = self._field_indices(lines, system, "Flags")
                         if len(flags) != 1 or not re.fullmatch(r"\$0{1,8}", FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2]):
@@ -741,7 +752,7 @@ class VariantStore:
                             or any(key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0"
                                    for key in root.fields) or grid_inventory(lines, arrays)["counts_valid"] is not True):
                         raise ValueError(f"{control} editing requires complete circuit counts and every string in orientation 1")
-                    if ageing_transaction or iam_updates is not None:
+                    if ageing_transaction or iam_updates is not None or system_unavailability_updates is not None:
                         sflags = self._field_indices(lines, bounds, "Flags")
                         if (len(sflags) != 1
                                 or FIELD.fullmatch(lines[sflags[0]].rstrip("\r\n"))[2] != "$019E1002"
@@ -753,7 +764,13 @@ class VariantStore:
                                 or int(FIELD.fullmatch(lines[sflags[0]].rstrip("\r\n"))[2].lstrip("$"), 16) & ~0x00020000 != 0x019C1002
                                 or any("P50_P90=TP50_P90" in line for line in lines)):
                             raise ValueError(f"{control} editing requires the verified 0x019C1002 subarray flag family and no P50/P90 block")
-                    if inverter_temperature_updates is not None:
+                    if system_unavailability_updates is not None:
+                        root_flags = self._field_indices(lines, (0, header_end), "Flags")
+                        if (subarray_id != 1 or len(root_flags) != 1
+                                or not re.fullmatch(r"\$0{1,8}", FIELD.fullmatch(lines[root_flags[0]].rstrip("\r\n"))[2])):
+                            raise ValueError("System-unavailability removal requires the ordinary PV-only root and subarray 1")
+                        unavailability_change = replace_system_unavailability(lines, system, system_unavailability_updates)
+                    elif inverter_temperature_updates is not None:
                         temperature_change = replace_inverter_temperature(lines, system, inverter_temperature_updates)
                     elif power_factor_updates is not None:
                         power_factor_change = replace_power_factor(lines, system, power_factor_updates)
@@ -818,6 +835,8 @@ class VariantStore:
                 result["ageing"] = ageing_change
             if iam_change is not None:
                 result["iam"] = iam_change
+            if unavailability_change is not None:
+                result["system_unavailability"] = unavailability_change
             if name_change is not None:
                 result.update(name_change=name_change, bom_added=bool(bom_prefix) and not data.startswith(b"\xef\xbb\xbf"))
             if "PMismMPP" in loss_modes:

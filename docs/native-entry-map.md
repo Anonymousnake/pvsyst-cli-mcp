@@ -43,7 +43,7 @@
 | 入射角修正（IAM） | MCP 可读写 | `iam_updates` 支持切换 `component` 与 `ashrae`（`b0` 参数），见[老化与 IAM 输入](native-model-inputs.md) |
 | 辅助耗电（Auxiliaries） | MCP 可读写 | `auxiliary_updates` 支持 `none`、`constant`（运行/夜间 kW）及两类带阈值的 `profile` 模式，见[辅助功率](native-auxiliary-power.md)与[详细损失参数](native-detailed-losses.md) |
 | 组件老化（Ageing） | MCP 可读写 | `ageing_updates`（年数、年均衰减率、成对 RMS 参数）与 `ageing_enabled`（bit 20 开关），要求模板已包含完整老化块，见[老化与 IAM 输入](native-model-inputs.md) |
-| PV 系统不可用时段 | 只读状态 | `pvsyst_get_variant_parameters` 可读出已保存的停运配置与时段，暂未开放生成/写入接口 |
+| PV 系统不可用时段 | MCP 可读、清除与备份恢复 | `system_unavailability_updates={"mode":"none"}` 清除已有原生 `Periods` 配置；通过事务备份恢复原时段。限 8.1.6 单固定平面纯光伏模板；原生全年消费与恢复已确认，随机生成及新时段编辑仍未开放，见[详细损失参数](native-detailed-losses.md) |
 | 光谱修正 | 未开放 | 依赖 `.MET` 内含可降水量（PW）或相对湿度（RH）数据 |
 
 ## 能量管理（Energy Management）

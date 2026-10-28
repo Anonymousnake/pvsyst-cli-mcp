@@ -8,7 +8,7 @@ from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.project.domes import create_dome_allocation_variant
 from pvsyst_auto.scene.author import create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, NativeDCUpdates, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StringMismatchUpdates, TrackingControls
+from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, NativeDCUpdates, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
 from pvsyst_auto.api.context import categorized_tool, cli, components, variant_call
 
 
@@ -302,7 +302,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      string_mismatch_updates: StringMismatchUpdates | None = None,
                                      ageing_updates: AgeingUpdates | None = None,
                                       iam_updates: IamUpdates | None = None,
-                                      ageing_enabled: StrictBool | None = None) -> dict:
+                                      ageing_enabled: StrictBool | None = None,
+                                       system_unavailability_updates: SystemUnavailabilityUpdates | None = None) -> dict:
     """Edit existing validated parameters or display name with SHA guard and rollback backup.
     variant_name changes only one owning header Comment, not the VC identifier,
     filename, project or nested names. Requires printable single-line text of
@@ -520,6 +521,11 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     be enabled before model editing. Zero rate is a value, not the disabled state.
     iam_updates is separate too and covers only the component IAM bit or
     the ASHRAE model with an optional b0; PAN files and curve data are never written.
+    system_unavailability_updates={"mode":"none"} separately removes one existing native
+    Periods SystemUnavail child and its owning system tag. It is limited to the verified
+    8.1.6 PV-only single fixed/free-horizon template, with no P50, loads or storage.
+    It does not generate periods or edit grid availability. Restore the returned transaction
+    backup to recover the original native schedule; clearing a flag alone is not sufficient.
     No-op edits create no backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
@@ -537,7 +543,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         string_mismatch_updates.model_dump(exclude_none=True) if string_mismatch_updates is not None else None,
                         ageing_updates.model_dump(exclude_none=True) if ageing_updates is not None else None,
                         iam_updates.model_dump(exclude_none=True) if iam_updates is not None else None,
-                        ageing_enabled)
+                        ageing_enabled,
+                        system_unavailability_updates.model_dump() if system_unavailability_updates is not None else None)
 
 @categorized_tool()
 def pvsyst_restore_variant(project: str, variant: str, backup_name: str,
