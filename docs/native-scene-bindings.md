@@ -17,6 +17,14 @@
 | `pv_bindings.groups` | 按朝向汇总关联的子阵列 ID、PV 表路径，以及电气侧声明组件数（`NModSerie × NStringCh`）与 3D 场景侧表格组件数的对比 |
 | `pv_bindings.coordinate_frame` | 原生 `DOrigine` 坐标值（单位米） |
 
+## 原生组件布局（`module_layout`）
+
+活动场景还返回 `shading_scene.module_layout`，用于读取已保存的原生组件布局。`configured=false` 表示没有 `pvModuleLayout`；有布局且 `status="stored_consistent"` 时，会返回 `global_state`、总组件数和逐表子阵/朝向、原生物体引用、行列及组串信息。
+
+当前完整性检查限定为两个固定朝向、子阵列 `1`/`2` 各自独占一张零间距横装表、一个逆变器/MPPT 和一条 `1..100` 块组件的组串。检查会核对原生列表声明数量、模块序号/行列/组串、物体创建引用、朝向和回路计数；缺失、重复或未识别的结构返回 `needs_review`，不会视为布局消失。
+
+原生全局状态 `mlDefStrings` 或 `mlDefInverters` 只是保存状态，不表示当前选中了精细计算。布局的 `stored_consistent` 与 `native_consumption_verified=false` 也不构成电气损失计算证明。通过[原生住宅任务](native-house-task.md#module-layout-电气阴影)选用 `shading_mode="module_layout"` 后，导入结果另行记录 GUI 重载后的模式选择，仿真再检查 `ShdElec` 输出。
+
 ## 三种绑定状态（`status`）
 
 该检查支持包含 1..2 张 PVCollada 导入的 `pvShdArrayTable`、1..2 个普通非平均固定朝向和 1..2 个子阵列的 PVsyst 8.1.6 变体（若变体是空场景，则不附加 `pv_bindings` 字段）：

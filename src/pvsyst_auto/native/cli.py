@@ -29,6 +29,7 @@ VAR_GROUPS = {
     "inverter_losses": ("viInvLoss", "viIL_Oper", "viIL_Pmin", "viIL_Vmin",
                         "viIL_Pmax", "viILPmxSH", "viIL_Vmax", "viIL_Imax"),
     "all_common": VERIFIED_VARIABLES,
+    "shading": (*VERIFIED_VARIABLES, "viGlobShd", "viShdElec"),
     "soiling": (*VERIFIED_VARIABLES, "viGlobSlg", "viSlgLoss"),
     "grid_limit": (*VERIFIED_VARIABLES, "viPGridLim", "viEGrdLim", "viEUnused", "viEOutInv"),
     "grid_storage": (*VERIFIED_VARIABLES, "viE_User", "viEUseful", "viE_Miss", "viE_Avail",

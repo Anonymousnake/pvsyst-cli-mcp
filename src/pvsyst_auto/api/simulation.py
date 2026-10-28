@@ -23,7 +23,9 @@ def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
     outputs; native runs may omit these columns when soiling is disabled.
     variables=grid_limit adds PGridLim, EGrdLim, EUnused and EOutInv. PGridLim is
     the native limit, EGrdLim the grid-curtailment loss, not EUnused. EOutInv is
-    not the bounded injection column. Disabled runs may omit limit columns."""
+    not the bounded injection column. Disabled runs may omit limit columns.
+    variables=shading adds GlobShd/ShdElec; native linear-mode runs may omit ShdElec,
+    and a defined detailed layout can legitimately have zero electrical loss."""
     target = workspace_path("Models", filename, ".sfi")
     names = (VAR_GROUPS[variables] if variables in VAR_GROUPS
              else [part.strip() for part in variables.split(",")])
@@ -44,6 +46,9 @@ def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
     the same PAN/OND, anchor azimuth zero and distinct source planes. Native table
     properties assign each plane and place its declared coordinates; SHD exports,
     saved VC and actual GUI reload verify every mesh/region before the annual run.
+    Optional spec.shading_mode=module_layout invokes the native detailed electrical
+    layout path for two landscape zero-spacing, single-string groups and exports
+    ShdElec. Omitting it preserves the original request/checkpoint representation.
     Preview writes nothing/does not activate or launch GUI; cold execution requires
     dry_run=false and confirm=true, configured DataPath and NO preexisting native GUI.
     It exclusively creates a working PRJ/VC0, PVC2 and SFI, opens one owned GUI, imports/

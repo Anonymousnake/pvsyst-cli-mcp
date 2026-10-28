@@ -88,7 +88,12 @@ def _annual(csv_path, pdf_path, request, plan, variant):
     with pdf_path.open("rb") as stream:
         if stream.read(5) != b"%PDF-":
             raise ValueError("Native house report is not a PDF")
-    return {"metrics": metrics, "native_context": context, "numeric_columns": len(headers) - 1,
+    electrical = {}
+    if request.get("shading_mode") == "module_layout":
+        if units.get("ShdElec") != "kW":
+            raise ValueError("Detailed native house output lacks the requested ShdElec column/unit")
+        electrical = {"electrical_shading_output": {"column": "ShdElec", "unit": units["ShdElec"]}}
+    return {"metrics": metrics, "native_context": context, "numeric_columns": len(headers) - 1, **electrical,
             "hourly_rows": rows, "shading_output": {"column": "GlobShd", "unit": units["GlobShd"]}}
 
 
@@ -155,6 +160,11 @@ def _prepare(store, components, request):
         raise ValueError("The house task requires a complete AI/caller-authored mesh house")
     tables = table_profiles(request["layout"], pocket, snap["modules"], snap["source"])
     check_tables(pocket, tables)
+    mode = request.get("shading_mode", "linear")
+    if mode not in ("linear", "module_layout"):
+        raise ValueError("shading_mode must be linear or module_layout")
+    if mode == "module_layout":
+        native._module_layout_preflight(snap, tables)
     if not 1 <= len(tables) <= native.MAX_TABLES_BRIDGED:
         raise ValueError("The native house task supports only one or two PV regions")
     site_blocks = objects(store._read(paths["site"]).decode("utf-8-sig"))
@@ -166,7 +176,7 @@ def _prepare(store, components, request):
     if not math.isfinite(nominal) or nominal <= 0:
         raise ValueError("Source nameplate capacity is not finite and positive")
     plan = {"site": source_site, "met": source_met, "scene_name": scene_name,
-            "nominal_dc_kw": nominal,
+            "nominal_dc_kw": nominal, "shading_mode": mode,
             "house_parts": len(pocket["meshes"]), "pv_tables": len(tables),
             "source": snap["source"], "modules": snap["modules"],
             "tables": tables, "component_libraries": component_libraries,
@@ -326,11 +336,15 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 if (plan["source"].get("orientations")
                         and record.get("native_import", {}).get("native_reload_verified") is not True):
                     raise ValueError("Grouped house checkpoint lacks verified native reload evidence")
+                if (plan["shading_mode"] == "module_layout"
+                        and record.get("native_import", {}).get("native_shading_mode_reload_verified") is not True):
+                    raise ValueError("Detailed house checkpoint lacks verified native calculation-mode reload evidence")
                 native._verify_new(paths["native_variant"], store._read(paths["working_variant"]),
                     plan["house_parts"], plan["pv_tables"], plan["source"]["module_total"],
                     **({"scene_context": {"house": house_profile(request["house"]), "tables": plan["tables"],
                         "modules": plan["modules"], "source": plan["source"]}}
-                       if plan["source"].get("orientations") else {}))
+                       if plan["source"].get("orientations") else {}),
+                    shading_mode=plan["shading_mode"])
             if record["phase"] == "prepared":
                 # This task creates only VC0; another VC may be an unrecorded native SaveAs.
                 candidates = [variant_id(member) for member in cli.list_variants(request["new_project"])
@@ -367,7 +381,9 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     raise ValueError("House scene creation stopped: " + str(created["issues"]))
                 stage("scene_created", ("scene",))
             if record["phase"] == "scene_created":
-                build_sfi(paths["sfi"], list(VAR_GROUPS["all_common"]) + ["viGlobShd"], "House native hourly results")
+                variables = (list(VAR_GROUPS["shading"]) if plan["shading_mode"] == "module_layout"
+                             else list(VAR_GROUPS["all_common"]) + ["viGlobShd"])
+                build_sfi(paths["sfi"], variables, "House native hourly results")
                 stage("prepared", ("sfi",))
             if record["phase"] == "prepared":
                 if record.get("native_import", {}).get("file"):
@@ -380,7 +396,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     raise ValueError("The task will not take over an existing unverified user GUI session")
                 _save(paths["manifest"], record)
                 imported = native.import_house_pv_scene(store, components, cli, plan["scene_name"],
-                                                        request["variant_name"], dry_run=False, confirm=True)
+                                                        request["variant_name"], dry_run=False, confirm=True,
+                                                        shading_mode=plan["shading_mode"])
                 record["native_import"] = imported
                 _save(paths["manifest"], record)
                 if imported["status"] != "imported" or not imported["native_geometry_verified"]:

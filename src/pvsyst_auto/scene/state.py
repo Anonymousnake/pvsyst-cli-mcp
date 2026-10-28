@@ -6,6 +6,7 @@ import re
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects
+from pvsyst_auto.scene.mapping import verify_module_layout
 
 ACTIVE_BIT = 0x00000100
 SCENE_KEYS = ("Comment", "Flags", "Precision", "FracOmbreMod", "FracOmbreThin", "DisplayedRef")
@@ -62,7 +63,21 @@ def shading_state(lines):
     return {"mode": "active", "flags": raw, "object_count": declared,
             "object_types": types, "values": scene,
             "pv_bindings": _pv_bindings(lines, types),
+            "module_layout": module_layout_state(lines),
             "scope": "stored scene/PV declarations only; generic geometry, source XML and native consumption are not verified"}
+
+
+def module_layout_state(lines):
+    """Read saved layout integrity without claiming the selected calculation mode."""
+    if not any(line.strip().endswith("=pvModuleLayout") for line in lines):
+        return {"configured": False, "status": "absent", "native_consumption_verified": False}
+    try:
+        normalized = [line.rstrip("\r\n") + "\n" for line in lines]
+        return verify_module_layout(objects("".join(normalized)), normalized)
+    except (ValueError, KeyError, OverflowError) as exc:
+        return {"configured": True, "status": "needs_review", "issues": [str(exc)],
+                "native_consumption_verified": False,
+                "scope": "Stored layout is outside the verified two-array single-string profile or its references are inconsistent"}
 
 
 def _pv_bindings(lines, types):
