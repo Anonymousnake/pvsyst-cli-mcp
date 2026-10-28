@@ -110,9 +110,14 @@ def _load_owned(gui, proc, project, actions):
     load = [h for h in gui._tops() if gui._pid_of(h) == proc.pid
             and gui._class_of(h) == "TProjectLoadForm" and gui._describe(h)["visible"]
             and gui._describe(h)["enabled"]]
-    if len(load) == 1:
+    if len(load) > 1:
+        # Confirming one of several lists could load into the wrong window.
+        raise gui.NativeBridgeError("Expected at most one ready native project list, found %d"
+                                    % len(load))
+    if load:
         gui._activate(load[0])
         gui._key(gui.VK_RETURN)
+    # No list left means the row click already started the load; the project form wait decides.
     root = gui._wait("TProjectForm", timeout=25)
     end = time.monotonic() + 25
     while not _project_matches(gui, root, project):

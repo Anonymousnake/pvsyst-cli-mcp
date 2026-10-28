@@ -8,7 +8,7 @@ import re
 from pvsyst_auto.components.editor import replace_value
 from pvsyst_auto.components.generator import direct_fields, finite, one
 from pvsyst_auto.energy.availability import native_availability
-from pvsyst_auto.energy.storage import NUMERIC_FIELDS, STRATEGIES, set_grid_export, storage_state, validate_storage
+from pvsyst_auto.energy.storage import NUMERIC_FIELDS, STRATEGIES, decimal_text, set_grid_export, storage_state, validate_storage
 from pvsyst_auto.energy.load import hourly_load_block, load_snapshot
 
 
@@ -84,10 +84,12 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             lines[root_index] = replace_value(lines[root_index], f"${int(root_flags[1:], 16) | 0x00080000:08X}")
             lines[system_index] = replace_value(lines[system_index], f"${int(system_flags[1:], 16) | 0x10010040:08X}")
             set_grid_export(lines, system, allow_grid_export)
+            # TempBattRef has no separate declaration: it repeats the first (January) monthly
+            # value. That adapter choice is disclosed in the warnings, not presented as declared.
             additions = {"BatteryFile": battery["file_name"], "NBattSerie": str(battery["series_count"]),
-                         "NBattParall": str(battery["parallel_count"]), "CycleSOWBeg": str(cycle),
-                         "StaticSOWBeg": str(static), "TypeTempBatt": "1", "TempBattRef": str(temperatures[0]),
-                         "TempBattMois": ",".join(str(value) for value in temperatures) + ","}
+                         "NBattParall": str(battery["parallel_count"]), "CycleSOWBeg": decimal_text(cycle),
+                         "StaticSOWBeg": decimal_text(static), "TypeTempBatt": "1", "TempBattRef": decimal_text(temperatures[0]),
+                         "TempBattMois": ",".join(decimal_text(value) for value in temperatures) + ","}
             new_fields = []
             for key, value in additions.items():
                 existing = one(system_fields, key, False)
@@ -105,15 +107,18 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             if starts:
                 if starts[0].start() >= ends[0].end():
                     raise ValueError("Unmatched owning load block")
-                candidate_text = candidate_text[:starts[0].start()] + load + candidate_text[ends[0].end():]
+                # The block ends with its own newline, so the replaced closing line's goes too.
+                finish = ends[0].end() + candidate_text.startswith("\n", ends[0].end())
+                candidate_text = candidate_text[:starts[0].start()] + load + candidate_text[finish:]
                 load = ""
             storage_lines = ["  PVObject_GridStorage=pvGridStorage", "    Flags=$00", "    Strategy=" + state["strategy"],
                              "    ChargingStrategy=PVAvailable", "    DischStrategy=Immediate"]
-            storage_lines.extend("    " + key + "=" + str(state[name]) for name, (key, _, _) in NUMERIC_FIELDS.items())
+            storage_lines.extend("    " + key + "=" + decimal_text(state[name]) for name, (key, _, _) in NUMERIC_FIELDS.items())
             if grid_profile:
                 storage_lines.extend(grid_profile.splitlines())
             storage_lines.append("  End of PVObject pvGridStorage")
-            closing = candidate_text.rindex("End of PVObject pvVCalcul")
+            # Insert at the start of the closing line so its indentation stays on that line.
+            closing = candidate_text.rfind("\n", 0, candidate_text.rindex("End of PVObject pvVCalcul")) + 1
             candidate_text = candidate_text[:closing] + load + newline.join(storage_lines) + newline + candidate_text[closing:]
             bom = original.startswith(b"\xef\xbb\xbf") or not battery["file_name"].isascii() or not str(profile).isascii()
             candidate = (b"\xef\xbb\xbf" if bom else b"") + candidate_text.encode("utf-8")
@@ -130,6 +135,7 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
                           bom_added=bom and not original.startswith(b"\xef\xbb\xbf"))
             result["warnings"].append("This constructs native centralized AC-coupled storage, not hybrid DC battery ports or a grid-charging tariff controller. DC port/BMS compatibility and hardware sizing are not certified.")
             result["warnings"].append("Battery model/counts/temperature/SOW and efficiencies are caller-declared, not inferred from PV or climate. SOCDischSelf is the WeakGrid self-use reserve; it remains unused as a backup reserve under SelfConsumption.")
+            result["warnings"].append(f"TempBattRef has no separate input: it repeats the first (January) declared monthly battery temperature, {decimal_text(temperatures[0])} C. This adapter choice is not a declared or verified battery reference temperature.")
             result["warnings"].append("PV design, geometry, component references and site/weather remain inherited. Run matching native year/timezone and verify loads, SOC and energy before claiming consumption.")
             if store._read(source) != original or any(path.read_bytes() != data for path, data in snapshots.items()):
                 raise ValueError("A source battery/load/template changed before creation")

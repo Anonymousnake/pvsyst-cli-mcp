@@ -68,7 +68,8 @@ def pvsyst_acquire_weather(csv_name: StrictStr = "", year: StrictInt | None = No
     """Plan or execute one Open-Meteo ERA5 year as a PVsyst standard hourly weather CSV.
     Give either location_id from pvsyst_resolve_location, or explicit latitude/longitude
     together with site_name, country_code and timezone_name; mixing both is blocked.
-    year is an integer in 1940..2068 and the requested year must already be fully
+    year is an integer in 1969..2068 (native weather dates carry two-digit years; ERA5 itself
+    starts in 1940) and the requested year must already be fully
     published by the provider. temperature_method=endpoint_mean is the only verified
     method: the unweighted mean of the two UTC instants bounding each local standard
     hour, disclosed as a linear approximation. dry_run=true (default) downloads nothing
@@ -98,7 +99,7 @@ def pvsyst_review_weather(csv_name: StrictStr, native_csv_name: StrictStr, year:
     only. This review does not certify the effective sun-position time shift inside the
     native run, does not claim that the endpoint_mean ambient temperature is a measured
     hourly mean, and does not certify climate extremes. Nothing is written, hashed or
-    simulated. status is blocked, needs_review or completed: review items are listed in
+    simulated. status is blocked or needs_review: review items are listed in
     the result instead of being dropped, and blocked means the evidence could not be
     read at all."""
     return review_weather(cli().workspace, csv_name=csv_name, native_csv_name=native_csv_name,

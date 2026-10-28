@@ -119,8 +119,10 @@ async def main():
                 assert typo_text.startswith(
                     "Unknown argument(s) for pvsyst_simulate_template: weather_manifest."), typo_text
                 assert "weather_manifest_name" in typo_text, typo_text
-                # 只封闭这两个入口：其余工具保持 SDK 既有的未知键忽略行为
-                assert await inspect("complete.csv", unknown_option=1) == complete
+                # 所有工具都拒绝未知顶层键，只读工具也不例外
+                lenient = await session.call_tool("pvsyst_inspect_weather_csv",
+                                                  {"csv_name": "complete.csv", "unknown_option": 1})
+                assert lenient.is_error and "unknown_option" in lenient.content[0].text, lenient.content
                 assert root_before == tree(), tree()
                 evidence["prepare_contract"] = {"tool_parameters": sorted(schema["properties"]),
                                                 "valid_input_status": gated["status"],

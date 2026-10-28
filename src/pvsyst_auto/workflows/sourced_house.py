@@ -58,7 +58,11 @@ def _source_checkpoint(store, design, binding):
         weather_manifest = weather_manifest or Path(met).stem + "_weather.json"
     warnings = []
     if weather_manifest:
-        assets, _, warnings = load_weather_manifest(store.workspace, weather_manifest, design["year"], sit, met)
+        try:
+            assets, _, warnings = load_weather_manifest(store.workspace, weather_manifest, design["year"], sit, met)
+        except (KeyError, TypeError, AttributeError) as exc:
+            # A manifest missing or mistyping recorded fields is an incomplete checkpoint, not a crash.
+            raise ValueError(f"Incomplete weather preparation manifest: {weather_manifest}") from exc
         expected.update(assets)
     if record.get("inputs") != expected:
         raise ValueError("Prepared component/weather assets changed; no source or checkpoint was rewritten")
@@ -78,6 +82,8 @@ def run_sourced_house_task(store, components, cli, *, request, binding, dry_run=
             if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation, accept_source_review)):
                 raise ValueError("Use strict booleans")
             design = _prune_empty(request["design"])
+            if not isinstance(design, dict) or not isinstance(binding, dict):
+                raise ValueError("Provide the design request and the cited-source binding as objects")
             if design.get("capacity") is not None or design.get("electrical_design") is not None:
                 raise ValueError("Provide cited source inputs, not a second capacity/electrical_design override")
             source_name = project_name(design["new_project"])
@@ -85,7 +91,7 @@ def run_sourced_house_task(store, components, cli, *, request, binding, dry_run=
             if source_name.casefold() == final_name.casefold():
                 raise ValueError("Source preparation and final house require distinct new project names")
             for key in ("module", "inverter"):
-                if not design.get(key, {}).get("file_name"):
+                if not isinstance(design.get(key), dict) or not design[key].get("file_name"):
                     raise ValueError("Sourced house requires exact loose module/inverter filenames")
             if binding.get("status") not in ("ready", "needs_review") or not isinstance(binding.get("electrical_design"), dict):
                 result.update(status="needs_context", issues=list(binding.get("issues") or []),

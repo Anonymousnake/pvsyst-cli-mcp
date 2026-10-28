@@ -4,12 +4,15 @@ This compares stored configuration, not effective runtime physics or source auth
 """
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, Overflow, localcontext
 import json
 from pathlib import Path
 
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
+
+# Half a unit of the third decimal the existing editor writes for angles and losses.
+SAVED_TOLERANCE = Decimal("0.0005")
 
 
 def _baseline_bytes(path):
@@ -30,6 +33,17 @@ def _number(value):
     if not result.is_finite():
         raise ValueError("Expected a finite saved/declared number")
     return result
+
+
+def _within_saved_precision(actual, declared):
+    """Match within the editor's three-decimal precision, not its re-serialized text.
+
+    Extra saved digits or another writer's float noise are not a difference, and a value
+    farther than half a unit from the declaration never matches.
+    """
+    with localcontext() as context:
+        context.traps[Overflow] = False  # An absurd magnitude compares as different, never raises.
+        return abs(_number(actual) - declared) <= SAVED_TOLERANCE
 
 
 def review_project_inputs(store, *, project, variant, preparation_manifest_name):
@@ -91,7 +105,8 @@ def review_project_inputs(store, *, project, variant, preparation_manifest_name)
                         saved = str(int(declared))
                     else:
                         saved = format(float(declared), ".3f")
-                    same = actual is not None and _number(actual) == _number(saved)
+                    same = actual is not None and (_number(actual) == _number(saved) if integer
+                                                   else _within_saved_precision(actual, declared))
                 result["comparisons"].append({"field": field, "owner": owner, "unit": unit,
                     "declared": expected, "expected_saved": saved, "actual_saved": actual,
                     "status": "missing" if actual is None else "matches" if same else "differs",

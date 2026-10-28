@@ -57,7 +57,11 @@ def load_snapshot(workspace, manifest_name):
     reader = csv.reader(io.StringIO(normalized.decode("ascii")), delimiter=";", strict=True)
     if next(reader) != ["Date", "P Load"] or next(reader) != ["", "kW"]:
         raise ValueError("Expected the prepared native ASCII Date;P Load / ;kW CSV")
-    values = [(datetime.strptime(row[0], DATE_FORMATS["pvsyst_dot"]), number(row[1])) for row in reader]
+    rows = list(reader)
+    # _inspect_load skips blank rows, which would otherwise reach row[0] as an empty list.
+    if any(len(row) != 2 for row in rows):
+        raise ValueError("Every prepared load row must be one Date;P Load pair")
+    values = [(datetime.strptime(row[0], DATE_FORMATS["pvsyst_dot"]), number(row[1])) for row in rows]
     if any(stamp != original_stamp or not math.isclose(power, original_power, rel_tol=1e-11, abs_tol=1e-9)
            for (stamp, power), (original_stamp, original_power) in zip(values, expected, strict=True)):
         raise ValueError("Normalized load differs from its current declared raw input")
@@ -128,17 +132,20 @@ def create_load_variant(store, *, project, source_variant, new_variant, load_man
             record, profile, values, snapshots = load_snapshot(store.workspace, load_manifest_name)
             newline = "\r\n" if "\r\n" in text else "\n"
             block, encoding = hourly_load_block(profile, values, record["year"], newline)
-            starts = list(re.finditer(r"(?m)^\s*PVObject_UserNeeds=pvLoad\s*\r?$", text))
-            ends = list(re.finditer(r"(?m)^\s*End of PVObject pvLoad\s*\r?$", text))
+            starts = list(re.finditer(r"(?m)^[ \t]*PVObject_UserNeeds=pvLoad[ \t]*\r?$", text))
+            ends = list(re.finditer(r"(?m)^[ \t]*End of PVObject pvLoad[ \t]*\r?$", text))
             if len(starts) > 1 or len(ends) > 1 or bool(starts) != bool(ends):
                 raise ValueError("Ambiguous owning load block")
             if starts:
                 begin, finish = starts[0].start(), ends[0].end()
                 if begin >= finish:
                     raise ValueError("Unmatched owning load block")
-                candidate_text = text[:begin] + block + text[finish:]
+                # The block ends with its own newline, so the replaced closing line's goes too.
+                candidate_text = text[:begin] + block + text[finish + text.startswith("\n", finish):]
             else:
-                candidate_text = text[:text.rindex("End of PVObject pvVCalcul")] + block + text[text.rindex("End of PVObject pvVCalcul"):]
+                # Insert at the start of the closing line so its indentation stays on that line.
+                closing = text.rfind("\n", 0, text.rindex("End of PVObject pvVCalcul")) + 1
+                candidate_text = text[:closing] + block + text[closing:]
             bom = original.startswith(b"\xef\xbb\xbf") or not block.isascii()
             candidate = (b"\xef\xbb\xbf" if bom else b"") + candidate_text.encode("utf-8")
             _, checked = store._text(candidate)

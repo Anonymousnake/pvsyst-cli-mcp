@@ -461,15 +461,23 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             review = (tracking_mode or run.get("warnings") or flags or weather_warnings
                       or result.get("weather_comparison", {}).get("needs_review", False))
             result.update(status="needs_review" if review else "completed", stage="completed")
-    except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
+    except (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired) as exc:
         result.update(status="failed", error=cli._redact(str(exc))[-12000:])
+    except BaseException as exc:
+        # An unanticipated error still leaves a terminal manifest, never "running"; it then propagates.
+        result.update(status="failed", error=cli._redact(f"{type(exc).__name__}: {exc}")[-12000:])
+        try:
+            save()
+        except Exception:
+            pass  # a failed save must not replace the original error
+        raise
     try:
         result["template_preserved"] = store.inspect_project(template_project)["files"] == original["files"]
         if not result["template_preserved"]:
             result.update(status="failed", error="Template changed externally during the job")
         if store._path(new_project).is_file():
             result["working_files"] = store.inspect_project(new_project)["files"]
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, KeyError, TypeError) as exc:
         result.update(status="failed", error=cli._redact(str(exc)))
     if prepare_only and result["status"] == "failed":
         result["prepared"] = False

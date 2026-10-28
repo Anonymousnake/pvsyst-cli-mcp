@@ -133,7 +133,11 @@ def build_sourced_component(store, *, component_type, template_name, new_name,
             data = (b"\xef\xbb\xbf" if bom else b"") + candidate.encode("utf-8")
             validation = store._inspect(component_type, data)
             store._require_valid(validation, complete=True)
-            declared = electrical_inventory(component_type, candidate)["fields"]
+            electrical = electrical_inventory(component_type, candidate)
+            if electrical["status"] != "readable":
+                # A flattened-complete template can still lack its owning electrical object.
+                raise ValueError("Candidate electrical fields are unreadable: " + "; ".join(electrical["issues"]))
+            declared = electrical["fields"]
             if component_type == "PAN":
                 for key in ("ISC", "Voc", "Imp", "Vmp"):
                     if declared[key]["status"] != "declared":
@@ -191,15 +195,24 @@ def build_sourced_component(store, *, component_type, template_name, new_name,
             record["scope"] += " This record describes the candidate, not proof that its file was created or simulated."
             encoded_record = json.dumps(record, ensure_ascii=False, indent=2, allow_nan=False)
             result["stage"] = "creation"
-            with manifest.open("x", encoding="utf-8") as stream:
-                stream.write(encoded_record)
-            store._new(component_type, new_name, data)
+            created = False
+            try:
+                with manifest.open("x", encoding="utf-8") as stream:
+                    created = True
+                    stream.write(encoded_record)
+                store._new(component_type, new_name, data)
+            except BaseException:
+                # The record describes this attempt only; a failed create must not block a retry.
+                # Only remove a record this call opened, never a pre-existing one.
+                if created:
+                    manifest.unlink(missing_ok=True)
+                raise
             result.update(stage="created", component_created=True)
         except (ValueError, OSError, TypeError) as exc:
             issue("component", exc)
             result["status"] = "failed" if result["stage"] == "creation" else "blocked"
             if result["status"] == "failed":
                 result["warnings"].append({"field": "recovery", "message":
-                    "Creation failed; retained candidate/source artifacts are disclosed, not silently removed. "
-                    "Inspect the reported paths before retrying with new names."})
+                    "Creation failed; no source record from this attempt is retained and no existing file "
+                    "was overwritten. Inspect the reported paths before retrying."})
     return result

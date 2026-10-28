@@ -16,6 +16,8 @@ def sourced_component(store: ComponentStore, kind: str, filename: str) -> tuple[
     """
     path = None
     for library in ("workspace", "builtin"):
+        if library == "builtin" and store.builtin is None:
+            continue  # No installed library to search: report the missing file below.
         try:
             candidate = store._path(kind, filename, library)
         except ValueError as exc:
@@ -33,7 +35,10 @@ def sourced_component(store: ComponentStore, kind: str, filename: str) -> tuple[
     if text is None:
         return (f"{kind}.name",
                 "Legacy binary PAN carries no readable declared identity; use a UTF-8 text component", None)
-    blocks = objects(text)
+    try:
+        blocks = objects(text)
+    except ValueError as exc:
+        return f"{kind}.name", str(exc), None
     roots = [block for block in blocks if not block.path]
     commercial = [block for block in blocks if block.path == "PVObject_Commercial"]
     if len(roots) != 1 or len(commercial) > 1:

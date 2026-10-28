@@ -5,6 +5,7 @@ from datetime import datetime
 import math
 import re
 
+from pvsyst_auto.components.curves import NUMBER
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
 
 
@@ -92,12 +93,15 @@ def _value(key, value):
                 raise ValueError("PriceDate must be a valid calendar date/time") from None
     else:
         try:
+            # float() also takes "４４０" or "1_000", which PVsyst cannot read back.
+            if not NUMBER.fullmatch(value):
+                raise ValueError()
             number = float(value)
         except ValueError:
             raise ValueError(f"{key} must be a finite number") from None
         if not math.isfinite(number) or number < spec["minimum"] or number > spec.get("maximum", math.inf):
             raise ValueError(f"{key} is outside the supported range")
-        if spec["type"] == "integer" and not re.fullmatch(r"\d+", value):
+        if spec["type"] == "integer" and not re.fullmatch(r"[0-9]+", value):
             raise ValueError(f"{key} must be a decimal integer")
     return value
 

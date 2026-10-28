@@ -104,6 +104,13 @@ def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
             headers = row
             units = [value.strip() for value in next(reader, [])]
             break
+        if headers is not None:
+            # A trailing delimiter (``...;Tamb;``, common in spreadsheet exports) only appends empty
+            # cells after the last column: drop those, never an empty name between two columns.
+            while headers and not headers[-1]:
+                headers.pop()
+            if len(units) > len(headers) and not any(units[len(headers):]):
+                del units[len(headers):]
         if headers is None or len(headers) > 64 or len(headers) != len(set(headers)) or "" in headers:
             raise ValueError("Expected 1..64 distinct nonempty column names")
         if len(units) != len(headers):
@@ -180,6 +187,8 @@ def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
             if rows > MAX_ROWS:
                 raise ValueError("Weather CSV exceeds the 20000-row single-year reader limit")
             line = reader.line_num
+            if len(row) > len(headers) and not any(value.strip() for value in row[len(headers):]):
+                del row[len(headers):]  # trailing delimiter, as for the header above
             if len(row) != len(headers):
                 issue(f"Line {line}: data width differs from column header")
                 invalid_dates += 1

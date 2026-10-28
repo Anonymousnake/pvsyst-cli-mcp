@@ -171,8 +171,10 @@ def _declare_explicit_counts(lines: list[str], array_id: int) -> list[dict]:
     added = []
     for node in sorted(pending, key=lambda item: item.line, reverse=True):
         lines.insert(node.line, _explicit_line(lines, node))
+        # Each later insertion lands above this row and pushes it down by one line.
+        above = sum(other.line < node.line for other in pending)
         added.append({"object": "pvCircuit", "node": node.kind, "field": "NElements", "value": "1",
-                      "line": node.line + 1,
+                      "line": node.line + 1 + above,
                       "reason": "Declare the single serialized branch explicitly for guarded resizing"})
     if added:
         checked = _branch_nodes(lines, array_id)

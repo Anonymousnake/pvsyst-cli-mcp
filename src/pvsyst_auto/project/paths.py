@@ -19,6 +19,9 @@ def write_json(path: Path, record, first=False):
                                          prefix=".pvsyst-task-", delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(payload)
+            # Persist the bytes before the rename, so a crash cannot leave an empty checkpoint.
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         if temporary is not None:
@@ -66,7 +69,7 @@ def workspace_file(workspace: Path, folder: str, filename: str, extension: str) 
 
 def project_root(workspace: Path) -> Path:
     root = workspace / "Projects"
-    if root.is_symlink() or root.resolve().parent != workspace:
+    if root.is_symlink() or root.resolve().parent != workspace.resolve():
         raise ValueError("Projects directory resolves outside workspace")
     return root.resolve()
 

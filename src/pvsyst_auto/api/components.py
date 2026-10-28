@@ -164,8 +164,9 @@ def pvsyst_build_sourced_component(
     units are not guessed. A dry run returns citation provenance, inherited parameters and a
     diff without writes. Creation requires acknowledge_inherited_model=true, writes a new
     component and a candidate source record in Results, and never overwrites existing paths.
-    Successful preview/creation remain needs_review, not physical certification. Failed writes
-    retain disclosed artifacts for inspection. Use a referencing native run to verify behavior;
+    Successful preview/creation remain needs_review, not physical certification. A failed creation
+    removes the source record it wrote and never overwrites existing files, so the same name can
+    be retried. Use a referencing native run to verify behavior;
     datasheet authenticity, page layout and source/model applicability are not certified here."""
     return build_sourced_component(
         components(), component_type=component_type, template_name=template_name, new_name=new_name,

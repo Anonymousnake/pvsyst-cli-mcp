@@ -5,7 +5,7 @@ import difflib
 import re
 from decimal import Decimal, InvalidOperation
 
-from pvsyst_auto.components.editor import objects, replace_value, require_flat
+from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, require_flat
 from pvsyst_auto.components.generator import direct_fields
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.energy.storage import storage_state, validate_storage
@@ -290,8 +290,10 @@ def peak_shaving_state(lines):
     Values are returned as stored text: endpoint inclusivity, the meaning of AfterSunset
     beyond the native label, and every efficiency figure are not interpreted here.
     """
+    # Same assignment grammar as objects()/direct_fields, so spacing around "=" is not "absent".
     owner = [i for i, line in enumerate(lines)
-             if line.strip() == "PVObject_GridStorage=pvGridStorage"]
+             if (match := ASSIGNMENT.fullmatch(line.rstrip("\r\n")))
+             and (match[2], match[4]) == ("PVObject_GridStorage", "pvGridStorage")]
     if not owner:
         return {"mode": None, "reason": "no pvGridStorage section"}
     if len(owner) != 1:

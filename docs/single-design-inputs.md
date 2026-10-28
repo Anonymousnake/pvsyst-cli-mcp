@@ -57,7 +57,7 @@ existing使用明确SIT/MET；未绑定清单只做名称核对，不宣称逐�
 
 resolve_location只读返回全部候选和整数ID，只有恰好一个时selection_required=false；多候选明确选择，零候选补限定，不自动取首位。ID路径国家码取候选，冲突报错；不是由provider推断地点。
 
-获取仅访问Open-Meteo geocoding/archive，年份1940..2068且须完全发布，只取GHI/DHI及temperature_2m。UTC辐射为前一小时均值、区间终点标签；温度为瞬时值。CSV以固定当地标准小时起点表示，含相邻UTC边界读数及全部闰日，不填缺测／未发布小时或插值。
+获取仅访问Open-Meteo geocoding/archive，年份1969..2068（原生日期为两位年份；ERA5本身始于1940）且须完全发布，只取GHI/DHI及temperature_2m。UTC辐射为前一小时均值、区间终点标签；温度为瞬时值。CSV以固定当地标准小时起点表示，含相邻UTC边界读数及全部闰日，不填缺测／未发布小时或插值。
 
 endpoint_mean是两端UTC瞬时温度的无权平均近似，始终保留review，不是观测小时均温。provider0.25°网格及DEM回显与请求站点元数据分开，底层获取若使用DEM高程必须明示，非实测。原始响应、CSV、来源清单均新文件，失败也保留，拒绝覆盖。
 
