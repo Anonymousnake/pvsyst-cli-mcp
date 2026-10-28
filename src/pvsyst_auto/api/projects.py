@@ -1,6 +1,7 @@
 """Projects & Variants MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
+from typing import Literal
 from pydantic import StrictBool, StrictFloat, StrictInt, StrictStr
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import prepare_design_project
@@ -838,7 +839,8 @@ def pvsyst_open_native_project(project: StrictStr, dry_run: StrictBool = True,
 
 @categorized_tool()
 def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
-                                  dry_run: StrictBool = True, confirm: StrictBool = False) -> dict:
+                                   dry_run: StrictBool = True, confirm: StrictBool = False,
+                                   shading_mode: Literal["linear", "module_layout"] = "linear") -> dict:
     """Import a generated house/PV scene using the already open native PVsyst GUI.
     This bounded Windows path targets Chinese PVsyst 8.1.6 rev49278 with native
     logical DPI96 and the recorded physical window metrics, with
@@ -861,12 +863,17 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
     only the newly copied native text is read, never the earlier clipboard.
     imported/native_geometry_verified become true only after native persistence checks;
     native_consumption_verified stays false until a separate native simulation.
+    shading_mode=module_layout additionally uses native placement and automatic string
+    allocation, then selects detailed electrical shading. This opt-in requires two
+    fixed source groups, one landscape zero-spacing table and one independent string
+    (1..100 modules, one inverter/MPPT) per source array1/2. The saved module cells and
+    native table/array links are checked; the selected mode is checked after GUI reload.
     Use pvsyst_run_simulation on the returned variant for energy/shading consumption."""
     from pvsyst_auto.native.scene import import_house_pv_scene
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
     return import_house_pv_scene(store, component_store, cli(), scene_name, variant_name,
-                                 dry_run=dry_run, confirm=confirm)
+                                 dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
 
 @categorized_tool()
 def pvsyst_prepare_design_project(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:

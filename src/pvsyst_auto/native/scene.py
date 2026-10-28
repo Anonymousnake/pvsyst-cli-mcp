@@ -23,13 +23,14 @@ from pathlib import Path
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.native.cli import PVsystError
 from pvsyst_auto.native.project import _project_matches
-from pvsyst_auto.scene.mapping import verify_grouped_hardware, verify_house_geometry, verify_pv_geometry
+from pvsyst_auto.scene.mapping import verify_grouped_hardware, verify_house_geometry, verify_pv_geometry, verify_module_layout
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.scene.author import _num, check_tables, house_profile, resolve_modules, source_profile, table_profiles
 from pvsyst_auto.scene.reader import read_house_pv_scene
 
 EXPECTED_DPI = 96
-EXPECTED_SIZE = {"TPerspectiveForm": (1475, 899), "TOrientManageForm": (1126, 826)}
+EXPECTED_SIZE = {"TPerspectiveForm": (1475, 899), "TOrientManageForm": (1126, 826),
+                 "TModuleLayoutForm": (1476, 864), "TMLStringsAttribForm": (783, 725)}
 
 IMPORT_FOLDER = (230, 461)
 SOURCE_GROUP = (250, 301)
@@ -50,6 +51,8 @@ WM_GETTEXT = 0x000D
 WM_GETTEXTLENGTH = 0x000E
 WM_CLOSE = 0x0010
 WM_COMMAND = 0x0111
+BM_GETCHECK = 0x00F0
+VK_TAB = 0x09
 CB_GETCOUNT = 0x0146
 CB_GETLBTEXT = 0x0148
 CB_GETLBTEXTLEN = 0x0149
@@ -562,7 +565,28 @@ def _prepare_source(store, components, scene, *, allow_groups=False):
     return {"snapshot": snap, "house": pocket, "table_profiles": tables}
 
 
-def _preflight(components, cli, scene_name, module_geometry, *, store=None, allow_groups=False):
+def _module_layout_preflight(snapshot, tables):
+    """Keep automatic wiring within the native template that has been verified."""
+    arrays = [block for block in objects(snapshot["bytes"].decode("utf-8-sig"))
+              if block.object_type == "pvSubArray"]
+    planes = snapshot["source"].get("orientations", [])
+    if (len(planes) != 2 or {plane["id"] for plane in planes} != {1, 2} or len(tables) != 2
+            or [block.one("SubArrayId")[1] for block in arrays] != ["1", "2"]
+            or {block.one("NoOrientation")[1] for block in arrays} != {"1", "2"}
+            or any(table["orientation"] != "landscape" or table["row_spacing_m"] != 0
+                   or table["column_spacing_m"] != 0 for table in tables)):
+        _fail("Module Layout requires two source groups, arrays1/2 and landscape zero-spacing tables")
+    for array in arrays:
+        series = array.one("NModSerie")[1]
+        if (not re.fullmatch(r"[1-9][0-9]{0,2}", series) or int(series) > 100
+                or any(array.one(key)[1] != "1" for key in ("NStringCh", "NInverter", "NInvMPPT"))):
+            _fail("Module Layout requires one independent string of 1..100 modules and one inverter/MPPT per array")
+
+
+def _preflight(components, cli, scene_name, module_geometry, *, store=None, allow_groups=False,
+               shading_mode="linear"):
+    if type(shading_mode) is not str or shading_mode not in ("linear", "module_layout"):
+        _fail("shading_mode must be linear or module_layout")
     scene = read_house_pv_scene(components, scene_name)
     if scene.get("status") != "ready":
         return {"status": "needs_context", "scene": scene,
@@ -599,17 +623,23 @@ def _preflight(components, cli, scene_name, module_geometry, *, store=None, allo
     elif grouped:
         return {"status": "needs_context", "scene": scene,
                 "reason": "Grouped preflight requires the current source variant for per-orientation comparison"}
+    if shading_mode == "module_layout":
+        if store is None:
+            return {"status": "needs_context", "scene": scene,
+                    "reason": "Module Layout requires the current source variant"}
+        _module_layout_preflight(result["snapshot"], result["table_profiles"])
     return result
 
 
 def import_house_pv_scene(store, components, cli, scene_name, variant_name,
-                          dry_run=True, confirm=False):
+                          dry_run=True, confirm=False, shading_mode="linear"):
     with store.lock:
         return _import_house_pv_scene(store, components, cli, scene_name, variant_name,
-                                     dry_run, confirm)
+                                      dry_run, confirm, shading_mode)
 
 
-def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry_run, confirm):
+def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry_run, confirm,
+                           shading_mode="linear"):
     """Drive the already open PVsyst GUI through the recorded import path.
 
     dry_run reads state only: no activation, no key or mouse injection, no
@@ -625,7 +655,8 @@ def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry
         if type(dry_run) is not bool or type(confirm) is not bool:
             raise ValueError("Use strict booleans")
         result["cli_version"] = _check_cli(cli)
-        pre = _preflight(components, cli, scene_name, None, store=store, allow_groups=True)
+        pre = _preflight(components, cli, scene_name, None, store=store, allow_groups=True,
+                         shading_mode=shading_mode)
         result["preflight"] = {key: pre[key] for key in ("status", "tables", "parts") if key in pre}
         if pre["status"] != "preflight_stage2":
             result.update(status=pre["status"], issues=[pre.get("reason", "")])
@@ -702,6 +733,9 @@ def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry
                 return result
             _close_scene()
             result["native_actions"].append("close_scene")
+            if shading_mode == "module_layout":
+                result["stage"] = "native_module_layout"
+                _configure_module_layout(result["native_actions"])
             created = _save_new(args["project"], variant_name)
             result.update(stage="verify_native_save", variant=created.suffix.lstrip(".").upper(), file=str(created))
             result["artifacts"]["native_variant"] = str(created)
@@ -718,6 +752,7 @@ def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry
                     _fail("Source PAN changed during the native import")
             verification = _verify_new(created, snap["bytes"], pre["parts"], pre["tables"],
                                        snap["source"]["module_total"],
+                                       shading_mode=shading_mode,
                                        **({"scene_context": _scene_context(pre)} if pre["grouped"] else {}))
             if pre["grouped"]:
                 result["stage"] = "native_reload"
@@ -739,14 +774,20 @@ def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry
                 shading = _wait("TShadingsForm")
                 _click(_find(shading, "TPngBitBtn", "取消"))
                 _wait("TProjectForm")
+                if shading_mode == "module_layout":
+                    _module_layout_mode(select=False)
                 if created.read_bytes() != saved_bytes or snap["path"].read_bytes() != snap["bytes"]:
                     _fail("Native saved variant changed during reload")
                 _verify_new(created, snap["bytes"], pre["parts"], pre["tables"],
-                            snap["source"]["module_total"], scene_context=_scene_context(pre))
+                            snap["source"]["module_total"], scene_context=_scene_context(pre),
+                            shading_mode=shading_mode)
                 result.update(native_reload_verified=True, native_reload={"source_variant": args["variant"],
                     "saved_variant": created.suffix[1:].upper(), "exported_scene_file": str(reload_scene),
                     "verification": reloaded, "native_validity": reload_validity})
                 result["native_actions"].extend(["reload_saved_variant", "export_reloaded_scene", "verify_reloaded_geometry"])
+            if shading_mode == "module_layout":
+                result.update(shading_mode=shading_mode, module_layout=verification["module_layout"],
+                              native_shading_mode_reload_verified=True)
             result.update(status="imported", stage="completed", imported=True, native_geometry_verified=True,
                           verification=verification)
             return result
@@ -1079,6 +1120,61 @@ def _close_scene():
     _wait("TProjectForm", timeout=20.0)
 
 
+def _module_layout_mode(*, select):
+    root = _wait("TProjectForm")
+    _click(_find(root, "TPngBitBtn", "\u8fd1\u5904\u906e\u6321"))
+    shading = _wait("TShadingsForm")
+    radio = _find(shading, "TRadioButton", "\u7cbe\u7ec6\u8ba1\u7b97\u6a21\u5f0f (\u57fa\u4e8e\u7ec4\u4ef6\u5e03\u5c40)")
+    if select and _send(radio, BM_GETCHECK) != 1:
+        _click(radio)
+    checked = _send(radio, BM_GETCHECK) == 1
+    _click(_find(shading, "TPngBitBtn", "\u786e\u5b9a" if select else "\u53d6\u6d88"))
+    _wait("TProjectForm")
+    if not checked:
+        _fail("Native reloaded calculation mode is not detailed Module Layout")
+
+
+def _configure_module_layout(actions):
+    root = _wait("TProjectForm")
+    _click(_find(root, "TPngBitBtn", "\u7ec4\u4ef6\u5e03\u5c40"))
+    form = _wait("TModuleLayoutForm")
+    _check_size(form, "TModuleLayoutForm")
+    landscape = _find(form, "TRadioButton", "\u6a2a\u5411")
+    if _send(landscape, BM_GETCHECK) != 1:
+        _click(landscape)
+    whole = _find(form, "TTabSheet", "\u6574\u4e2a\u7cfb\u7edf")
+    edits = [handle for handle in _kids(whole) if _class_of(handle) == "TEdit"]
+    if len(edits) != 2:
+        _fail("Module Layout spacing controls differ from the recorded native form")
+    for edit in edits:
+        _click(edit)
+        _set_text(edit, "0")
+        _key(VK_TAB)
+        if float(_get_text(edit)) != 0:
+            _fail("Native Module Layout did not retain zero spacing")
+    _click(_find(form, "TPngBitBtn", "\u653e\u7f6e\u6240\u6709\u7ec4\u4ef6"))
+    actions.append("place_native_modules")
+    form = _wait("TModuleLayoutForm")
+    _click(_find(form, "TPngBitBtn", "\u81ea\u52a8\u5212\u5206"))
+    allocation = _wait("TMLStringsAttribForm")
+    _check_size(allocation, "TMLStringsAttribForm")
+    for caption in ("\u7ec4\u4e32\u4f4d\u4e8e 1 \u884c", "\u6c34\u5e73\u5730", "\u81ea\u5de6\u4e0b", "\u4ece\u5de6\u5230\u53f3\u7ee7\u7eed"):
+        radio = _find(allocation, "TRadioButton", caption)
+        if _send(radio, BM_GETCHECK) != 1:
+            _click(radio)
+        if _send(radio, BM_GETCHECK) != 1:
+            _fail("Native automatic string allocation did not retain the requested pattern")
+    _click(_find(allocation, "TPngBitBtn", "\u5206\u914d\u6240\u6709"))
+    actions.append("allocate_native_strings")
+    _click(_find(allocation, "TPngBitBtn", "\u5173\u95ed"))
+    form = _wait("TModuleLayoutForm")
+    _click(_find(form, "TPngBitBtn", "\u786e\u5b9a"))
+    _wait("TProjectForm")
+    actions.append("accept_native_module_layout")
+    _module_layout_mode(select=True)
+    actions.append("select_detailed_electrical_shading")
+
+
 def _post_close(hwnd):
     u, _ = _libs()
     if not u.PostMessageW(w.HWND(hwnd), WM_CLOSE, 0, 0):
@@ -1114,11 +1210,18 @@ def _save_new(project, variant_name):
     return created.pop()
 
 
-def _verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules, *, scene_context=None):
+def _verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules, *, scene_context=None,
+                 shading_mode="linear"):
     def parsed(raw):
         return objects(raw.decode("utf-8-sig"))
     target_bytes = Path(path).read_bytes()
     blocks = parsed(target_bytes)
+    layout = {}
+    if shading_mode == "module_layout":
+        try:
+            layout["module_layout"] = verify_module_layout(blocks, target_bytes.decode("utf-8-sig").splitlines(True))
+        except (ValueError, KeyError) as exc:
+            _fail(str(exc))
     tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
     generic = [block for block in blocks if block.object_type == "pvShdGenObject"]
     modules = sum(int(block.one("NModInHeight")[1]) * int(block.one("NModInWidth")[1]) for block in tables)
@@ -1139,7 +1242,7 @@ def _verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules,
         except ValueError as exc:
             _fail(str(exc))
         return {"objects": len(generic) + len(tables), "house": len(generic), "tables": len(tables),
-                "modules": modules, **hardware, **house_geometry, **pv_geometry}
+                "modules": modules, **hardware, **house_geometry, **pv_geometry, **layout}
     if len([block for block in blocks if block.object_type == "pvOrient"]) != 1 or any(
             block.one("NoOrient")[1] != "1" for block in tables):
         _fail("New variant does not reference a single orientation")

@@ -69,7 +69,8 @@
 | 远方地平线（Far Horizon） | MCP 可读写 | `horizon_updates` 写入 4..100 个方位角/仰角点对或清空地平线，见[地平线轮廓](horizon-profile.md) |
 | 房屋与光伏 `.pvc2` 建模与回读 | MCP 已封装 | `pvsyst_create_house_pv_scene` 与 `pvsyst_read_house_pv_scene`，支持单朝向多分区与双坡屋顶场景生成及 XML 逆向还原，见[住宅与光伏建模](house-pv-modeling.md) |
 | 3D 场景 GUI 导入与全年任务 | MCP 已封装 | `pvsyst_import_house_pv_scene`、`pvsyst_run_house_task`、`pvsyst_run_sourced_house_task`，见[住宅单任务](native-house-task.md)与[双屋面交付说明](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance) |
-| 已保存场景的 PV 表格关联检查 | 只读状态 | `pvsyst_get_variant_parameters` 返回 `shading_scene.pv_bindings`，核对表格朝向引用与组件数，见[PV 区域关联读取](native-scene-bindings.md) |
+| 已保存场景的 PV 表格关联检查 | 只读状态 | `pvsyst_get_variant_parameters` 返回 `shading_scene.pv_bindings`，以及有限模板的 `module_layout` 保存完整性，见[PV 区域关联读取](native-scene-bindings.md) |
+| Module Layout 精细电气阴影 | MCP 已封装（有限双朝向模板） | 导入工具及住宅任务的 `shading_mode="module_layout"` 使用原生组件放置、组串自动分配、精细模式选择与保存重载；限每组一张零间距横装表和独立单组串，见[原生住宅任务](native-house-task.md#module-layout-电气阴影)。任意接线、跨表分串和多于两个朝向仍待扩展 |
 | 既有 3D 场景阴影重算 | MCP 已封装 | `pvsyst_run_simulation(recompute_shading=True)` 调 CLI `-rs` 参数重新计算阴影表 |
 
 ## 负荷与储能（Loads & Storage）

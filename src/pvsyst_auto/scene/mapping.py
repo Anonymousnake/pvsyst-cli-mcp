@@ -421,3 +421,108 @@ def verify_pv_geometry(blocks, tables, modules, source):
             "pv_max_coordinate_residual_m": max_origin, "pv_max_dimension_residual_m": max_dimension,
             "pv_max_angle_residual_deg": max_angle,
             "pv_geometry_scope": "source origins, planes, dimensions, module layout and NoOrient links; anchor azimuth zero"}
+
+
+def verify_module_layout(blocks, lines):
+    """Check the saved native two-array, one-string-per-table layout, not shading physics."""
+    owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
+    arrays = _indexed(blocks, "pvSubArray", "SubArrayId")
+    tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
+    layouts = [block for block in blocks if block.object_type == "pvMLTable"]
+    if (len(owners) != 1 or owners[0].path != "PVObject_ModuleLayout"
+            or list(arrays) != [1, 2] or len(tables) != 2 or len(layouts) != 2
+            or owners[0].one("ModLayoutGlobState")[1] not in ("mlDefStrings", "mlDefInverters")
+            or owners[0].one("SubFieldsOrigin")[1] != "so3DShadings"):
+        raise ValueError("Module Layout review requires two native 3D tables and source arrays 1/2 with defined strings")
+    planes = _indexed(blocks, "pvOrient", "NoOrient")
+    if set(planes) != {1, 2} or {_integer(array.one("NoOrientation")[1]) for array in arrays.values()} != {1, 2}:
+        raise ValueError("Module Layout source arrays must own two existing distinct orientations 1/2")
+    for plane in planes.values():
+        if (plane.one("FieldType")[1] != "FixedPlane" or plane.one("Flags")[1] != "$00"
+                or any(plane.one(key)[1] != "False" for key in ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"))):
+            raise ValueError("Module Layout review requires ordinary non-averaged fixed source planes")
+    bounds = {key: (array.line - 1, array.end_line - 1) for key, array in arrays.items()}
+    if inventory(lines, bounds)["counts_valid"] is not True:
+        raise ValueError("Module Layout source circuit counts or ownership are incomplete")
+    body = lines[owners[0].line:owners[0].end_line - 1]
+    declared = [int(match[1]) for line in body
+                if (match := re.fullmatch(r"\s*SubFields, list of=([0-9]+) PVObjects\s*", line))]
+    if declared != [2] or sum(line.strip() == "End of SubFields" for line in body) != 1:
+        raise ValueError("Module Layout declared subfield list does not match its tables")
+    created = _indexed(blocks, "pvShdArrayTable", "NoObjCreated")
+    scene_objects = [block for block in blocks
+                     if re.fullmatch(r"PVObject_Ombrage/PVObject_[1-9][0-9]*", block.path)]
+    identities = [_integer(block.one("NoObjCreated")[1]) for block in scene_objects]
+    if len(created) != 2 or 0 in identities or len(identities) != len(set(identities)):
+        raise ValueError("Module Layout requires unique native object creation references")
+    result, used, subfields = [], set(), set()
+    for layout in layouts:
+        if layout.path.rsplit("/", 1)[0] != owners[0].path:
+            raise ValueError("Module Layout table lies outside its owning layout")
+        subfield = _integer(layout.one("NoSubField")[1])
+        if subfield not in (1, 2) or subfield in subfields:
+            raise ValueError("Module Layout has a missing or repeated subfield identity")
+        subfields.add(subfield)
+        identifier = _integer(layout.one("NoSubArrayPar")[1])
+        if identifier not in arrays or identifier in used:
+            raise ValueError("Module Layout has a missing or repeated source array")
+        used.add(identifier)
+        array = arrays[identifier]
+        rows, columns = (_integer(layout.one(key)[1]) for key in ("NLigMod", "NColMod"))
+        count = rows * columns
+        if (not rows or not columns or not 1 <= count <= 100
+                or _integer(array.one("NModSerie")[1]) != count
+                or any(array.one(key)[1] != "1" for key in ("NStringCh", "NInverter", "NInvMPPT"))):
+            raise ValueError("Module Layout review requires one independent string of 1..100 modules per array")
+        if "PowerSharingInverterId" in array.fields and array.one("PowerSharingInverterId")[1] != "-1":
+            raise ValueError("Module Layout single-string review excludes shared inverter inputs")
+        plane = planes[_integer(array.one("NoOrientation")[1])]
+        reference = _integer(layout.one("NoField3DCreated")[1])
+        table = created.get(reference)
+        if (table is None or table.one("Version")[1] != "8.1.6"
+                or table.one("Source")[1] != "osPVCollada"
+                or table.path.rsplit("/", 1)[-1] != "PVObject_" + layout.one("NoField3D")[1]
+                or layout.one("NoShed3D")[1] != "1" or layout.one("NIdentical")[1] != "1"
+                or _integer(table.one("NoOrient")[1]) != _integer(array.one("NoOrientation")[1])
+                or _integer(table.one("NModInHeight")[1]) != rows
+                or _integer(table.one("NModInWidth")[1]) != columns
+                or layout.one("ModLayoutState")[1] != "mlDefStrings"
+                or layout.one("ModOrient")[1] != "moLandScape"
+                or table.one("ModuleOrient")[1] != "moLandScape"):
+            raise ValueError("Module Layout table/array/3D references or mechanical layout disagree")
+        for table_key, plane_key in (("DInclin", "FieldTilt"), ("DAzimut", "FieldAzim"), ("BaseSlope", "BaseSlope")):
+            if abs(_number(table.one(table_key)[1]) - _number(plane.one(plane_key)[1])) > ANGLE_TOL:
+                raise ValueError("Module Layout PV table angles disagree with their owning source plane")
+        for key in ("ModSpacingX", "ModSpacingY"):
+            if _number(layout.one(key)[1]) != 0 or _number(table.one(key)[1]) != 0:
+                raise ValueError("Module Layout review is bounded to zero-spacing native tables")
+        if _number(layout.one("RowPadding")[1]) != 0:
+            raise ValueError("Module Layout review requires zero native row padding")
+        body = lines[layout.line:layout.end_line - 1]
+        declared = [int(match[1]) for line in body
+                    if (match := re.fullmatch(r"\s*Modules, list of=([0-9]+) tModule\s*", line))]
+        fields = [key for key in layout.fields if key.startswith("Module_")]
+        if (declared != [count] or sum(line.strip() == "End of List Modules" for line in body) != 1
+                or fields != ["Module_%d" % index for index in range(1, count + 1)]):
+            raise ValueError("Module Layout declared module count or records are missing or unexpected")
+        cells = set()
+        for index in range(1, count + 1):
+            raw = layout.one("Module_%d" % index)[1]
+            if not re.fullmatch(r"[1-9][0-9]*,[1-9][0-9]*,[1-9][0-9]*,[1-9][0-9]*,", raw):
+                raise ValueError("Module Layout requires complete positive native module/string records")
+            sequence, row, column, string = map(int, raw.rstrip(",").split(","))
+            if (sequence != index or not 1 <= row <= rows or not 1 <= column <= columns
+                    or string != identifier or (row, column) in cells):
+                raise ValueError("Module Layout contains an unassigned, repeated or mismatched module/string cell")
+            cells.add((row, column))
+        result.append({"object_path": layout.path, "subarray_id": identifier,
+                       "orientation_id": _integer(array.one("NoOrientation")[1]),
+                       "native_table_path": table.path, "native_created_id": reference,
+                       "rows": rows, "columns": columns, "module_count": count,
+                       "string_id": identifier, "state": layout.one("ModLayoutState")[1],
+                       "module_orientation": layout.one("ModOrient")[1]})
+    return {"configured": True, "status": "stored_consistent", "tables": result,
+            "global_state": owners[0].one("ModLayoutGlobState")[1],
+            "module_count": sum(row["module_count"] for row in result),
+            "native_consumption_verified": False,
+            "scope": "Stored native8.1.6 two-array landscape/zero-spacing single-string layout only; simulation mode and consumption are separate"}

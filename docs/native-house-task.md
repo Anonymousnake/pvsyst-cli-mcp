@@ -24,6 +24,28 @@
 | `layout` | 单区域排布或 `tables` 中的双区域排布，组件总颗数必须与源变体子阵列严格一致 |
 | `module_geometry` | 组件几何尺寸（`model_name`、`nom_power_wp`、`width_m`、`length_m`、`geometry_depth_m`） |
 | `report_pages` | 可选的原生 PDF 报告页名称列表；省略时输出默认完整报告 |
+| `shading_mode` | 可选；省略时保留原有线性阴影流程，`module_layout` 使用原生组件布局与精细电气阴影计算 |
+
+## Module Layout 电气阴影
+
+对已满足双屋面条件的输入，在 `spec` 中加入 `"shading_mode": "module_layout"`。任务会在 PVsyst 中放置组件、自动分配组串、选中精细计算模式，再另存新变体；不在 MCP 内计算或近似电气阴影。
+
+当前入口限定为两个固定朝向、子阵列编号 `1` 和 `2`，每个朝向独占一张横装矩形表，每个子阵列恰好一条 `1..100` 块组件的组串、一个独立逆变器及一个 MPPT，组件间距为零。沿用普通双屋面入口的站点、模型、朝向、坐标及原生版本要求。自动分配采用原生水平、左下起、连续填充方式；自定义接线、跨多表分串及任意多朝向尚未接入。
+
+已准备好 `.pvc2` 且对应工程在 GUI 中打开时，也可直接调用导入工具：
+
+```json
+{
+  "scene_name": "RoofScene.pvc2",
+  "variant_name": "Roof electrical shading",
+  "shading_mode": "module_layout",
+  "dry_run": true
+}
+```
+
+确认预览后，同时传入 `dry_run=false` 和 `confirm=true` 执行。导入结果中的 `module_layout` 核对已保存模块、原生表格及子阵引用，`native_shading_mode_reload_verified` 表示保存后真实切离重载的 GUI 仍选中精细模式。配置、几何验证和仿真消费仍是不同阶段。
+
+全年任务会自动导出 `ShdElec` 电气阴影损失。单独运行仿真时，可通过 `pvsyst_build_sfi(variables="shading")` 生成包含 `GlobShd`、`ShdElec` 的导出定义。逐小时输出中的 `ShdElec` 单位为 `kW`，全年求和得到 `kWh`；零损失也是有效结果。线性模式可能不导出该列，比较结果时按实际列名对齐，保留缺列状态，不自动补零。
 
 ## 执行阶段（`phase`）与产物命名
 

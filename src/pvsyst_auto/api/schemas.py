@@ -266,6 +266,7 @@ class HouseTaskRequest(BaseModel):
     layout: NamedPVTablesLayout | PlacedPVTableLayout
     module_geometry: ModuleGeometry | None = None
     report_pages: list[StrictStr] | None = None
+    shading_mode: Literal["linear", "module_layout"] | None = None
 
 class AfterSunsetDischarge(BaseModel):
     """Native AfterSunset discharge mode; it carries no hour fields."""
