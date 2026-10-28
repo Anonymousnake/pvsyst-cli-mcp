@@ -724,13 +724,14 @@ class GridTests(unittest.TestCase):
 
 
     def test_missing_root_block_raises_value_error_not_stop_iteration(self):
-        from pvsyst_auto.project import tracking, template
+        from pvsyst_auto.components.editor import root_block
+        from pvsyst_auto.project import tracking
         with self.assertRaisesRegex(ValueError, "no root PVObject block"):
-            tracking._root_block(["no objects here"])
+            root_block(["no objects here"])
         with self.assertRaisesRegex(ValueError, "no root PVObject block"):
-            tracking._block_of(["no objects here"], (0, 0))
+            root_block(["no objects here"], (0, 0))
         with self.assertRaisesRegex(ValueError, "no root PVObject block"):
-            template._subarray(["no objects here"], (0, 0))
+            tracking._require_scope(None, ["no objects here"], {}, None)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ import re
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
 from pvsyst_auto.project.circuit import circuit_nodes, positive_integer
-from pvsyst_auto.project.tracking import _decimal, _require_scope, _view
+from pvsyst_auto.project.tracking import _decimal, _require_scope
 
 AC_FLAG = 0x200000
 AC_FIELDS = ("ACWireNoSect", "ACWireLength", "ACWireMetal")
@@ -66,7 +66,7 @@ def _header_cable(lines, node):
 
 
 def _layout(lines):
-    blocks = objects(_view(lines))
+    blocks = objects("".join(lines))
     mains = [block for block in blocks if block.object_type == "pvMainArray"]
     subs = [block for block in blocks if block.object_type == "pvSubArray"]
     circuits = [block for block in blocks if block.object_type == "pvCircuit"]

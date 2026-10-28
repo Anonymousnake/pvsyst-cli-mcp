@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import re
 
-from pvsyst_auto.components.editor import objects, replace_value
+from pvsyst_auto.components.editor import replace_value, root_block
 from pvsyst_auto.project.circuit import circuit_nodes, inventory, positive_integer, resize_capacity
 
 NUMBERS = (
@@ -65,7 +65,7 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
             raise ValueError("Capacity planning requires one subarray")
         store._require_no_geometry(lines, require_shading_section=True)
         bounds = arrays[array_id]
-        root = next(block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path)
+        root = root_block(lines, bounds)
         raw_flags = root.one("Flags")[1]
         if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags):
             raise ValueError("Require explicit hexadecimal subarray Flags")

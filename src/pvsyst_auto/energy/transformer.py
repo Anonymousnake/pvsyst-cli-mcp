@@ -5,7 +5,7 @@ import difflib
 
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.project.circuit import circuit_nodes, TRANSFORMER_KEYS
-from pvsyst_auto.project.tracking import _require_scope, _view
+from pvsyst_auto.project.tracking import _require_scope
 
 NIGHT_DISCONNECT_FLAG = 0x20000000
 MAIN_FLAGS = ("$01F00400", "$21F00400")
@@ -22,7 +22,7 @@ def _profile(store, lines):
     arrays, system = store._sections(lines)
     _require_scope(store, lines, arrays, system, main_flags=MAIN_FLAGS, system_flags=("$00",))
     store._ordinary_fixed_plane(lines, store._orientation(lines, 1))
-    blocks = objects(_view(lines))
+    blocks = objects("".join(lines))
     mains = [block for block in blocks if block.object_type == "pvMainArray"]
     circuits = [block for block in blocks if block.object_type == "pvCircuit"]
     if (len(mains) != 1 or mains[0].path != "PVObject_PVMainArray" or not mains[0].end_line

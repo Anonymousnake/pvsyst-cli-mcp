@@ -4,15 +4,10 @@ from __future__ import annotations
 import difflib
 import re
 
-from pvsyst_auto.components.editor import objects, replace_value, require_flat
+from pvsyst_auto.components.editor import objects, replace_value, require_flat, root_block
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 
 BOM = b"\xef\xbb\xbf"
-# Parser view only: the saved bytes keep both original orientation closing tags.
-ORIENT_CLOSE = (
-    re.compile(r"(?m)^([ \t]*)End of TOrientGroup([ \t]*)(?=\r?$)"),
-    re.compile(r"(?m)^([ \t]*)End of TDomeOrientGroup([ \t]*)(?=\r?$)"),
-)
 # Adapter bound only; the native GUI and engineering limits are not measured.
 ALLOCATION_MAX = 39
 SUB_PROFILE = {"Version": "8.1.6", "Flags": "$019E1002", "Flags2": "$20", "SubArrayId": "1",
@@ -30,20 +25,6 @@ DOME_BACK = {"Version": "8.1.6", "Flags": "$00", "NoOrient": "2", "FieldType": "
              "FieldTilt": "10.0", "FieldAzim": "-90.0", "BaseSlope": "0.0",
              "UsesTiltAver": "False", "UsesAzimAver": "False", "UsesSlopeAver": "False",
              "BTNoTrackers": "-1,-1,", "NoPairOrient": "1", "IsMainOrient": "False"}
-
-
-def _view(lines):
-    text = "".join(lines)
-    text = ORIENT_CLOSE[0].sub(r"\1End of PVObject pvOrient\2", text)
-    return ORIENT_CLOSE[1].sub(r"\1End of PVObject pvDomeOrient\2", text)
-
-
-def _block_of(lines, bounds):
-    blocks = objects(_view(lines[bounds[0]:bounds[1] + 1]))
-    block = next((block for block in blocks if not block.path), None)
-    if block is None:
-        raise ValueError("Subarray has no root PVObject block")
-    return block
 
 
 def allocation(value, label):
@@ -74,7 +55,7 @@ def orientation_list(lines):
 
 def dome_records(lines):
     """Return the paired main/backface records; anything else stops."""
-    blocks = objects(_view(lines))
+    blocks = objects("".join(lines))
     header, closer = orientation_list(lines)
     records = [block for block in blocks if block.object_type == "pvDomeOrient"]
     if len(records) != 2:
@@ -106,7 +87,7 @@ def dome_records(lines):
 
 def _require_scope(store, lines, arrays, system):
     """Verified native 8.1.6 two-face Dome profile with one subarray sharing both orientations."""
-    blocks = objects(_view(lines))
+    blocks = objects("".join(lines))
     root = next((block for block in blocks if not block.path), None)
     if root is None:
         raise ValueError("Project file has no root PVObject block")
@@ -117,7 +98,7 @@ def _require_scope(store, lines, arrays, system):
         raise ValueError("Root Flags must be 0")
     if system is None or len(arrays) != 1:
         raise ValueError("Requires one pvSystem and one subarray")
-    system_root = _block_of(lines, system)
+    system_root = root_block(lines, system)
     if set(system_root.fields) != {"Flags", "SystemType"}:
         raise ValueError("pvSystem must declare only Flags and SystemType for this batch")
     if system_root.one("SystemType")[1] != "Grid" or system_root.one("Flags")[1] != "$06000000":
@@ -126,7 +107,7 @@ def _require_scope(store, lines, arrays, system):
     main_array = store._main_array(lines)
     if main_array is None:
         raise ValueError("A pvMainArray section is required")
-    main_root = _block_of(lines, main_array)
+    main_root = root_block(lines, main_array)
     if main_root.one("Flags")[1] != "$01900400" or main_root.one("Flags2")[1] != "$082A":
         raise ValueError("Main array requires the verified Flags=$01900400 and Flags2=$082A")
     bounds = next(iter(arrays.values()))
@@ -190,8 +171,7 @@ def create_dome_allocation_variant(store, *, project, source_variant, new_varian
             if variant_name is not None:
                 store._validate_display_name(variant_name, "variant_name")
                 bom_prefix = store._display_name_prefix(original, variant_name, add_utf8_bom, "variant_name")
-                name_line, = store._display_name_fields(
-                    _view(candidate_lines).splitlines(keepends=True), complete=True)
+                name_line, = store._display_name_fields(candidate_lines, complete=True)
                 before = candidate_lines[name_line].partition("=")[2].strip()
                 candidate_lines[name_line] = replace_value(candidate_lines[name_line], variant_name)
                 name_change = {"before": before, "after": variant_name}

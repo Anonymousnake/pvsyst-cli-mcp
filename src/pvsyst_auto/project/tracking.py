@@ -5,13 +5,11 @@ import difflib
 import re
 from decimal import Decimal, InvalidOperation
 
-from pvsyst_auto.components.editor import objects, replace_value
+from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 
 BOM = b"\xef\xbb\xbf"
 STEP = Decimal("0.1")
-# Parser view only: the saved bytes keep the original orientation closing tag.
-ORIENT_CLOSE = re.compile(r"(?m)^([ \t]*)End of TOrientGroup([ \t]*)(?=\r?$)")
 
 # Adapter ranges only; the native GUI limits are not measured.
 RANGES = {"AxisAzim": (Decimal("-20"), Decimal("20")),
@@ -118,25 +116,6 @@ UNLIM_GEOMETRY = {"Pitch": Decimal("6.600"), "CollectorWidth": Decimal("3.000"),
 UNLIM_INTEGERS = {"NSheds": "10", "NModInWidth": "3"}
 
 
-def _view(lines):
-    return ORIENT_CLOSE.sub(r"\1End of PVObject pvOrient\2", "".join(lines))
-
-
-def _root_block(lines):
-    root = next((block for block in objects(_view(lines)) if not block.path), None)
-    if root is None:
-        raise ValueError("Project file has no root PVObject block")
-    return root
-
-
-def _block_of(lines, bounds):
-    blocks = objects(_view(lines[bounds[0]:bounds[1] + 1]))
-    block = next((block for block in blocks if not block.path), None)
-    if block is None:
-        raise ValueError("Subarray has no root PVObject block")
-    return block
-
-
 def _decimal(text, label):
     try:
         value = Decimal(text.strip())
@@ -228,7 +207,7 @@ def tracking_values(tracking, fieldtype, source=None):
 
 def orient_block(lines):
     """Return the one directly owned tracking record after checking every owned field."""
-    blocks = objects(_view(lines))
+    blocks = objects("".join(lines))
     records = [block for block in blocks if block.object_type == "pvOrient"]
     if len(records) != 1:
         raise ValueError("Requires exactly one pvOrient record")
@@ -276,7 +255,7 @@ def orient_block(lines):
 def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), system_flags=("$06000000",),
                    sub_flags=("$019E1002",)):
     """Verified native 8.1.6 PV-only single-subarray Grid scope; callers own flag-family validation."""
-    root = _root_block(lines)
+    root = root_block(lines)
     if root.one("Version")[1] != "8.1.6":
         raise ValueError("Requires a native 8.1.6 variant")
     flags = root.one("Flags")[1]
@@ -284,7 +263,7 @@ def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), s
         raise ValueError("Root Flags must be 0")
     if system is None or len(arrays) != 1:
         raise ValueError("Requires one pvSystem and one subarray")
-    system_root = _block_of(lines, system)
+    system_root = root_block(lines, system)
     if set(system_root.fields) != {"Flags", "SystemType"}:
         raise ValueError("pvSystem must declare only Flags and SystemType for this batch")
     if system_root.one("SystemType")[1] != "Grid" or system_root.one("Flags")[1] not in system_flags:
@@ -292,10 +271,10 @@ def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), s
     main = store._main_array(lines)
     if main is None:
         raise ValueError("A pvMainArray section is required")
-    main_root = _block_of(lines, main)
+    main_root = root_block(lines, main)
     if main_root.one("Flags")[1] not in main_flags or main_root.one("Flags2")[1] != "$082A":
         raise ValueError("Main array requires the caller's verified flag family and Flags2=$082A")
-    sub_root = _block_of(lines, next(iter(arrays.values())))
+    sub_root = root_block(lines, next(iter(arrays.values())))
     if sub_root.one("Version")[1] != "8.1.6" or sub_root.one("Flags")[1] not in sub_flags:
         raise ValueError("Subarray requires native 8.1.6 and the caller's verified flag family")
     if sub_root.one("Flags2")[1] != "$20":
@@ -309,7 +288,7 @@ def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), s
         raise ValueError("Every other NStrOrient* must be zero")
     store._orientation_list(lines)
     store._require_no_geometry(lines)
-    if any(block.object_type in ("pvLoad", "pvGridStorage") for block in objects(_view(lines))):
+    if any(block.object_type in ("pvLoad", "pvGridStorage") for block in objects("".join(lines))):
         raise ValueError("Load and storage objects are outside this batch")
     if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
         raise ValueError("P50/P90 and saved horizon objects are outside this batch")

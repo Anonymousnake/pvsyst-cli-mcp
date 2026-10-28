@@ -857,7 +857,7 @@ def _export_scene(components, name):
 
 
 def _scene_records(path):
-    text = path.read_text(encoding="utf-8-sig").replace("End of TOrientGroup", "End of PVObject pvOrient")
+    text = path.read_text(encoding="utf-8-sig")
     return objects(text), text.splitlines(True)
 
 
@@ -1116,7 +1116,7 @@ def _save_new(project, variant_name):
 
 def _verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules, *, scene_context=None):
     def parsed(raw):
-        return objects(raw.decode("utf-8-sig").replace("End of TOrientGroup", "End of PVObject pvOrient"))
+        return objects(raw.decode("utf-8-sig"))
     target_bytes = Path(path).read_bytes()
     blocks = parsed(target_bytes)
     tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
@@ -1128,8 +1128,7 @@ def _verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules,
     if modules != expect_modules:
         _fail("New variant module total is %d, expected %d" % (modules, expect_modules))
     if scene_context is not None and scene_context["source"].get("orientations"):
-        source_text, target_text = (raw.decode("utf-8-sig").replace(
-            "End of TOrientGroup", "End of PVObject pvOrient") for raw in (source_bytes, target_bytes))
+        source_text, target_text = (raw.decode("utf-8-sig") for raw in (source_bytes, target_bytes))
         try:
             hardware = verify_grouped_hardware(parsed(source_bytes), blocks, source_text.splitlines(True),
                                                target_text.splitlines(True), scene_context["source"])

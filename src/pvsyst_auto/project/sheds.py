@@ -13,7 +13,7 @@ import difflib
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import objects, replace_value
-from pvsyst_auto.project.tracking import _decimal, _require_scope, _view
+from pvsyst_auto.project.tracking import _decimal, _require_scope
 
 BOM = b"\xef\xbb\xbf"
 TYPES = ("Sheds", "SunShields")
@@ -48,7 +48,7 @@ FACTOR_LIMITS = (Decimal("0"), Decimal("1"))
 
 def orient_block(lines):
     """Return the one directly owned shed/sun-shield record after checking its shape."""
-    blocks = objects(_view(lines))
+    blocks = objects("".join(lines))
     records = [block for block in blocks if block.object_type == "pvOrient"]
     if len(records) != 1:
         raise ValueError("Requires exactly one pvOrient record")

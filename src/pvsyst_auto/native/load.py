@@ -5,7 +5,7 @@ import difflib
 import re
 from decimal import Decimal, InvalidOperation
 
-from pvsyst_auto.components.editor import objects, replace_value
+from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.components.generator import finite
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 
@@ -16,8 +16,6 @@ BOM = b"\xef\xbb\xbf"
 # Adapter bound only; not a native or engineering limit.
 LIMIT = 1e6
 STEP = Decimal("0.001")
-# Parser view only: the saved bytes keep their original orientation closing tag.
-ORIENT_CLOSE = re.compile(r"(?m)^([ \t]*)End of TOrientGroup([ \t]*)(?=\r?$)")
 COMMENTS = {"constant": "MCP native constant load", "monthly": "MCP native monthly load",
             "daily": "MCP native daily profile load"}
 ALLOWED = {
@@ -39,25 +37,6 @@ EXPECTED = {
 }
 # mode -> (declared values, trailing slots, trailing slot equals their sum)
 SERIES = {"Monthly": ("ValMonth", 12, 3, False), "DailyProfile": ("ValHour_1", 24, 1, True)}
-
-
-def _view(lines):
-    return ORIENT_CLOSE.sub(r"\1End of PVObject pvOrient\2", "".join(lines))
-
-
-def _root_block(lines):
-    root = next((block for block in objects(_view(lines)) if not block.path), None)
-    if root is None:
-        raise ValueError("Project file has no root PVObject block")
-    return root
-
-
-def _block_of(lines, bounds):
-    blocks = objects(_view(lines[bounds[0]:bounds[1] + 1]))
-    block = next((block for block in blocks if not block.path), None)
-    if block is None:
-        raise ValueError("Section has no root PVObject block")
-    return block
 
 
 def _decimal(text, label, maximum=LIMIT):
@@ -181,7 +160,7 @@ def _verify_existing(mode, fields):
 
 def flat_load(lines):
     """Return the one directly owned flat load block, or None; unknown shapes stop instead of being replaced."""
-    loads = [block for block in objects(_view(lines)) if block.object_type == "pvLoad"]
+    loads = [block for block in objects("".join(lines)) if block.object_type == "pvLoad"]
     if len(loads) > 1:
         raise ValueError("Only one owning pvLoad object is supported")
     if not loads:
@@ -206,7 +185,7 @@ def flat_load(lines):
 
 def _require_scope(store, lines, arrays, system):
     """Verified native 8.1.6 PV-only single-subarray Grid variant; no storage, scene or P50."""
-    root = _root_block(lines)
+    root = root_block(lines)
     if root.one("Version")[1] != "8.1.6":
         raise ValueError("Requires a native 8.1.6 variant")
     flags = root.one("Flags")[1]
@@ -214,7 +193,7 @@ def _require_scope(store, lines, arrays, system):
         raise ValueError("Root Flags must be 0 or 0x80000")
     if system is None or len(arrays) != 1:
         raise ValueError("Requires one pvSystem and one subarray")
-    system_root = _block_of(lines, system)
+    system_root = root_block(lines, system)
     if set(system_root.fields) != {"Flags", "SystemType"}:
         raise ValueError("pvSystem must declare only Flags and SystemType for this batch")
     if system_root.one("SystemType")[1] != "Grid":
@@ -224,10 +203,10 @@ def _require_scope(store, lines, arrays, system):
     main = store._main_array(lines)
     if main is None:
         raise ValueError("A pvMainArray section is required")
-    main_root = _block_of(lines, main)
+    main_root = root_block(lines, main)
     if main_root.one("Flags")[1] != "$01900400" or main_root.one("Flags2")[1] != "$082A":
         raise ValueError("Main array requires the verified Flags=$01900400 and Flags2=$082A")
-    sub_root = _block_of(lines, next(iter(arrays.values())))
+    sub_root = root_block(lines, next(iter(arrays.values())))
     if sub_root.one("Version")[1] != "8.1.6":
         raise ValueError("Subarray requires the verified 8.1.6 declaration")
     if sub_root.one("Flags")[1] != "$019E1002":
@@ -240,7 +219,7 @@ def _require_scope(store, lines, arrays, system):
            for key in sub_root.fields):
         raise ValueError("Every other NStrOrient* must be zero")
     store._require_no_geometry(lines)
-    if any(block.object_type == "pvGridStorage" for block in objects(_view(lines))):
+    if any(block.object_type == "pvGridStorage" for block in objects("".join(lines))):
         raise ValueError("Grid storage objects are outside this batch")
     if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
         raise ValueError("P50/P90 and saved horizon objects are outside this batch")
@@ -264,7 +243,7 @@ def _apply_block(lines, load, newline):
     else:
         block = native_load_block(load, newline).splitlines(keepends=True)
         candidate = lines[:found[0]] + block + lines[found[1] + 1:]
-    index, _ = _root_block(candidate).one("Flags")
+    index, _ = root_block(candidate).one("Flags")
     candidate[index] = replace_value(candidate[index], "$00080000")
     return candidate
 

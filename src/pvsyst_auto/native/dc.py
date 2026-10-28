@@ -6,8 +6,9 @@ import time
 from decimal import Decimal
 from pathlib import Path
 
+from pvsyst_auto.components.editor import root_block
 from pvsyst_auto.energy.ac import _layout
-from pvsyst_auto.project.tracking import _require_scope, _root_block
+from pvsyst_auto.project.tracking import _require_scope
 
 
 def _number(value):
@@ -206,7 +207,7 @@ def create_native_dc_cabling_variant(store, cli, *, project, source_variant, dc,
                             raise
                         time.sleep(0.2)
                 key = "resistance_mohm" if dc["mode"] == "resistance" else "loss_percent"
-                if _root_block(decoded.splitlines(keepends=True)).one("Comment")[1] != variant_name:
+                if root_block(decoded).one("Comment")[1] != variant_name:
                     raise ValueError("Native saved display name differs from the request")
                 if _invariants(decoded.splitlines(keepends=True)) != unchanged:
                     raise ValueError("Native SaveAs changed a non-DC physical record")

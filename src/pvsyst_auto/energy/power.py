@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from pvsyst_auto.components.editor import ASSIGNMENT, replace_value
+from pvsyst_auto.components.editor import ASSIGNMENT, has_object, replace_value
 from pvsyst_auto.native.grid_limit import grid_limit_state, replace_grid_limit
 from pvsyst_auto.energy.power_factor import power_factor_state, replace_power_factor
 
@@ -37,7 +37,7 @@ def _owning(lines, system):
     if any(line.strip().startswith("PVObject_") or line.strip() == "EndTags"
            for line in lines[system[0] + 1:system[1]]):
         raise ValueError("Require a flat native grid system")
-    if any("pvLoad" in line or "pvGridStorage" in line for line in lines):
+    if has_object(lines, "pvLoad", "pvGridStorage"):
         raise ValueError("Load or storage coupling is outside this scope")
     if any(line.strip() == "P50_P90=TP50_P90" for line in lines):
         raise ValueError("P50 parameter coupling is outside this scope")
@@ -73,7 +73,7 @@ def _owning(lines, system):
     return fields, flags
 
 
-def _view(lines, system, keep, own):
+def _masked_view(lines, system, keep, own):
     """Whole-file copy; inside the owning body drop counterpart fields and mask Flags."""
     view, delta = list(lines), 0
     for i in range(system[0] + 1, system[1]):
@@ -110,8 +110,8 @@ def _grid_shape(state, flags):
 def _parts(lines, system):
     """Both views from the untouched file, so `before` is never a post-edit read."""
     fields, flags = _owning(lines, system)
-    pf_view, pf_bounds = _view(lines, system, PF_BITS, PF_OWN)
-    grid_view, grid_bounds = _view(lines, system, ENABLED | INJECTION, GRID_OWN)
+    pf_view, pf_bounds = _masked_view(lines, system, PF_BITS, PF_OWN)
+    grid_view, grid_bounds = _masked_view(lines, system, ENABLED | INJECTION, GRID_OWN)
     power_factor = power_factor_state(pf_view, pf_bounds)
     grid_limit = _grid_shape(grid_limit_state(grid_view, grid_bounds), flags)
     if power_factor.get("mode") is None or grid_limit.get("mode") is None:

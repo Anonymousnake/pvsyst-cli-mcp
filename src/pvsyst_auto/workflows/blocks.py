@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from pvsyst_auto.components.editor import ASSIGNMENT, objects
+from pvsyst_auto.components.editor import ASSIGNMENT, root_block
 from pvsyst_auto.components.generator import direct_fields, one
 from pvsyst_auto.project.circuit import circuit_nodes, inventory as grid_inventory
 
@@ -48,8 +48,7 @@ def _inspect_blocks(store, data):
                         and match[2].startswith("PVObject_")), len(lines) - 1)
     if one(direct_fields(lines, (0, first_child)), "Version")[1] not in {"8.1.0", "8.1.6"}:
         raise ValueError("Block preparation requires native variant Version=8.1.0/8.1.6")
-    main_fields = next(block for block in objects("".join(lines[main[0]:main[1] + 1]))
-                       if not block.path).fields
+    main_fields = root_block(lines, main).fields
     for key, expected in (("Flags", 0x00100400), ("Flags2", 0x082A)):
         raw = one(main_fields, key)[1]
         if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", raw) or int(raw[1:], 16) != expected:

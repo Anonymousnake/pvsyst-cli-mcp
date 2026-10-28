@@ -9,7 +9,6 @@ from decimal import Decimal, InvalidOperation
 from pvsyst_auto.energy.availability import native_availability
 
 from pvsyst_auto.components.editor import objects, replace_value
-from pvsyst_auto.project.tracking import _view
 from pvsyst_auto.components.generator import direct_fields, finite, one
 
 NUMERIC_FIELDS = {
@@ -68,7 +67,7 @@ def storage_state(lines, system):
         if not raw.isdigit() or not 1 <= int(raw) <= 10000:
             raise ValueError("Battery pack counts must be positive bounded integers")
         counts[key] = int(raw)
-    records = [block for block in objects(_view(lines)) if block.object_type == "pvGridStorage"]
+    records = [block for block in objects("".join(lines)) if block.object_type == "pvGridStorage"]
     if len(records) != 1 or records[0].path != "PVObject_GridStorage" or not records[0].end_line:
         raise ValueError("An existing complete unique pvGridStorage template is required")
     bounds = (records[0].line - 1, records[0].end_line - 1)

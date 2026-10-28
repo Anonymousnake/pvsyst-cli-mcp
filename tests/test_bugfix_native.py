@@ -178,8 +178,8 @@ class PathTests(unittest.TestCase):
             events.append("replace")
             real_replace(source, destination)
 
-        with mock.patch.object(paths.os, "fsync", side_effect=fsync), \
-                mock.patch.object(paths.os, "replace", side_effect=replace):
+        with mock.patch.object(os, "fsync", side_effect=fsync), \
+                mock.patch.object(os, "replace", side_effect=replace):
             paths.write_json(target, {"phase": "completed"})
         self.assertEqual(events, ["fsync", "replace"])
         self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"phase": "completed"})
@@ -226,9 +226,10 @@ class EditorTests(unittest.TestCase):
         self.assertEqual(lines, GRID_LINES)
 
     def test_load_scope_reports_a_missing_root_block_as_value_error(self):
-        for call in (lambda: native_load._root_block([]),
-                     lambda: native_load._root_block(["  Comment=orphan\r\n"]),
-                     lambda: native_load._block_of(GRID_LINES, (20, 25))):
+        from pvsyst_auto.components.editor import root_block
+        for call in (lambda: root_block([]),
+                     lambda: root_block(["  Comment=orphan\r\n"]),
+                     lambda: root_block(GRID_LINES, (20, 25))):
             with self.assertRaisesRegex(ValueError, "no root PVObject block"):
                 call()
         with tempfile.TemporaryDirectory() as directory:
@@ -450,7 +451,7 @@ class NativeDCTests(unittest.TestCase):
                     _profile=mock.Mock(side_effect=lambda store, lines: SAVED_DC if "saved" in "".join(lines)
                                        else SOURCE_DC),
                     _invariants=mock.Mock(return_value=("unchanged",)), _open=self.open,
-                    _root_block=mock.Mock(side_effect=lambda lines: SimpleNamespace(
+                    root_block=mock.Mock(side_effect=lambda text: SimpleNamespace(
                         one=lambda key: (0, self.saved_name))))),
                 (native_scene, dict(
                     _check_cli=self.check_cli, _physical_coordinates=contextlib.nullcontext,

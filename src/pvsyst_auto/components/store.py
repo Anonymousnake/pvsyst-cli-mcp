@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 
 from pvsyst_auto.project.paths import project_name, project_path, variant_id
+from pvsyst_auto.project import fileio
 from pvsyst_auto.components.editor import OBJECT_CLOSE_ALIAS, curve_inventory, replace_curves, replace_value, objects
 from pvsyst_auto.components.battery import battery_curve_inventory, replace_battery_curve
 from pvsyst_auto.components.commercial import commercial_inventory, replace_commercial
@@ -621,18 +622,17 @@ class ComponentStore:
                 result["commercial_after"] = commercial_inventory(kind, edited)
             if dry_run or candidate == data:
                 return result
-            if self._read(path) != data:
-                raise ValueError("Component changed while preparing the edit")
-            backup = self.backup(kind, name)
-            temporary = path.with_name(f".{name}.{uuid.uuid4().hex}.tmp")
-            try:
-                with temporary.open("xb") as stream:
-                    stream.write(candidate)
-                if backup["sha256"] != before_sha or self._read(path) != data:
+
+            def unchanged_backup():
+                # The backup re-reads the component, so it must hold the inspected bytes too.
+                backup = self.backup(kind, name)
+                if backup["sha256"] != before_sha:
                     raise ValueError("Component changed while preparing the edit")
-                os.replace(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
+                return backup
+
+            backup = fileio.replace_checked(path, data, candidate, self._read,
+                                            "Component changed while preparing the edit",
+                                            prepare=unchanged_backup)
             return {**result, "backup_name": backup["backup_name"]}
 
     def restore(self, kind: str, name: str, backup_name: str, confirm: bool = False) -> dict:
@@ -653,13 +653,7 @@ class ComponentStore:
             verified = self._verify_snapshot(kind, name, source, data)
             validation = self._recovery_info(kind, data)
             previous = self.backup(kind, name) if path.exists() else None
-            temporary = path.with_name(f".{name}.{uuid.uuid4().hex}.tmp")
-            try:
-                with temporary.open("xb") as stream:
-                    stream.write(data)
-                os.replace(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            fileio.atomic_replace(path, data)
             return {"name": name, "restored_from": backup_name,
                     "sha256": hashlib.sha256(data).hexdigest(),
                     "integrity_verified": verified, "validation": validation,

@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))       # sibling component fixture module
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # pvsyst_* modules and the server
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # the registered tool catalog
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -26,6 +27,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 # test helper is driven here. The module fixture below is a root-only text PAN whose
 # identity lives directly in the pvModule root object.
 from test_design_envelope import OND_TEXT
+from pvsyst_auto.api.context import TOOL_GROUPS
 
 PAN_ROOT_TEXT = """PVObject_=pvModule
   Comment=Jinko\tTiger Neo 620W\tUser device
@@ -73,8 +75,9 @@ End of PVObject pvModule
 """
 
 SERVER = Path(__file__).resolve().parents[1] / "pvsyst_mcp_server.py"
-EXPECTED_TOOL_COUNT = 60
-EXPECTED_GROUP_COUNT = 7
+# The published catalog must equal the registered one, so a new tool never needs an edit here.
+EXPECTED_TOOL_COUNT = sum(map(len, TOOL_GROUPS.values()))
+EXPECTED_GROUP_COUNT = len(TOOL_GROUPS)
 NEW_TOOL_GROUPS = (("pvsyst_resolve_location", "Sites & Weather"),
                    ("pvsyst_acquire_weather", "Sites & Weather"),
                    ("pvsyst_review_weather", "Sites & Weather"),

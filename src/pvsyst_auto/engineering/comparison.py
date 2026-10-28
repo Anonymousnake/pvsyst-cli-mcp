@@ -10,7 +10,8 @@ from pathlib import Path, PureWindowsPath
 import re
 
 from pvsyst_auto.native.cli import iter_result_csv, result_units
-from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file, write_json
+from pvsyst_auto.project.fileio import write_json
+from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
 from pvsyst_auto.results import compare_results, fingerprint
 
 

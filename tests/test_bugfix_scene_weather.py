@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pvsyst_auto.project.paths as paths_module
+import pvsyst_auto.project.fileio as fileio_module
 import pvsyst_auto.weather.acquisition as acquisition
 import pvsyst_auto.weather.preparation as preparation
 import pvsyst_auto.weather.review as review_module
@@ -263,7 +263,7 @@ class PrepareManifestWrites(unittest.TestCase):
                 raise PermissionError("fixture: manifest is locked")
 
         with patch.object(self.cli, "_run", side_effect=native_weather_commands()), \
-                patch.object(paths_module, "os", LockedManifest()):
+                patch.object(fileio_module, "os", LockedManifest()):
             result = self.prepare("Locked")
         self.assertEqual((result["status"], result["stage"]), ("failed", "normalized_inputs"), result)
         self.assertIn("Weather manifest write failed: fixture: manifest is locked", result["issues"])
@@ -380,8 +380,8 @@ class GroupedHardwareVerification(unittest.TestCase):
     native_tables = (("30.123457", "-12.300000"), ("20.000000", "90.000000"))
 
     def verify(self, saved):
-        texts = [text.replace("End of TOrientGroup", "End of PVObject pvOrient")
-                 for text in (grouped_variant(), saved)]
+        # Raw native text, as native.scene._verify_new passes it: objects() reads TOrientGroup closings.
+        texts = [grouped_variant(), saved]
         return verify_grouped_hardware(objects(texts[0]), objects(texts[1]),
                                        texts[0].splitlines(True), texts[1].splitlines(True),
                                        self.source)
