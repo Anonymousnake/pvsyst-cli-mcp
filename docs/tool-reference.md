@@ -138,7 +138,7 @@ See [result comparison](result-comparison-verification.md) for side-by-side diff
 ## Parameter & variant guides
 
 `pvsyst_update_variant_parameters` applies one domain update per transaction (optionally paired with `variant_name`) so flag mutations stay isolated:
-- Detailed losses: [loss scalars (Uc, LID, quality, mismatch)](grid-capacity-verification.md), [loss GUI roundtrip notes](loss-gui-roundtrip.md), [soiling](soiling-verification.md), [string mismatch & auxiliary profiles](native-detailed-losses.md), [constant auxiliary power](native-auxiliary-power.md), [IAM & ageing](native-model-inputs.md)
+- Detailed losses: [loss scalars (Uc, LID, quality, mismatch)](grid-capacity-verification.md), [loss GUI roundtrip notes](loss-gui-roundtrip.md), [soiling](soiling-verification.md), [string mismatch, auxiliary profiles & PV-system outage removal](native-detailed-losses.md), [constant auxiliary power](native-auxiliary-power.md), [IAM & ageing](native-model-inputs.md)
 - Orientation & horizon: [seasonal tilt](seasonal-orientation.md), [far horizon profile](horizon-profile.md), [plane & horizon notes](plane-horizon-native.md), [orientation types](native-orientation-controls.md)
 - Energy management: [inverter temperature](inverter-temperature.md), [power factor & PNom](power-factor.md), [grid injection limit](grid-power-limit.md), [combined PF + power controls](native-power-controls.md), [system flags & units](native-energy-management.md), [P50/P90 parameters](p50-native-parameters.md)
 

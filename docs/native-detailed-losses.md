@@ -1,4 +1,4 @@
-# 详细损失参数：组串电压失配与辅助耗电曲线
+# 详细损失参数：失配、辅助耗电与停运配置
 
 本文档说明 `pvsyst_update_variant_parameters` 中的 `string_mismatch_updates`（组串间电压失配）和 `auxiliary_updates` 的 `profile`（带阈值/比例的辅助耗电）模式。这两项均针对 PVsyst 8.1.6 单子阵列、单固定平面、自由地平线、无 3D 阴影的纯光伏并网变体，每次更新作为独立事务执行（可同时附带 `variant_name`）。
 
@@ -33,6 +33,20 @@
 2. **与输出功率成比例的运行耗电**：`proportional_w_per_kw > 0`（单位 `W/kW`，步长 `0.1`）且 `proportional_threshold_kw >= 0`（单位 `kW`，步长 `0.1`），其余三项为 `0`。
 
 **底层单位差异注意**：在 `.VCx` 文件的 `pvSystem` 块里，`AuxPower_Const` 和 `AuxPower_Night` 是按 **瓦（W）** 存储的，而阈值 `AuxPower_CThresh` / `AuxPower_PThresh` 是按 **千瓦（kW）** 存储的，比例系数 `AuxPower_Pout` 则是 **W/kW**。工具内部会按各自字段的原生单位分别转换，不会一刀切地全部乘 1000。
+
+## 清除 PV 系统停运配置
+
+`pvsyst_get_variant_parameters.system_unavailability` 读取 PV 系统自身已保存的停运配置。要移除已有配置，在 `pvsyst_update_variant_parameters` 的通用请求中传入以下专用字段，`project`、`variant` 和当前 `expected_sha256` 仍按普通变体事务提供：
+
+```json
+{"system_unavailability_updates": {"mode": "none"}, "dry_run": true}
+```
+
+确认预览后用 `dry_run=false` 执行。该操作移除所属 `pvSystem` 的整个 `SystemUnavail=TUnavailability` 子对象，并清理其存在标记；只清标记而保留子对象并不会可靠地关闭停运。返回的 `system_unavailability.before/after` 描述保存状态，执行后读取的 `configured` 为 `false`。已经没有停运配置时是无操作，不创建备份。
+
+执行返回 `backup_name`，其中保留完整原文件、原生时段及随机生成设置。恢复时使用 `pvsyst_restore_variant`，传入该备份名、最新读取的 `expected_sha256` 和 `confirm=true`。配置更新返回的 `native_consumption_verified=false` 不是运行结果，实际仿真仍通过 `pvsyst_run_simulation` 执行。
+
+此事务只适用于已识别的 PVsyst 8.1.6 `Periods` 模板：单子阵、普通固定平面、自由地平线、完整电路计数，无负荷、储能、P50/P90 或活动阴影。只接受 `mode=none`，可附带 `variant_name`，其他物理更新分开提交。它不生成新时段、不重新随机抽样，也不修改 WeakGrid 的电网可用性。
 
 ## 其他详细损失项入口索引
 
