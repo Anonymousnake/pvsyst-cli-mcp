@@ -1,58 +1,71 @@
 # 模板驱动的全年仿真
 
-`pvsyst_simulate_template`组合现有工程复制、源同步、组件引用、参数事务、原生运行与结果检查，不生成空白物理设计或接管GUI。单一设计spec由[simulate_design](single-design-inputs.md)协调；显式跟踪使用[继承UnlimTracking任务](tracking-template-flow.md)，不套用固定平面范围。
+`pvsyst_simulate_template` 将“克隆模板工程 → 绑定站点与气象（`.SIT`/`.MET`） → 替换组件与逆变器（`.PAN`/`.OND`） → 修改倾角与容量 → 调用 `PVsystCLI.exe` 跑全年逐时仿真 → 校验 CSV/PDF 输出”串成一步到位的自动化调用。
 
-## 固定模式输入
+- 如果想连组件检索、模板自动匹配和在线天气下载也一起包办，见更高层的 [`pvsyst_simulate_design`](single-design-inputs.md)。
+- 如果模板是无限水平轴跟踪器（`UnlimTracking`），同一工具会自动走跟踪分支，详见[跟踪模板流程](tracking-template-flow.md)。
 
-| 参数 | 要求 |
+## 固定倾角模式入参
+
+| 参数名 | 说明与要求 |
 |---|---|
-| template_project／variant | 工作区完整PRJ及所选VC |
-| new_project | 全新PRJ前缀；工程、清单、SFI及CSV/PDF均无冲突 |
-| pan_name／ond_name | 精确完整明文PAN/OND，不猜模型或用简短铭牌代替拟合 |
-| site_name／met_name | 已有SIT/MET，或由已准备清单明确绑定 |
-| tilt | 严格有限0..90° |
-| year | 严格整数1969..2068，完整所选小时年 |
-| dry_run | 严格布尔，默认true |
-| capacity | 可选[声明包络与整数数量规划](capacity-sizing.md) |
-| weather_manifest_name | 可选天气来源清单，启用资产／时基及逐时对照 |
-| report_pages | 原生页名列表；省略/null为默认完整报告 |
+| `template_project` / `variant` | 工作区中作为底板的 `.PRJ` 与 `.VCx`（要求单子阵列、单固定平面、无 3D 阴影场景或 Module Layout、根级 `PRCorrTemp=False`） |
+| `new_project` | 新生成的 `.PRJ` 文件名（工程名、清单名、`.SFI` 及输出 CSV/PDF 均不能与工作区现有文件重名） |
+| `pan_name` / `ond_name` | 完整的明文 `.PAN`（要求 `GRef=1000 W/m²`）与 `.OND` 文件名 |
+| `site_name` / `met_name` | 工作区 `Sites` 与 `Meteo` 下的 `.SIT` 和 `.MET` 文件名 |
+| `tilt` | 固定平面倾角，范围 `0..90` 度 |
+| `year` | 仿真日历年份（整数 `1969..2068`），必须与 `.MET` 文件的起止日期匹配 |
+| `dry_run` | 布尔值，默认 `true`（仅做只读预检，不创建文件也不调 CLI） |
+| `capacity` | 可选的整数串并联容量规划参数，详见[容量规划](capacity-sizing.md)；不传则直接沿用模板原有的逆变器与组串数量 |
+| `weather_manifest_name` | 可选，`pvsyst_prepare_weather` 生成的天气清单文件名；传入后会开启源 CSV 与仿真输出辐射/温度的逐时比对 |
+| `report_pages` | 可选，指定 PDF 报告要输出的页面名称列表；不传或传 `null` 则输出默认完整报告 |
 
-要求结构完整的单子阵／固定平面Grid，无活动阴影／表／Module Layout，根PRCorrTemp=False，PAN GRef=1000W/m²。未传capacity时保持数量、MPPT、方位、损失和模式；SIT/MET同步整个副本，选中VC改引用和倾角。capacity仅接受更窄的完整独立MPPT模板，不重建拓扑或拟合损失。
-
-不自动选硬件、填缺测、改年、换设备／天气或认证全工况。MET日历预检只读声明，ready不是原生试运行，也不证明载荷覆盖、气候质量或地理／时区一致。
-
-## 预览与状态
-
-使用实际工作区文件调用，检查issues后才设置dry_run=false：
+先用 `dry_run=true` 跑一次预检，确认返回的 `issues` 为空后再把 `dry_run` 设为 `false`：
 
 ```json
-{"template_project":"Template.PRJ","variant":"VC0","new_project":"RoofAnnual.PRJ","pan_name":"ValidatedModule.PAN","ond_name":"ValidatedInverter.OND","site_name":"Site.SIT","met_name":"Weather.MET","tilt":28,"year":2024,"dry_run":true}
+{
+  "template_project": "Template.PRJ",
+  "variant": "VC0",
+  "new_project": "RoofAnnual.PRJ",
+  "pan_name": "ValidatedModule.PAN",
+  "ond_name": "ValidatedInverter.OND",
+  "site_name": "Site.SIT",
+  "met_name": "Weather.MET",
+  "tilt": 28,
+  "year": 2024,
+  "dry_run": true
+}
 ```
 
-blocked表示输入／范围／能力／冲突问题，ready表示只读预检；completed表示执行和本入口结果检查通过。needs_review保留原生警告、异常启发式或天气差异，不能当正常工程认证。failed查看stage/error和产物。MCP is_error=false不保证完成；参数类型错误仍为工具错误。
+## 状态流转与全年输出校验
 
-预览不创建文件或备份；执行先独占创建Results清单，不覆盖旧任务，不自动重试。新的任务请求、实际配置、快照及恢复调用保存在清单中。
+- `blocked`：参数缺项、模板结构不符、`.MET` 年份对不上或目标文件重名。
+- `ready`：`dry_run=true` 预检通过。
+- `completed`：全年仿真跑完，且 CSV/PDF 结果校验全部通过。
+- `needs_review`：仿真跑完了，但触发了复核提示（例如 CLI 控制台打出了 `warning`/`caution`、天气转换有微小舍入偏差、或 `IL_Pmax` 限幅损失异常偏高）。
+- `failed`：写文件或 CLI 运行中途报错，可查看返回的 `stage`、`error` 和保留在工作区的现场文件。
 
-## 年度结果
-
-CSV上下文须匹配项目、变体、SIT/MET；时轴恰为该年00:00..23:00的8760或8784个小时，缺失／重复／倒序／额外年份停止，不补行。E_Grid、EArray、IL_Pmax、GlobInc需明确单位与有限值。标准并网PR使用原生E_Grid、GlobInc与已核验组件数／PAN根PNom和GRef，不平均小时PR；辐照加权交叉检查的0.002绝对比值为导出复核容差，不是设计合格线，也不用于储能。
-
-IL_Pmax不是全部限电或逆变器损失。年度IL_Pmax超过铭牌容量与入射辐照对应STC参考能量的三倍会触发公开的保守review，不是原生物理上限。PDF检查原生文件标识，生产路径不依赖文本提取库。diagnostics尾部最多12000字符；本次原生warning/warn/caution行保留并可使needs_review，固定适用范围说明本身不触发。
+仿真结束后，工具会对导出的 CSV 和 PDF 做一轮严格体检：
+1. **上下文与时间轴**：CSV 头部记录的工程、变体、`.SIT`/`.MET` 必须与请求一致；时间轴必须恰好覆盖目标年份 `00:00..23:00` 的全部 8760（平年）或 8784（闰年）个整点小时，缺行、重复或乱序直接判失败。
+2. **标准并网 PR 核算**：读取 `E_Grid`、`EArray`、`IL_Pmax`、`GlobInc` 的单位与全量有限值，并用全年的 $\sum E_{\text{Grid}} / (\sum \text{GlobInc} \times P_{\text{nom,DC}} / G_{\text{ref}})$ 交叉核对系统 PR（不能拿每小时 PR 的算术平均值当年度 PR）。
+3. **逆变器限幅异常提示**：如果全年的 `IL_Pmax`（逆变器超功率削峰损失）超过了特定启发式阈值，会把任务标为 `needs_review` 提醒检查容配比。
 
 ## 天气与报告
 
-绑定清单时，在写项目之前重验源／规范化／月值CSV、MEF、SIT、MET及状态、年份、时基和名称。原生显式加载SIT/MET，输出GlobHor/DiffHor/T_Amb与准备CSV比较。0.1W/m²和0.01°C仅为舍入／转换复核阈值；超阈或保留转换警告保持review，标签／行数／单位不一致则失败。prepared不等于MET验证；见[天气准备](weather-preparation.md)。
+### 绑定天气清单核对
 
-report_pages沿严格schema进入请求清单和原生-rp，不后裁／重排PDF。可用名称：
+如果传入了 `weather_manifest_name`，工具在写工程文件前会先校验源 CSV、归一化 CSV、月值 CSV、`.MEF`、`.SIT`、`.MET` 的文件哈希与时基声明；仿真跑完后，还会把导出 CSV 里的 `GlobHor`、`DiffHor`、`T_Amb` 与准备阶段的 CSV 逐小时比对。辐射差超过 `0.1 W/m²` 或温度差超过 `0.01 °C` 会记入 `needs_review` 提示。
+
+### 原生 PDF 报告页选择（`report_pages`）
+
+`report_pages` 直接映射给 `PVsystCLI.exe` 的 `-rp` 参数，由 PVsyst 原生渲染指定页面（不是生成全量 PDF 后在外部用脚本删页）。支持的页面标识如下：
 
 ```text
 cover summary notes params horizon shadings usersneeds results econeval circuit losses financialbalance p50p90 carbonbalance predefgraphs
 ```
 
-未知／空列表／错误类型在发现、天气或副本创建之前停止。页名合法不保证当前配置有该页内容，例如P50仍需原生结果状态。run_simulation原逗号字符串接口不变。
+注意：页面标识合法只代表 CLI 接受该参数，实际 PDF 里能不能打出那一页取决于变体本身是否启用了对应模块（比如没配地平线或没激活 P50/P90 时，选了 `horizon` 或 `p50p90` 也不会凭空多出一页）。
 
-## 失败与恢复
+## 失败保留与回滚
 
-原模板只读，失败保留副本、备份、SFI、报告和清单。recovery按逆序给出现有restore_variant／restore_project_sources参数；只有文件仍处对应事务状态时有效，外部编辑后先重新检查，不替换前置条件盲目覆盖。恢复回到刚复制的PRJ/VC，不删除任务或改写历史报告。
-
-清单更新使用同目录临时文件替换，非跨文件原子作业或断电持久性保证。编辑与登记之间中断需结合已有阶段、后端备份和现场人工恢复；进程锁不排除外部编辑。同进程单工作区串行，不把恢复记录当跨进程租约。
+模板工程本身全程只读。执行任务时会先在 `Results` 下创建独占的任务清单 JSON，并在克隆出的新工程上分步修改。万一中途失败，已生成的工作工程、备份、`.SFI` 和日志都会保留在磁盘上方便排查；清单里的 `recovery` 字段按逆序列出了可直接传给 `pvsyst_restore_variant` 和 `pvsyst_restore_project_sources` 的回滚参数。

@@ -1,28 +1,28 @@
-# 读取保存的PV区域关联
+# 已保存 3D 场景中的 PV 表格与朝向关联检查（`pv_bindings`）
 
-`pvsyst_get_variant_parameters`在活动`shading_scene`中返回`pv_bindings`，核对保存的PV表、朝向和子阵声明。它不启动软件、不写工程，也不证明原生计算。**stored_consistent不等于源几何一致，DOrigine也不是房屋或PVCollada坐标。**
+当一个 `.VCx` 变体包含活动的 3D 近阴影场景（`shading_scene`）时，调用 `pvsyst_get_variant_parameters` 会在 `shading_scene.pv_bindings` 中返回场景内各张光伏组件表（`pvShdArrayTable`）与电气朝向（`pvOrient`）、子阵列（`pvSubArray`）之间的绑定核对结果。
 
 ```json
-{"project":"HOUSE.PRJ","variant":"VC1"}
+{
+  "project": "HOUSE.PRJ",
+  "variant": "VC1"
+}
 ```
 
-## 返回内容
+## `pv_bindings` 返回字段
 
-`shading_scene`保留mode/flags/object_count/object_types/values。活动场景另含：
+| 字段路径 | 内容说明 |
+|---|---|
+| `pv_bindings.tables` | 每张 `pvShdArrayTable` 在文件中的对象路径、原始字段值、绑定的 `orientation_id`（`NoOrient`）、表格组件数（`module_count`）以及原生局部原点 `origin_m`（`DOrigine`） |
+| `pv_bindings.groups` | 按朝向汇总关联的子阵列 ID、PV 表路径，以及电气侧声明组件数（`NModSerie × NStringCh`）与 3D 场景侧表格组件数的对比 |
+| `pv_bindings.coordinate_frame` | 原生 `DOrigine` 坐标值（单位米） |
 
-| 字段 | 内容 | 使用边界 |
-|---|---|---|
-| `pv_bindings.tables` | 对象路径、所属字段原文、orientation_id、module_count、origin_m | Comment和NoObjCreated不是稳定身份；object_path仅定位当前文件 |
-| `pv_bindings.groups` | 朝向原文、关联子阵ID／表路径、电气与场景组件数 | 比较保存引用，不认证电路拓扑或工程来源 |
-| `pv_bindings.coordinate_frame` | 原生DOrigine，单位米 | 不猜轴或锚点修正，不自动投影或移动 |
-| `source_geometry_verified` / `native_consumption_verified` / `generic_geometry_decoded` | 均false | 不用旧运行替任意新输入背书 |
+## 三种绑定状态（`status`）
 
-## 状态与范围
+该检查支持包含 1..2 张 PVCollada 导入的 `pvShdArrayTable`、1..2 个普通非平均固定朝向和 1..2 个子阵列的 PVsyst 8.1.6 变体（若变体是空场景，则不附加 `pv_bindings` 字段）：
 
-`stored_consistent`表示受支持声明中PV表引用存在，倾角、方位和底面倾角等于目标固定朝向，逐朝向场景组件数等于对应子阵NModSerie×NStringCh之和。它不说明PV表在正确屋面、坐标未交换、物理参数有效或已被仿真消费。
+- **`stored_consistent`**：所有 PV 表的 `NoOrient` 引用均指向存在的固定朝向，表格的倾角、方位角、底面坡度与目标固定朝向完全一致，且每个朝向下的 3D 表格组件总数恰好等于对应子阵列的 `NModSerie × NStringCh`。
+- **`needs_review`**：发现朝向引用缺失、表格角度与系统朝向不一致，或者某个朝向下的 3D 组件数与电气子阵列组件数对不上（具体差异见 `issues`）。
+- **`unsupported`**：场景包含超过 2 张表、使用了跟踪/平均朝向或非有限坐标等超出当前检查规则的结构（此时 `shading_scene` 仍保持 `active` 状态并保留原始字段摘要）。
 
-`needs_review`表示存在缺失引用、角度或逐组数量差异，issues定位对象与朝向。`unsupported`表示形状超范围、关键字段缺失／重复或坐标非有限等；原场景仍为active，不伪装成empty，已读取原文及重复值保留。
-
-仅支持1..2张native8.1.6/osPVCollada的pvShdArrayTable、1..2普通非平均固定朝向、1..2子阵及普通物体。不支持其他版本／导入来源、平均／跟踪平面或未知物体；通用网格不解码，不自动修复。
-
-空场景不添加pv_bindings。仅改变表坐标而保持引用和数量时，stored_consistent仍可能成立，source_geometry_verified始终false。源坐标与身份限制见[场景身份说明](native-scene-identity-map.md)；受限双屋面运行见[工程交付](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)，不将保存声明核对升级为几何认证。
+**需要注意的一点**：`stored_consistent` 只代表 `.VCx` 里保存的朝向引用、角度和组件颗数自洽；如果你在 3D 编辑器里把整张光伏表平移偏离了屋顶（只改了 `DOrigine` 坐标，没改朝向和颗数），`stored_consistent` 依然会是真。要连同屋面空间坐标一起做 `0.00002 m` 精度的完整核对，需走 [`pvsyst_run_house_task`](native-house-task.md) 的场景归位与重载校验流程（详见[场景身份说明](native-scene-identity-map.md)和[双屋面交付](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。

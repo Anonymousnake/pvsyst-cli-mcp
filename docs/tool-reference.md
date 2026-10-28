@@ -1,159 +1,168 @@
 # Tool and capability reference
 
-See [installation](../README.md) or[简体中文](../README.zh-CN.md). The default server exposes 82 tools in eight groups. Optional PVSYST_TOOL_GROUPS selection changes only that server process; for example, setup, engineering, results selects those workflows. Each tool description starts with its category. Restart a running server after code/schema changes.
+For setup instructions and package layout, see [README.md](../README.md) or [README.zh-CN.md](../README.zh-CN.md).
 
-## Native scope
+By default the MCP server exposes **82 tools across 8 groups**. You can restrict a server process to specific groups via the `PVSYST_TOOL_GROUPS` environment variable (for example `setup,engineering,results`). Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
 
-PVsystCLI runs existing projects/variants. The adapter checks the installed executable's own help before using an option; newer online documentation does not add missing capabilities. The bounded Chinese8.1.6rev49278/DPI96 GUI bridges are separate native entries, not official CLI imports or general desktop automation.
+## PVsystCLI version differences
 
-| Feature |8.0.6|8.1.6|
+`PVsystCLI.exe` runs simulations on existing projects and variants, converts weather files, and manages licenses. Because editing project parameters, component databases, or 3D shading scenes is not part of the official CLI, this package handles those edits by parsing and writing PVsyst's text files directly (or via targeted Win32 GUI automation on PVsyst 8.1.6 rev49278 Chinese at 96 DPI for 3D scene imports and DC cable calculations).
+
+Before running a CLI command, the adapter inspects `PVsystCLI.exe help` on the host machine so unsupported flags fail immediately without burning a simulation run:
+
+| CLI capability | 8.0.6 | 8.1.6 |
 |---|---|---|
-| Existing project, CSV/PDF, date range, language, report pages |Yes|Yes|
-| Weather conversion, license commands, logs |Yes|Yes|
-| Batch params/RVT, shading recomputation |No|Yes|
-| Site creation/override, synthetic weather |No|Yes|
-| Hour/subhour option |No|Yes|
+| Simulate existing project/variant, export CSV/PDF, date range, language, report pages | Yes | Yes |
+| Convert weather CSV to `.MET`, license commands, export diagnostic logs | Yes | Yes |
+| Batch parameter CSV / `.RVT`, shading table recomputation (`-rs`) | No | Yes |
+| Create `.SIT` site file, override project site, generate synthetic weather | No | Yes |
+| Sub-hourly / hourly step selection | No | Yes |
 
-Options-file indirection(-cof) and default-CSV overwrite(-odc) are omitted: tools expose named options and require new output names. A site file is not a complete design. PVsyst performs physical, shading, probability and storage calculations; supported field editing does not certify hardware or source data.
+Two CLI flags are intentionally omitted from the MCP surface: `-cof` (options file indirection, since all options are passed explicitly) and `-odc` (overwrite default CSV, since every run requires an explicit new output filename).
 
-## Tools by workflow
+## Tools by workflow group
 
 ### Setup & License (6)
 
-| Tools | Purpose |
+| Tool | What it does |
 |---|---|
-| `pvsyst_capabilities` | Installed version and command/option support |
-| `pvsyst_license_info` | License/quota without key or Host ID |
-| `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | Explicitly confirmed license changes |
-| `pvsyst_export_logs` | New diagnostic ZIP under Results |
+| `pvsyst_capabilities` | Inspect installed `PVsystCLI.exe` version and supported CLI commands/flags |
+| `pvsyst_license_info` | Query CLI license status and remaining simulation quota (redacts key and Host ID) |
+| `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | Activate, deactivate, or sync the CLI license (`confirm=true` required) |
+| `pvsyst_export_logs` | Export PVsyst diagnostic logs to a new ZIP archive under `Results` |
 
 ### Engineering (6)
 
-| Tools | Purpose |
+| Tool | What it does |
 |---|---|
-| `pvsyst_project_handoff` | Read saved inputs and declarations, missing basis and follow-up actions |
-| `pvsyst_prepare_block_project` | Prepare new PRJ/VC from explicit counts of complete supported blocks; no simulation |
-| `pvsyst_review_engineering_brief` | Review caller-structured cited quantities before a PRJ exists |
-| `pvsyst_run_engineering_task` | Isolated fixed/UnlimTracking or existing AC-storage revision and native annual run |
-| `pvsyst_compare_engineering_scenarios` | Compare two/three existing native results with input/review separation |
-| `pvsyst_export_engineering_delivery` | Export a bound selected run or scenario set as one new ZIP |
+| `pvsyst_project_handoff` | Read an existing variant's equipment, counts, electrical/orientation links, weather, load, and storage; separate caller declarations from template-inherited values and list missing inputs |
+| `pvsyst_prepare_block_project` | Assemble a new `.PRJ`/`.VCx` by repeating complete fixed subarray blocks from a template project by integer counts |
+| `pvsyst_review_engineering_brief` | Check structured feasibility figures (module/inverter counts, strings, block schedules) for internal consistency and missing inputs before any `.PRJ` exists |
+| `pvsyst_run_engineering_task` | Apply an isolated revision (fixed angles/losses, `UnlimTracking` parameters, or centralized AC storage with hourly load) in a new project and run a full-year simulation |
+| `pvsyst_compare_engineering_scenarios` | Compare 2 or 3 completed simulation runs, separating shared conditions from intended/unintended input diffs, and export JSON/CSV/Markdown comparison reports |
+| `pvsyst_export_engineering_delivery` | Bundle a completed engineering run (or multi-scenario comparison) with its `.PRJ`/`.VCx`, result CSV/PDF, and readable Markdown handoff notes into a ZIP under `Results` |
 
-See [engineering delivery](engineering-delivery.md),[scenario comparison](engineering-scenarios.md),[AC storage](engineering-storage.md),[block preparation](block-project-preparation.md) and[brief review](engineering-brief.md). Preparation, ZIP creation and successful simulation do not clear engineering review.
+Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comparison](engineering-scenarios.md), [AC storage engineering](engineering-storage.md), [block project preparation](block-project-preparation.md), and [brief review](engineering-brief.md).
 
 ### Projects & Variants (32)
 
-| Tools | Purpose |
+| Tool | What it does |
 |---|---|
-| `pvsyst_list_projects`, `pvsyst_list_variants`, `pvsyst_inspect_project` | Workspace inventory and project file identities |
-| `pvsyst_create_project`, `pvsyst_clone_project`, `pvsyst_clone_variant` | Complete-text creation or guarded copying within/across projects |
-| `pvsyst_update_project_parameters` | Existing display title and explicit UTF-8 BOM transaction |
-| `pvsyst_update_project_sources`, `pvsyst_restore_project_sources` | Whole-project SIT/MET binding and complete snapshot recovery |
-| `pvsyst_get_variant_components`, `pvsyst_update_variant_components` | Scoped PAN/OND/BTR/GEN references |
-| `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Bounded parameter transactions and stored-state inspection |
-| `pvsyst_create_tracking_variant` | New VC from an existing supported tracking record |
-| `pvsyst_create_native_dc_cabling_variant` | Confirmed native GUI DC setting, recalculation and SaveAs |
-| `pvsyst_create_ac_cabling_variant` | Uniform per-inverter native AC cable configuration |
-| `pvsyst_create_mv_night_disconnect_variant` | Supported single-MV night switch/dependency bit |
-| `pvsyst_create_shed_geometry_variant` | New Sheds/SunShields VC without type conversion |
-| `pvsyst_create_dome_allocation_variant` | Rebalance an existing valid paired Dome template |
-| `pvsyst_review_project_inputs` | Read-only comparison with a completed preparation baseline |
-| `pvsyst_prepare_design_project` | Guarded source preparation without SFI or annual execution |
-| `pvsyst_open_native_project` | Confirmed owned cold launch; existing sessions remain read-only |
-| `pvsyst_create_house_pv_scene` | Explicit named house meshes/PV regions into a new standard scene |
-| `pvsyst_read_house_pv_scene` | Strict version1/2 XML reconstruction into supported arguments |
-| `pvsyst_import_house_pv_scene` | Confirmed native import, association, validity/table and SaveAs |
-| `pvsyst_validate_variant_structure`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray` | Scoped reference/count checks and bounded branch lifecycle |
-| `pvsyst_restore_variant` | Current-token protected variant snapshot recovery |
-| `pvsyst_archive_project`, `pvsyst_archive_variant`, `pvsyst_restore_project_archive` | Confirmed archive/recovery of PRJ/VC members |
+| `pvsyst_list_projects`, `pvsyst_list_variants`, `pvsyst_inspect_project` | List workspace projects/variants and inspect file metadata and SHA-256 hashes |
+| `pvsyst_create_project`, `pvsyst_clone_project`, `pvsyst_clone_variant` | Create a project from full text or clone projects/variants across the workspace |
+| `pvsyst_update_project_parameters` | Update a project's root display title (`Comment`) and optionally add a UTF-8 BOM |
+| `pvsyst_update_project_sources`, `pvsyst_restore_project_sources` | Bind a `.SIT`/`.MET` pair across a project and all its variants, or roll back from a saved snapshot |
+| `pvsyst_get_variant_components`, `pvsyst_update_variant_components` | Read or swap `.PAN`, `.OND`, `.BTR`, and `.GEN` references inside a variant |
+| `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Read stored variant state and apply guarded parameter updates (angles, series count, MPPT/string counts, losses, horizon, seasonal tilt, temperature, PF, grid limits, P50/P90) |
+| `pvsyst_create_tracking_variant` | Create a new variant with updated axis/backtracking/limit parameters from an existing tracking template |
+| `pvsyst_create_native_dc_cabling_variant` | Set DC wiring resistance (`mOhm`) or STC loss (`%`) via the open PVsyst 8.1.6 GUI, trigger native recalculation, and save as a new variant |
+| `pvsyst_create_ac_cabling_variant` | Configure uniform per-inverter AC cable length (`0.1 m` precision) and section in a new variant |
+| `pvsyst_create_mv_night_disconnect_variant` | Toggle the `NightDisconnect` switch and main-array bit 29 on a single-MV transformer template |
+| `pvsyst_create_shed_geometry_variant` | Create a new variant with updated pitch, tilt, count, width, or electrical shading flag on an existing `Sheds` or `SunShields` template |
+| `pvsyst_create_dome_allocation_variant` | Rebalance string counts between the two faces of an existing paired `Dome` template |
+| `pvsyst_review_project_inputs` | Compare a prepared design manifest against the actual values saved in a `.PRJ`/`.VCx` |
+| `pvsyst_prepare_design_project` | Run component discovery, weather preparation, and project configuration without launching an annual simulation |
+| `pvsyst_open_native_project` | Cold-launch PVsyst 8.1.6 GUI and load the target project when no conflicting session is active |
+| `pvsyst_create_house_pv_scene` | Serialize named house meshes and rooftop PV regions into a standard PVCollada 2.0 (`.pvc2`) file |
+| `pvsyst_read_house_pv_scene` | Parse a v1/v2 `.pvc2` XML file back into structured house and PV layout arguments |
+| `pvsyst_import_house_pv_scene` | Import a `.pvc2` scene into an already open PVsyst 8.1.6 project via GUI, bind orientations, check validity/shading tables, and save as a new variant |
+| `pvsyst_validate_variant_structure`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray` | Check subarray/circuit/MPPT consistency, or clone and remove subarrays and fixed planes |
+| `pvsyst_restore_variant` | Roll back a variant file to a previously recorded backup snapshot |
+| `pvsyst_archive_project`, `pvsyst_archive_variant`, `pvsyst_restore_project_archive` | Archive projects/variants out of the active workspace or restore them |
 
-Read[project transactions](project-source-verification.md),[titles](project-title.md) and[topology editing](grid-capacity-verification.md) for strict selectors, counts, MPPT, ownership, geometry and recovery. A successful structure check is not electrical sizing. Raw[stored native state](native-state-inspection.md) or[PV table bindings](native-scene-bindings.md) do not expand writers or certify source geometry.
+Detailed guides: [project sources & transactions](project-source-verification.md), [project titles](project-title.md), [grid topology & capacity editing](grid-capacity-verification.md), [stored state inspection](native-state-inspection.md), and [PV scene bindings](native-scene-bindings.md).
 
 ### Components (14)
 
-| Tools | Purpose |
+| Tool | What it does |
 |---|---|
-| `pvsyst_list_components`, `pvsyst_get_component`, `pvsyst_validate_component` | PAN/OND/BTR/GEN inventory, inspection and static checks |
-| `pvsyst_create_component`, `pvsyst_copy_component`, `pvsyst_clone_component` | Complete-content creation, import or cloning |
-| `pvsyst_build_sourced_component` | Explicit template-derived PAN/OND with exact citations/inherited fields and curves |
-| `pvsyst_update_component`, `pvsyst_backup_component`, `pvsyst_restore_component` | Allowlisted edit, backup and recovery |
-| `pvsyst_archive_component`, `pvsyst_restore_archived_component` | Archive an unreferenced component or restore it |
-| `pvsyst_compare_components`, `pvsyst_project_components` | File comparison and project reference lookup |
+| `pvsyst_list_components`, `pvsyst_get_component`, `pvsyst_validate_component` | List, inspect, and statically validate `.PAN`, `.OND`, `.BTR`, and `.GEN` files |
+| `pvsyst_create_component`, `pvsyst_copy_component`, `pvsyst_clone_component` | Create a component from full text, copy from the built-in library, or clone an existing file |
+| `pvsyst_build_sourced_component` | Derive a new `.PAN` or `.OND` from a workspace template using cited datasheet values and units, while explicitly listing inherited fields and curves |
+| `pvsyst_update_component`, `pvsyst_backup_component`, `pvsyst_restore_component` | Edit allowlisted commercial/electrical fields, remarks, or Mode 1 curve tables with SHA-256 checks and backup/restore |
+| `pvsyst_archive_component`, `pvsyst_restore_archived_component` | Archive an unreferenced component file or restore it from archive |
+| `pvsyst_compare_components`, `pvsyst_project_components` | Diff two component files or list all components referenced by a project |
 
-See [sourced components](sourced-components.md),[native component behavior](commercial-verification.md),[curve tables](curve-table-verification.md),[OND curves](ond-curve-verification.md),[battery capacity](btr-capacity-verification.md) and[generator references](generator-verification.md). Files, curves and static checks are not a model fit or manufacturer certification. Template-derived creation discloses inheritance, requires acknowledgement and retains needs_review.
+Detailed guides: [sourced components](sourced-components.md), [commercial fields](commercial-verification.md), [Mode 1 curve tables](curve-table-verification.md), [OND efficiency curves](ond-curve-verification.md), [BTR capacity curves](btr-capacity-verification.md), [GUI PAN format](gui-pan-verification.md), and [backup generator settings](generator-verification.md).
 
 ### Sites & Weather (8)
 
-| Tools | Purpose |
+| Tool | What it does |
 |---|---|
-| `pvsyst_build_monthly_weather`, `pvsyst_create_site` | Monthly CSV and native SIT creation |
-| `pvsyst_convert_meteo` | Native CSV+MEF+SIT conversion to MET |
-| `pvsyst_inspect_weather_csv` | Standard-hourly metadata, units, calendar and observed summaries |
-| `pvsyst_prepare_weather` | New normalized CSV/MEF/SIT/MET and source manifest |
-| `pvsyst_resolve_location` | All geocoding candidates; no automatic first selection |
-| `pvsyst_acquire_weather` | Plan/download one public Open-Meteo ERA5 year and its raw/source files |
-| `pvsyst_review_weather` | Read-only provider/CSV/native-hourly and MET/SIT declaration review |
+| `pvsyst_build_monthly_weather`, `pvsyst_create_site` | Build a monthly weather CSV and create a `.SIT` site file (requires CLI 8.1+) |
+| `pvsyst_convert_meteo` | Run `PVsystCLI.exe` to convert a weather CSV + `.MEF` + `.SIT` into a binary `.MET` |
+| `pvsyst_inspect_weather_csv` | Validate a PVsyst standard hourly weather CSV (headers, units, full-year calendar, leap day, and radiation bounds) |
+| `pvsyst_prepare_weather` | Convert a validated hourly CSV into new `.SIT`/`.MET` files and record a provenance manifest |
+| `pvsyst_resolve_location` | Query Open-Meteo geocoding for a place name and return all candidates with `location_id`, coordinates, ISO country code, and IANA timezone |
+| `pvsyst_acquire_weather` | Download a full calendar year of Open-Meteo ERA5 hourly irradiance and temperature, aligned to local winter standard time (`LegalTime`), and save the raw JSON, standard CSV, and manifest |
+| `pvsyst_review_weather` | Compare an acquired/prepared weather CSV against simulation output and `.MET`/`.SIT` headers |
 
-[Weather input](weather-input-verification.md) and[preparation](weather-preparation.md) distinguish calendar checks, LegalTime binding, native conversion and review. Acquisition requires one explicit location ID or complete coordinate/site/country/IANA-zone inputs, not both. It preserves requested site metadata, discloses provider grid/elevation and endpoint_mean temperature approximation, uses a fixed whole-hour standard offset and does not fill unpublished data. Half-hour offsets, changing standard offsets and ambiguous negative-DST winter conventions stop rather than being rebinned. Provider completion limits actual available years.
-
-[Weather engineering review](weather-engineering-review.md) compares current values and declarations without writing, running native software or claiming effective solar-position/climate certification. Source binding checks declared text/tokens, not authenticity of the original PDF.
+Detailed guides: [weather input checks](weather-input-verification.md), [weather preparation](weather-preparation.md), and [weather engineering review](weather-engineering-review.md).
 
 ### Loads & Storage (6)
 
-| Tools | Purpose |
+| Tool | What it does |
 |---|---|
-| `pvsyst_prepare_load_profile` | Complete nonnegative 8760/8784-hour load with explicit units/year/standard time |
-| `pvsyst_create_load_variant` | New VC with actual normalized-hourly cache binding |
-| `pvsyst_create_native_load_variant` | Native constant kW, monthly kWh or 24-hour kW definition |
-| `pvsyst_create_peak_shaving_variant` | Existing PeakShaving/PVToGridMin profile and supported timing |
-| `pvsyst_create_grid_storage_variant` | Preserve supported source strategy while changing explicit storage scalars |
-| `pvsyst_create_grid_storage_system` | Caller-declared native AC-coupled SelfConsumption/WeakGrid and battery hardware |
+| `pvsyst_prepare_load_profile` | Validate a complete 8760/8784-hour load CSV in `UserData` (units, year, fixed standard time) and emit a normalized native CSV + manifest |
+| `pvsyst_create_load_variant` | Bind a prepared hourly load into a new variant by encoding the `Energy/MJ` signed-base62 hourly cache inside `pvLoad` |
+| `pvsyst_create_native_load_variant` | Create a PV-only self-consumption variant using a native constant (`kW`), monthly (`12 × kWh`), or daily (`24 × kW`) load profile |
+| `pvsyst_create_peak_shaving_variant` | Create a new variant with updated discharge timing (`AfterSunset` or hour window) from an existing `PeakShaving` / `PVToGridMin` template |
+| `pvsyst_create_grid_storage_variant` | Update SOC thresholds, AC charge/discharge power limits, efficiency, or `allow_grid_export` on an existing storage variant |
+| `pvsyst_create_grid_storage_system` | Add battery hardware and centralized AC-coupled `SelfConsumption` or `WeakGrid` storage (plus hourly load and grid-availability bindings) to a PV-only grid variant |
 
-See [loads](storage-loads.md),[storage parameters](grid-storage-parameters.md),[native strategy dependencies](native-load-storage-controls.md) and[peak shaving](native-peak-shaving.md). Binding replaces the actual native cache, not only a CSV filename. WeakGrid requires fresh complete 0/1 availability with an outage, matching year and standard offset. SOC reserve, hard minimum and native outages remain distinct.
-
-Optional strict allow_grid_export changes only the native injection bit; it is not grid charging or a numeric kW limit. Pack/BMS sizing, hybrid DC-port construction, probability/household generation and arbitrary charging schedules are not supplied by these AC tools. Preserve native precision/residuals and use complete grid_storage flows, including CL_Over; battery-side power is not directly an AC rating.
+Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parameters](grid-storage-parameters.md), [load & storage internals](native-load-storage-controls.md), and [peak shaving](native-peak-shaving.md).
 
 ### Simulation (7)
 
-| Tools | Purpose |
+| Tool | What it does |
 |---|---|
-| `pvsyst_build_sfi` | Native variable selection; storage preset includes complete AC-flow columns |
-| `pvsyst_run_simulation` | Single/batch native execution with new CSV/PDF and diagnostics |
-| `pvsyst_simulate_template` | Preview or guarded copy/configure/annual run; fixed or bounded inherited UnlimTracking |
-| `pvsyst_run_sourced_house_task` | Source binding, preparation and native house delivery using existing checkpoints |
-| `pvsyst_run_house_task` | Owned native house lifecycle and fresh-CLI annual reload, resume/retry |
-| `pvsyst_simulate_design` | Strict single-design inputs, exact assets, declared envelope and weather mode |
-| `pvsyst_prepare_sourced_design` | Electrical draft from exact declared value/unit citations, without inventing missing data |
+| `pvsyst_build_sfi` | Generate a `.SFI` hourly variable selection file under `Models` (presets include `default`, `soiling`, `grid_limit`, `grid_storage`, etc.) |
+| `pvsyst_run_simulation` | Run a single or batch simulation via `PVsystCLI.exe` with optional date range, `.SFI`, `.RVT`, report page selection (`-rp`), and shading recomputation (`-rs`) |
+| `pvsyst_simulate_template` | Copy a fixed-plane or `UnlimTracking` template, apply component/weather/angle/capacity edits, run a full year, and write a rollback manifest |
+| `pvsyst_run_sourced_house_task` | Bind cited datasheet tokens into a design draft, prepare the source project, and hand off to the 3D house simulation pipeline |
+| `pvsyst_run_house_task` | End-to-end 3D house workflow: generate `.pvc2`, open PVsyst GUI, import scene, bind orientations, save new variant, close GUI, and run a full-year CLI simulation with checkpoint resume |
+| `pvsyst_simulate_design` | Unified single-design workflow combining component lookup, template matching, integer capacity sizing (or declared electrical envelope), weather acquisition/preparation, and annual simulation |
+| `pvsyst_prepare_sourced_design` | Extract an `electrical_design` envelope from cited datasheet snippets and check whether all required voltage/current/temperature inputs are present |
 
-See [automatic simulation](automatic-simulation.md),[design inputs](single-design-inputs.md),[tracking tasks](tracking-template-flow.md),[house modeling](house-pv-modeling.md),[house tasks](native-house-task.md) and[sourced house tasks](sourced-house-task.md). dry_run is not native consumption. Open-Meteo dry-run returns a weather plan, not complete execution preflight. needs_review remains separate from stage=completed; failed outputs and explicit new-name recovery remain visible.
+Detailed guides: [automatic simulation](automatic-simulation.md), [single-design inputs](single-design-inputs.md), [capacity sizing](capacity-sizing.md), [tracking template flow](tracking-template-flow.md), [tutorial grid workflow](tutorial-grid-cycle.md), [house PV modeling](house-pv-modeling.md), [native house task](native-house-task.md), and [sourced house task](sourced-house-task.md).
 
 ### Results (3)
 
-| Tools | Purpose |
+| Tool | What it does |
 |---|---|
-| `pvsyst_read_results`, `pvsyst_read_rows` | Summaries and paged actual CSV values |
-| `pvsyst_read_batch_results` | Native SIM_* batch summary fields |
+| `pvsyst_read_results`, `pvsyst_read_rows` | Parse simulation CSV metadata, units, and summary statistics, or page through hourly rows |
+| `pvsyst_read_batch_results` | Parse `SIM_*` summary rows from a batch simulation output CSV |
 
-See [result comparison](result-comparison-verification.md). Keep original units, time labels, actual omitted columns and warnings; do not synthesize missing physical outputs or apply the PV-only PR formula to storage.
+See [result comparison](result-comparison-verification.md) for side-by-side diffs of two result CSVs.
 
-## Parameter guides
+## Parameter & variant guides
 
-Variant updates use one supported independent transaction at a time, except explicitly allowed name/scalar combinations. Details and exact ranges are in[loss scalars](grid-capacity-verification.md),[soiling](soiling-verification.md),[detailed loss modes](native-detailed-losses.md),[IAM/ageing](native-model-inputs.md),[seasonal](seasonal-orientation.md),[horizon](horizon-profile.md),[inverter temperature](inverter-temperature.md),[PF](power-factor.md),[power limits](grid-power-limit.md),[combined controls](native-power-controls.md) and[P50](p50-native-parameters.md).
+`pvsyst_update_variant_parameters` applies one domain update per transaction (optionally paired with `variant_name`) so flag mutations stay isolated:
+- Detailed losses: [loss scalars (Uc, LID, quality, mismatch)](grid-capacity-verification.md), [loss GUI roundtrip notes](loss-gui-roundtrip.md), [soiling](soiling-verification.md), [string mismatch & auxiliary profiles](native-detailed-losses.md), [constant auxiliary power](native-auxiliary-power.md), [IAM & ageing](native-model-inputs.md)
+- Orientation & horizon: [seasonal tilt](seasonal-orientation.md), [far horizon profile](horizon-profile.md), [plane & horizon notes](plane-horizon-native.md), [orientation types](native-orientation-controls.md)
+- Energy management: [inverter temperature](inverter-temperature.md), [power factor & PNom](power-factor.md), [grid injection limit](grid-power-limit.md), [combined PF + power controls](native-power-controls.md), [system flags & units](native-energy-management.md), [P50/P90 parameters](p50-native-parameters.md)
 
-New-VC entries separately cover[AC](native-ac-cabling.md),[DC GUI](native-dc-cabling.md),[MV night](native-mv-night.md),[tracking](native-tracking-controls.md),[Sheds](native-shed-controls.md) and[Dome](native-dome-allocation.md). Scene authorship, stored bindings, native validity, source geometry and consumption are independent checks; the[bounded two-roof task](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance) is not a generic identity converter.
+Dedicated variant-creation tools handle structural or multi-object changes:
+- Cabling & transformers: [AC cabling](native-ac-cabling.md), [DC cabling GUI bridge](native-dc-cabling.md), [MV night disconnect](native-mv-night.md)
+- Complex orientations & 3D scenes: [tracking controls](native-tracking-controls.md), [sheds & sun-shields](native-shed-controls.md), [paired dome allocation](native-dome-allocation.md), [two-roof house delivery](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance), [grouped house scenes](grouped-house-scenes.md), [multi-roof mapping](multiroof-native-map.md), [scene identity notes](native-scene-identity-map.md), [project GUI session](native-project-session.md)
 
-## Files and coordination
+## Workspace directories and conventions
 
-File arguments are filenames, not unrestricted paths. Stage inputs under the configured workspace:
+For safety, file arguments only accept bare filenames (no path traversal or arbitrary filesystem paths). Every file type maps to its standard PVsyst workspace folder:
 
-| Files | Directory |
+| File types | Workspace subfolder |
 |---|---|
-| PRJ/VC | Projects |
-| SFI, input RVT | Models |
-| Weather CSV, MEF, MET, monthly CSV | Meteo |
-| SIT | Sites |
-| Advanced.dat, load inputs, authored scene | UserData |
-| Batch params/RVT/summary | UserBatch |
-| Per-scenario hourly CSV | UserHourly |
-| Simulation CSV/PDF, ZIP, manifests | Results |
+| `.PRJ`, `.VC0`..`.VCn` | `Projects` |
+| `.SFI`, input `.RVT` | `Models` |
+| `.PAN`, `.OND`, `.BTR`, `.GEN` | `ComposPV` subdirectories |
+| Weather `.CSV`, `.MEF`, `.MET`, monthly weather `.CSV` | `Meteo` |
+| `.SIT` | `Sites` |
+| `Advanced.dat`, load CSVs, authored `.pvc2` scenes | `UserData` |
+| Batch parameter `.CSV`, batch `.RVT`, batch summaries | `UserBatch` |
+| Per-scenario batch hourly `.CSV` | `UserHourly` |
+| Simulation `.CSV`/`.PDF`, delivery `.ZIP`, run manifests | `Results` |
 
-Current-token/file-map guards, backups, new-file conflicts and explicit confirmation are part of each mutating operation. WorkspaceRLock and first-client initialization are process-local, not exclusion of external editors. Expected input/file/native-adapter errors keep their actionable MCP2.x reason. Dates use MM.DD, YY.MM.DD orYYYY.MM.DD, not hyphens. Use the actual tool schema for required arguments; unrecognized keys and wrong strict types stop before execution.
+General conventions across all tools:
+- **Optimistic locking & backups**: Mutating tools verify `expected_sha256` (or current file tokens), write a backup snapshot before touching existing files, and refuse to overwrite existing target filenames when creating new variants/projects.
+- **Date format**: PVsyst CLI dates use dots (`MM.DD`, `YY.MM.DD`, or `YYYY.MM.DD`, e.g. `2024.01.01`), never hyphens.
+- **Strict arguments**: Every tool validates its top-level argument names and types before running; unknown keys return an immediate MCP `ToolError` listing the accepted parameter names.

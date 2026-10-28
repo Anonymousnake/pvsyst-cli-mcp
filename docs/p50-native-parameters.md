@@ -1,10 +1,12 @@
-# 原生P50/P90参数编辑
+# P50 / P90 概率评估参数编辑
 
-`pvsyst_get_variant_parameters.p50_p90`读取保存参数；`pvsyst_update_variant_parameters(..., p50_p90_updates=...)`编辑既有`P50_P90=TP50_P90`块，可同批设置variant_name。概率分布、标准差合成、分位值及图表由PVsyst计算。
+在 PVsyst 中，P50/P90 年发电量不确定度评估参数保存在变体文件（`.VCx`）根部的 `P50_P90=TP50_P90` 块中。`pvsyst_get_variant_parameters.p50_p90` 用于读取这 14 个字段，`pvsyst_update_variant_parameters(..., p50_p90_updates=...)` 用于在已有 P50 结果模板上修改它们并生成带概率分布页的年度报告。
 
-## 输入
+关于 PVsyst 中各项方差合成与分位数计算的统计定义，可参考官方文档 [P50–P90 evaluations](https://www.pvsyst.com/help/project-design/p50-p90-evaluations.html)。
 
-十四项原生键全部必填，不提供别名或单位转换。以下数值只演示格式，实际不确定度和气象类型需有依据：
+## 入参格式（14 个必填字段）
+
+调用 `pvsyst_update_variant_parameters` 时，`p50_p90_updates` 必须完整提供以下 14 个原生键名（可同批附带 `variant_name`）：
 
 ```json
 {
@@ -25,20 +27,17 @@
 }
 ```
 
-- MeteoKind只接受SpecYear、TMY。TMY保留显式YearDevFromAver保存值，但不使用年度偏差；声明TMY不将单年天气变成多年气象。
-- 分位参数须为整数，满足51 <= P90Custom < PxxCustom <= 99。P90Custom这个字段名不把分位固定为90。
-- YearDevFromAver为百分比，范围[-100,100]；六个Variab字段为百分比，范围[0,100]；均为0.001增量。这是适配器范围，不保证科学合理性或覆盖完整GUI输入域。
-- PxxReport控制概率报告章节，PxxMainResults控制主要结果中的分位指标，均为严格布尔。PlotKind只支持1，即概率分布；不支持累计图。
-- CustomVarLabel为1..80字节的可打印单行ASCII，无首尾空格。普通等号、分号或T_TEST文字按标签内容处理，不解释为原生字段或嵌套类型。
+各字段取值规则：
+- `MeteoKind`：支持 `"SpecYear"`（特定年份气象）或 `"TMY"`（典型气象年）。注意选 `"TMY"` 时，PVsyst 不将 `YearDevFromAver` 计入偏差，但文件里仍需保留该字段的保存值。
+- `P90Custom` 与 `PxxCustom`：两个自定义分位点（整数），必须满足 `51 <= P90Custom < PxxCustom <= 99`（尽管字段名叫 `P90Custom`，它可以设成 85、90 等任意满足顺序的整数）。
+- `YearDevFromAver`：特定年份相对于多年均值的偏差百分比，范围 `[-100, 100]`，步长 `0.001`。
+- 六个方差/不确定度百分比字段（`MeteoAnnualVariab`、`PVModelVariab`、`InverterVariab`、`SoilingVariab`、`DegradVariab`、`CustomVariab`）：范围 `[0, 100]`，步长 `0.001`。
+- `PxxReport` 与 `PxxMainResults`：布尔值，分别控制是否在 PDF 报告中输出独立的 P50/P90 章节以及是否在摘要页展示分位结果。
+- `PlotKind`：固定传整数 `1`（概率密度分布图）。
+- `CustomVarLabel`：自定义不确定度项的说明文字，`1..80` 字节的单行可打印 ASCII 字符串，首尾无空格。
 
-GUI的变率／模型默认勾选会恢复软件默认值，不是排除该项；这些勾选没有独立十四字段标志。接口保存明确数值，不提供自动默认模式或气候估算。
+## 为什么要求源变体是“已保存结果模板”（`Flags=$01800001`）
 
-## 模板与事务
+在 PVsyst 8.1.6 里，如果一个 `.VCx` 变体还没有在 GUI 里跑过仿真并勾选保存 P50/P90（即根部 `pvVCalcul.Flags` 不是 `$01800001` 且没有现成的 `P50_P90=TP50_P90` 块），单纯往普通输入变体里硬塞一个 `TP50_P90` 文本块，跑 CLI 时并不会产出 P50/P90 报告页。
 
-只接受8.1.6原生P50结果模板：root Flags数值$01800001，一个根级平坦块及完整十四字段。还须为普通PV-only Grid、单固定平面／子阵、自由地平线、无几何且电路计数完整。
-
-不新建或删除P50块，不设置结果状态位，不改缓存、物理输入、站点、气象或组件。PF、限电、辅助、温度、储能等耦合及同时修改其他物理参数停止。缺失、重复、非所属、嵌套或未知字段停止；ClimateChange尚不支持。
-
-复制十四字段不足以从无结果工程构造完整概率专页，添加状态位或显式请求p50p90页也不属于此入口。只有既有结果模板的受限编辑受到支持；P50报告变化不要求逐时发电量变化。预览、同值无操作、备份、恢复及源冲突保护沿用变体事务。
-
-统计含义参见[PVsyst P50–P90 evaluations](https://www.pvsyst.com/help/project-design/p50-p90-evaluations.html)。
+因此，`pvsyst_update_variant_parameters` 的 `p50_p90_updates` 只接受根级 `Flags=$01800001` 且已带有完整 14 字段 `TP50_P90` 块的单子阵列固定平面并网模板（无 3D 阴影、无地平线、未混开 PF/限发/温度/储能）。修改这些统计参数会改变 PDF 报告中的 P50/P90 分位评估页正文，而不会改变逐时 CSV 里的 8760 小时发电量列。

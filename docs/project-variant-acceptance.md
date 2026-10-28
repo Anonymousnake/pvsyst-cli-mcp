@@ -1,22 +1,21 @@
-# 项目与变体管理
+# 工程与变体日常管理
 
-PRJ组织电站资料，VC为其下可独立配置、运行和比较的方案。工具支持受限文件、参数和电路生命周期，不复刻完整GUI，也不认证电气设计。
+在 PVsyst 的工作区 `Projects` 目录中，一个 `.PRJ` 文件代表一个电站项目（保存站点、气象文件绑定及项目标题），它下面挂着一个或多个 `.VC0`、`.VC1`… 变体文件（每个 `.VCx` 是一套可以独立改参、跑仿真和对比的具体设计方案）。
 
-| 工作 | 工具与说明 |
+## 常用管理工具一览
+
+| 操作类别 | 对应工具与说明 |
 |---|---|
-| 检查成员 | list_projects、list_variants、inspect_project返回文件集、引用差异、缺件、原始标题和BOM |
-| 新建／复制 | create_project接收完整文本；clone_project／clone_variant保留来源和引用，可跨项目复制，不生成默认物理设计 |
-| 标题／来源 | update_project_parameters与update_project_sources使用完整文件集保护及整组恢复；[事务](project-source-verification.md) |
-| 组件引用 | PAN/OND按子阵选择，BTR/GEN按system选择；仅替换明确存在的引用，不拟合模型或据文件名判断兼容 |
-| 参数／结构 | get/update_variant_parameters、validate_variant_structure、clone/remove_subarray；[拓扑与模式](grid-capacity-verification.md) |
-| 恢复／归档 | restore_variant及project/variant归档、restore_project_archive；完整恢复清单和当前前置条件，普通变体归档至少保留一个成员 |
+| 盘点与检查 | `pvsyst_list_projects`、`pvsyst_list_variants`、`pvsyst_inspect_project`：查看文件列表、SHA-256 指纹、`.SIT`/`.MET` 引用是否一致、缺失组件以及标题和 UTF-8 BOM 状态 |
+| 新建与克隆 | `pvsyst_create_project`（从完整文本新建）、`pvsyst_clone_project`（整项目克隆）、`pvsyst_clone_variant`（同项目内或跨项目复制单个 `.VCx`） |
+| 标题与气象源 | `pvsyst_update_project_parameters`（改项目显示标题）、`pvsyst_update_project_sources`（统一替换 `.PRJ` 和所有 `.VCx` 的 `.SIT`/`.MET`）；详见[工程文件与事务](project-source-verification.md) |
+| 替换组件引用 | `pvsyst_get_variant_components`、`pvsyst_update_variant_components`：按子阵列替换 `.PAN`/`.OND`，或按系统替换 `.BTR`/`.GEN` |
+| 参数与拓扑编辑 | `pvsyst_get_variant_parameters`、`pvsyst_update_variant_parameters`、`pvsyst_validate_variant_structure`、`pvsyst_clone_subarray`、`pvsyst_remove_subarray`；详见[并网拓扑与参数编辑](grid-capacity-verification.md) |
+| 备份恢复与归档 | `pvsyst_restore_variant`（回滚单个变体）、`pvsyst_archive_project`、`pvsyst_archive_variant`（归档单个变体时工程下至少需保留 1 个活动变体）、`pvsyst_restore_project_archive` |
 
-典型顺序是检查、预览、应用、重新检查结构、原生运行，再按需逆序恢复或归档。每次都使用最新变体令牌或完整项目files，外部编辑后重新检查。乐观检测不是跨进程锁或断电原子事务。
+## 改参实操建议
 
-非ASCII名称要求已有UTF-8 BOM或显式增加，影响整个文件解码。原始UTF-8检查不证明未标记文件被原生正确显示。恢复保留原BOM及换行，详见[标题](project-title.md)。
-
-数量、角度、模式和结构编辑保留各自版本、owner、计数及几何门禁；活动阴影、Module Layout、未知／混合版本和不完整电路不会被视为可编辑。MPPT图示不是模式或物理分配证明，任意合并拆分、跨朝向预算和自动硬件选型仍不支持。
-
-ModuleQualityLoss是成对U/I与默认位的语义入口，原始U/I/P不是三项独立百分比。其他损失及派生缓存按[专题指南](native-entry-map.md)处理，不通过原始字段读取扩大写入域。
-
-版本声明可被CLI8.1.6加载不表示运行过旧版可执行程序；局部原生控制不外推所有模型、全年天气或GUI往返。默认工具集合及新入口见[工具参考](tool-reference.md)，运行中的MCP进程需重启以读取新schema。
+1. **标准改参流程**：先调 `inspect` / `get_variant_parameters` 拿最新的文件哈希令牌 → 传 `dry_run=true` 预览 diff → 传 `dry_run=false` 落盘 → 调 `validate_variant_structure` 复核结构 → 调 `run_simulation` 跑仿真。
+2. **避免与桌面端冲突**：如果中间在 PVsyst 桌面 GUI 里手动打开并保存过工程，GUI 往往会顺手改写版本号、默认标志位或缓存字段。此时旧的 SHA-256 令牌会失效拦截，重新调一次 `inspect_project` 或 `get_variant_parameters` 刷新令牌即可。
+3. **非 ASCII 命名**：给工程或变体起中文名时，记得检查 `utf8_bom` 并在需要时传 `add_utf8_bom=true`（见[项目显示标题](project-title.md)）。
+4. **组件质量损失字段**：改组件质量损失时直接传 `subarray_updates.ModuleQualityLoss`，工具会自动同步底层的 `PQualityModU` 和 `PQualityModI` 并清掉默认位 `0x00100000`。

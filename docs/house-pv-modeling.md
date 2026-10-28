@@ -1,57 +1,44 @@
-# 房屋与光伏：PVCollada2
+# 住宅与屋顶光伏 3D 场景建模（PVCollada 2.0 / `.pvc2`）
 
-`pvsyst_create_house_pv_scene(project, variant, output_name, house, layout, dry_run=True, module_geometry=None)`接收完整命名房屋网格和PV布局，薄序列化为标准pvc2。它不执行提交代码、不写原生VC、不操作GUI或实现遮挡／辐照。创建、导入、保存和消费为独立状态；create的imported及native_consumption_verified为false。
+在 PVsyst 8.1.6 中，3D 近阴影场景支持导入基于 COLLADA 1.5 扩展的 PVCollada 2.0（`.pvc2`）XML 格式。本模块提供三个递进的工具来管理住宅 3D 场景：
+1. `pvsyst_create_house_pv_scene`：将结构化的房屋三维网格（`house`）与屋顶光伏排布（`layout`）序列化为工作区 `UserData` 下的 `.pvc2` 文件。
+2. `pvsyst_read_house_pv_scene`：从已有的 `.pvc2` XML 中无损解析并还原出当初的 `house` 和 `layout` 参数，方便在此基础上微调尺寸后另存新场景。
+3. `pvsyst_import_house_pv_scene`：驱动已打开的 PVsyst 8.1.6 GUI 导入 `.pvc2` 文件、绑定屋顶朝向、校验几何有效性并计算阴影表，最后另存为新 `.VCx` 变体。
 
-完整工程／年度流程用[住宅单任务](native-house-task.md)；双源作者与原生任务另按[双朝向范围](grouped-house-scenes.md)。原固定无阴影入口不因场景能力放开。
+如果要从头到尾一键跑完“生成场景 → 启动 GUI 导入另存 → 退出 GUI → 调 CLI 跑全年仿真”，请直接使用高层任务入口 [`pvsyst_run_house_task`](native-house-task.md)（双坡屋顶场景另见[双朝向住宅场景](grouped-house-scenes.md)）。
 
-## 完整网格house
+## 1. 构建房屋网格（`house`）
 
-使用kind=mesh和meshes数组，每构件明确给name、vertices、triangles。name为1..120字符、无首尾空白、忽略大小写唯一；vertices为局部米制[x,y,z]，triangles为零基[i,j,k]、在界且互异，复杂多边形由调用方先三角化。
+推荐使用显式三角网格模式（`kind="mesh"`），一次性传入墙体、多坡屋面、挑檐、门窗外框、烟囱、门廊或附属体量等构件列表 `meshes`：
+- 每个构件包含：`name`（`1..120` 字符，忽略大小写唯一）、`vertices`（局部米制 `[x, y, z]` 坐标列表，保留 6 位小数）和 `triangles`（零基顶点索引 `[i, j, k]` 列表）。
+- 容量上限：单场景最多 128 个构件、50,000 个顶点、100,000 个三角形。
+- 几何自检：序列化前会自动检查退化三角形（共线或面积过小）、越界索引等错误。若发现问题，会在 `issues` / `diagnostics` 中返回精确到构件与三角形下标的定位（如 `house.meshes[3].triangles[7]`）及修复建议 `repair_hint`。
+- 向后兼容参数化模式：仍支持旧版的简单矩形平顶（`roof.kind="flat"`）或双坡顶（`roof.kind="gable"`）参数化输入。
 
-一次提供墙、屋面、挑檐、门窗外形、烟囱、门廊和同栋附属体量等必要构件，尺寸有依据或明确假设，不将推断当测绘。名称不赋予玻璃／材料／建筑物理语义，闭合、自交、法向及遮挡仍须原生审查。无家具、精细五金、材质、周边树木／建筑或通用CAD内核。
+## 2. 布置屋顶光伏板（`layout` 与 `module_geometry`）
 
-上限128构件、50000顶点、100000三角，属于接口负载界。坐标六位小数，按实际序列化值检查退化、微小非零归零及派生溢出。响应只返回摘要。issues及diagnostics含code、path、message、repair_hint，适用时含part／triangle；例如house.meshes[3].triangles[7]。最多100项并披露diagnostics_truncated，不自动修面。
+### 单区域与多区域排布
+- **单区域（单张组件表）**：直接在 `layout` 中指定 7 个字段：`module_rows`（行数）、`module_columns`（列数）、`orientation`（`"portrait"` 竖放或 `"landscape"` 横放）、`row_spacing_m`、`column_spacing_m`、`origin_m`（局部起点 `[x, y, z]`）以及承托该阵列的屋面构件名 `roof_mesh`。
+- **同朝向多区域（`tables` 列表）**：当同一个朝向的组件分块摆在屋顶不同位置（例如被烟囱或天窗隔开成左右两块）时，使用 `layout.tables` 列表（支持 1..64 个分区，不过注意后面的 GUI 自动导入桥目前最多支持 1..2 个分区）。每个分区带独立的 `name` 和上述 7 个字段，且所有分区的 `module_rows × module_columns` 累加和必须等于源变体子阵列的总组件数（`NModSerie × NStringCh`）。
 
-## 显式PV布局
+几何校验规则：
+- 所选 `roof_mesh` 必须是法向朝上且倾角/方位角与源变体固定朝向一致的共面屋面网格。
+- 光伏阵列四角的竖直投影必须落在 `roof_mesh` 三角形并集内部且不低于屋面，共面多分区之间不能互相重叠（否则返回 `pv_tables_overlap`）。
 
-网格单区layout恰含七字段：module_rows、module_columns、orientation、row_spacing_m、column_spacing_m、origin_m、roof_mesh。行列严格正整数；方向portrait/landscape；间距非负米；origin_m为低侧局部起点；roof_mesh是精确的独立共面向上屋面网格，不是实体盒。
+### 组件几何尺寸（`module_geometry`）
+传入 `model_name`、`nom_power_wp`、`width_m`、`length_m` 和 `geometry_depth_m`（组件边框厚度，米）。若工作区有明文 `.PAN`，工具会自动核对长宽尺寸是否与 `.PAN` 一致；因为 `.PAN` 核心参数里不一定带边框厚度，所以创建场景时仍需显式给出 `geometry_depth_m`。
 
-倾角／方位继承源普通固定朝向。屋面法向与PV一致，四角竖直投影落在屋面三角并集且不低于屋面。该检查不证明连通、无洞或整块不跨凹口，也不替代实体相交／结构校验。
+## 3. 无损回读与修订（`pvsyst_read_house_pv_scene`）
 
-多区使用tables，每项加name及同样七字段。名字仅在tables内忽略大小写唯一，支持1..64区；行列乘积之和等于源组件总数，不在每区复制整个阵列。每区独立标准rack/table/instance，共用源PAN及角度。共面PV矩形内部重叠返回pv_tables_overlap，接边不算。双源输入的orientation_id及保守投影检查另见[分组作者](grouped-house-scenes.md)。
+调用 `pvsyst_read_house_pv_scene(scene_name)` 会解析 `UserData/<scene_name>.pvc2` 中的真实 XML 网格与 PV 支架节点，并用解析出的参数在内存里重新生成一份 XML 与原文件做归一化比对，确保没有漏掉任何未知节点或手改变换。
 
-## 组件与旧参数
+返回的 `create_arguments` 字典可以直接拿来修改（比如把烟囱高度从 `6.4 m` 改成 `7.2 m`），然后换一个新的 `output_name` 调 `pvsyst_create_house_pv_scene` 生成修订版场景。
 
-module_geometry明确包含model_name、nom_power_wp、width_m、length_m、geometry_depth_m。可读PAN优先工作区后配置的loose库，解析根或商业米制尺寸；重复／冲突停止，与声明型号／功率／尺寸核对并写前重验。
+## 4. GUI 自动导入与关联（`pvsyst_import_house_pv_scene`）
 
-数据库引用没有独立PAN时，显式geometry返回caller-provided-for-native-database-reference，不认证数据库内容。可读PAN也需要明确厚度，因此完整geometry实际创建仍必需，默认None只用于返回缺项，不猜厂家厚度。
+当 PVsyst 8.1.6 rev49278（中文界面，96 DPI）已经在桌面上打开了匹配的源工程且无未保存弹窗时，调用 `pvsyst_import_house_pv_scene(scene_name, variant_name, dry_run=False, confirm=True)` 会自动执行以下步骤：
+1. 打开 3D 近阴影编辑器（要求标准窗口尺寸 `1475×899`），导入 `.pvc2` 场景（支持 1 或 2 个 PV 分区）。
+2. 打开朝向管理窗口（`Shift+Ctrl+O`，尺寸 `1126×826`），将场景中的 PV 场区关联到系统朝向，并清理导入产生的多余空朝向组。
+3. 执行原生几何有效性检查与阴影因子表计算，最后通过 `SaveAs` 另存为新 `.VCx` 变体并回读校验。
 
-旧参数兼容length_m、width_m、eave_height_m、roof.kind=flat/gable；gable的pitch_deg满足0<pitch_deg<90且与源倾角一致，屋脊平行局部X，前坡放PV。layout明确行列、方向、行列间距、clearance_m及edge_margin_m；不自动摆满。退距在平顶按水平、双坡按坡面解释，roof_rise_m相对檐口而非绝对标高。
-
-## 读回与修订
-
-`pvsyst_read_house_pv_scene(scene_name)`只读UserData中的有界UTF-8pvc2，排除DTD／实体声明。支持方言从真实XML取网格／rack／几何元数据，重建并进行命名空间归一后的完整比较。未知节点、属性、变换、材料、动画或坏元数据停止，不静默另写“相似”场景。
-
-ready表示可重建，非工程认证。create_arguments供原create预览，新output_name始终由调用方提供；source.provenance=file-declared及source_verified=false。旧的可识别不完整方言返回needs_context及草案，缺project／variant／roof_mesh不猜。重新创建会重新读取实际工程和PAN，不把文件声明当认证。
-
-修订为读回、修改指定输入、指定新名、预览、按诊断修正、创建新文件，再原生导入／保存。不存在补丁DSL、私有VC写入或自动覆盖。预览不创建目录；执行仅新UserData文件，大小写同名、越界路径、未知键、错误数值／XML字符停止，源工程与PAN保持。
-
-## 原生自动导入
-
-`pvsyst_import_house_pv_scene(scene_name, variant_name, dry_run=True, confirm=False)`使用已打开、匹配DataPath／源工程、已保存且无弹窗的GUI，不启动／退出软件、不写INI。仅支持中文8.1.6rev49278、DPI96及录制物理布局：3D编辑器1475×899、朝向管理1126×826，不承诺任意缩放。
-
-预览不激活、输入或读剪贴板；实际需dry_run=false且confirm=true，期间保持单一桌面驱动。预检重用reader及源／PAN，按六位精度核对引用、站点和角度。GUI关联仅1..2区，作者64区不是导入覆盖保证。未知模态、窗口、动作或警告停止并保留现场。
-
-原生链依次导入、朝向关联、有效性、遮挡表、另存新VC。PVC2当前有beta提示，导入自动物体名不保证源构件名保真。Shift+Ctrl+O关联到原系统朝向时选择实际PV参数动作，不启用平均；仅删除已确认空组，不删除PV场区／子阵。显示模型不等于关联完成，保存后须核对并重载。
-
-有效性保留native_validity正文；native_scene_invalid不保存。Ctrl+C仅在本次复制序号变化后读取新文本，短暂锁有界等待，序号／前台／外来owner异常停止；不读取或备份先前剪贴板。DPI上下文局部线程使用并恢复，不改全进程。
-
-imported／native_geometry_verified只在新VC保存及所支持对象／来源／朝向／组件和硬件后验通过后为true，不等于通用源坐标认证。native_consumption_verified仍false；实际消费另用run_simulation(recompute_shading=true)和新CSV/PDF。保存后后验失败仍披露已存路径，不重放或覆盖源。受限双屋面另须[严格空间核对](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)。
-
-## 标准与解释
-
-COLLADA1.5、米制、Z_UP；PV namespace为https://pvcollada.org/2026/XMLSchema，profile=PVCollada-2.0，只有pv:module尺寸转换为毫米。普通构件不发明pv:house/window标签。共同父Z旋转使用北半球PVsyst方位到地理北的标准转换，PV平移仍为房屋局部；原生可合并共面三角，不保证分面形式保持。
-
-原生几何有效不认证建筑，全年差值不单独归因某个构件，缺GlobShd等列不补零。支持源为单普通固定Grid、完整计数及内嵌站点，无活动场景／布局、负荷／储能、P50、地平线；双源仅按单独范围，不泛化任意类型。
-
-参考[原生格式](https://www.pvsyst.com/help/project-design/shadings/near-shadings-import/pv-collada-file-format.html)及[朝向管理](https://www.pvsyst.com/help/project-design/shadings/near-shadings-orientations/orientation-management-window.html)。
+关于 PVsyst 官方对 PVCollada 格式和朝向管理窗口的说明，可参考 [PV Collada file format](https://www.pvsyst.com/help/project-design/shadings/near-shadings-import/pv-collada-file-format.html) 与 [Orientation management window](https://www.pvsyst.com/help/project-design/shadings/near-shadings-orientations/orientation-management-window.html)。

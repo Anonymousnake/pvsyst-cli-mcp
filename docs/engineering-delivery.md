@@ -1,15 +1,18 @@
 # Existing-project revision and engineering delivery
 
-Engineering tools organize native PVsyst input handoff, intentional revision, annual execution, comparison and delivery. PVsyst owns physical calculations; caller declarations do not certify equipment, fitted models, weather or site conditions.
+The engineering workflow tools wrap a common four-step cycle around an existing PVsyst project: inspect what is saved in the `.PRJ`/`.VCx`, clone an isolated project to apply a targeted parameter change and run a full-year simulation, compare two or three runs side by side, and bundle the project and results into a single ZIP archive.
 
-## Public workflow
+## Workflow steps
 
-1. `pvsyst_project_handoff(project, variant, declarations?)` reads saved equipment, counts, subarray/orientation/circuit relationships, site/weather, load and storage. It separates declarations from inherited values and reports missing inputs with next actions. It writes nothing and does not invoke the native executable.
-2. `pvsyst_run_engineering_task(spec, dry_run=true)` previews an isolated revision. Fixed planes accept explicit tilt, azimuth and supported losses. Existing UnlimTracking templates accept supported tracking controls. Equipment, counts, topology and site/weather remain inherited. The ordinary revision path requires one complete Grid subarray/orientation without active scene or Module Layout. Centralized AC storage additionally requires its bound prepared load; see [storage engineering](engineering-storage.md).
-3. Repeat an accepted request with `dry_run=false` to create a new project and VC, reload them through native CLI and run an hourly calendar year. Run-time input handoff and file protections bind the result. Context, complete calendar, units, finite actual columns and the applicable result checks must pass before native consumption is verified. Storage does not use the PV-only PR formula.
-4. `pvsyst_export_engineering_delivery(manifest_name, output_name, dry_run=true, comparison_name="")` previews one new Results ZIP. Execution includes readable summary/input notes, selected PRJ/VC and original CSV/PDF. Models, weather and other externally licensed assets remain external dependencies. Other cloned variants are excluded. An explicit bound comparison adds its two/three selected scenarios and JSON/CSV/Chinese Markdown; the primary run must be one of those scenarios, with all runs and report files still consistent.
+1. **Inspect inputs (`pvsyst_project_handoff`)**: Read-only check on `(project, variant, declarations?)`. Parses the saved equipment models, inverter/string counts, subarray-to-orientation links, `.SIT`/`.MET` bindings, load profile, and battery storage settings. Caller-provided declarations (such as nominal nameplate power or weather provenance) are kept separate from template-inherited fields, and any missing engineering inputs are returned with concrete follow-up actions.
+2. **Preview a revision (`pvsyst_run_engineering_task` with `dry_run=true`)**: Validates the source project and proposed `changes` without writing files. Supported revisions:
+   - Fixed-plane grid projects: update `tilt`, `azimuth`, and supported loss scalars on a single-subarray, single-orientation variant (no active 3D scene or Module Layout).
+   - `UnlimTracking` projects: update axis/backtracking/angle limits on an existing tracking template.
+   - Centralized AC-coupled storage projects: bind a prepared hourly load and update storage scalars (see [engineering-storage.md](engineering-storage.md)).
+3. **Execute the revision (`pvsyst_run_engineering_task` with `dry_run=false`)**: Clones the source into `new_project` / `new_variant`, applies the parameter edits, runs a full calendar year through `PVsystCLI.exe`, and verifies the exported CSV/PDF (header context, full 8760/8784-hour calendar, units, finite columns, and standard PR). Writes a run manifest under `Results/<new-project-stem>_engineering_<year>.json`.
+4. **Package for delivery (`pvsyst_export_engineering_delivery`)**: Bundles `summary.md`, `inputs.md`, the `.PRJ` and selected `.VCx`, the simulation CSV/PDF, and the task manifest into a new `.zip` file under `Results`. If you pass `comparison_name`, the archive also includes the comparison JSON/CSV/Markdown reports and the `.PRJ`/`.VCx`/CSV/PDF assets for all two or three compared scenarios.
 
-Use actual workspace assets and engineering declarations:
+Example request for `pvsyst_run_engineering_task`:
 
 ```json
 {
@@ -18,7 +21,7 @@ Use actual workspace assets and engineering declarations:
     "source_variant": "VC0",
     "new_project": "TILT_REVISION.PRJ",
     "new_variant": "VCREV",
-    "objective": "Compare an explicit tilt change with inherited hardware and weather",
+    "objective": "Compare a 30-degree tilt against the baseline using the same hardware and weather",
     "year": 2024,
     "nominal_dc_power_kw": 21.6,
     "power_source": "Project equipment schedule: 36 modules rated 600 W each.",
@@ -29,30 +32,29 @@ Use actual workspace assets and engineering declarations:
 }
 ```
 
-Declare nominal power from the real equipment basis; it is not inferred from filenames or cached sizing. `changes={}` preserves a fixed reference. Tracking requires a nonempty tracking object and its own supported shape/version. Optional declarations provide sourced weather and design-condition notes; missing engineering basis remains visible as review.
+Pass `changes={}` when you want to run an unmodified baseline under the same manifest format so you can feed both runs into `pvsyst_compare_engineering_scenarios`. Note that `nominal_dc_power_kw` must be supplied explicitly from your equipment schedule rather than inferred from cached `.VCx` sizing fields.
 
-## Run binding and status
+## Run manifests and status flags
 
-Results `<new-project-stem>_engineering_<year>.json` records operation `engineering_revision`, schema version1, source/working PRJ/VC, requested/actual changes, run-time input handoff, file/input state, uninspected database references, native context, metrics and output state.
+Each completed revision writes `<new-project-stem>_engineering_<year>.json` in `Results` (`operation="engineering_revision"`, schema version 1). The manifest records the source and working `.PRJ`/`.VCx` hashes, requested vs. applied changes, the runtime input handoff, referenced `.PAN`/`.OND`/`.SIT`/`.MET` files, annual metrics, and output CSV/PDF hashes.
 
-Delivery and scenario comparison use the same run loader. Changed input, output, loose database shadow or mismatched identity stops the binding. Paths stay within controlled workspace/library folders; a manifest does not permit arbitrary file access. These are consistency records, not signed authenticity certificates or frozen native-database copies.
+Both `pvsyst_compare_engineering_scenarios` and `pvsyst_export_engineering_delivery` verify this manifest before reading results. If a project file, weather file, loose component file, or output CSV was modified after the run finished, the loader aborts rather than packaging mismatched files.
 
-`ready` means preview. `stage=completed` plus `native_consumption_verified=true` means execution and input/output checks completed, not engineering certification. `needs_review` may remain because of database contents, source basis or native warnings. Export itself keeps `native_consumption_verified=false`; `task_status` and `task_native_consumption_verified` separately carry the original task outcome. Comparison review is also reported separately.
+Key status fields:
+- `ready`: Dry-run preview succeeded.
+- `stage=completed` and `native_consumption_verified=true`: The CLI run finished and output checks passed.
+- `needs_review`: Execution succeeded, but there are open review items (e.g., encrypted built-in database models that cannot be statically inspected, missing caller declarations, or CLI warnings). Exporting a ZIP preserves `task_status` and `task_native_consumption_verified` from the underlying run while keeping the export call's own `native_consumption_verified=false` (since packaging does not run a new simulation).
 
-Existing names stop before execution. Failures retain the isolated project, manifest and available outputs; there is no automatic retry, overwrite, deletion or rollback. Review them before using a new project name. Historical CSV headers alone do not identify past model contents; unbound results retain review and do not acquire a historical binding from today's project. See [scenario comparison](engineering-scenarios.md).
-
-## Delivery contents
-
-A single-run package includes `summary.md`, `inputs.md`, selected PRJ/VC, original CSV/PDF and its task manifest. House tasks also include their authored PVC2 and SFI. A bound comparison package includes only the selected scenario assets and its three report formats. External dependency and unresolved engineering-basis notes remain explicit; export adds no simulation and never silently clears source review.
+If a run fails partway through, the working project, manifest, and any partial outputs are left on disk for debugging; pick a fresh `new_project` name when retrying.
 
 ### Finite two-roof task: bounded native acceptance
 
-The two-roof path composes `pvsyst_run_house_task`, scene author/reader, native geometry checks and delivery. Input is one house mesh and two ordinary fixed source orientations ID1/2, each owning one complete exclusive subarray and one PV table, using the same PAN/OND. Orientation1 FieldAzim=0 is the anchor. Chinese PVsyst8.1.6rev49278/DPI96 and owned-process/workspace requirements apply.
+For residential rooftops with two roof planes, `pvsyst_run_house_task` chains `.pvc2` scene generation/reading, GUI scene import, orientation binding, coordinate verification, annual CLI simulation, and ZIP delivery (`operation="engineering_house"`).
 
-Nonzero anchor azimuths, additional groups, shared or heterogeneous hardware, Module Layout, electrical shading, storage and arbitrary geometry/topology are outside this path. A successful bounded case does not provide a generic scene identity or coordinate converter.
+Supported layout and environment requirements:
+- **Electrical & orientation structure**: One house mesh and two fixed orientations (`ID 1` and `ID 2`), where each orientation owns one exclusive subarray and one PV table using the same `.PAN`/`.OND` models. Orientation 1 must have `FieldAzim=0` (the `anchor0` reference frame).
+- **GUI environment**: PVsyst 8.1.6 rev49278 in Chinese locale at 96 DPI, running in an owned workspace session.
+- **Coordinate mapping & precision**: During GUI import, PVsyst maps `anchor0` coordinates with inverted X/Y signs and unchanged Z, and can introduce small centimetre-level placement offsets. The bridge opens each PV table's properties dialog to bind the explicit orientation (`#1` / `#2`), exports `.SHD` data to check offsets, applies native position corrections (`Ctrl+B`), and deletes any confirmed empty third orientation group before saving the variant.
+- **7-character field check**: Because PVsyst's position inputs accept at most 7 characters, the adapter rejects requested coordinates whose 7-character rounding error exceeds `0.00002 m` (20 µm), and verifies that saved and reloaded table coordinates stay within that `0.00002 m` bound.
 
-Per-table native properties select the actual orientation. Native SHD export and position editing establish supported source-to-native correspondence; automatic leaf names or counts alone are not identity. In the anchor0 mapping, source X/Y signs are inverted and Z is unchanged. This rule is not extended to other anchors or scene types.
-
-Native position fields accept seven characters. The adapter accepts a requested position only when its rounding difference at that precision is within0.00002m. Source-to-native checks enforce that bound after native correction and again after save/reload; they do not widen it by module depth or accept import offsets within a depth envelope. Unrepresentable positions or identity/spatial mismatches stop. These are adapter checks, not installation tolerances.
-
-Only an explicitly confirmed empty extra orientation group may be removed. Native validity, saved/reloaded identity, geometry and annual consumption are independent checks. Completed house manifests use `operation=engineering_house` and expose `native_reload_verified`, inherited hardware/circuit information and geometry results. Status may remain needs_review even when phase/stage are completed and native consumption is verified. Successful geometry, annual output or ZIP creation does not erase missing engineering basis or saved-shading review.
+Completed house task manifests include `native_reload_verified`, geometry residual checks, and the authored `.pvc2` and `.SFI` files alongside the `.PRJ`/`.VCx` and CSV/PDF reports.

@@ -1,21 +1,26 @@
-# Native DC cabling bridge
+# DC cabling GUI bridge (`pvsyst_create_native_dc_cabling_variant`)
 
-## Supported entry
+In PVsyst 8.1.6, changing DC wiring resistance (`mOhm`) or STC wiring loss (`%`) updates coupled fields across the subarray (`RSCablage`, loss fraction, and mode flags) and every `StringNode` in the circuit tree. Instead of reimplementing PVsyst's internal wire-sizing math in Python, `pvsyst_create_native_dc_cabling_variant` drives an already open PVsyst 8.1.6 GUI session, enters your target resistance or loss percentage in the Detailed Losses dialog, lets PVsyst recalculate all coupled fields natively, and saves the result as a new variant via `SaveAs`.
 
-`pvsyst_create_native_dc_cabling_variant` operates an already open Chinese PVsyst8.1.6rev49278 GUI at DPI96. It uses the detailed-loss window, resistance/STC-percent controls, native confirmation and SaveAs. PVsyst calculates coupled subarray resistance/percent and StringNode resistance; the adapter does not implement cable or loss equations.
+## Prerequisites
 
-Open the requested project with DataPath equal to the MCP workspace. The tool does not start or exit PVsyst, edit INI, use the clipboard, load another project or directly patch DC records. Preview is read-only; execution requires both `dry_run=false` and `confirm=true`. Use one GUI driver/server and leave the desktop untouched during execution. The shared in-process lock is not a cross-process desktop lock.
+- **Desktop environment**: PVsyst 8.1.6 rev49278 in Chinese locale at 96 DPI (100% display scaling), with the target project already open in the GUI and `PVsyst.ini` `DataPath` pointing to the MCP workspace.
+- **Template layout**: Single-subarray, single-fixed-plane unshaded PV-only grid variant (`8.1.6`) with complete circuit counts, uniform direct `StringNode` resistances matching the subarray summary, and no active AC cabling, MV/HV transformers, horizon, P50, load, or storage.
+- **Subarray DC mode flags**: Supports switching freely between resistance mode (`Flags=$019E1002`) and STC loss-percentage mode (`Flags=$019E1003`).
 
-The source and candidate must be native8.1.6, one ordinary fixed-plane/subarray PV-only Grid, with complete circuit counts, inactive AC and no MV/HV, load, storage, geometry, horizon or P50. Only uniform direct StringNode resistances consistent with the subarray's stored0.001mOhm summary are accepted. Custom, mixed or partial states stop. DC mode flags are019E1002 for resistance and019E1003 for percent; accepting both here does not widen other editors'019E1002 domain.
+## Parameters and behavior
 
-## Input and persistence
+Pass `dc` with `mode` and `value`:
+- `mode`: `"resistance"` (in `mOhm`) or `"percent"` (STC loss in `%`, up to `100`).
+- `value`: Non-negative finite number with at most 2 decimal places (`0.01` precision) and at most 20 formatted characters.
+- `variant_name`: Display title (`Comment`) for the new variant. Note that PVsyst's native `SaveAs` dialog assigns the next free `.VCx` filename automatically; the tool returns the actual created `variant` ID and file path.
+- `dry_run` / `confirm`: `dry_run=true` validates the open project and variant state without touching the GUI; executing requires both `dry_run=false` and `confirm=true`. Leave the mouse and keyboard untouched while the GUI bridge is running.
 
-`dc` contains `mode: resistance|percent` and strict numeric `value`. Resistance is in mOhm; percent is STC loss percent. Values must be finite, nonnegative, exactly representable at0.01 precision and at most20 formatted characters; percent must not exceed100. These are adapter constraints, not manufacturer limits. Readback preserves native decimal strings and higher-precision circuit resistance.
+## Post-save verification
 
-`variant_name` is a display title, not a requested VC id. Native SaveAs chooses the id; use the actual path/id returned. Source PRJ/VC snapshots must remain unchanged before input, before save and after save.
+Once PVsyst finishes writing the new `.VCx` file, the bridge re-parses both the source and new variant files to verify that:
+- The source `.PRJ` and `.VCx` bytes were not modified.
+- The new `.VCx` has the expected DC mode flag (`$019E1002` or `$019E1003`), updated subarray DC resistance/percentage fields, and updated `StringNode` resistances.
+- All non-DC physical blocks remain identical to the source variant (accounting for PVsyst GUI adding a UTF-8 BOM or normalizing whitespace on save).
 
-After asynchronously written candidate contents are ready, the adapter verifies mode, requested value, owner consistency, title and non-DC physical records. Only owning DC subarray flag/Ch/PC, direct StringNode resistances and display comments/BOM may differ. Native saves may add a UTF-8 BOM or re-encode an existing unmarked non-ASCII display comment; physical lines must remain equal after whitespace normalization. The adapter does not rewrite source comments externally.
-
-## Failure and recovery
-
-A failed native action may leave its modal open for inspection. If SaveAs created a file, the response retains `variant_created=true` and its path even if postchecks stop. Failed artifacts are not silently deleted. Inspect the actual GUI and saved file before choosing a fresh target; saved state is not simulation-consumption certification.
+If a GUI dialog check fails after `SaveAs` has already written the file, the response still reports `variant_created=true` and the new file path so you can inspect the saved `.VCx` and the open GUI window before retrying.

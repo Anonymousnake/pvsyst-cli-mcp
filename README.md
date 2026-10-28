@@ -2,28 +2,31 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A local MCP server and Python adapter for engineering work with **installed PVsyst software**: review inputs, prepare or revise bounded native projects, run native simulations, compare related scenarios and deliver the original project/results with readable handoffs.
+Local MCP server and Python adapter for driving an installed copy of PVsyst 8 on Windows. It wraps `PVsystCLI.exe` for simulations, weather conversion, and license checks, and provides direct parsers and editors for PVsyst text files (`.PRJ`, `.VCx`, `.PAN`, `.OND`, `.BTR`, `.GEN`, `.SIT`) along with targeted GUI automation for features that the official CLI does not expose.
 
-PVsyst performs the physical calculations. This unofficial project does not bundle PVsyst, licenses, commercial models, weather assets or a replacement PV/storage/shading simulator.
+You need your own PVsyst installation and license on the host machine.
 
-## Start here
+## Common workflows
 
-| Task | Entry point | Details |
+| What you want to do | Main entry point | Guide |
 |---|---|---|
-| Review cited feasibility quantities and missing inputs | `pvsyst_review_engineering_brief` | [Brief review](docs/engineering-brief.md) |
-| Inspect an existing project and plan an isolated revision | `pvsyst_project_handoff`, `pvsyst_run_engineering_task` | [Engineering delivery](docs/engineering-delivery.md) |
-| Prepare a project from complete fixed blocks | `pvsyst_prepare_block_project` | [Block preparation](docs/block-project-preparation.md) |
-| Author and consume one bounded two-roof house | `pvsyst_run_house_task` | [House task](docs/native-house-task.md) |
-| Evaluate existing native AC storage with hourly load | `pvsyst_run_engineering_task` | [Storage engineering](docs/engineering-storage.md) |
-| Compare bound native scenarios and package results | `pvsyst_compare_engineering_scenarios`, `pvsyst_export_engineering_delivery` | [Scenario comparison](docs/engineering-scenarios.md) |
+| Check equipment counts and missing inputs from a feasibility brief | `pvsyst_review_engineering_brief` | [Brief review](docs/engineering-brief.md) |
+| Inspect an existing project, apply an isolated change, and run a full year | `pvsyst_project_handoff`, `pvsyst_run_engineering_task` | [Engineering delivery](docs/engineering-delivery.md) |
+| Assemble a new project by repeating fixed subarray blocks from a template | `pvsyst_prepare_block_project` | [Block preparation](docs/block-project-preparation.md) |
+| Build a 3D house scene, bind roof orientations, and run annual shading | `pvsyst_run_house_task` | [House task](docs/native-house-task.md) |
+| Evaluate centralized AC-coupled storage against an hourly load profile | `pvsyst_run_engineering_task` | [Storage engineering](docs/engineering-storage.md) |
+| Diff two or three simulation runs and bundle the project + reports into a ZIP | `pvsyst_compare_engineering_scenarios`, `pvsyst_export_engineering_delivery` | [Scenario comparison](docs/engineering-scenarios.md) |
 
-By default, the server exposes **82 tools in eight groups**. Use the [complete tool reference](docs/tool-reference.md) for low-level components, project editing, weather, loads, controls, simulations and result APIs.
+By default the server registers **82 tools across 8 groups**. If you need low-level access to components, variant parameters, circuit trees, weather files, loads, or result CSVs, see the [tool reference](docs/tool-reference.md).
 
-## Install
+## Installation
 
-Use Windows, Python 3.10+ and your own installed PVsystCLI. Native CLI behavior has evidence for 8.0.6 and 8.1.6; the bounded Chinese GUI paths have their own 8.1.6 rev49278/DPI96 requirements. Check each feature's evidence rather than inferring support from a version number.
+Requirements:
+- Windows with Python 3.10+
+- Installed `PVsystCLI.exe` (tested against 8.0.6 and 8.1.6)
+- For features that drive the desktop UI (3D house scene import and DC cable resistance calculation): PVsyst 8.1.6 rev49278 in Chinese locale at 96 DPI (100% display scaling)
 
-From this checkout:
+From the repository root:
 
 ```powershell
 py -m venv .venv
@@ -33,11 +36,11 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 .\.venv\Scripts\python.exe -m pvsyst_auto
 ```
 
-`pyproject.toml` owns package metadata and dependencies, including MCP SDK 2.x and Windows `tzdata`. The existing `pip install -r requirements.txt` route now installs the same editable package. For a non-editable installation, use `pip install .` instead.
+Dependencies (`mcp` 2.x and `tzdata` for Windows IANA timezones) are declared in `pyproject.toml`. Running `pip install -r requirements.txt` installs the same editable package; use `pip install .` for a regular install.
 
-## Connect an MCP client
+## MCP client configuration
 
-Configure the Python interpreter in which the package is installed. Module launch works independently of the client's current directory:
+Point your MCP client at the virtualenv Python executable. Launching via `-m pvsyst_auto` (or the installed `pvsyst-mcp` console script) does not depend on the working directory:
 
 ```json
 {
@@ -54,64 +57,56 @@ Configure the Python interpreter in which the package is installed. Module launc
 }
 ```
 
-The installed `pvsyst-mcp` command launches the same stdio server. Existing clients targeting the checkout's `pvsyst_mcp_server.py` keep working through one thin compatibility launcher; old root-level implementation modules are not retained as forwarding files. Restart the MCP client after changing its environment or updating the package.
+`pvsyst_mcp_server.py` at the repo root is kept as a thin wrapper so older client configs still boot. Restart your MCP client after changing environment variables or pulling code updates.
 
-After connecting, use `pvsyst_capabilities` and `pvsyst_license_info` to inspect the **CLI's** actual options and license/quota before a native run. These queries do not run simulations; GUI and CLI licenses can differ. Credentials and license material do not belong in source control.
+Once connected, run `pvsyst_capabilities` and `pvsyst_license_info` first to see which CLI flags your PVsyst version supports and check your remaining CLI simulation quota. Note that PVsyst tracks CLI and GUI licenses separately.
 
-### Optional focused discovery
+### Filtering exposed tool groups
 
-By default all 82 tools remain available. To publish only the groups needed by one client, add `PVSYST_TOOL_GROUPS` to its existing `env`, for example `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`. This keeps the current 15 setup/engineering/result tools and avoids advertising the other groups. Omit the variable to keep the full catalog.
+Exposing all 82 tools can bloat an LLM's context window. If a session only needs a subset, set `PVSYST_TOOL_GROUPS` in `env`—for example `"PVSYST_TOOL_GROUPS": "setup,engineering,results"` to expose only those 15 tools.
 
-Keys are case-sensitive: `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`. Empty, duplicate or unknown entries stop startup rather than silently choosing a different set. Selection is process-local and requires a restart; it changes discovery/call availability, not native execution or workspace/engineering requirements.
+Valid group keys (case-sensitive): `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`. Unknown or duplicate group names raise an error at startup so typos fail fast.
 
-## Read results honestly
+## Understanding task statuses
 
-| State | Meaning |
+High-level workflow tools return structured status fields so callers can tell the difference between a dry-run check, a file edit, and an actual PVsyst simulation:
+
+| Status / Flag | What it means |
 |---|---|
-| `ready` | Preflight/preview passed; not a native simulation |
-| `prepared` | Requested files were created; not necessarily consumed by PVsyst |
-| `stage=completed` and `native_consumption_verified=true` | That task's recorded native execution and its input/output checks passed |
-| `needs_review` | Keep unresolved source, model, engineering or native-warning conditions visible, even when execution completed |
-| `blocked` / `failed` | Inspect issues and retained artifacts; no automatic overwrite or retry is implied |
+| `ready` | Dry-run preflight passed; no files were written and PVsyst did not run |
+| `prepared` | Project or input files were written to disk, but no simulation has run yet |
+| `stage=completed` + `native_consumption_verified=true` | PVsyst ran the simulation and output checks (calendar, columns, units) passed |
+| `needs_review` | Simulation or preparation finished, but there are caveats to check (e.g. template-inherited fields, weather time-shift warnings, or missing engineering citations) |
+| `blocked` / `failed` | Preconditions or execution failed; check `issues` and any retained working files before retrying under a new output name |
 
-An export or numerical comparison does not perform another native run. Historical CSV names alone do not establish historical inputs. Models, weather, hardware topology and engineering declarations remain explicit dependencies; a successful run is not equipment or site-design certification.
-
-## Scope
-
-The existing fixed/tracking revision, AC-storage evaluation, two-roof house and fixed-block preparation paths each retain their documented limits. A two-roof anchor0 case does not imply arbitrary geometry or nonzero-anchor support; fixed blocks do not imply terrain, shared transformers or arbitrary topology; AC self-consumption evidence does not imply every hybrid DC port or storage strategy.
-
-Physical behavior always uses native PVsyst entries. Workspace file checks, production conflict guards, process-local locks, original-input preservation and retained failure records remain in place. A process-local lock is not a cross-process desktop lock. Coordinate/version/locale and short-period/full-year evidence are kept separate in the [native entry map](docs/native-entry-map.md).
-
-## Code organization
+## Package layout
 
 ```text
 src/pvsyst_auto/
-├── api/          # MCP context, strict request models and eight tool groups
-├── workflows/    # Preparation, revision, annual runs and delivery
-├── engineering/  # Briefs, input handoffs, reviews and scenario comparison
-├── project/      # PRJ/VC, circuits, templates and orientation edits
-├── components/   # PAN/OND/BTR, object editors and cited model creation
-├── scene/        # House/PV authoring, reading and spatial verification
-├── energy/       # Loads, storage, losses and electrical controls
-├── weather/      # Acquisition, time basis, preparation and review
-├── native/       # Existing CLI and bounded Windows GUI entries
-└── results.py    # Shared native result validation and aggregation
+├── api/          # MCP server setup, strict argument validation, and 8 tool modules
+├── workflows/    # End-to-end pipelines (template runs, revisions, house tasks, ZIP delivery)
+├── engineering/  # Feasibility brief checks, input handoff, and multi-scenario diffs
+├── project/      # .PRJ/.VCx parsing, subarray circuits, templates, and orientations
+├── components/   # .PAN/.OND/.BTR/.GEN readers, allowlisted editors, and curve tables
+├── scene/        # PVCollada (.pvc2) 3D house mesh generator, XML reader, and coordinate checks
+├── energy/       # Load profiles, battery storage, loss scalars, and power factor / grid limits
+├── weather/      # Open-Meteo ERA5 downloader, LegalTime alignment, and .SIT/.MET conversion
+├── native/       # Subprocess wrapper for PVsystCLI.exe and Win32 GUI automation bridges
+└── results.py    # Result CSV/PDF parser and hourly aggregation
 ```
 
-Start at a workflow for an end-to-end task, a domain module for edits, and `native` for vendor execution. API code delegates to those existing implementations. There is no new plugin/DI framework, dispatch simulator or generic desktop engine. See [architecture and import migration](docs/architecture.md).
+See [architecture.md](docs/architecture.md) for module responsibilities and old-to-new import paths, and [native-entry-map.md](docs/native-entry-map.md) for the support matrix across PVsyst features.
 
-The public Python adapter is available as:
+To use the CLI wrapper directly from Python:
 
 ```python
 from pvsyst_auto import PVsystCLI, PVsystError
 ```
 
-## Development
+## Development & tests
 
-Install the editable package before using Python modules directly. Public interface tests are under `tests/contracts`; tests using native inputs require explicit fixtures and the documented software environment. A skipped fixture-dependent test does not demonstrate native compatibility.
-
-For supported behavior and recovery options, see the [tool reference](docs/tool-reference.md) and [engineering delivery](docs/engineering-delivery.md).
+Install the package in editable mode (`pip install -e .`) before running tests. Contract tests live under `tests/contracts/`. Tests that drive real PVsyst project fixtures or `PVsystCLI.exe` expect local environment variables pointing to your workspace and installed binary.
 
 ## License
 
-[MIT](LICENSE). PVsyst and third-party inputs retain their own ownership and licensing terms.
+[MIT](LICENSE).

@@ -1,48 +1,49 @@
-# 原生功率因数与逆变器额定限制
+# 功率因数（Power Factor）与逆变器 PNom 限制方式
 
-`pvsyst_update_variant_parameters.power_factor_updates`设置原生PF及同组PNom选项，`pvsyst_get_variant_parameters.power_factor`读取语义状态。它保存带符号TanPhi/TanPhiM，不计算Cosφ、无功、额定功率或发电。PF与注入点限值的组合使用独立[功率控制](native-power-controls.md)事务。
+`pvsyst_update_variant_parameters` 中的 `power_factor_updates` 用于独立配置系统功率因数（常数或 12 个月分月设定）以及逆变器额定功率 `PNom` 的限制基准（`pnom_limit`）；当前配置可通过 `pvsyst_get_variant_parameters.power_factor` 读取。
 
-## 输入
+如果需要同时配置功率因数和并网注入点有功/视在功率上限（`PLimGrid`），请使用组合入口 [`power_controls_updates`](native-power-controls.md)。
 
-mode和pnom_limit必须明确提供，可同批设置variant_name。
+## 入参结构与单位约定
 
-| mode | 数值输入 | pnom_limit |
+调用 `power_factor_updates` 时必须显式传入 `mode` 和 `pnom_limit`（可同批附带 `variant_name`）：
+
+| `mode` | 数值字段 | 允许的 `pnom_limit` |
 |---|---|---|
-| none | 无，移除PF字段 | native |
-| constant | tan_phi | native / active / apparent |
-| monthly | monthly_tan_phi，一月至十二月12项 | native / active / apparent |
-
-数值是无量纲正切，不是Cosφ。适配器范围[-1,1]、0.001增量，须有限且不是布尔或数字字符串；不是GUI或厂家极限。领先保存负值、滞后保存正值，月值按声明保留，不由符号推导无功曲线。
-
-pnom_limit=native清除Legacy强制位，交OND和原生模式决定；active/apparent改变逆变器PNom的Legacy解释，不是注入点kW/kVA限值，也不修改OND硬件或厂家PF限制。
+| `none` | 无（从 `pvSystem` 中移除 PF 字段） | `"native"` |
+| `constant` | `tan_phi`（单个数值） | `"native"` / `"active"` / `"apparent"` |
+| `monthly` | `monthly_tan_phi`（1～12 月共 12 个数值的列表） | `"native"` / `"active"` / `"apparent"` |
 
 ```json
 {
-  "power_factor_updates": {"mode": "constant", "pnom_limit": "native", "tan_phi": -0.484},
+  "power_factor_updates": {
+    "mode": "constant",
+    "pnom_limit": "native",
+    "tan_phi": -0.484
+  },
   "variant_name": "PF_LEADING"
 }
 ```
 
-## 支持范围与保存
+**关键注意点：传的是 $\tan\varphi$ 而不是 $\cos\varphi$**
+- PVsyst 在 `.VCx` 的 `pvSystem` 块里保存的是无量纲相角正切值 `TanPhi`（或月度 `TanPhiM`），**不是余弦功率因数 $\cos\varphi$**（例如 $\cos\varphi = 0.90$ 对应 $|\tan\varphi| \approx 0.484$）。
+- 允许范围为 `[-1, 1]`，步长 `0.001`；正值代表滞后（Lagging），负值代表超前（Leading）。
+- `pnom_limit` 控制逆变器额定输出是按 `.OND` 原生设置（`native`）、强制按有功功率 kW（`active`）还是强制按视在功率 kVA（`apparent`）限幅。
 
-仅支持8.1.6 PV-only Grid、单普通固定平面／子阵、自由地平线、完整电路及受支持主阵列标志。活动几何／布局、负荷／储能、逆变器温度、辅助、限值及其他系统字段或位停止。重复或非所属PF字段、位与字段冲突、两个PNom强制位并存也停止；其他功能不混入独立PF事务。
+## 底层 `pvSystem.Flags` 掩码对照
 
-| 保存模式示例 | pvSystem.Flags |
+本事务要求源变体为 PVsyst 8.1.6 单子阵列、单固定平面、自由地平线、无 3D 阴影且未开启温度/辅助/限发/储能的纯光伏并网变体。不同组合在 `pvSystem.Flags` 中的十六进制值如下：
+
+| 配置组合 | `pvSystem.Flags` |
 |---|---|
-| 无PF | $00 |
-| 常数PF | $00100000 |
-| 月度PF | $00300000 |
-| 常数＋强制有功PNom | $00900000 |
-| 常数＋强制视在PNom | $00500000 |
-| 月度＋强制有功PNom | $00B00000 |
-| 月度＋强制视在PNom | $00700000 |
+| 关闭 PF (`mode="none"`, `pnom_limit="native"`) | `$00` |
+| 常数 PF + `native` PNom | `$00100000` |
+| 月度 PF + `native` PNom | `$00300000` |
+| 常数 PF + 强制有功 PNom (`active`) | `$00900000` |
+| 常数 PF + 强制视在 PNom (`apparent`) | `$00500000` |
+| 月度 PF + 强制有功 PNom (`active`) | `$00B00000` |
+| 月度 PF + 强制视在 PNom (`apparent`) | `$00700000` |
 
-组合入口中月度PNom加有功注入点、单列损失的族为$05B00000/$05700000。不放开未列出的monthly＋PNom＋视在注入限值；无PF仍要求native。无限值组合明确使用quantity=active、point=inverter，不无条件添加注入点位。
+## 仿真导出列的单位提示
 
-读取和写入使用相同组合规则；候选读回语义须匹配请求。getter返回mode/tan_phi/monthly_tan_phi/pnom_limit，不支持状态返回mode=null及issue。预览、同值无操作、备份和恢复沿用变体事务。
-
-## 结果解释
-
-EReGrid/EApGrid保留原生kVAh表头，不自行改为kvarh或补符号；负TanPhi不保证产生负的无功导出。InvPmax不是每个小时E_Grid的严格上界，native与apparent也不保证对所有OND都产生相同结果。
-
-P50是独立结果分析功能，使用[受限P50编辑器](p50-native-parameters.md)；不通过PF配置创建概率专页。
+在导出包含无功与视在能量的 CSV 时（如 `EReGrid`、`EApGrid`），PVsyst 8.1.6 原生表头把这两列的单位都标为 `kVAh`，并且即使设置了负的 `TanPhi`（超前），导出的 `EReGrid` 也是非负数值。结果解析器会原样保留 PVsyst 输出的表头和数值，不会擅自改表头或加负号。

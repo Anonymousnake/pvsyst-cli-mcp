@@ -1,10 +1,10 @@
 # Native AC-storage engineering scenarios
 
-`pvsyst_run_engineering_task` composes an existing centralized AC-coupled storage design, its prepared hourly load, a native annual run, scenario comparison and delivery. It reuses native storage/load entries and PVsyst calculations, not a separate dispatch, chemistry or hybrid DC-port model.
+`pvsyst_run_engineering_task` supports revising and simulating existing centralized AC-coupled battery storage projects alongside its fixed-plane and tracking workflows. It binds a validated hourly load profile, updates storage parameters in an isolated project copy, runs a full calendar year through `PVsystCLI.exe`, and feeds into `pvsyst_compare_engineering_scenarios` and `pvsyst_export_engineering_delivery`.
 
-## Request
+## Request format
 
-Use an existing one-subarray/one-fixed-orientation Grid storage project without an active scene or module layout. Provide `changes.storage`, `load_manifest_name` and the normal engineering-task inputs. Source PRJ and VC must reference the same workspace SIT/MET, and the site's standard UTC offset must match the prepared load. An empty storage object preserves an existing SelfConsumption design for a new bound reference run.
+Start from a single-subarray, single-fixed-orientation grid project that already has AC-coupled storage enabled and no active 3D shading scene or Module Layout. Pass `changes.storage` and `load_manifest_name` in addition to the standard engineering revision fields:
 
 ```json
 {
@@ -13,7 +13,7 @@ Use an existing one-subarray/one-fixed-orientation Grid storage project without 
     "source_variant": "VCLOAD",
     "new_project": "AC_STORAGE_CANDIDATE.PRJ",
     "new_variant": "VCSTORAGE",
-    "objective": "Compare an explicit charger AC input limit with the existing limit",
+    "objective": "Compare a 2 kW AC charger input limit against the baseline 3 kW limit",
     "year": 2024,
     "nominal_dc_power_kw": 36,
     "power_source": "Project equipment schedule: 60 modules rated 600 W each.",
@@ -25,14 +25,20 @@ Use an existing one-subarray/one-fixed-orientation Grid storage project without 
 }
 ```
 
-Replace the example with actual workspace assets and engineering declarations. Hardware, topology, battery model/counts/temperature/SOW and unrequested controls remain inherited. WeakGrid requires the existing complete `availability` declaration; empty updates without availability accept only the existing SelfConsumption triplet. The SelfConsumption annual path does not establish arbitrary WeakGrid or Peak schedules.
+Requirements and behavior:
+- **Site & timezone alignment**: The source `.PRJ` and `.VCx` must point to the same workspace `.SIT`/`.MET` files, and the site's fixed standard UTC offset must match the timezone offset recorded in `load_manifest_name`.
+- **Baseline reference runs**: Passing `changes: {"storage": {}}` keeps the existing `SelfConsumption` storage parameters untouched so you can generate a bound baseline run manifest for scenario comparison.
+- **WeakGrid availability**: If the source variant uses the `WeakGrid` strategy, you must also supply the complete 0/1 hourly grid `availability` declaration matching the simulation year and timezone offset.
+- **Load cache verification**: Before running, the workflow checks the prepared load manifest against the variant's embedded `Energy/MJ` base62 cache, calendar dates, units, and encoding, and after the simulation finishes it verifies that the exported `E_User` column matches the prepared hourly load hour by hour.
 
-The prepared load is checked against the source VC's complete native cache, dates, DST, renormalization, units and encoding, not merely a filename. Historical absolute paths are metadata, not instructions to access outside the workspace. Native output must reproduce E_User hour by hour. The run binds the load record, raw/normalized CSVs, BTR where available, PRJ/VC, models and SIT/MET.
+## Exported columns and balance checks
 
-## Result interpretation
+The workflow uses the `grid_storage` `.SFI` variable preset so the annual CSV includes all required AC and DC storage columns:
+- Load and grid flows: `E_User`, `EFrGrid`, `E_Grid` / `EToGrid`, `E_Miss`, `EUnused`, `CL_Over` (converter overload / clipping loss)
+- Battery DC flows and state of charge: `EBatCh`, `EBatDis`, `SOC_Beg`, `SOC_End` (or `SOC`)
 
-The result must cover the entire hourly year with finite actual columns and explicit units. Load, grid import/export, battery charge/discharge and SOC are required. SOC's first sample and declared range, charger AC input and inverter AC output limits are checked at native export precision. Full AC-flow consistency is checked only when all required native columns exist; missing columns are disclosed, never replaced by zero.
-
-EBatCh/EBatDis are battery-side quantities. AC checks use native converter-loss columns instead of comparing DC power with AC ratings. Export precision is separate from engineering/device tolerances. The adapter does not derive usable energy by capacity-times-SOC, certify hardware/BMS, or apply the PV-only E_Grid PR formula to storage.
-
-Comparison reports actual import/export, load, unmet load, battery/DC flows, unused energy and independent SOC extrema/times. Only bound identical load assets and verified caches permit normalization of workspace-location metadata; other differences remain visible. Delivery uses the bound multi-scenario ZIP described in [engineering delivery](engineering-delivery.md). Successful execution does not clear inherited engineering-review requirements.
+Post-simulation checks verify that:
+- The output covers all 8760 or 8784 hours of the requested calendar year with finite values and expected units.
+- Initial SOC, minimum/maximum SOC bounds, AC charger input power, and battery inverter AC output power stay within the configured limits (accounting for converter losses rather than treating battery-side DC `EBatCh`/`EBatDis` as AC ratings).
+- When all required AC flow columns (`CL_Over`, etc.) are present, the hourly AC energy balance closes within CSV rounding precision.
+- Standard PV-only performance ratio (`E_Grid / (GlobInc × PNom)`) is skipped for storage runs because battery charging/discharging and self-consumption decouple grid export from array yield.

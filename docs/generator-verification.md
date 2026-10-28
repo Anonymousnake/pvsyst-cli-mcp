@@ -1,15 +1,23 @@
 # Standalone backup generator settings
 
-Variant parameter inspection exposes generator; updates accept generator_updates for declared8.1.0/8.1.6 variants with exactly one pvSystem of SystemType=Battery. Runtime support is based on CLI8.1.6 loading those declarations, not every historical executable or GUI locale.
+For standalone battery systems (`SystemType=Battery` in PVsyst 8.1.0 / 8.1.6 `.VCx` files), `pvsyst_get_variant_parameters` exposes the backup generator configuration under `generator`, and `pvsyst_update_variant_parameters` updates it via `generator_updates`.
 
-## Fields and requirements
+## Fields modified in `.VCx`
 
-The writer changes only system Flags bit0x20, GensetFile, PEffBackUp and explicitly selected subarray VBkUpEncl_syst/VBkUpDecl_syst. Missing supported generator fields may be inserted; nested objects, other bits, version, BOM and newlines stay unchanged.
+A `generator_updates` transaction touches four places in the variant file:
+- System enable bit: bit `0x20` on `pvSystem.Flags`
+- Generator reference: `GensetFile` (pointing to a `.GEN` file in `ComposPV`)
+- Operating power: `PEffBackUp` (kW)
+- Per-subarray start/stop voltage thresholds: `VBkUpEncl_syst` and `VBkUpDecl_syst`
 
-Enabling requires an existing valid GEN, positive operating power and both thresholds for every subarray. Thresholds are native normalized voltages within[0,1], not SOC. No unevidenced start/stop ordering is imposed. Power above GEN nominal produces a warning rather than a sizing approval. Disabling retains saved settings; GEN nominal power and fuel parameters use a separate component transaction.
+Requirements and gotchas:
+- **Thresholds are normalized voltages, not SOC**: In PVsyst's standalone battery system block, `VBkUpEncl_syst` and `VBkUpDecl_syst` are normalized voltage ratios in `[0, 1]`, not state-of-charge percentages. When enabling the generator, both thresholds must be provided for every subarray in the variant.
+- **Operating power vs `.GEN` nominal rating**: `PEffBackUp` must be positive when enabling. If `PEffBackUp` exceeds the nominal power declared inside the `.GEN` file, the tool emits a warning so you can check whether the mismatch was intentional. To edit the `.GEN` file's own nominal rating or fuel consumption parameters, use `pvsyst_update_component`.
+- **Disabling**: Setting `enabled=false` clears bit `0x20` on `pvSystem.Flags` while keeping the saved `GensetFile`, `PEffBackUp`, and voltage thresholds in the file.
 
-## Transactions and output
+## Reading generator simulation outputs
 
-Use the current variant token. Preview does not write or create backups; same-value updates preserve numeric spelling. Apply snapshots original bytes and rechecks both variant and selected GEN, including a new loose file shadowing a builtin GEN. These are optimistic checks, not exclusion of external writers; recovery uses restore_variant.
-
-Native controls cover48h dispatch, not full fuel/battery-model validation. BkUp_ON is fractional runtime, so a positive hourly row is not necessarily a full operating hour. Preserve E_BkUp/FuelBU/BkUp_ON units and actual omitted columns. Other system types, conversion, cross-file transactions and complete GUI save/reload are outside this entry.
+When simulating a standalone variant with a backup generator, PVsyst exports:
+- `E_BkUp`: Backup generator energy output
+- `FuelBU`: Fuel consumption
+- `BkUp_ON`: Fractional operating time within each hourly step (a positive value like `0.35` means the generator ran for 35% of that hour, not a full hour)

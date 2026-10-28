@@ -1,17 +1,25 @@
-# Component commercial fields
+# Component commercial fields and remarks
 
-`pvsyst_get_component` returns commercial values, types, units and editability for text8.1.6 PAN/OND/BTR/GEN files. `pvsyst_update_component` accepts commercial_updates and remarks with the current expected fingerprint, optional preview and automatic backup. These edits do not fit or certify a physical model.
+`pvsyst_get_component` and `pvsyst_update_component` read and edit the commercial metadata block (`pvCommercial`) and multi-line `Remarks` array in text-format PVsyst 8.1.6 `.PAN`, `.OND`, `.BTR`, and `.GEN` files.
 
-## Fields and ownership
+## Commercial fields (`commercial_updates`)
 
-The ten commercial fields are Manufacturer, Model, DataSource, YearBeg, Width, Height, Depth, Weight, NPieces and PriceDate. The input dictionary uses strings. Missing supported fields may be added to an existing direct pvCommercial object; nested commercial schemas are not modified. Identity changes belong in this dictionary, not arbitrary scalar updates.
+The `commercial_updates` dictionary accepts string values for up to ten fields on the direct `pvCommercial` object:
+- Identity & provenance: `Manufacturer`, `Model`, `DataSource`, `YearBeg`, `PriceDate`
+- Physical dimensions & packaging: `Width`, `Height`, `Depth`, `Weight`, `NPieces`
 
-PAN dimensions synchronize existing root LargApp/LongApp when present. Commercial-only GUI exports are accepted without inventing legacy counterparts; duplicate/ambiguous dimensions stop. Identity edits update manufacturer/model slots of a tab-separated root Comment while preserving its status/source slots. Other scopes, flags, curves and physical fields stay unchanged.
+Behavior and edge cases when writing:
+- **Missing fields**: If a supported field is not yet present in `pvCommercial`, the editor inserts it into the direct `pvCommercial` block (nested commercial sub-objects are not touched).
+- **PAN dimension sync**: Older `.PAN` files also store module dimensions in root-level `LargApp` (width) and `LongApp` (length), whereas newer GUI exports often only write `pvCommercial.Width` and `pvCommercial.Height` (see [GUI PAN format](gui-pan-verification.md)). When updating `Width` or `Height` on a `.PAN`, the editor updates `LargApp`/`LongApp` if they already exist in the file, and leaves commercial-only files without legacy root fields as-is.
+- **Root comment sync**: Updating `Manufacturer` or `Model` also updates the corresponding slots in the tab-separated root `Comment` header line while keeping its status and data-source columns intact.
 
-## Remarks and transactions
+## Multi-line `Remarks` array (`remarks`)
 
-remarks replaces one complete array, including count, numbered rows and closing value. Up to five lines are supported; an empty list removes the array, omission preserves it, and a same-value array preserves bytes. Malformed/missing/duplicate headers, orphan or inconsistent rows/counts/closing values stop.
+Pass `remarks` as a list of up to 5 strings:
+- Providing 1 to 5 strings rewrites the `Remarks` block with synchronized `Count`, numbered `Remark_1`..`Remark_N` lines, and the closing marker.
+- Passing an empty list `[]` removes the `Remarks` block from the file.
+- Omitting `remarks` (or passing the exact existing lines) leaves the bytes untouched.
 
-A PAN fifth remark line can have functional meaning; remarks are not universally physically inert. Preview, same-value no-op, stale-source checking, backup and restore use the normal component transaction. Commercial/remarks may share a transaction with supported electrical scalars or curves, subject to all their gates.
+**Gotcha on `.PAN` files**: PVsyst sometimes stores functional flags on the 5th remark line (`Remark_5`) of a `.PAN` file. Keep that in mind before wiping or overwriting `Remarks` on an existing module.
 
-These fields do not implement seller-specific pricing, currencies or project economics, and successful native loading does not prove every field affects physics. PAN width/five-row GUI behavior is only partial GUI coverage; BTR/GEN and complete four-type GUI round trips are separate. See[PAN compatibility](gui-pan-verification.md) and[component creation](sourced-components.md).
+Commercial updates and `remarks` can be combined with electrical scalar or Mode 1 curve updates in a single guarded `pvsyst_update_component` call.

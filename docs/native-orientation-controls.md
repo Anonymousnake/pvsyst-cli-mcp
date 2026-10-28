@@ -1,25 +1,28 @@
-# 原生朝向类型与依赖
+# PVsyst 朝向类型（`FieldType`）与编辑入口对照
 
-PVsyst8.1.6的朝向窗口将类型分组展示，分组标题不是类型。Dome一次选择产生两条配对记录，因此可选项数量不等于FieldType字面值数量。读取原生记录不表示适配器可任意构造该类型。
+在 PVsyst 8.1.6 的 `.VCx` 变体文件中，`TOrientGroup` 下的朝向对象根据 `FieldType` 的不同，拥有各自专属的几何与角度字段（其中双坡对置的 `Dome` 选一次会在列表里成对生成两条互指的 `pvDomeOrient` 记录）。
 
-| 原生类型 | 主要保存字段／结构 | MCP入口 |
+下面是全量 `FieldType` 的底层关键字段与对应 MCP 工具入口速查表：
+
+| `FieldType` | 核心保存字段 / 结构特点 | 对应 MCP 编辑入口与文档 |
 |---|---|---|
-| FixedPlane | FieldTilt、FieldAzim、BaseSlope | [固定平面与生命周期](grid-capacity-verification.md) |
-| Dome＋DomeBackfaces | 两条pvDomeOrient／TDomeOrientGroup，互指配对 | [既有有效模板的分配](native-dome-allocation.md) |
-| SeasonalTilt | SummerTilt、WinterTilt、WinterMonths | [季节倾角](seasonal-orientation.md) |
-| Sheds／SunShields | 角度及棚架几何，类型不同 | [棚架配置](native-shed-controls.md) |
-| UnlimTracking | 轴方位、phi界限、回溯、辐照优化、棚架 | [跟踪控制](native-tracking-controls.md) |
-| TrackHorizNSAxis | phi、CentralGap、PitchSlope及风收拢 | 同一跟踪入口，按类型限定 |
-| TrackTiltedAxis | 前一类字段及AxisTilt | 同一跟踪入口 |
-| TrackVertAxis | FieldTilt、AxisAzim、MinAzim/MaxAzim | 同一跟踪入口 |
-| TrackSunShield | 倾角界限、回溯、棚架 | 同一跟踪入口 |
-| TrackHorizAxis | 倾角界限、PitchSlope、回溯、棚架 | 同一跟踪入口 |
-| TrackTwoAxis | 方位及倾角界限 | 同一跟踪入口 |
-| TrackFrameNS | AxisTilt、倾角、FrameMinPhi/MaxPhi | 同一跟踪入口 |
-| TrackFrameEW | phi、FrameMinTilt/MaxTilt | 同一跟踪入口 |
+| `FixedPlane` | `FieldTilt`, `FieldAzim`, `BaseSlope` | `pvsyst_update_variant_parameters` / `pvsyst_clone_subarray`（见[并网拓扑与固定平面](grid-capacity-verification.md)） |
+| `Dome` + `DomeBackfaces` | 两条 `pvDomeOrient` 记录，通过 `NoOrient=1/2` 与 `NoPairOrient=2/1` 互指 | `pvsyst_create_dome_allocation_variant`（见[Dome 双朝向分配](native-dome-allocation.md)） |
+| `SeasonalTilt` | `SummerTilt`, `WinterTilt`, `WinterMonths`（此时 `FieldTilt=0.0`） | `pvsyst_update_variant_parameters.seasonal_updates`（见[季节倾角](seasonal-orientation.md)） |
+| `Sheds` / `SunShields` | 倾角/方位角 + 排间距 `Pitch`、宽度 `CollectorWidth`、排数 `NSheds` 等 | `pvsyst_create_shed_geometry_variant`（见[棚架与遮阳板配置](native-shed-controls.md)） |
+| `UnlimTracking` | `AxisAzim`, `MinPhi`/`MaxPhi`, `UsesBacktracking`, `UsesIrradOptimiz`, 棚架几何 | `pvsyst_create_tracking_variant`（见[跟踪控制](native-tracking-controls.md)） |
+| `TrackHorizNSAxis` | `AxisAzim`, `MinPhi`/`MaxPhi`, `CentralGap`, `PitchSlope`, 回溯与大风保护（Wind Stow） | `pvsyst_create_tracking_variant` |
+| `TrackTiltedAxis` | 在 `TrackHorizNSAxis` 基础上增加轴倾角 `AxisTilt` | `pvsyst_create_tracking_variant` |
+| `TrackVertAxis` | `FieldTilt`, `AxisAzim`, `MinAzim`/`MaxAzim` | `pvsyst_create_tracking_variant` |
+| `TrackSunShield` | `AxisAzim`, `MinTilt`/`MaxTilt`, `UsesBacktracking` | `pvsyst_create_tracking_variant` |
+| `TrackHorizAxis` | `AxisAzim`, `MinTilt`/`MaxTilt`, `PitchSlope`, `UsesBacktracking` | `pvsyst_create_tracking_variant` |
+| `TrackTwoAxis` | `AxisAzim`, `MinAzim`/`MaxAzim`, `MinTilt`/`MaxTilt` | `pvsyst_create_tracking_variant` |
+| `TrackFrameNS` | `AxisAzim`, `AxisTilt`, `MinTilt`/`MaxTilt`, `FrameMinPhi`/`MaxPhi`, `UsesBacktracking` | `pvsyst_create_tracking_variant` |
+| `TrackFrameEW` | `AxisAzim`, `MinPhi`/`MaxPhi`, `FrameMinTilt`/`MaxTilt`, `UsesBacktracking` | `pvsyst_create_tracking_variant` |
 
-角度为度，Pitch、CollectorWidth、InactiveBandWidth和CellWidth保存为米；GUI可能以厘米显示CellWidth。类型及角度以所属字段为准，残留Comment不是当前配置。不得把配对Dome记录扁平化按字段名去重，也不将TDomeOrientGroup当作3D路径引用。
+## 常见踩坑细节
 
-Dome的NoOrient=1/2、NoPairOrient=2/1及IsMainOrient区分两面，系统须为两面提供实际PV归属；未分配第二面会在原生检查停止。它不表示类型不受支持，也不应通过改FieldType或删除配对绕过。
-
-普通、季节、棚架及跟踪类型已有原生全年基线；新增控件和MCP消费仍按各指南的模板与时段范围，不把既有工程可运行当成所有类型可新建。跟踪报告中的no Shadings标签不排除内建二维互遮挡；参见[导出解释](native-tracking-controls.md#原生二维遮挡与导出)。原生新增字段、显示名、缓存和窗口状态都不自动扩大固定无阴影写入范围。
+1. **单位差异**：在 `.VCx` 文件里，所有角度均以**度（deg）**存储，而 `Pitch`、`CollectorWidth`、`InactiveBandWidth` 和 `CellWidth` 全部以**米（m）**存储（尽管 PVsyst GUI 界面上经常把电池片宽度 `CellWidth` 显示为厘米，落盘时仍是米，例如 `0.156`）。
+2. **`Comment` 不代表当前类型**：在 GUI 里切换过朝向类型后，对象头部的 `Comment` 字符串有时还会残留上一次类型的名字，判断朝向类型一律以 `FieldType` 为准。
+3. **成对的 `Dome` 记录**：`Dome`（`NoOrient=1`, `IsMainOrient=True`）和 `DomeBackfaces`（`NoOrient=2`, `IsMainOrient=False`）必须成对出现，且子阵列必须同时关联这两面（`NoOrientation=1`, `NoOrientation2=2`）；如果第二面没有分配组串，PVsyst 会在校验时报错拦截。
+4. **跟踪器与棚架的内建二维遮挡**：`Sheds`、`SunShields` 和 `UnlimTracking` 等类型在 PVsyst 内核里自带二维排间遮挡计算，详情见[原生二维遮挡与导出](native-tracking-controls.md#原生二维遮挡与导出)。

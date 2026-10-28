@@ -1,35 +1,42 @@
-# 站点、天气与指定年份准备
+# 站点与标准逐时气象转换（`pvsyst_prepare_weather`）
 
-`pvsyst_prepare_weather`把工作区标准小时CSV转换为新SIT/MET，并生成可供年度任务绑定的来源清单。它不下载气候数据、不修补观测、不解码MET逐时载荷；电气和场址设计依据仍由调用者明确提供。
+`pvsyst_prepare_weather` 将工作区 `Meteo` 下的一份 PVsyst 标准逐时气象 CSV 一步转换为新的 `.SIT`（站点）和 `.MET`（二进制/编码气象）文件，并在 `Results` 下生成一份来源清单 JSON，供后续 [`pvsyst_simulate_template`](automatic-simulation.md) 绑定和逐时核对使用。
 
-## 输入
+如果需要先从 Open-Meteo ERA5 在线下载某年的标准逐时 CSV，请先调用 `pvsyst_acquire_weather`（或直接用一站式入口 [`pvsyst_simulate_design`](single-design-inputs.md)）。
 
-仅接受GHI、DHI、Tamb：辐照W/m²或每小时MJ/m²，温度deg.C/degC。日期列可重排，Year可来自#Year。year为1969..2068，全部00:00..23:00标签及闰日完整，文件名不证明覆盖。
+## 输入要求与调用示例
 
-必须声明time_basis=local_standard_interval_start，即固定当地冬季标准时、无DST、每标签为区间起点。位置、海拔、时区、站点、国家标签和source来自CSV；另显式提供大写ISO alpha-2 country_code，避免建站时自动外查。UTC、显式时间参考、非零偏移、缺测、POA和其他列映射停止，不移时、补值或丢列。
+源 CSV 需先满足 [`pvsyst_inspect_weather_csv`](weather-input-verification.md) 的标准整点校验，且：
+- 仅包含水平总辐射 `GHI`、散射辐射 `DHI`（单位 `W/m²` 或 `MJ/m²`）和环境温度 `Tamb`（单位 `deg.C` / `degC`）。
+- 完整覆盖目标年份（`1969..2068`）的 8760 或 8784 个整点（含闰年 2 月 29 日）。
+- 显式传入 `time_basis="local_standard_interval_start"`（即固定当地冬季标准时、无夏令时跳变、每个时间戳代表该小时区间的起点）以及两位大写 ISO 国家代码 `country_code`（如 `"CN"`、`"US"`）。
 
-## 调用与新文件
-
-以下为已连接MCP客户端中的工具参数示例；先预览，检查结果后再以同一参数设置dry_run=false：
+先用 `dry_run=true` 预览，确认无报错后再设 `dry_run=false` 执行：
 
 ```json
-{"csv_name":"station_2024.csv","year":2024,"sit_name":"station_2024.SIT","met_name":"station_2024.MET","country_code":"US","time_basis":"local_standard_interval_start","dry_run":true}
+{
+  "csv_name": "station_2024.csv",
+  "year": 2024,
+  "sit_name": "station_2024.SIT",
+  "met_name": "station_2024.MET",
+  "country_code": "US",
+  "time_basis": "local_standard_interval_start",
+  "dry_run": true
+}
 ```
 
-CSV序列化为独立日期列和统一单位，再按明确列号生成MEF；SIT走原生create-site。执行创建导入CSV、月值CSV、MEF、SIT、MET及Results来源JSON，同名停止。源CSV保持，执行前后验证指纹。生成SIT按实际打印精度复核位置、时区、国家和月值：月辐照±0.051kWh/m²、月温度±0.0051°C，不将其当物理容差。
+## 底层生成的文件与精度校验
 
-## 绑定年度任务
+当 `dry_run=false` 时，工具会按顺序生成以下新文件（若任一同名文件已存在则报错停止，绝不覆盖源 CSV 或旧文件）：
+1. 拆分好独立日期列、统一好单位的规范化导入 CSV 与月度汇总 CSV（位于 `Meteo`）。
+2. 调用 `PVsystCLI.exe create-site` 生成 `.SIT` 站点文件（位于 `Sites`），并按 PVsyst 的打印精度回读校验经纬度（`±0.0000501°`）、海拔（`±0.500001 m`）、时区、国家及 12 个月辐射/温度均值（月辐射 `±0.051 kWh/m²`、月均温 `±0.0051 °C`）。
+3. 生成绑定 `RefTime=LegalTime` 的 `.MEF` 转换格式文件（位于 `Meteo`），再调用 `PVsystCLI.exe convert-meteo` 生成 `.MET` 文件（确保 `.MET` 内部 `HLeg=True`）。
+4. 在 `Results` 下写入来源清单 JSON（路径见返回值的 `artifacts.manifest`）。
 
-将响应中的artifacts.manifest文件名传给simulate_template的weather_manifest_name；同时明确模板、工作工程、实际PAN/OND、SIT/MET及year。不要猜清单文件名或把准备完成当作全年完成。
+## 与全年仿真任务联动
 
-预检重验清单中的源CSV、导入CSV、月值、MEF、SIT、MET与请求年份／名称，变化在写项目之前停止。绑定的固定当地标准时profile重新核对MET时基，旧SolarTime需用新名重建，不改写旧资产。
+将返回的 `artifacts.manifest` 文件名传给 `pvsyst_simulate_template` 的 `weather_manifest_name` 参数：
+- 仿真启动前会自动重验源 CSV、导入 CSV、月值 CSV、`.MEF`、`.SIT`、`.MET` 的哈希指纹及 `LegalTime` 时基。
+- 仿真结束后会自动把导出 CSV 里的 `GlobHor`、`DiffHor`、`T_Amb` 与准备阶段的 CSV 逐时比对（辐射差超过 `0.1 W/m²` 或温度差超过 `0.01 °C` 时会保留 `needs_review` 提示）。
 
-原生运行显式加载SIT/MET，不只改历史来源名称。SFI导出GlobHor、DiffHor、T_Amb与CSV逐时比对，年度完整性另检。0.1W/m²和0.01°C只是公开的舍入／转换复核阈值，不代表MET存储精度或物理认证；标签／数量不匹配属于失败，数值超阈保留review。
-
-## 状态与恢复
-
-blocked／ready为只读预检；prepared／needs_review表示新文件已生成，native_met_verified仍false。转换质量／时间警告保留并传播到年度任务，不压制或自动相移。failed保留已生成文件和阶段清单，审查后用新输出名重试，不删除／修补源输入。
-
-年度任务沿用completed／needs_review／failed与逆序恢复；文件存在、转换退出成功或可读取声明都不认证气候质量。UTC/DST／区间结束转换、额外变量映射和有效太阳位置仍非这个准备入口的保证。
-
-格式依据：[标准天气格式](https://www.pvsyst.com/help/meteo-database/import-meteo-data/pvsyst-standard-format.html)、[自定义导入](https://www.pvsyst.com/help/meteo-database/custom-meteo-files/procedure.html)、[时间标签](https://www.pvsyst.com/help/meteo-database/custom-meteo-files/time-shift.html)。
+关于 PVsyst 标准气象格式与时间偏移的官方说明，可参考：[PVsyst standard format](https://www.pvsyst.com/help/meteo-database/import-meteo-data/pvsyst-standard-format.html)、[Custom meteo import procedure](https://www.pvsyst.com/help/meteo-database/custom-meteo-files/procedure.html) 与 [Time shift in meteo files](https://www.pvsyst.com/help/meteo-database/custom-meteo-files/time-shift.html)。

@@ -1,30 +1,31 @@
-# 项目显示标题
+# 项目显示标题（Project Display Title）
 
-项目标题是PRJ已有根头部Comment，供原生项目列表、编辑页及CSV/PDF显示；不是PRJ/VC文件名、变体名或窗口文件标题。只编辑唯一所属字段，嵌套Comment、变体、来源和物理设置保持；缺失、重复或异常结构停止，不创建默认标题。
+在 PVsyst 中，项目列表、工程编辑窗口以及仿真導出的 CSV/PDF 报告顶部显示的“项目名称”，并不是 `.PRJ` 的文件名，而是 `.PRJ` 文本里根对象 `PVObject_=pvProject` 头部的 `Comment=` 字段。
 
-## 参数
+`pvsyst_update_project_parameters` 专门用来安全地修改这个根级 `Comment` 显示标题（不会改动 `.PRJ`/`.VCx` 文件名、变体标题或嵌套子对象里的 `Comment`）。
 
-| 参数 | 要求 |
+## 参数说明
+
+| 参数名 | 说明与要求 |
 |---|---|
-| project | Projects中的现有PRJ文件名 |
-| expected_files | 最新inspect_project返回的完整files，含全部VC |
-| project_name | 严格可打印单行字符串，1..80 UTF-8字节、无首尾空白 |
-| dry_run | 严格布尔，默认false；true仅预览 |
-| add_utf8_bom | 严格布尔，默认false；增加EF BB BF需明确true |
+| `project` | `Projects` 目录下的 `.PRJ` 文件名 |
+| `expected_files` | 最近一次调 `pvsyst_inspect_project` 返回的完整 `files` 哈希字典（包含 `.PRJ` 和该工程下所有 `.VCx`） |
+| `project_name` | 单行可打印字符串，长度 `1..80` UTF-8 字节，首尾不能带空格 |
+| `dry_run` | 布尔值，默认 `false`；传 `true` 时只返回预览 diff，不写盘 |
+| `add_utf8_bom` | 布尔值，默认 `false`；当标题含中文等非 ASCII 字符且原 `.PRJ` 无 BOM 时，需显式传 `true` |
 
-80字节是适配器范围，不是GUI绝对极限。ASCII中的等号、斜杠和分号按文字处理。原始UTF-8检查值不保证无BOM中文被原生正确解码；非ASCII编辑需已有BOM或明确增加，影响整个PRJ，不只标题。不猜测或转换非UTF-8源。
+## 中文乱码问题与 UTF-8 BOM
 
-## 操作与恢复
+PVsyst 8.1.6 在读取 `.PRJ` 和 `.VCx` 时有个老毛病：如果文件开头没有 3 字节的 UTF-8 BOM（`EF BB BF`），哪怕文件内容本身是合法的 UTF-8，PVsyst 的 GUI 和 CLI 也会按西欧单字节编码（类似 `cp1252`）去解码，导致中文标题在软件列表和导出的 PDF 报告里全部变成乱码。
 
-1. 关闭GUI中待修改项目，避免旧内存状态之后覆盖文件。
-2. 调用pvsyst_inspect_project，保存完整files、project_name及utf8_bom。
-3. 以原files预览pvsyst_update_project_parameters，检查diff、name_change、changed和bom_added。纯标记更新可文本diff为空但changed=true。
-4. 应用使用预览前的原files，而非候选files，并设置dry_run=false。
-5. 保存响应完整backups及files，重新检查，再按需打开GUI或执行原生运行。
-6. 恢复调用pvsyst_restore_project_sources，传完整backups、当前files及confirm=true。
+因此：
+- 当你传入包含中文等非 ASCII 字符的 `project_name` 时，如果原 `.PRJ` 没有 UTF-8 BOM，工具会要求你显式传入 `add_utf8_bom=true`（并在返回结果中标记 `bom_added=true`）。
+- 如果原文件已经是 UTF-8 中文但因为没 BOM 在 PVsyst 里乱码，你也可以传入相同的 `project_name` 加 `add_utf8_bom=true`，只给文件补上 BOM 头（此时文本 `diff` 为空，但 `changed=true`、`bom_added=true`）。
 
-同名同标记请求无操作且无备份。实际修改备份完整PRJ/VC，但只替换变动PRJ，未变VC的字节、mtime和文件标识保持。恢复重建原始字节、换行和标记；它恢复整个快照，不与外部GUI新内容做字段级合并。
+## 推荐操作与回滚步骤
 
-GUI保存后应关闭项目并重新检查，再以新files接续MCP更新。GUI可能改写版本、默认字段或缓存，不将所有字节变化等同物理变化，也不假定都无影响。PDF长标题可换行，提取可归一空格；CSV、GUI和文件原值分开解释，不要求PDF标题恰在一行。
-
-进程锁和完整成员前置条件是乐观冲突检测，不是跨GUI锁或断电原子事务。更广编码／区域／版本、缺标题修复、文件重命名、变体GUI名称及重排是独立功能；见[项目事务](project-source-verification.md)与[项目管理](project-variant-acceptance.md)。
+1. 如果该工程正在 PVsyst 桌面 GUI 中打开，先在 GUI 中关闭它，防止稍后 GUI 把内存里的旧状态重新写盘覆盖。
+2. 调用 `pvsyst_inspect_project`，拿到最新的 `files` 哈希字典、当前 `project_name` 和 `utf8_bom` 状态。
+3. 先用 `dry_run=true` 调 `pvsyst_update_project_parameters` 看一眼 `diff` 和 `name_change`。
+4. 确认无误后，带着同一份 `expected_files` 和 `dry_run=false` 正式执行修改。工具会备份整套 `.PRJ`/`.VCx`，但只改写 `.PRJ` 文件本身，不会碰各个 `.VCx` 的修改时间和文件内容。
+5. 如需回滚到修改前的状态（包括还原最初有无 BOM 的字节状态），将返回的 `backups` 和当前 `files` 传给 `pvsyst_restore_project_sources(..., confirm=true)`。

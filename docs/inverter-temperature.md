@@ -1,32 +1,34 @@
-# 原生逆变器温度配置
+# 逆变器工作温度配置（Inverter Temperature）
 
-`pvsyst_update_variant_parameters.inverter_temperature_updates`是独立事务，配套读取状态为`pvsyst_get_variant_parameters.inverter_temperature`，原始字段位于system_parameters。它设置原生温度入口，不计算温度、降额或功率，不修改模块Uc及OND曲线。
+在 PVsyst 的能量管理（Energy Management）设置中，逆变器所处环境温度支持三种模式：直接跟随气象文件的室外环境温度（`ambient`）、室外环境温度加上固定温升偏移（`offset`）、或者恒定室内温度（`fixed`）。
+
+`pvsyst_update_variant_parameters` 通过独立事务 `inverter_temperature_updates` 修改该配置，`pvsyst_get_variant_parameters` 则在 `inverter_temperature`（以及原始字段字典 `system_parameters`）中返回当前状态。
 
 ```json
 {
   "project": "INVERTER_TEMPERATURE.PRJ",
   "variant": "VC1",
-  "expected_sha256": "<当前检查返回值>",
-  "inverter_temperature_updates": {"mode": "fixed", "offset_c": 20, "fixed_c": 60}
+  "expected_sha256": "<current-token>",
+  "inverter_temperature_updates": {
+    "mode": "fixed",
+    "offset_c": 20,
+    "fixed_c": 60
+  }
 }
 ```
 
-实际调用使用当前读取返回的并发令牌。
+## 三种模式的字段与标志位规则
 
-## 模式与数值
+在 `.VCx` 文件的 `pvSystem` 块中，温度模式由 `pvSystem.Flags` 的 `$4000` 和 `$8000` 两个位控制，温度数值保存在 `TempShift` 和 `TempFixed` 中：
 
-- ambient仅接受mode，移除TempShift/TempFixed并清温度模式位，不将字段写为0。
-- offset须显式给offset_c及fixed_c，保存两值并使能$4000。fixed_c是未启用但保留的值，不推断默认温度。
-- fixed也须给两个值，保存并使能$8000。示例实际固定温度为60°C，不是60+20。
+| `mode` | 入参要求 | `.VCx` 内部写入行为 |
+|---|---|---|
+| `ambient` | 仅传 `{"mode": "ambient"}` | 清除 `pvSystem.Flags` 中的 `$4000` 与 `$8000` 位，并直接移除 `TempShift` 和 `TempFixed` 两个字段（不是把它们写成 `0`） |
+| `offset` | 必须同时传 `offset_c` 和 `fixed_c` | 置位 `$4000`（清除 `$8000`），同时保存 `TempShift=offset_c` 与 `TempFixed=fixed_c`（此时 PVsyst 按“室外气温 + `TempShift`”计算，但文件里仍保留未激活的 `TempFixed` 值） |
+| `fixed` | 必须同时传 `offset_c` 和 `fixed_c` | 置位 `$8000`（清除 `$4000`），同时保存 `TempShift=offset_c` 与 `TempFixed=fixed_c`（此时逆变器恒定按 `fixed_c` 运行，比如上面示例中恒为 `60 °C`，而不是 `60 + 20`） |
 
-两值单位为°C，范围[-100,100]、0.1°步长、严格有限数，不接受布尔或数字字符串。这是适配器范围，不是GUI范围、厂家额定值或场址极值。
+数值要求：`offset_c` 与 `fixed_c` 单位均为 `°C`，允许范围 `[-100, 100]`，步长 `0.1 °C`。
 
-before/after返回mode/offset_c/fixed_c，ambient两值为null。相同语义请求不写或备份；预览、恢复和同批variant_name沿用现有事务及明确UTF-8 BOM规则，其他参数另开事务。
+## 适用模板条件
 
-## 支持范围
-
-仅支持8.1.6 PV-only Grid、单子阵／普通非平均固定朝向1、完整电路及全部组串归属该方向、受支持main Flags/Flags2、自由地平线，无活动近阴影或布局。不混入PF、限值、辅助、负荷、储能及其他系统模式；关闭状态仍保留$06000000的源也停止，不暗中清位。
-
-pvSystem直属字段仅接受Comment/Flags/SystemType/TempShift/TempFixed。重复、未知或嵌套字段停止。源标志仅接受ambient、offset-only、fixed-only；$C000组合不解释。ambient携带休眠温度字段、受控源缺字段均停止。
-
-读取到系统模式不表示该状态可编辑；超范围问题通过issue披露，可另查原始system_parameters。字段归属和原生模式见[能量管理](native-energy-management.md)，不得用外部调温或削峰模型替代PVsyst。
+源变体需为 PVsyst 8.1.6 单子阵列、单固定平面（朝向 1）、自由地平线、无 3D 阴影场景、且 `pvSystem` 未开启功率因数（PF）、并网限发、辅助耗电或储能的纯光伏并网工程（若 `pvSystem.Flags` 带有残留的 `$06000000` 关闭位或未知字段，写入器会报错拦截以防误清其他位）。

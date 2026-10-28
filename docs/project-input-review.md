@@ -1,10 +1,10 @@
-# 比较声明与工程保存值
+# 工程保存值与准备清单对比（Project Input Review）
 
-`pvsyst_review_project_inputs(project, variant, preparation_manifest_name)` 只读比较一份源准备清单的声明与目标PRJ/VC保存值。它不做物理验算或自动修订，不读取未保存GUI状态，不查询许可、不仿真、不改文件。
+在用 `pvsyst_prepare_design_project` 生成好源工程后，工程文件可能会被导入到 PVsyst GUI 里挂接 3D 住宅场景、或者经过其他步骤转存为新变体。`pvsyst_review_project_inputs(project, variant, preparation_manifest_name)` 用于只读对比目标 `.PRJ`/`.VCx` 里当前实际保存的参数值与当初准备清单（`<stem>_prepare_<year>.json`）里记录的设计初衷是否一致，看看中间有没有哪个参数被意外改掉。
 
-## 调用与结果
+该工具全程只读，不修改任何文件，也不调用 `PVsystCLI.exe`。
 
-三个参数均为严格字符串。基线应为Results下`pvsyst_prepare_design_project`产生的`<source-stem>_prepare_<year>.json`；目标可为源本身、独立副本或同一受限结构的已保存住宅。基线名称、项目、变体和年份必须自洽，不接受任意全年或住宅任务清单。
+## 调用方式与返回字段
 
 ```json
 {
@@ -14,25 +14,30 @@
 }
 ```
 
-| 字段 | 解释 |
+`preparation_manifest_name` 必须是 `Results` 目录下由 `pvsyst_prepare_design_project` 生成的准备清单（文件大小上限 32 MiB）。目标 `project` / `variant` 可以是刚准备好的源工程本身，也可以是基于它另存出来的后续变体（要求保持单子阵列、单固定非平均朝向的并网结构）。
+
+返回字典中的核心字段：
+
+| 字段名 | 说明 |
 |---|---|
-| `comparisons` | 逐项owner/unit/declared/expected_saved/actual_saved及matches/differs/missing |
-| `differences` | 非matches项，不代表全部原生告警或工程问题 |
-| `declared_not_native` | 电气包络、容量声明和执行年份等非直接设置 |
-| `inherited_project_saved` | 所属对象的DesignTempMin/TempOper/TempOperMin/TempOperMax等原始保存字符串 |
-| `source_reference_warnings` | 工作区内SIT/MET引用未解析等警告，保留needs_review |
-| `native_mode_flags` | 原始Flags，不推断损失默认／手动模式 |
-| `readonly` / `repairs_applied` | 始终true/false |
-| `native_consumption_verified` / `runtime_state_observed` | 始终false/false |
+| `comparisons` | 逐项比对明细（含所属对象 `owner`、单位 `unit`、声明值 `declared`、期望保存值 `expected_saved`、实际保存值 `actual_saved` 以及状态 `matches` / `differs` / `missing`） |
+| `differences` | 所有状态不为 `matches` 的差异项汇总 |
+| `declared_not_native` | 准备清单中记录但不会直接写成 `.VCx` 标量字段的声明参数（如冷态开路电压计算包络、仿真目标年份等） |
+| `inherited_project_saved` | `.PRJ` / `.VCx` 中沿用自模板的设计温度字段原值（如 `DesignTempMin`、`TempOper`、`TempOperMin`、`TempOperMax`） |
+| `source_reference_warnings` | 工作区中 `.SIT`/`.MET` 引用文件缺失或无法解析时的告警 |
+| `native_mode_flags` | 主阵列、子阵列与系统的原始十六进制 `Flags` 字符串 |
 
-`reviewed`只表示受支持保存值没有差异且无已知复核项。差异、未解释的损失模式、来源复核和工作区引用警告均为`needs_review`；基线损坏、歧义字段、平均朝向或超范围结构为`blocked`。
+## 比对覆盖的参数项
 
-## 比较范围
+工具会对以下保存在 `.PRJ` 和 `.VCx` 中的字段做精确比对（浮点数如角度和损失百分比按编辑器写入时的 `.3f` 格式化字符串对齐比对）：
+- 组件与逆变器引用文件名（`.PAN` / `.OND`）
+- `.PRJ` 与 `.VCx` 中的站点和气象文件名（`.SIT` / `.MET`）
+- 固定平面倾角（`FieldTilt`）与方位角（`FieldAzim`），同时检查未开启倾角/方位角平均模式（`UsesTiltAver` / `UsesAzimAver` / `UsesSlopeAver` 必须为假或未设置）
+- 容量规划落地后的串联组件数（`NModSerie`）、并联组串数（`NStringCh`）与逆变器台数（`NInverter`）
+- 准备阶段显式指定过的损失参数：`LIDLoss`、`PMismMPP`、`ModuleQualityLoss`（同步核对 `PQualityModU` 与 `PQualityModI`）以及主阵列 `UFactor`
 
-仅支持一组Grid子阵及其固定、非季节、非平均朝向。UsesTiltAver/UsesAzimAver/UsesSlopeAver均检查；披露原始字段不等于支持编辑所有模式。
+## 返回状态说明
 
-可比较PAN/OND文件名、PRJ与VC中的SIT/MET文件名、倾角／方位角、容量计划的NModSerie/NStringCh/NInverter，以及明确请求的LIDLoss/PMismMPP/ModuleQualityLoss/UFactor。角度与损失按编辑器`.3f`序列化比较，不用浮点容差替代相等。ModuleQualityLoss对应PQualityModU/I，UFactor属于main_array。
-
-组件或天气内容、完整模型适用性、来源真实性、现场温度极值和原生有效损失模式不在认证范围。文件名相同不证明模型等价；可解析SIT/MET引用不证明逐时气象质量通过。包络温度、系数、电流限值不按名称映射为项目设置。安装数量按原接受计划比较，不把允许的目标容量误差当错配；执行年份不推算为VC模拟年份。
-
-基线读取限制32MiB，读取结束复核字节；工程使用文件快照避免混合状态。所有名称经过受控文件名及工作区路径检查，不执行清单中的任意路径。workspace锁仅在进程内有效。自动修订、阴影／负荷缓存认证和多子阵不属于此入口。
+- `reviewed`：所有受检保存值与准备清单完全吻合，且无遗留复核项。
+- `needs_review`：发现保存值被修改（如倾角变了）、存在未解析的 `.SIT`/`.MET` 引用，或继承了准备阶段的复核项。
+- `blocked`：准备清单损坏、目标变体变成了多子阵列/平均朝向等不支持的结构，或字段出现重复歧义。

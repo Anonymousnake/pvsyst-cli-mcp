@@ -1,31 +1,39 @@
-# Native constant and monthly soiling
+# Native constant and monthly soiling configuration
 
-`pvsyst_get_variant_parameters.main_array.soiling` reports native mode and percentages; unfamiliar/legacy forms disclose an issue, not a fictional disabled setting. The writer configures native inputs, not irradiance or a replacement loss model.
+`pvsyst_get_variant_parameters` reports the current soiling configuration under `main_array.soiling`, and `pvsyst_update_variant_parameters` updates it via `soiling_updates` on PVsyst 8.1.6 unshaded single-subarray fixed-plane grid variants (`pvMainArray` `Flags` `$00100400` or `$01900400`, `Flags2=$082A`).
 
-## Input
+## Request formats
 
-Use the current token with one explicit soiling_updates alternative:
+Pass one of the three supported modes (`constant`, `monthly`, or `none`) along with the current `expected_sha256` token:
 
 ```json
-{"mode":"constant","yearly_loss_pct":2.5}
+{"mode": "constant", "yearly_loss_pct": 2.5}
 ```
 
 ```json
-{"mode":"monthly","monthly_loss_pct":[1,2,3,4,5,6,7,8,9,10,11,12]}
+{"mode": "monthly", "monthly_loss_pct": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}
 ```
 
 ```json
-{"mode":"none"}
+{"mode": "none"}
 ```
 
-These illustrate shape, not climate/cleaning recommendations. Percentages are finite JSON numbers0..100 in0.1 percentage-point steps; booleans, strings, wrong month counts, mixed modes or conflicting fields stop. Use a separate physical transaction; variant_name may accompany it. Preview, same-value no-op, backup and whole-file restore apply.
+Validation rules:
+- Percentages must be finite numbers in `[0, 100]` at `0.1` percentage-point precision (e.g. `2.5`).
+- `monthly_loss_pct` requires all 12 monthly values (January through December).
+- `soiling_updates` runs as its own parameter transaction (optionally paired with `variant_name`).
 
-## Native storage and scope
+## How PVsyst serializes soiling in `.VCx`
 
-Only native8.1.6 PV-only Grid, one unshaded fixed plane/subarray, main Flags=$00100400 or$01900400 and Flags2=$082A are supported. Storage, active geometry/layout, legacy SoilingLoss, file profiles and unknown tag blocks stop.
+Inside `pvMainArray`, soiling is stored in a named `Soiling=Soiling` block (not `PVObject_Soiling`):
+- **`constant` (e.g. `2.5%`)**: Writes `IsYearly=True`, `IsMonthly=False`, `IsFromFile=False`, and `YearlyValue=0.025` (stored as a decimal fraction in `[0, 1]`).
+- **`monthly`**: Writes `IsYearly=False`, `IsMonthly=True`, `IsFromFile=False`, the 12 monthly fraction values, and retains an inactive `YearlyValue` scalar (which PVsyst ignores while `IsMonthly=True`).
+- **`none`**: Removes the `Soiling=Soiling` block from `pvMainArray`.
 
-The owner is pvMainArray's named Soiling=Soiling block, not PVObject_Soiling. Constant2.5% stores IsYearly=True, IsMonthly=False, IsFromFile=False, YearlyValue=0.025. Monthly stores twelve fraction values, its mode flags and an inactive YearlyValue; that inactive scalar is not an extra applied loss. None removes the whole block. Other mode bits/cache refreshed by GUI loss dialogs are not treated as soiling switches.
+## Exporting hourly soiling columns
 
-## Results
+When building an `.SFI` export definition with `pvsyst_build_sfi(variables="soiling")`, PVsyst exports two additional irradiance columns (in `W/m²`):
+- `GlobSlg`: Effective global irradiance after soiling
+- `SlgLoss`: Irradiance loss due to soiling
 
-The soiling SFI preset adds native GlobSlg and SlgLoss inW/m². Disabled native runs may omit both; compare common columns rather than inventing zeroes. Complete-year native controls exist for constant/monthly modes, but input percentages need not equal energy changes because PVsyst handles temperature,irradiance and clipping interactions. Editing does not establish site assumptions, file-based models or automatic cleaning/snow behavior.
+Note that when soiling is disabled (`mode="none"`), `PVsystCLI.exe` omits `GlobSlg` and `SlgLoss` from the output CSV even if they were requested in the `.SFI` file.

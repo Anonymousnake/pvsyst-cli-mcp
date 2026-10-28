@@ -1,104 +1,76 @@
-# Grid topology and parameter editing
+# Grid topology, capacity, and loss parameter editing
 
-The existing variant parameter, subarray copy/removal and structure tools support bounded grid layouts. They preserve unrequested models, cable metadata, losses and sizing hints. They do not select hardware, infer available MPPT ports, fit losses or certify electrical design. Native runtime evidence uses CLI 8.1.6; supported 8.1.0 declarations are not evidence of an 8.1.0 executable.
+This guide covers how `pvsyst_update_variant_parameters`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray`, and `pvsyst_validate_variant_structure` inspect and modify `.VCx` subarray quantities, MPPT modes, fixed orientations, and basic loss scalars in PVsyst 8.1.0 / 8.1.6 grid projects.
 
-## Supported boundary
+## Preconditions and transaction rules
 
-Count and structural edits require complete consistent declarations, circuit ownership, a fixed-plane assignment and one supported empty shading section. Empty flags are$00/$00020000/$00080000; active/unknown shading, scenes/tables, nested geometry or any PVObject_ModuleLayout block stop. Series/angle scalar edits alone may accept an absent shading section. No operation silently drops geometry or leaves stale module/string maps.
+1. **No active 3D shading or Module Layout**: Structural and count edits require an empty shading block (`Flags` in `$00`, `$00020000`, or `$00080000`, with no 3D objects, shading tables, or `PVObject_ModuleLayout` sections) so changing string/module counts never leaves a 3D scene or module layout map out of sync. Pure scalar edits (`NModSerie`, `FieldTilt`, `FieldAzim`) also accept legacy variants that omit the shading block entirely.
+2. **Strict integer selectors**: `subarray_id`, `source_subarray_id`, and `orientation_id` must be positive JSON integers (`1`, not `"1"`, `1.0`, or `true`).
+3. **Optimistic locking & rollback**: Every write checks `expected_sha256`, writes a backup snapshot before modifying the `.VCx` file (unless the update is a no-op with identical values), and returns a token for `pvsyst_restore_variant`.
 
-Selectors subarray_id, source_subarray_id and orientation_id are strict positive JSON integers: 1, not true, 1.0 or "1". Numeric values inside update dictionaries use their separate finite/integral range checks.
+## Ordinary subarray capacity edits
 
-Preview writes nothing. Applying uses the current expected_sha256, backup and final source recheck. Same-value requests make no backup. Restore requires the current returned token and restores the actual snapshot, including mode/BOM/newlines. These are optimistic conflict checks, not cross-process locks or crash-atomic multi-file operations; coordinate external editors.
-
-## Ordinary capacity edits
+For standard subarrays without independent MPPT mode (`NInvMPPT=1`, no `$0400` bit, no explicit MPPT child nodes, no power sharing, and all strings on one fixed plane):
 
 ```json
-{"subarray_updates":{"NInverter":12,"NStringCh":80}}
+{
+  "subarray_updates": {
+    "NInverter": 12,
+    "NStringCh": 80
+  }
+}
 ```
 
-Ordinary sources require NInvMPPT=1 without independent bit$0400, no explicit MPPT branches or shared power, and all strings assigned to one plane. NInverter-only scales inverter groups while preserving strings per inverter. NStringCh-only scales parallel leaves while preserving inverter groups. Combined edits scale leaf multiplicity by(new_strings × old_inverters)/(old_strings × new_inverters), retaining relative allocation.
+- Updating `NInverter` alone scales the inverter group count while keeping the number of strings per inverter constant.
+- Updating `NStringCh` alone scales the parallel string leaves while keeping the inverter group count constant.
+- Updating both together scales each string leaf's multiplicity by `(new_strings × old_inverters) / (old_strings × new_inverters)` (which must divide evenly to an integer).
+- `NElements`, `NInverter`, `NStringCh`, and `NStrOrient1` are updated together. Note that PVsyst omits `NElements` when its value is `1`; if a node's multiplicity needs to change, `NElements` must already be present in the serialized block.
 
-Every resulting group/leaf count must be integral. NElements, NInverter, NStringCh, NStrOrient1 stay synchronized. An omitted NElements represents one only while unchanged; changed multiplicities must already be explicit. This allocation does not imply proportional energy or refit AreaSizing, PNomSizing, resistance or other losses.
+## Structure validation (`pvsyst_validate_variant_structure`)
 
-## Structure inspection
+Checks orientation list counts, subarray-to-orientation references, circuit tree ownership, and inverter/MPPT/string/module totals (see [grid circuit inventory](grid-circuit-verification.md) for node-level details):
+- In independent MPPT mode (`Flags` bit `$0400`), `NInvMPPT` is compared directly against the sum of expanded explicit MPPT inputs (not `NInverter × NInvMPPT`).
+- For shared inverters (`PowerSharingInverterId=0` with bit `$0100`), parent inverters are deduplicated across homogeneous member subarrays when computing project totals.
+- Returns `valid=true` when all checks pass, `valid=false` when a mismatch is found, or `valid=null` if the variant uses an unchecked layout (such as Dome orientations or unfamiliar node types).
 
-`pvsyst_validate_variant_structure` checks supported counted orientation lists, references, circuit ownership, aggregate inverter/string/module declarations and explicit MPPT inputs. Missing NElements means one only in the recognized format. valid isfalse for issues, null for incomplete checks, true only when scoped checks pass. Dome/unknown lists and unknown layouts remain explicitly unchecked.
+## Cloning and removing subarrays
 
-Explicit MPPT nodes alone do not enable independent mode. For complete 8.1.0/8.1.6 independent$0400 records, NInvMPPT is compared directly with expanded explicit inputs, not NInverter × NInvMPPT. Whole/unknown mode or implicit allocation leaves this comparison unset. Successful native loading does not prove serialized count consistency. Saved PNomAC_InMPPT is not necessarily effective native model power.
-
-A bounded shared parent requires homogeneous8.1.0 or8.1.6 member declarations, matching inverter references, canonical names, complete direct owned MPPT/string branches and group0 or all-1. Aggregate inverters deduplicate parents; unknown/mixed versions, groups or ownership do not produce misleading totals.
-
-## Grouped subarray copy and removal
-
-`pvsyst_clone_subarray` copies all complete exclusive groups of the selected subarray, preserving layout and relative quantities. Only owning IDs/names are remapped; fresh IDs exceed those already reserved across project variants. Ordinary removal deletes the owned root/groups only while another subarray uses its plane. Mixed/shared ownership, outside target references, unsupported systems or active geometry stop.
-
-Complete explicit MPPT branches can be preserved without changing their mode. A drawn MPPT multiplicity is not independent mode or power sharing. Copying a complete branch is not arbitrary input redistribution.
+- `pvsyst_clone_subarray`: Copies a subarray along with all of its exclusively owned inverter/MPPT/string groups in the circuit tree, assigning fresh IDs higher than any ID currently used across the project's variants.
+- `pvsyst_remove_subarray`: Deletes a subarray and its exclusively owned circuit branches, provided another subarray still uses the assigned orientation plane (or pass `remove_orientation=true` to delete the plane at the same time).
 
 ## Fixed-plane lifecycle
 
-clone_orientation=true appends a flat ordinary FixedPlane with Flags=$00 and no averaging, synchronizes NoOrient/NoOrientation and the list count. IDs must be sequential. Sources may be ordinary/no-explicit-MPPT, or recognized 8.1.0/8.1.6 independent$0400 exclusive direct-MPPT layouts with disabled sharing-1 and complete counts.
+You can manage multiple fixed planes (`FixedPlane` with `Flags=$00` and no tilt/azimuth averaging) across standard or exclusive independent-MPPT (`$0400`, `PowerSharingInverterId=-1`) subarrays:
+- **Append a plane (`clone_orientation=true`)**: Appends a new sequential `FixedPlane` to the orientation list, increments the list count, and binds the target subarray's `NoOrient` / `NoOrientation` to the new plane ID.
+- **Reassign a subarray (`subarray_updates.NoOrientation`)**: Moves a subarray onto another existing fixed plane, provided no existing plane is left orphaned without a subarray.
+- **Delete an exclusive plane (`remove_orientation=true`)**: Deletes the subarray and its exclusively used fixed plane. If higher-numbered planes exist after the deleted plane, their IDs (and all subarray `NoOrientation` references pointing to them) are shifted down by 1, and `orientation_id_map` returns the old-to-new ID mapping.
 
-subarray_updates.NoOrientation reassigns a selected root to an existing supported plane. Every defined plane must retain a user; no orphan is silently pruned. Reference-only edits preserve list counts, geometry, topology and model/loss fields. Capacity values may accompany reassociation where their own scope permits; NInvMPPT resizing stays separate.
+## Independent MPPT (`$0400`) and power sharing (`$0100`)
 
-remove_orientation=true removes the root and its exclusively used plane only when another assigned plane remains. Higher plane IDs and all owning root references shift down by one for non-final deletion. orientation_id_map reports changed surviving IDs with string keys. Surviving root IDs, properties and quantities remain unchanged.
+For variants using explicit MPPT nodes (`Flags` bit `$0400`):
 
-Flat/non-averaged mode, complete exclusive ownership and recognized-reference checks apply even to final-plane deletion. Every NoOrient*/OrientationId must belong to a counted plane or direct root NoOrientation; circuit or external references stop. Tracking, Dome, averaging, active scenes and shared cross-plane allocation are not rebuilt by these options.
+1. **Toggle independent MPPT mode (`independent_mppt_enabled`)**: Standalone boolean transaction for exclusive direct-MPPT subarrays (`PowerSharingInverterId=-1`). Setting `true` enables bit `$0400` and sets root `NInvMPPT` to the sum of explicit MPPT inputs; setting `false` clears `$0400` and resets `NInvMPPT` to `1`.
+2. **Scale MPPT input count (`NInvMPPT` only)**: Scales MPPT group multiplicities (`1..10000`) while keeping inverter and string-leaf multiplicities unchanged, synchronizing `NInvMPPT`, `NStringCh`, and `NStrOrient1`.
+3. **Scale inverter count (`NInverter` only)**: Scales exclusive inverter-group multiplicities while keeping MPPT and string-leaf multiplicities per inverter unchanged, updating `NInverter`, `NInvMPPT`, `NStringCh`, and `NStrOrient1`.
+4. **Scale parallel strings (`NStringCh` only)**: Scales string-leaf multiplicities proportionally while keeping inverter and MPPT counts fixed (also works on an individual member of a shared inverter parent).
+5. **Construct a shared inverter parent (`pvsyst_clone_subarray(..., share_inverter=true)`)**: Copies a single-inverter, single-MPPT-input subarray as a second MPPT branch under the *same* physical inverter (setting the parent inverter to `Owner=0` with a combined canonical name, while keeping sharing disabled until toggled).
+6. **Toggle power sharing (`power_sharing_enabled`)**: Enables (`PowerSharingInverterId=0`, bit `$0100` set) or disables (`PowerSharingInverterId=-1`, bit `$0100` cleared) automatic power sharing across all member subarrays of a shared inverter parent.
+7. **Remove a shared member (`pvsyst_remove_subarray(..., shared_member=true)`)**: Removes one member of a two-member shared inverter parent and returns sole ownership of the inverter to the surviving subarray (`remaining_member_id`). If power sharing is currently active, disable it with `power_sharing_enabled=false` first before removing the member.
 
-## Independent MPPT quantity edit
+## Series module count and fixed angles
 
-NInvMPPT-only accepts integral1..10000 in known 8.1.0/8.1.6 independent$0400 layouts, explicit PowerSharingInverterId=-1, exclusive direct MPPT children, complete counts and one unshaded plane. MPPT group multiplicities scale; inverter and parallel-leaf quantities remain. NInvMPPT/NStringCh/NStrOrient1 synchronize. Changed NElements must exist and allocations must remain integral. Do not combine with NInverter, NStringCh or NoOrientation.
+- `subarray_updates.NModSerie`: Updates the series module count per string.
+- `orientation_updates` (`FieldTilt`, `FieldAzim`): Updates tilt and azimuth on a standard `FixedPlane` (requires `UsesTiltAver`, `UsesAzimAver`, and `UsesSlopeAver` to be absent or `False`).
 
-## Independent MPPT inverter count edit
+## Basic array and subarray loss scalars
 
-NInverter-only scales each exclusive inverter-group multiplicity in the same known independent formats. MPPT/leaf multiplicities remain, while root NInverter, total NInvMPPT, NStringCh, NStrOrient1 synchronize. Changed inverter NElements must be explicit. Shared parents and simultaneous independent quantity edits stop. Declared inverter count is not a hardware-installation certificate; PVsyst determines model power.
+`pvsyst_update_variant_parameters` supports four basic loss scalars on unshaded 8.1.0 / 8.1.6 grid variants:
 
-## Independent parallel-string edit
-
-NStringCh-only proportionally scales explicit leaves while keeping inverter/MPPT multiplicities, NInvMPPT and mode. Complete unshared ownership, fixed plane, explicit changed counts and integral allocation are required. Do not combine with independent input/inverter resizing. Unchanged resistance or power budgets can change clipping and losses; no exact energy scaling is promised.
-
-## Explicit MPPT mode switch
-
-independent_mppt_enabled is a separate strict-boolean transaction for complete known 8.1.0/8.1.6 exclusive direct-MPPT layouts with sharing-1. It changes only$0400 and root NInvMPPT: enabled uses expanded explicit inputs, disabled uses1. It preserves physical layout, quantities, other bits, models and cached losses/nominals. Mixed direct-string/MPPT, implicit or shared layouts and combined scalar/sharing changes stop. mppt_mode reports before/after.
-
-## Existing power-sharing toggle
-
-power_sharing_enabled selects a whole bounded parent through any member ID, not that member alone. Homogeneous recognized versions, identical inverter references, complete counts, common unshaded plane, no extra member parents/exclusive branches and no outside group0 references are required.
-
-Enabling sets each member PowerSharingInverterId=0 and$0100; disabling sets-1 and clears only that bit. Mode$0400, topology, quantities and other fields remain. Native automatic allocation is used, not manual budget fitting. power_sharing reports all members and the parent. It does not merge arbitrary parents or combine with other scalar/mode edits.
-
-## Shared member string edit
-
-NStringCh-only can proportionally edit one member of a recognized bounded parent with group0 or all-1. Only its root string declarations and owned leaves change. Peer roots, input/inverter quantities, sharing IDs/bits, nominal tags and losses remain. capacity.shared_parent_line identifies this path. Shared inverter/input resizing is not supported; native effective budgets may rebalance without cached-tag changes.
-
-## Shared-parent construction by clone
-
-clone_subarray(..., share_inverter=true) copies an owned MPPT subtree under its existing inverter, not a new inverter. Requires recognized independent mode, sharing-1, one exclusive inverter/direct input of multiplicity1, complete counts and one common unshaded plane. The parent becomes owner0 with canonical combined name; both roots retain disabled sharing. Enabling remains a separate transaction. shared_parent_created reports this path. Do not combine with clone_orientation or arbitrary merging.
-
-## Shared-member removal
-
-remove_subarray(..., shared_member=true) removes either member of a complete disabled two-member parent, explicit owner0 and one inverter/input per member. The surviving root/quantities remain; parent ownership/name become exclusive to it. Outside target references stop. remaining_member_id reports the survivor. Do not combine with remove_orientation.
-
-An active group must be explicitly disabled before removal. Restore deletion first, then the toggle to recover the active group. These are two guarded visible operations, not atomic deletion or implicit disabling. No general active budget redistribution or merge/split is implied.
-
-## Series and angle scalars
-
-NModSerie changes series count only. Ordinary angle edits require flat FixedPlane, Flags=$00 when present, and absent or uniquelyFalse UsesTiltAver/UsesAzimAver/UsesSlopeAver. Scalar legacy records may omit Flags; structural callers still require explicit$00. Unknown/duplicate modes, active averaging or geometry stop. No cold-Voc/MPPT sizing, scene synchronization or title refitting is performed.
-
-## Loss scalars
-
-Supported owning Grid declarations are8.1.0/8.1.6 without active geometry/layout. Fields must already exist uniquely; nested names/decoys are not edited. Inputs are strict finite numbers, not booleans or numeric strings.
-
-| Input | Adapter range / mapping | Preserved state |
+| Parameter path | Allowed range | Underlying `.VCx` fields and flag handling |
 |---|---|---|
-| subarray_updates.LIDLoss |0..100%, existing owning scalar|Flags, models, other losses|
-| subarray_updates.PMismMPP |0..100%, clear only default bit0x00040000|Other bits, topology, components|
-| subarray_updates.ModuleQualityLoss |[-5, 20]%, synchronize PQualityModU/I, clear only0x00100000|PQualityModP and other fields|
-| main_array_updates.UFactor |15..100W/m²/K, one owning main Flags=$00100400/Flags2=$082A|Wind, absorptance, efficiency, components, topology|
+| `subarray_updates.LIDLoss` | `0..100` (%) | Updates `LIDLoss` on the owning subarray |
+| `subarray_updates.PMismMPP` | `0..100` (%) | Updates `PMismMPP` and clears default bit `0x00040000` on the subarray `Flags` (if that bit stays set, PVsyst ignores the manual value) |
+| `subarray_updates.ModuleQualityLoss` | `[-5, 20]` (%) | Writes the percentage to both `PQualityModU` and `PQualityModI` (negative values represent module positive sorting gain) and clears default bit `0x00100000` while leaving cached `PQualityModP` untouched |
+| `main_array_updates.UFactor` | `15..100` (W/m²·K) | Updates constant thermal loss factor `UFactor` on `pvMainArray` (requires standard `Flags=$00100400`, `Flags2=$082A`) |
 
-QualityP, U, I are not independent percentage controls. Writing a mismatch scalar while its default bit remains set can leave it inactive. Updates disclose default_before/default_after and snapshots recover prior defaults. Adapter ranges are not universalGUI/factory limits; no native-default calculator or fitting is introduced. GUI loss saving can rewrite caches/modes outside the writer's scope; see [save/re-edit boundaries](loss-gui-roundtrip.md).
-
-## Errors and process coordination
-
-Expected input/file/PVsystError failures retain actionable MCP SDK2.x tool reasons. Dates use MM.DD, YY.MM.DD orYYYY.MM.DD, for example1990.01.01, not hyphenated dates. Unexpected internal exceptions remain distinct.
-
-First CLI-client initialization is serialized inside the server; requests share one client and workspaceRLock. This is process-local, not an OS or external-editor lock. Native topology controls are bounded48h consumption evidence, not full-year energy accuracy, hardware sizing or arbitrary geometry equivalence.
+For notes on how PVsyst GUI rewrites loss flags and cached fields when resaving a variant, see [loss GUI roundtrip notes](loss-gui-roundtrip.md).

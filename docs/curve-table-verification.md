@@ -1,19 +1,25 @@
-# Mode1 point-table editing
+# Mode 1 point-table and CSV curve editing
 
-The component update tool accepts complete4..256 point tables for OND8.1.6 single-voltage Converter/ProfilPIO and BTR8.1.6 AGM/Gel capacity curves in Mode1. Existing source guards, preview, activation and value checks apply. This is a table editor, not a physical fitter or general curve compiler.
+`pvsyst_update_component` supports replacing the full point table (from 4 to 256 points) on linear `Mode=1` curves in PVsyst 8.1.6 text components:
+- Single-voltage inverter efficiency curves (`Converter` / `ProfilPIO` in `.OND`; see [OND curve editing](ond-curve-verification.md))
+- Sealed lead-acid (`Pb_Sealed_AGM` / `Pb_Sealed_Gel`) discharge capacity curves (`CapaCourant` in `.BTR`; see [BTR capacity curves](btr-capacity-verification.md))
 
-## Point counts and rows
+## How point-count changes work in PVsyst files
 
-A changed active count sets NPtsMax and NPtsEff to the new length and emits exactly that many X/Y rows, removing old padding and serialized a/b/c coefficients. Mode, LastCompile and unrelated objects remain. Native Mode1 compilation produces segment coefficients. Same-count edits preserve count fields, inactive rows and unchanged point spelling.
+In `.OND` and `.BTR` files, a `TCubicProfile` block stores both an allocated capacity (`NPtsMax`) and an active point count (`NPtsEff`), followed by `Point_1`..`Point_N` rows. When PVsyst GUI compiles a curve, it may also append precalculated spline/segment coefficients (`x, y, a, b, c`) and a hexadecimal `LastCompile` value.
 
-Resizing requires consecutive numerically ordered Point_N rows, with count/mode/compile fields before the table. LastCompile must be absent or hexadecimal0,19,008D,8089. Other compilation modes stop. X is at least1e-9, neighboring X separation at least1e-8, in addition to finite increasing X and model-specific checks; no point elimination is silently accepted.
+- **Same-count edits**: If the new table has the same number of active points as `NPtsEff`, the editor updates the active `Point_1`..`Point_N` rows and leaves `NPtsMax`, `NPtsEff`, and any trailing `(0, 0)` padding rows unchanged.
+- **Resizing the table (4..256 points)**: When the point count changes, the editor sets both `NPtsMax` and `NPtsEff` to the new length, writes `Point_1`..`Point_N` as clean `X,Y` pairs, and strips old trailing padding rows and stale `a,b,c` coefficients so PVsyst recompiles the segments cleanly at load time.
 
-Inspection exposes allocated/active counts, point_count_editable, point_count_errors and the supported range. Updates report curve_counts_before/after. Both X/Y and X/Y/a/b/c stored rows can be read; editing supplies only X/Y. Appending text rows without synchronizing allocated count is not a supported way to add points.
+Preconditions for resizing:
+- Existing rows must be numbered consecutively (`Point_1`..`Point_N`) after the header fields (`NPtsMax`, `NPtsEff`, `Mode`, `LastCompile`).
+- `LastCompile`, if present, must be one of the known Mode 1 hex flags (`0`, `19`, `008D`, or `8089`).
+- Every point must have `X >= 1e-9` and adjacent points must be separated by at least `1e-8` on the X axis so PVsyst does not silently drop duplicate abscissas during compilation.
 
-## CSV transport
+`pvsyst_get_component` returns `NPtsMax`, `NPtsEff`, `point_count_editable`, and `point_count_errors`, and `pvsyst_update_component` reports `curve_counts_before` and `curve_counts_after`.
 
-`pvsyst_get_component(include_curve_csv=true)` returns CSV contents for complete main OND/BTR capacity curves with known axes. `pvsyst_update_component(curve_csv=...)` accepts one such table, mutually exclusive with curve_updates. Use explicit-unit headers, comma-separated decimal values,4..256 points and at most64KiB UTF-8 text. Parsed values use the same guarded curve path; export does not expand edit support.
+## Exporting and importing curves as CSV text
 
-Files are selected/saved by the client; tools exchange CSV text. Unknown axes are omitted with reasons, not exported under guessed units. See[OND activation](ond-curve-verification.md) and[BTR capacity](btr-capacity-verification.md).
-
-Native consumption is bounded to supported models and operating conditions, not all compile-option/count combinations, other chemistries, three-voltage OND, nonlinear modes, general caches or GUI save/reopen. Inspection retains simulation_effect=unverified for the particular file; simulate its referencing design after editing.
+Instead of passing a JSON array in `curve_updates`, you can exchange the curve as CSV text:
+- Call `pvsyst_get_component(..., include_curve_csv=true)` to include a ready-to-edit CSV string with explicit unit headers for supported main OND/BTR curves.
+- Pass `curve_csv="..."` to `pvsyst_update_component` (mutually exclusive with `curve_updates`). The CSV parser accepts comma-separated decimal values, verifies the unit header, enforces the 4..256 point and 64 KiB limits, and routes the points through the same validation and backup pipeline.
