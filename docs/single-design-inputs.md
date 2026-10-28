@@ -1,72 +1,80 @@
-# 单方案输入与全年流程
+# 单方案设计输入与全年流程
 
-`pvsyst_simulate_design`组合精确组件、合格原生模板、声明包络、整数容量、天气准备和[全年任务](automatic-simulation.md)。scope仅fixed_unshaded_grid：单子阵／普通固定Grid、PRCorrTemp=False，无活动阴影／表／Module Layout，不生成空白物理设计或操作GUI。
+`pvsyst_simulate_design(spec, dry_run=True)` 是面向单子阵列固定倾角并网项目（`fixed_unshaded_grid`）的最高层一站式入口。它把组件查找、模板筛选（或空工作区种子初始化）、串并联整数容量规划、天气下载/转换以及[模板全年仿真](automatic-simulation.md)打包在一个统一的 `spec` 里执行。
 
-## spec
+如果只想把工程文件配好落盘、暂不跑全年仿真（例如后面还要导 3D 房屋场景），可以把完全相同的 `spec` 传给 [`pvsyst_prepare_design_project`](design-project-preparation.md)。
 
-| 字段 | 要求 |
+## `spec` 顶层字段
+
+| 字段名 | 说明与要求 |
 |---|---|
-| new_project | 全新PRJ名，派生源与产物也须无冲突 |
-| year | 严格整数1969..2068，与实际天气覆盖一致 |
-| target_dc_kw | 明确正有限DC目标 |
-| tilt／azimuth | 0..90°／-180..180°，PVsyst南0、西正 |
-| module／inverter | 精确manufacturer+model或明确file_name |
-| template_project／variant | 可选，限制候选，不被别的模板隐式替代 |
-| weather | existing、csv或open_meteo |
-| capacity／electrical_design | 必须恰有一个；声明包络／来源参数 |
-| losses | 仅LIDLoss、PMismMPP、ModuleQualityLoss及main作用域UFactor |
-| report_pages | 可选原生页名，见[报告](automatic-simulation.md#天气与报告) |
+| `new_project` | 新生成的 `.PRJ` 工程文件名（连同派生的天气、清单和结果文件均不能与现有文件重名） |
+| `year` | 仿真年份（整数 `1969..2068`），需与所选天气数据覆盖年份一致 |
+| `target_dc_kw` | 目标直流装机容量（kWp，正数） |
+| `tilt` / `azimuth` | 固定倾角（`0..90°`）与方位角（`-180..180°`，遵循 PVsyst 惯例：正南为 `0°`，偏西为正，偏东为负） |
+| `module` / `inverter` | 组件与逆变器标识：可传精确的 `{"manufacturer": "...", "model": "..."}` 或直接传工作区文件名 `{"file_name": "..."}` |
+| `template_project` / `variant` | 可选；指定作为底板的模板工程与变体，不传则自动扫描工作区择优或使用内置标准种子 |
+| `weather` | 气象数据模式：`existing`（已有 `.SIT`/`.MET`）、`csv`（本地标准逐时 CSV）或 `open_meteo`（在线下载 ERA5） |
+| `capacity` / `electrical_design` | **二选一必填**：`capacity` 直接给算好的电压/电流边界；`electrical_design` 给带出处的温度系数与极值，由工具推导边界 |
+| `losses` | 可选损失参数覆盖，支持 `LIDLoss`、`PMismMPP`、`ModuleQualityLoss` 与主阵列 `UFactor` |
+| `report_pages` | 可选 PDF 报告页名列表，见[天气与报告](automatic-simulation.md#天气与报告) |
 
-严格嵌套schema，不接受未知键、布尔／数字字符串冒充数值或浮点冒充整数。内层目标若给出必须等于顶层，不调和矛盾声明，不退化为保留模板数量。未请求损失继承并披露，不按安装类型猜默认值。
-
-以下是完整调用形状示例，文件须实际存在，包络仅演示声明结构，不是厂家／场址建议：
+调用示例：
 
 ```json
 {
-  "spec":{
-    "new_project":"DESIGN.PRJ","year":2024,"target_dc_kw":21.6,"tilt":28,"azimuth":0,
-    "module":{"file_name":"ValidatedModule.PAN"},"inverter":{"file_name":"ValidatedInverter.OND"},
-    "weather":{"mode":"existing","sit_name":"SITE.SIT","met_name":"SITE.MET"},
-    "capacity":{"max_dc_ac_ratio":1.3,"capacity_tolerance_pct":5,"voltage_standard":"IEC","cold_voc_v":65,"hot_vmp_v":38,"cold_vmp_v":47,"module_max_operating_current_a":16,"module_max_short_circuit_current_a":18,"mppt_max_operating_current_a":32,"mppt_max_short_circuit_current_a":40,"design_min_temperature_c":-10,"design_min_operating_temperature_c":20,"design_max_operating_temperature_c":70,"design_basis":"Explicit demonstration; replace with sourced site and hardware envelope."}
+  "spec": {
+    "new_project": "DESIGN.PRJ",
+    "year": 2024,
+    "target_dc_kw": 21.6,
+    "tilt": 28,
+    "azimuth": 0,
+    "module": {"file_name": "ValidatedModule.PAN"},
+    "inverter": {"file_name": "ValidatedInverter.OND"},
+    "weather": {"mode": "existing", "sit_name": "SITE.SIT", "met_name": "SITE.MET"},
+    "capacity": {
+      "max_dc_ac_ratio": 1.3,
+      "capacity_tolerance_pct": 5,
+      "voltage_standard": "IEC",
+      "cold_voc_v": 65,
+      "hot_vmp_v": 38,
+      "cold_vmp_v": 47,
+      "module_max_operating_current_a": 16,
+      "module_max_short_circuit_current_a": 18,
+      "mppt_max_operating_current_a": 32,
+      "mppt_max_short_circuit_current_a": 40,
+      "design_min_temperature_c": -10,
+      "design_min_operating_temperature_c": 20,
+      "design_max_operating_temperature_c": 70,
+      "design_basis": "Site extreme -10 C ambient, 20..70 C cell operating range."
+    }
   },
-  "dry_run":true
+  "dry_run": true
 }
 ```
 
-## 组件、模板与种子
+## 组件检索、模板筛选与空工作区初始化
 
-身份按大小写不敏感精确相等，工作区loose文件优先配置库；胜出库有多个同身份文件即歧义，要求精确名。不模糊替换或枚举加密数据库；不可枚举不等于物理缺件。完整PAN/OND先静态检查，再读取所属electrical字段，不凭字段可读保证拟合正确。
+1. **组件匹配**：按大小写不敏感的精确匹配查找 `manufacturer + model`（或直接定位 `file_name`）。工作区 `ComposPV` 下的散文件（loose file）优先级高于 `DataRO` 内置库；如果在同一优先级目录里搜出多个同名同型号文件，会报错提示改用明确的 `file_name`。选定 `.PAN`/`.OND` 后会先跑一遍静态校验并读取电气额定值。
+2. **模板排序**：如果不传 `template_project`，工具会扫描工作区里所有结构合规的单子阵固定平面模板，试算容量规划后按“逆变器台数改动最少 → 参数修改步数最少 → 容量偏差最小 → 名称字典序”自动挑出最顺手的底板。
+3. **空工作区自动打底（Bootstrap）**：对于刚建好的空工作区（要求根目录名为 `PVsyst8.1_Data`），即使里面一个 `.PRJ` 都没有、甚至 26 个标准子目录还没建全，只要放好了所需的明文 `.PAN`/`.OND`，`dry_run=false` 执行时会自动补齐缺失的工作区子目录，并从内置的标准种子模板派生出基础工程。
 
-模板结构完整，容量计划ready后按逆变器变动最少、参数步数最少、容量误差最小、项目／变体名排序。显式模板错误直接报issues；自动扫描保留每个拒绝原因，不因一个坏候选放弃其他合格成员。
+## 两种容量与电气边界写法
 
-没有合格成员且调用方未指定模板／变体时，可从已安装标准原生模板只读派生源，再复制工作工程。这是内部fallback，不是新工具，不从零造设计。预览仅内存，不建Projects；名称冲突及不匹配种子停止。原种子保留声明版本／BOM及历史引用；继承BatchParams不证明其实际加载。
+- **直接传 `capacity`**：直接给出冷态 $V_{oc}$、冷/热态 $V_{mp}$、组件与单路 MPPT 最大工作/短路电流等数值边界，详见[容量规划](capacity-sizing.md)。
+- **传 `electrical_design`（带出处推导）**：适合从规格书摘录原始参数的场景（也可配合 [`pvsyst_prepare_sourced_design`](weather-engineering-review.md) 自动组装）。需要注意几个常见坑：
+  - 温度系数必须写明单位（如 `%/°C` 或 `V/°C`）和出处；不能拿功率温度系数 $\beta_{P\max}$ 去冒充工作电压温度系数 $\beta_{Vmp}$。
+  - 逆变器 `.OND` 里的整机 `IDCMax` 不能直接当成单路 MPPT 的最大输入电流（也不能简单除以 MPPT 路数，因为很多逆变器各路分配不均或总量受限），必须明确声明单路 MPPT 电流上限。
+  - 如果用短路电流温度系数 $\alpha_{Isc}$ 推导最大电流，必须同时给出最大有效辐照度 `max_irradiance_w_m2` 和双面背面增益 `rear_gain_factor`（不会默认按 $1000\text{ W/m}^2$ 或背面增益 $0$ 偷算）。
+  - 温度须满足 `-100 ≤ 最低环境温度 ≤ 最低组件工作温度 ≤ 最高组件工作温度 ≤ 150 °C`，且最低环境温度需提供设计依据 `min_ambient_basis`（不能直接拿某一年气象文件里的最低温当多年极端低温）。
 
-CLI8.1.6工作区要求根名PVsyst8.1_Data及规范布局：17根子目录、ComposPV内9目录。26目录是支持集合，不声称最小必要集合。根不改名／移动／替换；provider请求前检查缺目录、嵌套链接逃逸及同名文件。执行可补齐缺目录，预览不写；不外推其他原生版本。
+## 三种气象模式（`weather.mode`）
 
-## 电气来源
+- `existing`：直接使用工作区现有的 `sit_name` 和 `met_name`。
+- `csv`：指定 `Meteo` 下已放好的标准逐时 CSV，自动调 [`pvsyst_prepare_weather`](weather-preparation.md) 生成 `.SIT`/`.MET`。
+- `open_meteo`：在线调 Open-Meteo 拉取指定年份的 ERA5 逐时辐射（`GHI`/`DHI`）与 2 米气温（`temperature_2m`）。
+  - 地点可以通过 [`pvsyst_resolve_location`](tool-reference.md) 查出唯一 `location_id` 传入，或者直接传完整的 `latitude`、`longitude`、`site_label`、`altitude`、`country_code`、`timezone_name`（两种方式二选一，不能混传）。
+  - 下载器会自动把 UTC 数据对齐到当地冬季标准时（`LegalTime`，要求时区为 `-12..+12` 整点偏移且年内标准时不变；半小时时区或像 `Europe/Dublin`、`Africa/Casablanca` 这种带负夏令时的时区会直接拦截，避免错位 1 小时）。
+  - 因为 ERA5 的 `temperature_2m` 是整点瞬时值，工具会取前后两个整点的算术均值（`endpoint_mean`）作为该小时的平均气温，并在返回结果中保留一条 `needs_review` 说明。
 
-capacity直接采用[明确包络](capacity-sizing.md)。electrical_design接受数值或value/unit/source声明，温度系数须同时明确单位和来源，不猜PAN序列化单位。电压包络可直接提供或按带来源系数形成并回传公开线性关系，这不是PVsyst内部模型拟合。
-
-beta_pmax不替代beta_vmp，整机IDCMax不当每MPPT限值、不除以MPPT数。系数化电流需max_irradiance_w_m2、rear_gain_factor及source，不默认STC或增益1；直接声明两电流限值时多给辐照会提示未使用。显式mA／kV等非期望标度停止，A／V或键携单位的值按规则接受。
-
-设计最低环境温度需min_ambient_basis，不能用单年天气最低值代替。-100≤min环境≤min组件工作≤max组件工作≤150°C；组件工作温度不等于环境温度，相等条件会提示。可选manufacturer_model须匹配实际PAN/OND身份标签。来源绑定不是厂家认证，空请求返回字段级缺项而非ready。
-
-## 天气与获取
-
-existing使用明确SIT/MET；未绑定清单只做名称核对，不宣称逐时源天气比较。csv需已暂存标准CSV及local_standard_interval_start，复用[天气准备](weather-preparation.md)。open_meteo用明确location_id或完整坐标，两者不混用；统一spec的坐标路径须latitude、longitude、site_label、altitude、country_code和timezone_name。
-
-resolve_location只读返回全部候选和整数ID，只有恰好一个时selection_required=false；多候选明确选择，零候选补限定，不自动取首位。ID路径国家码取候选，冲突报错；不是由provider推断地点。
-
-获取仅访问Open-Meteo geocoding/archive，年份1969..2068（原生日期为两位年份；ERA5本身始于1940）且须完全发布，只取GHI/DHI及temperature_2m。UTC辐射为前一小时均值、区间终点标签；温度为瞬时值。CSV以固定当地标准小时起点表示，含相邻UTC边界读数及全部闰日，不填缺测／未发布小时或插值。
-
-endpoint_mean是两端UTC瞬时温度的无权平均近似，始终保留review，不是观测小时均温。provider0.25°网格及DEM回显与请求站点元数据分开，底层获取若使用DEM高程必须明示，非实测。原始响应、CSV、来源清单均新文件，失败也保留，拒绝覆盖。
-
-IANA解析在Windows依赖tzdata。固定标准偏移只支持-12..+12整小时；半小时、年内标准偏移变化及采样日负DST约定停止，不重分箱或猜冬季偏移。原生SIT坐标／高程复核界±0.0000501°／±0.500001m只是打印精度，不等于位置完全相同。LegalTime和MET声明须按[天气审核](weather-engineering-review.md)检查，标签匹配不独立证明有效太阳位置。
-
-## 状态与恢复
-
-dry_run=true零文件／零仿真。在线尚无CSV时为ready_for_weather且execution_preflight_complete=false，只是计划；只有实际走到仿真预检才为true。执行协调获取、准备、模板任务，各阶段非明确可继续状态即停止。
-
-返回status、stage、issues、warnings、selected、preview、metrics、artifacts和recovery。completed是该入口检查结论，needs_review保留来源／近似／原生警告，不当工程认证。失败保留源、天气、工作项目及清单，不自动重试、覆盖、回滚或清理；recovery记录而不执行恢复，原模板只读。
-
-方案比较、储能、离网、多朝向及3D使用其他入口；本流程不认证全部气候、物理、电气、曲线或厂家参数。来源草案和准备见[资料绑定](weather-engineering-review.md)、[独立源准备](design-project-preparation.md)及[来源住宅任务](sourced-house-task.md)。
+注意：当 `weather.mode="open_meteo"` 且 `dry_run=true` 时，因为还没真正联网下载 CSV，预检会返回 `status="ready_for_weather"` 且 `execution_preflight_complete=false`。

@@ -1,28 +1,23 @@
-# 季节朝向与地平线的原生记录
+# 季节朝向与远方地平线的 `.VCx` 内部格式笔记
 
-季节倾角和远方地平线分别使用[季节写入](seasonal-orientation.md)与[地平线写入](horizon-profile.md)。下述为PVsyst8.1.6记录的维护说明，不替代各配置入口的完整支持条件或计算。
+要通过 MCP 工具修改季节性倾角或远方地平线，请直接参考[季节倾角配置](seasonal-orientation.md)与[地平线轮廓配置](horizon-profile.md)。本文档记录这两块配置在 PVsyst 8.1.6 `.VCx` 文件里的底层序列化细节。
 
-## 季节朝向
+## 1. 季节性倾角（`SeasonalTilt`）
 
-季节状态位于TOrientGroup中直属pvOrient，不是复制两个固定平面。
+在 PVsyst 中，季节性可调支架并不是建两个固定平面，而是直接把 `TOrientGroup` 下直属 `pvOrient` 的 `FieldType` 改成 `SeasonalTilt`：
 
-| 状态示例 | 原生字段 |
+| 场景 | `.VCx` 内的关键字段 |
 |---|---|
-| 固定15° | FieldType=FixedPlane、FieldTilt=15.0，无夏冬字段 |
-| 夏10°、冬30° | FieldType=SeasonalTilt、FieldTilt=0.0、SummerTilt=10.0、WinterTilt=30.0 |
-| 冬季1/2/3/10/11/12月 | WinterMonths=$0E07 |
-| 上述月份再加4月 | WinterMonths=$0E0F |
+| 常规固定 15° 倾角 | `FieldType=FixedPlane`, `FieldTilt=15.0`（无 `SummerTilt`/`WinterTilt`/`WinterMonths`） |
+| 夏 10° / 冬 30° 季节可调 | `FieldType=SeasonalTilt`, `FieldTilt=0.0`, `SummerTilt=10.0`, `WinterTilt=30.0` |
+| 冬季设为 1、2、3、10、11、12 月 | `WinterMonths=$0E07`（bit 0..2 对应 1..3 月，bit 9..11 对应 10..12 月） |
+| 在上例基础上把 4 月也划入冬季 | `WinterMonths=$0E0F`（bit 3 置位） |
 
-角度单位为度。读取入口返回实际存在的SummerTilt、WinterTilt、WinterMonths和UsesTiltAver字符串，缺失不填零。季节FieldTilt=0.0不代表全年水平安装，普通固定平面编辑也不因可读取季节字段而放开。
+注意：`SeasonalTilt` 下 PVsyst 固定把 `FieldTilt` 写成 `0.0`，读取参数时应看 `SummerTilt`、`WinterTilt` 和 `WinterMonths`。
 
-## 远方地平线
+## 2. 远方地平线（`pvHorizon`）
 
-pvVCalcul中内嵌PVObject_Horizon=pvHorizon，不是近阴影pvShading，也不只是HOR文件路径引用。原生点集使用HorizonLine=TCubicProfile、NPtsMax=100、实际NPtsEff、LastCompile=$81和Mode=1，并保留100个Point槽。
-
-手工轮廓的Flags=$01及FracAlbedo=1.000不包含三个派生因子；原生HOR保存／导入可产生Flags=$03及FHHDiffus、FHPDiffus、FHPAlbedo。系数由软件产生，不作为适配器默认值或外部插值模型。清除点集移除整个内嵌段，但独立HOR文件可继续存在。
-
-原生导入列表可能包含演示文件，必须明确选择自己的轮廓并核对点集。不同输入方位约定先通过原生导入确认，不猜转换；参数具体范围见[地平线接口](horizon-profile.md)。
-
-## 结果使用
-
-季节月份和地平线由原生内核消费，适配器不计算辐照或遮挡。原生报告的页数及损失图位置可随配置变化，不硬编码固定页码。短时格式等价不证明任意角度、轮廓或全年结果等价，季节与地平线组合也不扩大各自写入入口的耦合范围。
+远方地平线遮挡（Far Shadings / Horizon）在 `.VCx` 中作为根部 `pvVCalcul` 的内嵌块 `PVObject_Horizon=pvHorizon` 存储（与近阴影 3D 场景 `pvShading` 相互独立），哪怕最初是从外部 `.HOR` 文件导入的，点集也会被完整拷贝内嵌到 `.VCx` 中：
+- 曲线块 `HorizonLine=TCubicProfile` 固定使用 100 个点槽（`NPtsMax=100`，有效点数记在 `NPtsEff`，`LastCompile=$81`，`Mode=1`）。
+- 手工新建点集时 `pvHorizon.Flags=$01`、`FracAlbedo=1.000`，此时不含三个散射/反照率积分因子。
+- 当经过 GUI 保存或导入 `.HOR` 计算后，`pvHorizon.Flags` 变为 `$03`，并多出 `FHHDiffus`、`FHPDiffus`、`FHPAlbedo` 三个派生因子。如果后续通过 `horizon_updates` 改动了任何一个点的坐标，工具会把 `Flags` 重置回 `$01` 并删掉这三个旧因子，让 PVsyst 按新轮廓重算。

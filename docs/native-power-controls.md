@@ -1,39 +1,48 @@
-# 原生PF与功率限制组合
+# 功率因数（PF）与并网功率限制组合配置
 
-`pvsyst_update_variant_parameters.power_controls_updates`在独立事务内配置PF与网侧限值，可附带variant_name；读取使用`pvsyst_get_variant_parameters.power_controls`。独立power_factor_updates和grid_limit_updates仍执行各自窄范围；组合状态以power_controls结果为准。
-
-适配器复用原生字段读写，完整校验pvSystem所属字段和标志，再一次替换系统块。解析副本不交给仿真器，不计算Cos/tan、无功、kVA降额或限电能量。
+当同一个变体既要设功率因数（`TanPhi` / `TanPhiM` 与逆变器 `PNom` 基准），又要设网侧功率上限（有功 kW 或视在 kVA、注入点或逆变器端、是否单独统计限电损失）时，因为这两组设置共用 `.VCx` 中 `pvSystem.Flags` 的同一个 32 位掩码，需要通过 `pvsyst_update_variant_parameters` 的 `power_controls_updates` 在一次事务中联合写入；读取时查看 `pvsyst_get_variant_parameters.power_controls`。
 
 ```json
 {
   "power_controls_updates": {
-    "power_factor": {"mode": "constant", "pnom_limit": "native", "tan_phi": 0.484},
-    "grid_limit": {"mode": "constant", "quantity": "apparent", "point": "injection", "limit": 250, "separate_loss": true}
+    "power_factor": {
+      "mode": "constant",
+      "pnom_limit": "native",
+      "tan_phi": 0.484
+    },
+    "grid_limit": {
+      "mode": "constant",
+      "quantity": "apparent",
+      "point": "injection",
+      "limit": 250,
+      "separate_loss": true
+    }
   }
 }
 ```
 
-## 输入与组合
+## 参数结构与合法组合规则
 
-power_factor使用none/constant/monthly、明确pnom_limit和常数或12项月度正切。正值滞后、负值领先，范围[-1,1]、0.001增量。月度PNom范围见[功率因数](power-factor.md)。
+### 1. `power_factor` 子对象
+- `mode`：`"none"`、`"constant"` 或 `"monthly"`。
+- `pnom_limit`：`"native"`、`"active"` 或 `"apparent"`（当 `mode="none"` 时必须为 `"native"`）。
+- `tan_phi` / `monthly_tan_phi`：相角正切值（正数滞后、负数超前，范围 `[-1, 1]`，步长 `0.001`；详见[功率因数](power-factor.md)）。
 
-grid_limit.quantity为active/apparent，limit直接表示kW/kVA，须为正且满足0.1原生单位增量，不通过PF换算。point为injection/inverter，启用时须明确separate_loss布尔。关闭形状例如mode=none、quantity=apparent、point=injection，不带limit/separate_loss；类型与位置位保留，不将所有Flags清零。
+### 2. `grid_limit` 子对象
+- `mode`：`"none"` 或 `"constant"`。
+- `quantity`：`"active"`（有功上限，单位 kW）或 `"apparent"`（视在上限，单位 kVA）。
+- `point`：`"injection"`（并网注入点）或 `"inverter"`（逆变器出口端）。
+- `limit` 與 `separate_loss`：当 `mode="constant"` 时必填，`limit` 步长精度 `0.1`（直接代表所选 `quantity` 的 kW 或 kVA 值，工具不做余弦折算），`separate_loss` 为布尔值（对应 `LimGrSeparLoss`）。当 `mode="none"` 时省略这两个字段（工具会移除标量字段，但按 PVsyst 原生习惯保留 `Flags` 中的 `quantity` 和 `point` 位置位）。
 
-只接受受支持标志组合，不按位域任意组合。完全空白基线可明确请求PF none/native与grid none/active/inverter。限制启用时的额外约束：
+### 3. 支持的组合约束
+当 `grid_limit.mode="constant"` 启用限发时，需满足以下 PVsyst 8.1.6 已验证组合：
+- 若使用了月度 PF（`monthly`）或强制 `active`/`apparent` PNom：限发位置必须为 `point="injection"` 且 `separate_loss=true`（其中 `monthly` + 强制 `active`/`apparent` PNom 仅支持 `quantity="active"` 有功注入限值，对应 `Flags` `$05B00000` / `$05700000`）。
+- 若限发位置选在逆变器端（`point="inverter"`）：要求 `power_factor` 为 `constant`、`pnom_limit="native"` 且 `separate_loss=true`。
+- 若不单独列计限电损失（`separate_loss=false`）：要求 `power_factor` 为 `constant`、`pnom_limit="native"` 且 `point="injection"`。
+- 若关闭 PF（`power_factor.mode="none"`）仅开限发：要求 `quantity="active"`、`point="injection"` 且 `separate_loss=true`。
 
-- 月度PF或Legacy PNom与限值组合要求注入点及单列损失；不支持monthly＋PNom＋视在注入限值的未列族。
-- 逆变器端要求常数PF、native PNom及单列损失。
-- 不单列损失要求常数PF、native PNom及注入点。
-- NoPF启用限值要求有功、注入点及单列损失。
+如果要把变体重置回完全无 PF、无限发的空白默认态（`Flags=$00`），可传入 `power_factor: {"mode": "none", "pnom_limit": "native"}` 加 `grid_limit: {"mode": "none", "quantity": "active", "point": "inverter"}`。
 
-## 支持范围与事务
+## 导出结果的表头小贴士
 
-仅接受8.1.6 PV-only、单子阵／普通固定平面、自由地平线、无活动几何或布局、完整电路计数。温度、P50、辅助、负荷、储能和同次其他物理更新停止。未知／重复／非所属字段、模式冲突或缺失字段不被清理掩盖。
-
-预览、同值无操作、源冲突保护、备份和恢复沿用原事务。活动AC、变压器与新PF的任意耦合不由这个入口支持。
-
-## 原生结果解释
-
-EReGrid/EApGrid保留kVAh，PGridLim在视在模式也可能保留kW表头；类型以请求、保存字段及原生报告判定，不补无功符号或改单位。LimGrSeparLoss影响损失分类，不自行解释为额外能量损失。
-
-存在下游AC损耗时，两种限值位置可能产生不同结果；没有AC损耗的等值输出不证明通用等价。原生结果及工程设计依据仍须单独审查。
+在视在功率限发模式（`quantity="apparent"`）下，PVsyst 导出的 CSV 中 `PGridLim` 列的单位表头依然固定写着 `kW`（尽管它的数值和限幅逻辑实际上是 kVA），而 `EReGrid` / `EApGrid` 依然标为 `kVAh`（见[系统字段与输出单位](native-energy-management.md)）。

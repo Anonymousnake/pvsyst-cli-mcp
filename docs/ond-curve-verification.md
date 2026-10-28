@@ -1,15 +1,17 @@
-# OND file-curve editing
+# OND inverter efficiency curve editing
 
-The component editor supports the existing main Converter/ProfilPIO in text Version8.1.6 OND files, Mode1 and single voltage. X/Y are input/output power in watts, independent of GUI display units. Supply the complete supported point table; see[point counts and CSV](curve-table-verification.md).
+`pvsyst_update_component` can read and update the main `Converter` / `ProfilPIO` efficiency curve in text-format PVsyst 8.1.6 `.OND` inverter files using single-voltage linear `Mode=1`.
 
-## File mode
+## Units and point-table rules
 
-Root Flags bit4(0x10) selects the automatic profile. Editing point ordinates alone while automatic mode is active need not affect native output. Explicit use_file_curve=true selects the supported file-curve path, clearing only that bit. Three-voltage bit12(0x1000) remains outside the editor.
+Regardless of whether PVsyst GUI displays inverter power in `W` or `kW`, the serialized `ProfilPIO` table inside an `.OND` file always stores `X` (DC input power) and `Y` (AC output power) in **watts (W)**.
 
-Other root/nested flags and unrelated fields stay unchanged. Same-count edits preserve padding/counts; resizing synchronizes the full table. Current-source checks, preview, no-op, backup and restore use the normal component transaction.
+- You can replace the point table (4 to 256 points) either via `curve_updates` or as CSV text via `curve_csv` (see [Mode 1 point-table editing](curve-table-verification.md)).
+- Same-count updates preserve existing padding rows; changing the point count updates `NPtsMax` and `NPtsEff` and strips old precalculated spline coefficients (`a, b, c`) so PVsyst recalculates segment slopes on load.
+- Three-voltage efficiency curves (root `Flags` bit 12 / `0x1000`) are read-only and not modified by this editor.
 
-## Interpretation
+## Gotcha: switching out of automatic curve mode (`Flags` bit 4)
 
-Curve consumption does not establish consistency of every derived scalar or every operating regime. A changed curve can change operating points and limiting losses; aggregate energy is not a direct efficiency metric or engineering approval. Do not infer a general output multiplier from ordinate scaling.
+In `.OND` files, bit 4 (`0x10`) of the root `Flags` field tells PVsyst to synthesize an efficiency curve automatically from scalar `EfficMax` and `EfficEuro` values, ignoring the `ProfilPIO` points saved in the file.
 
-Other versions, three-voltage interpolation, automatic physical refitting and full GUI resave behavior remain separate. The returned simulation_effect stays unverified for the user's model; verify the actual referencing project and original native units/results after editing.
+If bit `0x10` is set and you only edit the `ProfilPIO` point coordinates, `PVsystCLI.exe` will still run using the automatic curve. Pass `use_file_curve=true` in `pvsyst_update_component` to clear bit `0x10` so PVsyst actually uses your custom point table.

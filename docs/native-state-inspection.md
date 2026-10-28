@@ -1,23 +1,27 @@
-# 原生保存状态读取
+# 变体保存状态只读检查（Native State Inspection）
 
-`pvsyst_get_variant_parameters`返回已支持原生记录的保存状态。读取字段、支持编辑和原生实际消费是不同能力；读取本身不运行PVsyst或改变配置。
+调用 `pvsyst_get_variant_parameters` 时，除了返回常规的倾角、组串数和基础损失外，还会把 `.VCx` 里保存的变压器、系统停运、削峰、3D 阴影场景、组件老化、IAM 和 P50/P90 等高级配置块一并解析出来，方便在改参或排错前看清变体的完整底数。
 
-## 返回内容
+## 解析返回的字段结构
 
-| 字段 | 内容与边界 |
+| 返回字段路径 | 包含的内容与解析说明 |
 |---|---|
-| `transformers` | TransformerNode的七项字段、层级深度和嵌套关系；count是序列化层数，不是设备台数，不换算电压、参考功率或损失 |
-| `system_unavailability` | pvSystem直属SystemUnavail的模式、目标比例、段数、时长、种子和保存时段；区别于WeakGrid电网可用性，不生成新安排 |
-| `peak_shaving` | PeakShaving的AfterSunset或小时窗、功率、SOC和效率字段；按所属对象读取，不计算调度或推断端点包含关系 |
-| `shading_scene` | 标志、ListeObjets内的物体计数与类型、保存标量及[PV区域关联](native-scene-bindings.md)；列表之后的分组不计为物体，不认证源几何 |
-| `ageing.template` | 模板的11个原生模式、保留／分配／RMS及保修字段；数组保留原文，不计算老化模型 |
-| `subarrays[].iam` | 组件缓存、ASHRAE、FresnelSmooth、UserProfile的有效／保存模型；点值不经适配器拟合 |
-| `p50_p90` | 受支持root状态中实际存在的14字段块；缺块返回none，不构造概率页或计算概率 |
+| `transformers` | 解析电路树中的 `TransformerNode`，返回 7 个核心损耗/额定字段、节点层级深度及嵌套关系。注意 `count` 表示序列化的 `TransformerNode` 块数量，不一定等于物理变压器台数 |
+| `system_unavailability` | 解析 `pvSystem` 直属的 `SystemUnavail` 块，返回不可用模式、目标停运比例、时段数量（最多返回 1000 段，超限报错不截断）、持续时长、随机种子及具体停运时段列表（与 `WeakGrid` 储能的电网停电序列相区分） |
+| `peak_shaving` | 解析 `PeakShaving` 块，返回放电时序模式（`AfterSunset` 或起止小时窗口）、削峰功率限值、SOC 阈值与充放电效率 |
+| `shading_scene` | 解析 3D 阴影块标志位、`ListeObjets` 内的三维物体数量与类型统计、保存的阴影标量，以及 [PV 表格与朝向的关联核对结果（`pv_bindings`）](native-scene-bindings.md) |
+| `ageing.template` | 解析老化配置块的 11 个模式与参数字段（运行年数、年均衰减率、RMS 离散度、保修点数组等） |
+| `subarrays[].iam` | 解析各子阵列的入射角修正（IAM）配置，区分组件自带（`component`）、`ASHRAE`、`FresnelSmooth` 和自定义折线 `UserProfile` |
+| `p50_p90` | 若变体根部包含 14 字段的 `P50_P90=TP50_P90` 块则返回各字段值；未配置时返回 `null` |
 
-未知、重复或不完整记录返回issue，缺席与已配置分开。PV不可用列表最多1000段；超限停止返回列表，不以截断内容冒充完整安排。读取受文件大小、版本及记录形状约束。
+如果某个配置块在 `.VCx` 里压根没出现，对应字段会标为未配置；如果出现了重复块、残缺字段或未知枚举值，会在 `issues` 中明确指出。
 
-## 编辑边界
+## 只读检查与可写范围的区别
 
-P50写入仍要求原生结果模板`$01800001`，读取其他root状态不放宽该条件。FresnelSmooth和UserProfile点表保持只读；读取不删除或重建用户曲线。其他老化、朝向、线损、储能等修改使用各自配置入口，并执行该入口的版本、所属对象、精度及支持形状检查。
+`pvsyst_get_variant_parameters` 的覆盖面比写入接口更广——有些复杂块（比如 `FresnelSmooth`/`UserProfile` 的自定义 IAM 点表、多级变压器损耗字段、`SystemUnavail` 随机停运时段）目前只支持读出保存状态，尚未开放直接修改。
 
-返回的是保存数据，不是运行中有效值、来源认证或新的物理计算结果。
+各个可写领域的具体前提条件（例如 `p50_p90_updates` 要求变体已具备结果模板标志 `$01800001`）以对应写入工具的文档为准：
+- [P50/P90 参数编辑](p50-native-parameters.md)
+- [老化与 IAM 输入](native-model-inputs.md)
+- [削峰放电控制](native-peak-shaving.md)
+- [MV 夜间断开](native-mv-night.md)与[AC 线缆配置](native-ac-cabling.md)

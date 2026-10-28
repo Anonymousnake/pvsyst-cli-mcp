@@ -1,22 +1,23 @@
-# Native entry support summary
+# Native feature support summary
 
-Native entries reuse PVsyst calculations and existing transaction/recovery helpers. This is a bounded capability summary, not full GUI or tutorial parity. Use the[tool catalog](tool-reference.md) for current names and restart a running server when its schema changes.
+This page gives a quick overview of the PVsyst 8.1.6 features supported beyond basic fixed-plane CLI runs. For exact tool names and parameters, see the [tool reference](tool-reference.md) and the [native entry map](native-entry-map.md).
 
-| Entry | Supported scope |
-|---|---|
-| House chain | Explicit house/PV geometry, native import/association, validity/table, new-variant save/reload and annual consumption;[house workflow](house-pv-modeling.md) |
-| Read-only state | Owner-aware transformer/outage/peak/scene/ageing/IAM records, with unknown shapes explicit;[inspection](native-state-inspection.md) |
-| PF/PNom | Constant/monthly bounded read/edit/clear and native annual consumption;[PF](power-factor.md) |
-| Ageing/IAM | Existing full templates and native inputs, not external sampling or model curves;[models](native-model-inputs.md) |
-| Report pages | Native template/design page selection, not post-processing a PDF;[reports](automatic-simulation.md) |
-| Tracking/Shed | Existing supported native types, exact precision and source/candidate gates;[tracking](native-tracking-controls.md),[Shed](native-shed-controls.md) |
-| Storage scalars | Preserve strategy/hardware and support recorded Peak timing; native controls limited to48h;[storage](grid-storage-parameters.md) |
-| MV night | One supported default-MV profile and dependency bit, native annual consumption;[MV](native-mv-night.md) |
-| AC cables | Coupled main/subarray/direct-inverter owners,0.1m precision and preserved DC; annual copper case plus other48h controls;[AC](native-ac-cabling.md) |
-| DC bridge | Confirmed already-open GUI setting, native recalculation and SaveAs/reload, both modes and annual consumption;[DC](native-dc-cabling.md) |
+## Feature overview
 
-DC proportional-resistance inversion is not included: software computes coupled resistance/loss fields. Owner, version, precision, quantity and source/candidate checks remain feature-specific; a new native flag family does not widen all older writers.
+| Domain | What is supported | Guide |
+|---|---|---|
+| 3D residential scenes | Author and read back `.pvc2` house/PV meshes, import via the 8.1.6 GUI bridge, bind 1 or 2 roof orientations, verify saved table coordinates, and run full-year CLI simulations | [House PV modeling](house-pv-modeling.md), [Native house task](native-house-task.md) |
+| Read-only state inspection | Inspect saved transformer losses, PV unavailability periods, peak-shaving settings, active 3D scene objects, ageing blocks, and IAM profiles via `pvsyst_get_variant_parameters` | [State inspection](native-state-inspection.md) |
+| Power factor & PNom | Read, edit, and clear constant or monthly signed `TanPhi`/`TanPhiM` alongside `native`/`active`/`apparent` inverter PNom limits | [Power factor](power-factor.md), [Combined power controls](native-power-controls.md) |
+| Ageing & IAM | Edit degradation year/mean/paired-RMS values and toggle bit 20 on existing ageing templates; switch IAM between `component` and `ashrae` | [Model inputs](native-model-inputs.md) |
+| PDF report pages | Select specific report sections (`summary`, `losses`, `results`, `horizon`, `near_shadings`, `p50_p90`, etc.) via native CLI `-rp` | [Automatic simulation](automatic-simulation.md) |
+| Tracking & sheds | Create variants with updated geometry, axis limits, and backtracking across 9 tracking types, or edit existing `Sheds` / `SunShields` templates | [Tracking controls](native-tracking-controls.md), [Shed controls](native-shed-controls.md) |
+| Storage scalar edits | Update SOC thresholds, AC charge/discharge limits, efficiency, and `allow_grid_export` on existing `SelfConsumption`, `WeakGrid`, or `PeakShaving` variants | [Grid storage parameters](grid-storage-parameters.md), [Peak shaving](native-peak-shaving.md) |
+| MV night disconnect | Toggle `NightDisconnect` and main-array bit 29 on single-MV transformer variants | [MV night disconnect](native-mv-night.md) |
+| AC cabling | Enable or edit uniform per-inverter AC cables (`0.1 m` length precision, inherited wire section and metal) while keeping DC string cables intact | [AC cabling](native-ac-cabling.md) |
+| DC cabling GUI bridge | Drive an open PVsyst 8.1.6 GUI session to set DC wiring resistance (`mOhm`) or STC loss (`%`), let PVsyst recalculate coupled fields, and save as a new variant | [DC cabling bridge](native-dc-cabling.md) |
 
-SaveAs, readback, input preservation, geometry agreement and simulation consumption are separate outcomes. Desktop coordination uses a single driver and process-local locks, not OS-wide exclusion. GUI bridges do not silently change INI or take over unrelated sessions.
+## Implementation notes
 
-Arbitrary topology, mixed/custom cable profiles, arbitrary MV/HV quantities/tables, every GUI locale/scale/version, hybrid DC battery ports, grid charging, special/random loads/outages and automatic engineering sizing are not implied. Forty-eight-hour controls remain48h, not annual evidence. See the[native entry map](native-entry-map.md) and each linked guide for exact limits.
+- **Why DC cabling uses the GUI bridge**: In PVsyst 8.1.6, changing the DC loss percentage in `.VCx` text without updating the coupled resistance fields across the subarray and circuit tree causes inconsistent state. Rather than reverse-engineering and reimplementing PVsyst's internal wire-sizing math, `pvsyst_create_native_dc_cabling_variant` sets the input in the GUI dialog and lets PVsyst write out the recalculated values.
+- **Process coordination**: All MCP tools in a server process share a single workspace `RLock` and validate file SHA-256 hashes before writing. GUI bridge tools check window titles and process ownership before interacting with PVsyst and never force-kill an existing user session or overwrite `PVsyst.ini`.

@@ -1,33 +1,19 @@
-# 有限双朝向场景与住宅任务
+# 双朝向（双屋面）住宅 `.pvc2` 场景生成与回读
 
-双朝向文件作者／读取器和[受限原生住宅任务](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)是不同层。作者只生成标准PVCollada2及可严格重建声明；自动任务另须满足单栋anchor0、原生逐表身份、归位与保存／重载条件，不扩展任意多组、共享或异构拓扑。
+在单朝向住宅建模（见[住宅与光伏建模](house-pv-modeling.md)）的基础上，`pvsyst_create_house_pv_scene` 和 `pvsyst_read_house_pv_scene` 支持为包含**两个固定朝向、两个独占子阵列**的住宅工程生成和回读 `version 2` 格式的双屋面 `.pvc2` 场景文件；后续可通过 `pvsyst_run_house_task` 完成单栋双屋面的端到端仿真与交付（详见[工程交付中的双屋面章节](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。
 
-## 来源分组
+## 源变体与输入结构要求
 
-只接受两个pvSubArray分别引用普通非平均pvOrient1/2，同PAN/OND、完整计数及8.1.0/8.1.6独占完整分支。每组恰好一个命名PV区域，组件数分别匹配该组NModSerie×NStringCh，不只匹配总和。
+1. **电气与朝向底板**：源 `.VCx` 变体需包含恰好两个子阵列（`SubArray 1` 与 `SubArray 2`），分别独占关联两个普通非平均固定平面朝向（`NoOrient=1` 与 `NoOrient=2`），且两个子阵列使用相同的 `.PAN` 组件和 `.OND` 逆变器型号，电路计数完整，无已有 3D 场景、远方地平线、P50、负荷或储能。
+2. **逐表绑定 `orientation_id`**：在 `layout.tables` 列表中传入两张 PV 表，每张表除了常规的 7 个排布字段（`module_rows`、`module_columns`、`orientation`、`row_spacing_m`、`column_spacing_m`、`origin_m`、`roof_mesh`）外，还必须显式指定整数 `orientation_id`（一张表传 `1`，另一张表传 `2`）。
+3. **逐组组件数对齐**：不仅总组件数要对上，每张表的 `module_rows × module_columns` 还必须严格等于其绑定的那个子阵列的 `NModSerie × NStringCh`。
 
-无活动场景／布局、负荷、储能、P50或地平线，延续北半球和PAN尺寸规则。orientation_id是已有原生朝向的严格整数，两表各使用1/2一次，不是布尔、自选角度或新建朝向。角度来自源；单源省略该字段，分组输入不隐式套到旧平面。
+## 局部参考系与几何检查
 
-创建完整请求还须提供与实际屋面对应的命名网格house、layout中的表位置／屋面及module_geometry。作者不补房型、尺寸、工程角度或厂家限值。
+- **以朝向 1 为局部参考系**：所有房屋构件的顶点坐标 `vertices` 以及两张 PV 表的起点 `origin_m` 均定义在朝向 1（`NoOrient=1`）的局部坐标系下。生成的 `.pvc2` 在公共 `SceneRoot` 节点上挂朝向 1 的方位角旋转，并在每张 PV 表的节点平移后附加相对于朝向 1 的局部 Z 轴旋转，各自的 `rack` 则写入对应朝向的真实倾角与 PVCollada 方位角。
+- **屋面法向与防重叠检查**：工具会把每张 PV 表的四个角点变换到同一参考系下，核对承托屋面 `roof_mesh` 的法向是否与对应朝向的倾角/方位角一致、四角竖直投影是否落在屋面三角形内，并检查两张 PV 表的水平 XY 包围盒是否互不重叠。
 
-## 坐标与几何检查
+## Version 2 严格回读与 `.VCx` 内部索引细节
 
-所有房屋顶点和origin_m位于朝向1局部框架。共享SceneRoot保留该朝向的方位旋转，每PV节点在平移后附加相对Z旋转；rack使用对应源倾角及PVCollada方位。变换服务于格式与几何校验，不估算辐照或电气收益。
-
-屋面法线及四角投影使用同一组变换后PV角点。双组XY包围盒重叠时保守停止，是适配器限制，不是通用碰撞认证。更多组、每组多区域或多层投影重叠不由此开放。原单朝向共面矩形重叠检查不变。
-
-## 严格回读
-
-单源写version1，双组写version2，source声明含逐组ID和组件数。读取从实际rack取角度、XML取网格，检查组声明、逐组计数及完整ID集合，重建支持内容并与原XML规范化比较。额外节点、旋转不匹配、坏清单等停止，不放松规范化来吞掉未知内容。
-
-ready表示文件方言／几何输入可重建，不认证工程来源；读取始终source_verified=false。返回create_arguments用于重新创建时，会重新读取实际工程并执行源门禁。合法文件声明被换成另一个project/variant不是来源认证。
-
-创建只写新的UserData场景，不覆盖原文件或修改工程、变体、PAN；组件厚度仍来自声明。作者／读取的导入和原生消费标志为false。原生桥对不支持形状返回needs_context，不按文件元数据推断当前工程匹配。
-
-## 原生任务与身份
-
-受限任务通过原生PV属性、SHD及位置入口核对每表实际朝向和空间状态；自动名称不作为稳定身份。只对明确空组执行删除，原生有效、保存、重载与年度消费分别校验，needs_review保留缺工程依据及保存阴影复核。
-
-native-state的Sommets/TPoly3D点名从1开始，但Faces索引为0..N-1，-1分隔多边形；两者不混用。普通物体局部角度为0时才能直接用局部点加DOrigine比较世界点，不能把此局部条件泛化为通用变换器。逐表NoOrient引用、坐标、尺寸与完整网格一起审查；stored_consistent或相同数量不能替代源几何认证。
-
-版本、DPI、七字符位置精度及0.00002m接受条件详见[交付范围](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)。原单朝向、一／两区域、旧version1及固定无阴影路径各自保持支持条件。
+- `pvsyst_read_house_pv_scene` 读取双朝向 `.pvc2` 时，会校验 `version 2` 元数据中的逐组朝向 ID 与组件数，从 XML 还原全部网格和两张表的排布参数，并在内存中重建 XML 做归一化比对。
+- **`.VCx` 内部 3D 顶点与面索引小贴士**：在 PVsyst 保存进 `.VCx` 的原生 3D 对象（`Sommets` / `TPoly3D`）中，顶点字段名是从 1 开始编号的（`Point_1`..`Point_N`），但 `Faces` 数组里的顶点下标是从 **0** 开始的（`0..N-1`），并用 `-1` 作为多边形面片之间的分隔符。解析原生 `.VCx` 场景状态时切勿把两套基数搞混。

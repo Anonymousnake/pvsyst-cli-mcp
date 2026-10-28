@@ -1,27 +1,34 @@
-# 原生AC线缆配置
+# 逆变器侧均一直流/交流（AC）线缆配置
 
-`pvsyst_create_ac_cabling_variant`从受限8.1.6模板预览或创建新VC，首次启用AC线缆或修改已启用的均一线缆。主阵列启用位与摘要、子阵列有效长度、直接InverterNode的CableDefinition协调更新，StringNode的DC电阻保持。电阻与损耗由PVsyst计算。
+在 PVsyst 8.1.6 的 `.VCx` 文件里，启用逆变器出口到并网点/变压器前的低压交流（AC）线缆并不是只改一个长度标量，而是需要同时改三处地方：主阵列（`pvMainArray`）的使能位与线缆摘要、子阵列（`pvSubArray`）的有效线长，以及电路树里每个直接 `InverterNode` 下的 `CableDefinition` 块。
+
+`pvsyst_create_ac_cabling_variant` 负责把这三处修改打包在一次操作里，生成一个新的 `.VCx` 变体（同时保持下级 `StringNode` 上的直流 DC 线缆阻值不变）。
 
 ```json
-{"project":"example.PRJ","source_variant":"VC0","new_variant":"VC1","ac":{"length_m":100,"metal":"Copper","section":"ISO60228_10"},"dry_run":true}
+{
+  "project": "example.PRJ",
+  "source_variant": "VC0",
+  "new_variant": "VC1",
+  "ac": {
+    "length_m": 100,
+    "metal": "Copper",
+    "section": "ISO60228_10"
+  },
+  "dry_run": true
+}
 ```
 
-## 输入
+## 参数要求
 
-`length_m`须为正数、不超过100000m，且可精确表示为0.1m；更细精度会停止，不舍入。这是适配器范围，不是GUI或厂家工程限值。
+- `length_m`：线缆长度（米），范围 `(0, 100000]`，精度到 `0.1 m`（传入超出一位小数的值会直接报错而不做静默四舍五入）。
+- `metal`：导线材质，支持 `"Copper"` 或 `"Aluminium"`。
+- `section`：导线截面规格，支持 `"ISO60228_10"`、`"ISO60228_16"`、`"ISO60228_25"`、`"ISO60228_35"`、`"ISO60228_50"`、`"ISO60228_70"`、`"ISO60228_95"`、`"ISO60228_120"`。
+- 如果源变体已经启用了 AC 线缆，只改 `length_m` 时可以省略 `metal` 和 `section`（自动沿用源变体当前材质与截面）；如果源变体尚未启用 AC 线缆且省略了材质/截面，则默认填入 `Copper` / `ISO60228_10`。线阻与损耗由 PVsyst 根据 `CableType` 规格在仿真时自行计算。
 
-`metal`为Copper或Aluminium；`section`为ISO60228_10/16/25/35/50/70/95/120。已启用源省略导体或截面时继承；未启用源省略时使用Copper/ISO60228_10模板值，不构成工程选型建议。适配器不按截面自行计算电阻。
+## 适用模板条件与底层结构
 
-## 支持范围
+源变体需为 PVsyst 8.1.6 单子阵列、单固定平面（朝向 1）、无 3D 阴影场景、无中高压变压器（`MVNbTransfos=0` 且无 `TransformerNode`）、无负荷/储能/P50 的纯并网工程（`pvMainArray` 的 `Flags` 为 `$01900400` 或 `$01B00400`，`Flags2=$082A`，`pvSystem.Flags=$00`）：
+- **未启用状态（`none`）**：主阵列无 AC 线缆摘要字段，子阵列 `ACWireLength=0.0`，逆变器节点无 AC `CableDefinition`。
+- **已启用状态（`active`）**：主阵列置位 bit 21 并带有 `ACWireNoSect=0`、`ACWireLength=0.0`、`ACWireMetal`；子阵列保存实际 `ACWireLength`；每个直接 `InverterNode`（位于 `Children` 之前）包含标准的 8 行 `CableDefinition` / `CableType` 块，且主阵列、子阵列与各逆变器节点的材质和截面一致。
 
-仅支持PV-only、单普通固定平面／子阵、全部组串属于朝向1、完整一致电路计数的8.1.6源。main Flags为01900400或01B00400，Flags2=082A，system Flags=$00。MVNbTransfos须为0且无TransformerNode；不支持显式几何／布局、负荷／储能、P50或保存地平线，也不编辑MV/HV下游电缆。
-
-启用态须同时具有主阵列bit21、ACWireNoSect=0、ACWireLength=0.0及ACWireMetal，子阵列ACWireLength和每个直接逆变器的非custom电缆定义。各所属对象的长度、金属、截面必须一致。非启用态须无主AC摘要和直接逆变器AC电缆，子阵列长度为0。缺失、重复、混合或部分声明会停止。
-
-只接受InverterNode直属、位于Children之前的原生8行CableDefinition/CableType结构。未知结构、自定义电阻和嵌套伪装停止；下级StringNode的DC CableDefinition不修改。最终编码后的候选重新解析并核对状态。
-
-## 输出与文件
-
-参数读取中的`ac_cabling`返回none/active/unsupported、长度、金属、截面、组数和物理逆变器数量。组的NElements参与物理数量，不将节点数当设备数。
-
-预览不写文件；创建使用工作区锁、受控路径、同名冲突检查、源快照复核及新VC独占创建。失败时披露可能的部分产物。`native_consumption_verified`始终false，实际效果需另行原生运行。导体或截面映射不替代温度、载流量、保护设备及厂家限制校核。
+通过 `pvsyst_get_variant_parameters` 读取时，`ac_cabling` 字段会返回当前状态（`none` / `active` / `unsupported`）、长度、材质、截面、逆变器组数以及展开 `NElements` 后的物理逆变器总台数。

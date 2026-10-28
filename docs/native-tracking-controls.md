@@ -1,57 +1,53 @@
-# 原生跟踪控制
+# 单轴与双轴跟踪器（Tracking）变体参数配置
 
-`pvsyst_create_tracking_variant`预览或独占创建新VC，只编辑已存在的原生跟踪类型，不做固定转跟踪、跨类型转换、任意几何、3D或Module Layout。跟踪角、回溯和辐照由PVsyst计算。完整年度任务另见[跟踪模板](tracking-template-flow.md)，其高层范围仅UnlimTracking。
+`pvsyst_create_tracking_variant` 用于在已有的 PVsyst 8.1.6 跟踪器变体模板上修改跟踪轴角度、旋转限值、回溯（Backtracking）、大风保护（Wind Stow）等参数，并另存为一个新的 `.VCx` 变体。
+
+如果要直接跑“克隆 `UnlimTracking` 模板 → 改跟踪参数 → 跑全年仿真并核对报告”的完整工作流，见[跟踪模板全年仿真流程](tracking-template-flow.md)。
 
 ```json
 {
-  "project":"example.PRJ","source_variant":"VCK","new_variant":"VCX",
-  "tracking":{"axis_azimuth_deg":0,"min_rotation_deg":-45,"max_rotation_deg":60,"backtracking":true,"irradiance_optimization":true},
-  "variant_name":"Tracking Controls","dry_run":true
+  "project": "example.PRJ",
+  "source_variant": "VCK",
+  "new_variant": "VCX",
+  "tracking": {
+    "axis_azimuth_deg": 0,
+    "min_rotation_deg": -45,
+    "max_rotation_deg": 60,
+    "backtracking": true,
+    "irradiance_optimization": true
+  },
+  "variant_name": "Tracking Controls",
+  "dry_run": true
 }
 ```
 
-## 输入与类型
+## 支持的 9 种跟踪器类型与可编辑字段
 
-至少明确给一个源类型所属控制，未提供值继承。未知字段、混合类型、布尔代替数字、数字字符串和NaN/Inf停止。角度以度表示，CentralGap为米，风速为m/s。公开schema列明各*_deg、central_gap_m、pitch_slope_deg、wind_stow_speed_mps／wind_stow_position_deg及布尔字段。
+工具严格按照源变体 `pvOrient` 当前的 `FieldType` 校验允许修改的所属字段（不支持跨 `FieldType` 转换，每次至少传一个需要修改的字段，未传字段沿用源变体原值）：
 
-| 公共旧控制 | 原生字段 | 范围 |
-|---|---|---|
-| axis_azimuth_deg | AxisAzim | -20..20° |
-| min_rotation_deg | MinPhi | -60..-45° |
-| max_rotation_deg | MaxPhi | 45..60° |
-| backtracking | UsesBacktracking | 严格布尔 |
-| irradiance_optimization | UsesIrradOptimiz | 严格布尔 |
-
-既有三角度域保留；角度0.1增量并保存一位小数。其他新增数值仅接受有限0.1精度。所有范围为适配器域，不是已测GUI极限。源及候选的全部min/max对都验序，单边修改使用源另一侧；不交换坏界限、静默舍入或将微小值归零，Decimal溢出作为输入问题。
-
-| FieldType | 可编辑的所属原生字段 |
+| `FieldType` | 可通过 `tracking` 修改的底层字段 |
 |---|---|
-| UnlimTracking | AxisAzim、MinPhi/MaxPhi、UsesBacktracking、UsesIrradOptimiz、原有UsesElectricalEffect |
-| TrackHorizNSAxis | AxisAzim、MinPhi/MaxPhi、CentralGap、PitchSlope、回溯／辐照优化／风收拢及其速度／位置 |
-| TrackTiltedAxis | 上一类型的字段及AxisTilt |
-| TrackVertAxis | AxisAzim、FieldTilt、MinAzim/MaxAzim |
-| TrackSunShield | AxisAzim、MinTilt/MaxTilt、UsesBacktracking |
-| TrackHorizAxis | AxisAzim、MinTilt/MaxTilt、PitchSlope、UsesBacktracking |
-| TrackTwoAxis | AxisAzim、MinAzim/MaxAzim、MinTilt/MaxTilt |
-| TrackFrameNS | AxisAzim、AxisTilt、MinTilt/MaxTilt、FrameMinPhi/MaxPhi、UsesBacktracking |
-| TrackFrameEW | AxisAzim、MinPhi/MaxPhi、FrameMinTilt/MaxTilt、UsesBacktracking |
+| `UnlimTracking`（无限水平轴） | `AxisAzim`, `MinPhi`/`MaxPhi`, `UsesBacktracking`, `UsesIrradOptimiz`, `UsesElectricalEffect` |
+| `TrackHorizNSAxis`（水平南北轴） | `AxisAzim`, `MinPhi`/`MaxPhi`, `CentralGap`, `PitchSlope`, `UsesBacktracking`, `UsesIrradOptimiz`, 大风保护开关及风速/收拢角度 |
+| `TrackTiltedAxis`（倾斜轴） | 包含 `TrackHorizNSAxis` 的全部可编辑字段，外加轴倾角 `AxisTilt` |
+| `TrackVertAxis`（竖直轴） | `AxisAzim`, `FieldTilt`, `MinAzim`/`MaxAzim` |
+| `TrackSunShield`（跟踪遮阳百叶） | `AxisAzim`, `MinTilt`/`MaxTilt`, `UsesBacktracking` |
+| `TrackHorizAxis`（东西水平轴） | `AxisAzim`, `MinTilt`/`MaxTilt`, `PitchSlope`, `UsesBacktracking` |
+| `TrackTwoAxis`（双轴跟踪） | `AxisAzim`, `MinAzim`/`MaxAzim`, `MinTilt`/`MaxTilt` |
+| `TrackFrameNS`（南北框架双轴） | `AxisAzim`, `AxisTilt`, `MinTilt`/`MaxTilt`, `FrameMinPhi`/`MaxPhi`, `UsesBacktracking` |
+| `TrackFrameEW`（东西框架双轴） | `AxisAzim`, `MinPhi`/`MaxPhi`, `FrameMinTilt`/`MaxTilt`, `UsesBacktracking` |
 
-每类字段集合独立完整且唯一，不合并成可转换类型的大字典。只编辑原记录已拥有的字段，尤其不向其他类型补Unlim电气效应。
+常用字段范围与精度要求：
+- 角度与间距步长精度均为 `0.1`（保留一位小数），其中 `axis_azimuth_deg`（`AxisAzim`）范围为 `-20..20°`，`min_rotation_deg`（`MinPhi`）为 `-60..-45°`，`max_rotation_deg`（`MaxPhi`）为 `45..60°`。
+- 所有成对的最小/最大角度限值（如 `MinPhi`/`MaxPhi`、`MinTilt`/`MaxTilt`、`MinAzim`/`MaxAzim`）在落盘前都会校验大小顺序（只改单侧时自动与源变体的另一侧比对）。
 
-## 完整源条件
+## 源模板前提条件
 
-root8.1.6／Flags=0，Grid system仅Flags=$06000000及SystemType=Grid，main Flags=$01900400／Flags2=$082A，subarray8.1.6／$019E1002／$20。须单子阵、单计数TOrientGroup、直属NoOrient=1／Flags=$00，全部组串在朝向1，NStrOrient1=NStringCh且其他NStrOrient*=0，电路计数完整。
-
-Unlim模板保留23个所属字段及Pitch=6.600m、CollectorWidth=3.000m、两侧InactiveBandWidth=0.020m、CellWidth=0.156m、NSheds=10、NModInWidth=3、FracShadingFactor=1.000，三个Aver=False、BTNoTrackers=-1,-1,。它们是模板限制，不是工程建议；Comment不用于判型。
-
-负荷、储能、P50、地平线、显式场景和Module Layout停止。PartialSystemInclObj、平均模式和未请求几何保持。End of TOrientGroup仅在专用解析视图适配，不改文件闭合或全局别名。
-
-## 事务与消费
-
-预览不写；执行以锁、受控路径、同名冲突检查、源快照及独占创建写新VC。失败披露可能的部分产物，不自动删除。仅请求字段、可选根标题和明确BOM可变；非ASCII名称需已有BOM或add_utf8_bom=true，bom_added披露实际变化。
-
-配置的native_consumption_verified始终false。DateCalcul、VersionSimul和旧结果不是新输入已计算的证明；用run_simulation及匹配SIT/MET核对实际CSV/PDF。原有Unlim控制有全年消费，九类型新增控制对照限48h；风收拢触发、任意几何／GUI边界和所有回溯组合不由此获得全年保证。
+- PVsyst 8.1.6 单子阵列、单朝向（`TOrientGroup` 下唯一一个 `NoOrient=1`、`Flags=$00` 的跟踪朝向，全部组串归属朝向 1，`NStrOrient1=NStringCh`）。
+- 纯光伏并网系统（`pvSystem.Flags=$06000000`，主阵列 `Flags=$01900400`、`Flags2=$082A`，子阵列 `Flags=$019E1002`、`Flags2=$20`），无独立 3D 场景、Module Layout、远方地平线、P50、负荷或储能。
 
 ## 原生二维遮挡与导出
 
-无显式3D场景不等于没有原生二维互遮挡；Near Shadings/no Shadings标签也不证明GlobShd应为零。SFI使用vi*标识，CSV使用实际无vi列名；请求列可能被原生省略，不补列或填零。Unlim电气态可导出ShdElec，不能将它扩展为通用电气阴影或Module Layout能力。回溯／辐照优化不保证在所有天气几何下增加发电。
+使用跟踪器变体跑仿真并查看结果时，有几个容易混淆的地方需要注意：
+1. **PDF 报告里的 `no Shadings` 不代表没有排间遮挡**：`UnlimTracking` 等自带排间距（`Pitch`）和组件宽度（`CollectorWidth`）参数的跟踪类型，由 PVsyst 内核直接按二维几何计算排间互遮挡（或回溯角度）。只要没挂接独立的 3D 场景对象，PDF 摘要里就会显示 `Near Shadings: no Shadings`，但逐时 CSV 里的 `GlobShd`（遮挡后辐照）和当勾选 `UsesElectricalEffect=True` 时的 `ShdElec`（电气遮挡损失）是正常计算并导出的。
+2. **`.SFI` 变量名与 CSV 列名**：`.SFI` 输入文件里变量名带 `vi` 前缀（如 `viGlobShd`、`viShdElec`），而导出的 CSV 列名去掉了 `vi` 前缀（`GlobShd`、`ShdElec`）。当某项开关未启用、PVsyst 省略导出对应列时，结果读取器会如实反映该列未导出，不会凭空补全一列 0。

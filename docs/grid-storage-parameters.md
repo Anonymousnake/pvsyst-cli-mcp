@@ -1,70 +1,100 @@
-# 原生AC光储系统与参数
+# 集中式 AC 耦合光储系统构建与参数配置
 
-PVsyst执行电池、转换器、SOC与策略计算。`pvsyst_create_grid_storage_variant`编辑已有激活系统，`pvsyst_create_grid_storage_system`从PV-only Grid创建集中AC耦合新VC；二者不是混合DC端口、BMS或网充控制器。
+本模块提供两个工具来管理 PVsyst 8.1.0 / 8.1.6 并网光储（Grid Storage）变体：
+- `pvsyst_create_grid_storage_variant`：在**已经激活储能**的变体上修改 SOC 阈值、AC 充放电功率上限、变流器效率或防逆流开关，并另存为新 `.VCx`。
+- `pvsyst_create_grid_storage_system`：在**纯光伏并网（PV-only Grid）**变体上挂载电池包（`.BTR`）、串并联数量、12 个月电池温度、初始 SOW、储能控制策略（`SelfConsumption` 或 `WeakGrid`）以及已准备好的全年逐时负荷缓存，一步生成完整的 AC 耦合光储新 `.VCx`。
 
-## 已有系统标量
-
-源为完整UTF-8 VC，声明8.1.0/8.1.6，一个Grid system、现有BTR、正整数电池串并联、激活位和唯一直属平坦pvGridStorage／Flags=$00。惰性或未知模板不自动激活。未请求字段继承。
-
-```json
-{"project":"example.PRJ","source_variant":"VC0","new_variant":"VC1","updates":{"strategy":"self_consumption","soc_min":0.2,"soc_max":0.8,"initial_soc":0.4,"max_charge_ac_kw":1,"max_discharge_ac_kw":1},"dry_run":true}
-```
-
-| 输入 | 原生字段／单位 |
-|---|---|
-| soc_min／soc_max | SOCDischDecl／SOCChDecl，0..1硬低／充电高限 |
-| initial_soc | BattSoCInit，0..1 |
-| reserve_soc | SOCDischSelf，弱电网可用时自用阈值，不是发电机电压 |
-| max_charge_ac_kw | PMaxCharge，充电器AC输入kW |
-| max_discharge_ac_kw | PMaxDisch，电池逆变器AC输出kW |
-| charger_max/euro_efficiency_pct | BattRectMaxEffic／BattRectEuroEffic，% |
-| battery_inverter_max/euro_efficiency_pct | BattInvMaxEffic／BattInvEuroEffic，% |
-
-min<max，初值／备用值位于区间，功率／效率为正，效率≤100且Euro≤Max。严格有限数值，不接受布尔、字符串或未知键。数值合法不保证原生曲线有效，例如100/100效率仍可能被原生判为未定义，接口不拟合曲线绕过。
-
-## 原策略标量闭环
-
-省略strategy才保留源的已支持三元组。显式self_consumption同步SelfConsumption/PVAvailable/Immediate；WeakGrid必须本次完整availability。不声明策略且候选三元组与实际源相同，才允许保留受限PeakShaving/PVToGridMin的AfterSunset或MinMaxHour，不存在调用方豁免标记。
-
-源／候选都先验证SOC、效率、版本、owner、字段集合及有限精度，坏源不被更新掩盖。原生小时0..23严格整数且两端不同。编码后重新解析候选并核对实际after。合法标量修改后可继续走[削峰时序](native-peak-shaving.md)，其硬件／PLim200等其他条件仍保留。
-
-读取grid_storage的mode=stored表示保存状态，不是已运行；无对象为null，未知／损坏声明为unsupported及issues。标量与时序交互的原生消费控制限48h，不外推任意电池、温度、全年或全部组合。
-
-## 从PV-only创建
-
-调用者提供完整BTR、串并联、十二个月电池温度、初始循环／静态SOW、完整SOC、AC功率和效率，以及已准备v1负荷清单。以下仅为参数形状，实际硬件与数值须自行声明并复核：
+## 1. 修改现有光储系统的标量参数（`pvsyst_create_grid_storage_variant`）
 
 ```json
 {
-  "project":"example.PRJ","source_variant":"VC0","new_variant":"VC1","load_manifest_name":"load_2024_load.json",
-  "battery":{"file_name":"declared.BTR","series_count":4,"parallel_count":4,"monthly_temperature_c":[20,20,20,20,20,20,20,20,20,20,20,20],"cycle_sow":1,"static_sow":1},
-  "storage":{"strategy":"self_consumption","soc_min":0.2,"soc_max":0.9,"initial_soc":0.5,"reserve_soc":0.2,"max_charge_ac_kw":3,"max_discharge_ac_kw":5,"charger_max_efficiency_pct":97,"charger_euro_efficiency_pct":95,"battery_inverter_max_efficiency_pct":97,"battery_inverter_euro_efficiency_pct":95},
-  "dry_run":true
+  "project": "example.PRJ",
+  "source_variant": "VC0",
+  "new_variant": "VC1",
+  "updates": {
+    "strategy": "self_consumption",
+    "soc_min": 0.2,
+    "soc_max": 0.8,
+    "initial_soc": 0.4,
+    "max_charge_ac_kw": 1,
+    "max_discharge_ac_kw": 1
+  },
+  "dry_run": true
 }
 ```
 
-温度°C、SOW0..1；不推导倍率、电压电流或BMS兼容。已有电池／储能对象应走标量入口，不在构造时替换设备。新系统绑定真实完整负荷缓存并启用根pvVCalcul bit19；它不同于system电池位。仅有电池运行不证明E_User负荷已消费。返回backend=pvsyst_native_ac_coupled。
+支持的更新字段与 `.VCx` 中 `pvGridStorage` 内部字段对照：
 
-storage.strategy=weak_grid可直接创建，无需自用中间方案，但须给完整availability，与负荷同年、同固定标准偏移。默认self_consumption不接受额外availability，也不自动切策略。
+| 入参字段 | `.VCx` 字段 | 取值要求与物理含义 |
+|---|---|---|
+| `soc_min` / `soc_max` | `SOCDischDecl` / `SOCChDecl` | `0..1` 比例（需满足 `soc_min < soc_max`），代表放电硬下限与充电上限 |
+| `initial_soc` | `BattSoCInit` | `0..1` 比例（需落在 `[soc_min, soc_max]` 之间），仿真初始 SOC |
+| `reserve_soc` | `SOCDischSelf` | `0..1` 比例（需落在 `[soc_min, soc_max]` 之间），`WeakGrid` 模式下电网正常时的自用保留 SOC 下限 |
+| `max_charge_ac_kw` | `PMaxCharge` | 正数（kW），充电器交流输入功率上限 |
+| `max_discharge_ac_kw` | `PMaxDisch` | 正数（kW），电池逆变器交流输出功率上限 |
+| `charger_max_efficiency_pct` / `charger_euro_efficiency_pct` | `BattRectMaxEffic` / `BattRectEuroEffic` | 充电整流器最大效率与欧洲效率（`%`，需满足 `0 < Euro <= Max <= 100`） |
+| `battery_inverter_max_efficiency_pct` / `battery_inverter_euro_efficiency_pct` | `BattInvMaxEffic` / `BattInvEuroEffic` | 电池放电逆变器最大效率与欧洲效率（`%`，需满足 `0 < Euro <= Max <= 100`） |
 
-## WeakGrid可用性与备用
+关于 `strategy`（策略保持）的规则：
+- 如果省略 `strategy`，工具会原样保留源变体已有的策略三元组——这意味着除了 `SelfConsumption` 和 `WeakGrid` 外，你也可以在不传 `strategy` 的情况下直接修改现有 `PeakShaving` / `PVToGridMin` 削峰变体的 SOC、充放电功率和效率标量（改完后仍可继续用 [`pvsyst_create_peak_shaving_variant`](native-peak-shaving.md) 调整放电时间窗）。
+- 如果源变体是 `WeakGrid`（或显式传了 `strategy="weak_grid"`），每次调用都必须同时传入完整的电网可用性 `availability` 声明。
 
-已有或新建WeakGrid每次都需要当前完整CSV，不信任旧缓存。顶层availability示例：
+## 2. 从纯光伏变体新建 AC 光储系统（`pvsyst_create_grid_storage_system`）
+
+先用 [`pvsyst_prepare_load_profile`](storage-loads.md) 准备好全年逐时负荷清单（`load_manifest_name`），然后传入电池硬件参数（`battery`）与储能控制参数（`storage`）：
 
 ```json
-{"csv_name":"grid_2024.csv","year":2024,"utc_offset_hours":8,"time_basis":"local_standard_interval_start"}
+{
+  "project": "example.PRJ",
+  "source_variant": "VC0",
+  "new_variant": "VC1",
+  "load_manifest_name": "load_2024_load.json",
+  "battery": {
+    "file_name": "declared.BTR",
+    "series_count": 4,
+    "parallel_count": 4,
+    "monthly_temperature_c": [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20],
+    "cycle_sow": 1,
+    "static_sow": 1
+  },
+  "storage": {
+    "strategy": "self_consumption",
+    "soc_min": 0.2,
+    "soc_max": 0.9,
+    "initial_soc": 0.5,
+    "reserve_soc": 0.2,
+    "max_charge_ac_kw": 3,
+    "max_discharge_ac_kw": 5,
+    "charger_max_efficiency_pct": 97,
+    "charger_euro_efficiency_pct": 95,
+    "battery_inverter_max_efficiency_pct": 97,
+    "battery_inverter_euro_efficiency_pct": 95
+  },
+  "dry_run": true
+}
 ```
 
-UserData中的UTF-8分号CSV为Date;Grid Available，单位行;ratio，时间YYYY-MM-DD HH:MM。完整8760/8784小时，仅明确0/1，至少一个停电小时；不补缺、不套原生0.5阈值、不做DST／时移。全可用用SelfConsumption，不添加虚构停电。源负荷年份／时基及根自用位也须匹配，不自动改天气。
+底层關鍵细节：在从纯光伏变体构建光储系统时，除了在 `pvSystem` 挂电池硬件和 `pvGridStorage` 块、在 `pvLoad` 写入 366 天 `Energy/MJ` base62 负荷缓存外，工具还会自动置位变体根部 `pvVCalcul.Flags` 的 **bit 19**（`0x80000`）。如果不置位根部 bit 19，PVsyst 跑仿真时虽然会算电池，但用户负荷 `E_User` 和电网购电 `EFrGrid` 不会生效！
 
-绑定所属pvUnavail，DefMode=Periods、HourlyVal=GrdUnav、WRFactor=1000，以有符号base62的+0/+G8保存Day_DDMM每24小时、闰日2902。这里只做原格式绑定，不计算SOC或电池功率。
+## 3. 弱电网（`WeakGrid`）可用性 CSV 绑定与备用 SOC
 
-reserve_soc在电网可用时保留自用阈值，停电可向SOCDischDecl硬低继续放电；不是固定可用kWh、网充条件或发电机阈值。低SOC／备用生效不能证明网充已实现。
+当配置 `strategy="weak_grid"` 时，需在顶层传入 `availability` 参数，指向 `UserData` 下的全年整点电网可用性 CSV（分号分隔，表头 `Date;Grid Available`、单位行 `;ratio`、时间格式 `YYYY-MM-DD HH:MM`，取值为严格的 `0` 或 `1`，且全年至少包含 1 个停电小时 `0`）：
 
-## 回送、结果与文件
+```json
+{
+  "csv_name": "grid_2024.csv",
+  "year": 2024,
+  "utc_offset_hours": 8,
+  "time_basis": "local_standard_interval_start"
+}
+```
 
-两个创建入口的allow_grid_export为严格布尔，false设system bit27，true仅清该位，省略/null保留。它不是数值限值或网充；允许回送仍受功率限制、停电和剩余PV约束，不保证必有上网。
+- 电网可用性 CSV 的年份和固定标准时 UTC 偏移必须与负荷清单完全一致。工具会将其编码为有符号 base62 的 `+0` / `+G8`（`WRFactor=1000`）写入 `pvUnavail` 块的 `Day_DDMM` 缓存中。
+- **`reserve_soc`（`SOCDischSelf`）与 `soc_min`（`SOCDischDecl`）的区别**：在 `WeakGrid` 模式下，当电网正常供电（`1`）时，电池自发自用放电只会放到 `reserve_soc` 就停下，把剩余电量留作备电；一旦发生电网停电（`0`），电池则会继续向下放电直到触及硬下限 `soc_min`。
 
-使用grid_storage SFI保留实际负荷／未供负荷、SOC ratio、电池／电网流、EUnused、CL_Chrg、CL_InvB及CL_Over。EBatCh+CL_Chrg核对AC充电，EBatDis-CL_InvB核对AC放电；电池侧量不直接当AC额定。完整平衡需含限幅损失、弃电和E_Miss，保留原生导出舍入残差，不外部裁剪或修CSV。
+## 4. 防逆流开关（`allow_grid_export`）与能量平衡核对
 
-预览零写入，执行独占新VC，不覆盖源PRJ/VC、BTR、负荷／可用性CSV。失败披露产物，配置native_consumption_verified=false；新运行、源绑定和工程适配分别核对。其他BTR／物理体系、GUI完整回存、随机停电、正向网充及混合DC仍按未支持处理。
+- **防逆流位（`allow_grid_export`）**：两个光储工具均支持可选布尔参数 `allow_grid_export`。传 `false` 会置位 `pvSystem.Flags` 的 **bit 27**（禁止向电网送电，此时光伏富余且电池充满后的电量进入弃电 `EUnused`）；传 `true` 会清除 bit 27；不传则保持源变体原设置。
+- **使用 `grid_storage` SFI 预设核对 AC 能量平衡**：
+  调用 `pvsyst_build_sfi(variables="grid_storage")` 会导出完整的光储能量流列，包括 `E_User`、`E_Miss`、`EFrGrid`、`E_Grid`、`EUnused`、`EBatCh`、`EBatDis`、`CL_Chrg`（充电整流器损耗）、`CL_InvB`（放电逆变器损耗）以及 **`CL_Over`（变流器限幅损耗）**。
+  注意：`EBatCh` 和 `EBatDis` 是**电池直流侧（DC）**的能量，核对交流侧充放电功率是否超限时，应使用 `EBatCh + CL_Chrg`（交流充电输入）和 `EBatDis - CL_InvB`（交流放电输出），并把 `CL_Over` 纳入全站 AC 能量平衡，这样全年的逐时 AC 平衡残差可以完全收敛在 CSV 导出舍入精度（`< 0.01 kW`）以内。

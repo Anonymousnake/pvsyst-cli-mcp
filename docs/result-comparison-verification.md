@@ -1,17 +1,19 @@
-# Comparing native result files
+# Comparing simulation result CSVs
 
-`pvsyst_read_results(compare_to=..., compare_folder=...)` compares target csv_name minus baseline compare_to without native execution or writes. Existing single-file calls retain their response. Both inputs stay under Results/UserHourly.
+`pvsyst_read_results` can compare two simulation CSV files directly when you pass `compare_to` (and optionally `compare_folder` when the baseline lives in `UserHourly` instead of `Results`). It computes `csv_name` (target) minus `compare_to` (baseline) across shared numerical columns without modifying either file.
 
-## Alignment and missing values
+If you omit `compare_to`, `pvsyst_read_results` returns the standard single-file summary. For higher-level engineering comparisons that also diff `.PRJ`/`.VCx` configurations and export Markdown/CSV reports, see [engineering scenarios](engineering-scenarios.md).
 
-Select1..64 distinct columns with matching explicit units, row counts and identical strictly increasing timestamps; column order may differ. UTF-8 BOM and comma/semicolon separators are accepted. Malformed timestamps, extra values or missing units rows stop. Missing trailing values, NaN/Inf and nonnumeric cells count as missing, never zero.
+## Timestamp alignment and missing values
 
-Sums, relative changes and extrema use only common finite pairs. Marginal/paired counts, missing pairs and coverage are returned. Zero paired baseline sum gives null percentage; no finite pair gives null sums/extrema, not a fictitious zero difference. Arithmetic overflow stops before JSON serialization.
+- You can compare 1 to 64 distinct columns. Both CSV files must have the same number of rows, identical strictly increasing timestamps at every row, and matching explicit units on each compared column (the column order in the two headers does not need to match).
+- Both comma and semicolon delimiters (with or without a UTF-8 BOM) are supported.
+- Empty cells, `NaN`/`Inf`, or non-numeric entries are tracked as missing observations (`missing_pairs`) rather than coerced to `0`.
+- Sums, deltas, relative percentage changes, and min/max extrema are computed over rows where both files have finite values. If the paired baseline sum is `0`, the relative percentage change is returned as `null`.
 
-## Energy interpretation
+## Power-to-energy integration
 
-Identical irregular axes permit sample statistics but no integral. Regular W/kW values integrate over the actual step duration. A missing pair makes complete delta energy null while observed partial delta remains available; one row has no integral. Irradiance W/m² is not electric power and does not acquire a kWh energy field.
-
-Both files are fingerprinted before/after reading; detected changes stop the result. This is consistency checking, not an exclusive lock. Matching labels do not prove matching weather, models, timezone or intended full-period coverage.
-
-This statistics entry does not convert units or resample time. For engineering input binding, Chinese explanations and comparison exports, use[engineering scenarios](engineering-scenarios.md); do not infer dispatch physics or engineering validity from an aggregate delta alone.
+- For columns with power units (`W` or `kW`) on a regular time step (such as hourly steps), the reader integrates the paired values over the step duration to report total energy and delta energy in `kWh`.
+- If any row in a power column is missing a finite value, the full-period energy integral is returned as `null` while the partial integral over observed rows is reported separately.
+- Non-power columns (such as irradiance in `W/m²`, temperatures in `°C`, or ratios/SOC in `%`) report sample statistics and extrema without an integrated `kWh` field.
+- Both files are hashed before and after reading so concurrent edits to a CSV while it is being parsed are caught immediately.

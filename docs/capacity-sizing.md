@@ -1,42 +1,52 @@
-# 模板容量规划与声明边界
+# 模板整数容量规划（Capacity Sizing）
 
-simulate_template的可选capacity对象基于调用方明确包络规划有限整数数量，未传时保留模板数量。它不是温度模型、硬件选型、能量优化或工程认证；原生计算仍由PVsyst完成。
+在调用 `pvsyst_simulate_template`、`pvsyst_simulate_design` 或 `pvsyst_prepare_design_project` 时，如果不想手动算“每串多少块组件、每路 MPPT 并几串、一共用几台逆变器”，可以传入 `capacity` 对象。工具会根据你给定的目标直流容量（`target_dc_kw`）和电压/电流/容配比边界，在模板允许的拓扑结构内自动搜索最优的整数串并联组合。
 
-## 源与单位
+如果不传 `capacity`，模板工作流会原样保留模板工程里原有的逆变器台数和组串数。
 
-要求完整单子阵／固定平面Grid、无几何／表／Module Layout，子阵8.1.0/8.1.6独立$0400、无共享$0100、PowerSharingInverterId=-1，全部组串归同一平面。一个独占逆变器组、一个可重复MPPT及一个可重复并联串叶；每台MPPT数量等于目标OND.NbMPPT，全部硬件输入使用。ModeOper=MPPT、CompPMax=Lim、CompVMax=Lim，非异质／优化器字符串。
+## 适用模板条件与单位约定
 
-PAN限单晶／多晶硅、GRef=1000W/m²及TRef=25°C。调用者明确IEC或UL，对应根VMaxIEC/VMaxUL，缺额定停止。PAN功率为W，OND Converter功率为kW，电压／电流V/A。IDCMax=0不是正值限制，也不替代逐MPPT工作／短路额定电流。electrical.readable只说明读取，raw温度系数不猜单位。
+要启用自动整数容量规划，源模板变体必须满足规整的独立 MPPT 拓扑：
+- 单子阵列、单固定平面并网（Grid）工程，无 3D 阴影场景或 Module Layout。
+- 子阵列启用独立 MPPT 模式（`Flags` 含 `$0400`），未开启逆变器功率共享（无 `$0100` 且 `PowerSharingInverterId=-1`）。
+- 电路树中恰好包含 1 个独占逆变器组、1 个可按倍数缩放的 MPPT 组（每台逆变器的 MPPT 路数必须等于目标 `.OND` 的 `NbMPPT`，即所有 MPPT 通道均被使用）以及 1 个并联组串叶节点，且修改前的 `NElements` 计数必须显式存在。
+- 组件 `.PAN` 为晶硅组件（`GRef=1000 W/m²`、`TRef=25 °C`），且包含所选电压标准对应的系统最大电压字段（选 `IEC` 时读根级 `VMaxIEC`，选 `UL` 时读 `VMaxUL`）。
+- 单位约定：`.PAN` 额定功率为 `W`，`.OND` 逆变器功率为 `kW`，电压为 `V`，电流为 `A`（注意 `.OND` 中若 `IDCMax=0` 表示未设整机电流上限，不会当作 `0 A` 拦截）。
 
-## capacity结构
-
-下例仅示意明确声明包络，实际来源须说明温度、辐照、背面增益及方法，不是厂家或场址默认值：
+## `capacity` 参数结构
 
 ```json
 {
-  "target_dc_kw":21.6,"max_dc_ac_ratio":1.3,"capacity_tolerance_pct":5,"voltage_standard":"IEC",
-  "cold_voc_v":65,"hot_vmp_v":38,"cold_vmp_v":47,
-  "module_max_operating_current_a":16,"module_max_short_circuit_current_a":18,
-  "mppt_max_operating_current_a":32,"mppt_max_short_circuit_current_a":40,
-  "design_min_temperature_c":-10,"design_min_operating_temperature_c":20,"design_max_operating_temperature_c":70,
-  "design_basis":"Explicit demonstration envelope; replace with sourced project conditions and method."
+  "target_dc_kw": 21.6,
+  "max_dc_ac_ratio": 1.3,
+  "capacity_tolerance_pct": 5,
+  "voltage_standard": "IEC",
+  "cold_voc_v": 65,
+  "hot_vmp_v": 38,
+  "cold_vmp_v": 47,
+  "module_max_operating_current_a": 16,
+  "module_max_short_circuit_current_a": 18,
+  "mppt_max_operating_current_a": 32,
+  "mppt_max_short_circuit_current_a": 40,
+  "design_min_temperature_c": -10,
+  "design_min_operating_temperature_c": 20,
+  "design_max_operating_temperature_c": 70,
+  "design_basis": "Site extreme -10 C ambient, 20..70 C cell operating range."
 }
 ```
 
-最低环境温度≤最低组件工作温度≤最高组件工作温度，范围-100..150°C。cold_voc对应最低环境温度，cold_vmp／hot_vmp对应组件工作温度，不混用。设计范围含参考温度时包络覆盖参考Vmp/Voc，最大电流覆盖Imp/Isc，短路上界覆盖工作上界。design_basis为单行可打印文本，最多2000字符，不改写GUI项目级设计温度。
+校验规则：
+- 温度顺序必须满足 `-100 ≤ design_min_temperature_c ≤ design_min_operating_temperature_c ≤ design_max_operating_temperature_c ≤ 150`（°C）。其中 `cold_voc_v` 对应最低环境温度下的开路电压，`cold_vmp_v` 和 `hot_vmp_v` 对应组件工作温度范围下的工作电压。
+- 若工作温度区间覆盖了 STC 参考温度（`25 °C`），则 `hot_vmp_v .. cold_vmp_v` 必须包住 `.PAN` 的参考 `Vmp`，`cold_voc_v` 必须不低于参考 `Voc`；声明的最大工作/短路电流也必须不低于 `.PAN` 的参考 `Imp`/`Isc`。
+- 除 `capacity_tolerance_pct` 默认值为 `5`（允许范围 `0..20%`）外，其余字段均为必填。
 
-只有capacity_tolerance_pct默认5、范围0..20%，其余缺项停止。严格有限数值，不接受布尔、字符串或额外键。预览不写或消耗原生运行。
+## 整数求解与分步写入
 
-## 有限规划
+搜索空间限定为：每串串联组件数 `1..100`、每路 MPPT 并联串数 `1..100`、逆变器台数 `1..10000`。每个候选整数组合必须同时满足：
+1. **串联电压约束**：热态组串 $V_{mp} \ge \text{VMppMin}$，冷态组串 $V_{mp} \le \text{VMPPMax}$，冷态组串 $V_{oc} \le \min(V_{\text{Max,Inv}}, V_{\text{Max,Mod}})$。
+2. **并联电流约束**：单路 MPPT 下的并联总工作电流与总短路电流不超过 `mppt_max_operating_current_a` 与 `mppt_max_short_circuit_current_a`。
+3. **容量与容配比约束**：实际直流容量落在 `target_dc_kw ± capacity_tolerance_pct%` 区间内，且直流/交流容配比（DC:AC）不超过 `max_dc_ac_ratio`。
 
-每串1..100模块，每MPPT1..100串，逆变器1..10000台，保持每台MPPT数量、模式及拓扑。声明边界分别校核串联热态Vmp≥VMppMin、冷态Vmp≤VMPPMax、冷态Voc≤逆变器与所选模块标准额定电压的较小值，并联最大工作／短路电流不超过逐MPPT声明，DC:AC不超过显式上限。
+在所有满足约束的可行解中，按**容量绝对偏差最小 → 逆变器台数最少 → 与模板原串联数最接近**的优先级选出唯一解，并在 `capacity_plan` 中返回选定的串并联数、实际装机量、容配比和校核明细。如果整个搜索域内没有满足所有硬约束的整数解，工具会直接报错停止并指出是哪条约束卡住了。
 
-按绝对容量偏差、较少逆变器、接近原串联数择优；1e-9百分点仅处理排序／容量比较数值误差，不是电压电流隐含余量。capacity_plan返回实际数量／容量、有符号偏差、AC与DC:AC、声明边界、搜索域及未核实项。无整数解时停止，不扩范围或改拓扑。
-
-改变数量需既有显式NElements，默认1只在不变时保留，不修补或规范化模板。电路、损失、参考提示及原生硬件模型不重新拟合。
-
-## 执行与恢复
-
-容量阶段复用既有逆变器数、串数和串联数分步事务，每步有当前令牌、备份和逆序恢复；最终数量等于计划，年度PR用实际新组件数。源、组件及旧输出保持。失败保留已提交步骤和原生原因，不改年或自动撤销现场。
-
-线缆、保护、连接器、BMS、其他厂家限制、真实气候覆盖、包络来源及损失重拟合仍属unverified_checks。配置可保留检查或逆序恢复，历史报告不随恢复改变。参考[原生全年任务](automatic-simulation.md)及[官方电压选配说明](https://www.pvsyst.com/help/project-design/grid-connected-system-definition/array-voltage-sizing-according-to-inverter.html)。
+落盘时，工具会依次调用底层的逆变器数量、并联总串数和每串串联数更新事务，每一步都带文件哈希校验和备份，写入完成后再用新算出的组件总数去校核全年仿真的标准 PR。关于 PVsyst 官方的阵列电压选配逻辑，可参考 [PVsyst Help: Array voltage sizing](https://www.pvsyst.com/help/project-design/grid-connected-system-definition/array-voltage-sizing-according-to-inverter.html)。

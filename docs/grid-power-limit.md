@@ -1,30 +1,32 @@
-# 原生注入点有功功率上限
+# 并网注入点有功功率上限（Grid Power Limit）
 
-`pvsyst_update_variant_parameters.grid_limit_updates`设置PVsyst8.1.6的pvSystem数值限值。适配器不截断功率、不重算损失或执行储能调度；PF、kVA、P50、温度及文件限值使用各自入口。
+当电站受限于变压器容量或接入批复、需要在并网注入点限制最大有功上网功率（kWac）时，可通过 `pvsyst_update_variant_parameters` 的 `grid_limit_updates` 独立事务设置 `pvSystem` 的限发参数。
 
-## 调用
+如果需要把限发位置设在逆变器出口、按视在功率（kVA）限发，或者需要与功率因数（PF）同时开启，请使用组合入口 [`power_controls_updates`](native-power-controls.md)。
 
-先准备工作方案，并用`pvsyst_get_variant_parameters`取得当前并发令牌，再预览：
+## 调用示例
+
+先调 `pvsyst_get_variant_parameters` 拿到当前变体的 `expected_sha256` 令牌：
 
 ```json
 {
   "project": "WORKING.PRJ",
   "variant": "VC1",
   "expected_sha256": "<current-token>",
-  "grid_limit_updates": {"mode": "constant", "limit_kw": 250},
+  "grid_limit_updates": {
+    "mode": "constant",
+    "limit_kw": 250
+  },
   "dry_run": true
 }
 ```
 
-预览后使用同一未变化源的当前令牌设置dry_run=false。limit_kw须为正有限数、0.1kW精度；示例不是工程建议。mode=none不带limit_kw，关闭限制并移除限值和单列损失标量，但保留未使能的位置位。
+- **开启限发（`mode="constant"`）**：`limit_kw` 为正数，步长精度 `0.1 kW`。
+- **关闭限发（`mode="none"`）**：不传 `limit_kw`，工具会移除限值与单独损失记账字段，并将使能位清零。
 
-这是独立事务，可附带显示名称，不混入角度、容量、积灰、模式或储能更新。预览、同值无操作、备份、恢复及并发保护沿用既有机制，不修改源项目、设备、天气、损失或数量。
+## 底层 `.VCx` 字段与标志位
 
-## 支持范围
-
-仅支持8.1.6 PV-only Grid、一个无活动阴影／布局的普通固定平面和子阵，以及受支持扁平系统。PF、负荷／储能、其他系统标志、未知或非所属字段会在写入前停止，不删除或忽略它们。读取的grid_limit状态不保证任意场景可写。
-
-原生有功、注入点、单列损失组合保存为：
+该入口适用于 PVsyst 8.1.6 单子阵列、单固定平面、无 3D 阴影且未开启 PF/负荷/储能的纯光伏并网变体。开启注入点有功限发且单独统计限电损失时，`pvSystem` 块写入如下字段：
 
 ```text
 Flags=$05000000
@@ -33,10 +35,12 @@ PLimGrid=250.0
 LimGrSeparLoss=True
 ```
 
-逆变器端组合为$01000000；关闭注入点后为$04000000且两个标量消失，说明使能位与位置位不同。系统bit27表示允许／禁止注入，不是数值限值或网充；此独立入口不接受该模式。
+标志位拆解说明：
+- `$01000000`（bit 24）是限发总使能位；`$04000000`（bit 26）代表限发位置在**并网注入点**（若在逆变器出口则为 `$01000000`）。因此当你在 GUI 里把注入点限发关掉时，文件里往往会留下 `$04000000`（仅保留位置位，使能位已清零，且 `PLimGrid` 与 `LimGrSeparLoss` 字段消失）。
+- 注意区分 `pvSystem.Flags` 的 **bit 27**：bit 27 是光储系统里的“禁止向电网送电（防逆流）”开关，不是数值型有功限发。
 
-## 结果与扩展
+## 导出限发相关逐时列
 
-`pvsyst_build_sfi(variables="grid_limit")`加入原生PGridLim、EGrdLim、EUnused、EOutInv。PGridLim是限值，不是传输电量；启用单列损失时EOutInv不代表最终受限并网功率，应检查E_Grid。关闭模式可省略限值列，不补列或修正能量。
+调用 `pvsyst_build_sfi(variables="grid_limit")` 生成 `.SFI` 时，会自动勾选 `PGridLim`（功率上限值）、`EGrdLim`（限电削峰损失电量）、`EUnused` 和 `EOutInv`。
 
-注入点与逆变器端在存在下游AC损耗时可有不同结果，不从无AC损耗场景推出两者等价。其他功率量、位置和PF组合见[原生功率控制](native-power-controls.md)，不因读取或共有字段扩大本入口范围。
+看结果时注意：当 `LimGrSeparLoss=True`（单独统计并网限电损失）时，`EOutInv` 是逆变器出口未削峰前的电量，最终受限后的上网电量应看 **`E_Grid`**（其逐时最大值不会超过 `PLimGrid`），被削掉的电量记在 **`EGrdLim`** 中（此时 `EUnused` 为 0 不代表没发生限电）。

@@ -1,10 +1,10 @@
-# 跟踪模板完整年度任务
+# 跟踪模板全年仿真流程
 
-`pvsyst_simulate_template`支持从既有UnlimTracking模板执行跟踪方案。仅支持8.1.6rev49278的受限源形状，不做固定转跟踪、任意几何／场景、其他跟踪族、设备选型或数量调整。默认固定模式及`pvsyst_prepare_design_project`的准备行为不变，计算由PVsyst执行。
+除了固定倾角模板外，`pvsyst_simulate_template` 还支持基于现有的无限水平轴跟踪（`UnlimTracking`）模板克隆新工程、修改跟踪器几何与控制参数，并调用 `PVsystCLI.exe` 跑完全年逐时仿真。
 
-## 输入与阶段
+## 调用示例
 
-下例中的工程、设备和气象名称须替换为源模板的实际引用；功率及来源声明应来自实际设备资料。
+传入 `tracking`、`tracking_variant`、`nominal_dc_power_kw` 和 `tracking_power_source` 即可触发跟踪分支（此时不要传固定平面专用的 `tilt`、`azimuth`、`capacity` 或 `losses`）：
 
 ```json
 {
@@ -29,20 +29,19 @@
 }
 ```
 
-先检查预览的status、issues和review，再以相同请求设置`dry_run=false`。`ready`只表示预检，不表示原生消费。`tracking_variant`必须为源工程中尚不存在的新VC。传入tracking时省略tilt、azimuth、capacity和losses；混合两模式，或只有跟踪变体／功率却没有tracking时停止。
+参数说明：
+- `tracking`：要修改的 `UnlimTracking` 参数字典（支持的字段、角度范围与精度规则见[原生跟踪控制](native-tracking-controls.md)）。
+- `tracking_variant`：在新工程里生成的新变体 ID（如 `"VCRUN"`，不能与源工程已有变体同名）。
+- `nominal_dc_power_kw` 与 `tracking_power_source`：因为跟踪模板可以直接引用 PVsyst 内置加密组件库里的组件（不一定有外部明文 `.PAN` 可供读取 `PNom`），所以必须显式传入直流装机容量（kWp）及其来源说明，供仿真结束后的标准 PR 交叉验算使用。
 
-执行依次检查结构、PRCorrTemp=False和跟踪记录，核对设备引用、天气日历、许可、版本及产物冲突，然后受保护克隆、绑定SIT/MET、独占创建跟踪VC并读回。新CLI从保存VC运行完整小时年，再校验原生CSV/PDF、上下文、完整性、PR及输入保持。控制字段和范围见[原生跟踪控制](native-tracking-controls.md)。
+## 执行流程与组件引用规则
 
-## 来源与状态
+1. **前置检查**：校验源变体是否为 PVsyst 8.1.6 rev49278 的 `UnlimTracking` 结构（且 `PRCorrTemp=False`），检查 `.MET` 文件年份声明、CLI 许可证配额以及输出文件名冲突。
+2. **防止同名散文件意外遮蔽（Shadowing）**：在这条继承式跟踪工作流中，`pan_name` 和 `ond_name` 必须与源模板子阵列里引用的型号完全一致，且工作区 `ComposPV` 或配置的 `builtin` 目录里**不能存在同名的明文散文件**——这是为了防止有人在工作区放了一个只有铭牌功率的残缺同名 `.PAN` 文件，把 PVsyst 内置加密库里的完整双面/跟踪组件模型给静默覆盖掉。
+3. **克隆与运行**：克隆源工程到 `new_project`，同步 `.SIT`/`.MET`，调用底层跟踪变体构造器生成 `tracking_variant` 并回读核对，最后启动 `PVsystCLI.exe` 跑完全年 8760/8784 小时仿真并导出 CSV 和 PDF（含 `GlobShd` 近阴影辐照列）。
 
-仅接受没有同名loose覆盖的继承数据库引用。工作区或已配置builtin库中出现同名PAN/OND时停止；运行前后复核。缺少loose文件不被直接解释为原生数据库缺件，也不生成替代文件。PAN/OND名须与源子阵一致，数量、硬件、损失和非请求几何继续继承。
+注意：PVsyst 的 `UnlimTracking` 自带二维排间互遮挡计算，哪怕没有建 3D 场景也会算出近阴影损失（PDF 报告摘要上显示 `no Shadings` 只代表没挂独立 3D 场景文件，不代表二维跟踪遮挡没生效）。由于内置加密组件库的参数未在外部静态展开，任务跑完后 `native_consumption_verified` 为 `true`，同时会保留 `status="needs_review"` 和 `component_resolution="native_database_uninspected"` 标记。
 
-`nominal_dc_power_kw`是明确的正有限kWp，`tracking_power_source`是可审查的非空声明。标准PR交叉检查不从文件名、PNomSizing缓存或历史电量推测铭牌。原生结果须完整覆盖所选小时年，E_Grid/EArray/IL_Pmax等单位与PR一致，所有实际数值列有限，GlobShd单位为W/m²；缺列不补零。报告的no Shadings标签不代表没有内建二维互遮挡。
+## 失败现场保留
 
-`native_consumption_verified`只在全部原生结果和输入保持检查通过后为true，预览和失败时为false。数据库模型内容未读取或冻结，即使消费通过也保持`needs_review`、`review_required=true`和`component_resolution=native_database_uninspected`。结果不认证厂家限值、电气选型、工程净距或场址气候。
-
-## 保留与恢复
-
-模板和天气在运行前后保持，只写新的工作工程及产物。失败保留JSON清单、新VC及已创建文件，不自动删除、回滚或重试。`archive_isolated_tracking_task`是人工恢复说明：审查并归档整个新克隆及其VC、备份和输出，再用新工程名重试；它不是可执行API命令。
-
-同名任务无论先前成功或失败都会在预检停止，不覆盖旧产物，不提供自动检查点续算，也不隐式增加年度运行。
+如果仿真中途失败，新克隆的工程、`tracking_variant`、JSON 清单和已产生的输出文件都会留在工作区供排查，不会自动删除或覆盖。重试时请先归档或清理失败的新工程，或者换一个新的 `new_project` 名称。

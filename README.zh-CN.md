@@ -2,28 +2,31 @@
 
 [English](README.md) | **简体中文**
 
-围绕**已安装 PVsyst 软件**的本地 MCP 服务与 Python 适配器：审查工程输入、准备或修订受限原生项目、调用原生仿真、比较关联方案，并交付原工程、结果与可读交接说明。
+Windows 下配合本地 PVsyst 8 使用的 MCP 服务端与 Python 封装库。它一方面封装了官方 `PVsystCLI.exe` 的仿真、气象转换和许可查询命令；另一方面直接解析和修改 PVsyst 的明文工程与组件文件（`.PRJ`、`.VCx`、`.PAN`、`.OND`、`.BTR`、`.GEN`、`.SIT`），并对少数 CLI 没开放的功能（如 3D 住宅场景导入、DC 线缆阻值重算）提供受控的 Win32 GUI 自动化桥接。
 
-物理计算由 PVsyst 执行。这是非官方项目，不附带 PVsyst、许可证、商业模型、气象资产，也不实现替代 PV／储能／阴影仿真器。
+运行本项目需要本机已安装 PVsyst 并配置好有效许可证。
 
-## 从任务开始
+## 常用任务入口
 
-| 任务 | 入口 | 详细说明 |
+| 要做的事 | 入口工具 | 详细文档 |
 |---|---|---|
-| 审查有引用的可研数量、冲突和缺项 | `pvsyst_review_engineering_brief` | [工程简报预审](docs/engineering-brief.md) |
-| 查看已有工程，规划隔离修订 | `pvsyst_project_handoff`、`pvsyst_run_engineering_task` | [工程修订与交付](docs/engineering-delivery.md) |
-| 用完整固定分块准备新工程 | `pvsyst_prepare_block_project` | [分块工程准备](docs/block-project-preparation.md) |
-| 生成并由原生软件消费一栋受限双屋面房屋 | `pvsyst_run_house_task` | [住宅任务](docs/native-house-task.md) |
-| 结合逐时负荷评估已有原生 AC 光储 | `pvsyst_run_engineering_task` | [光储工程](docs/engineering-storage.md) |
-| 比较已绑定原生方案并打包交付 | `pvsyst_compare_engineering_scenarios`、`pvsyst_export_engineering_delivery` | [方案比较](docs/engineering-scenarios.md) |
+| 核对可研简报里的设备数量、串并联关系与缺项 | `pvsyst_review_engineering_brief` | [工程简报预审](docs/engineering-brief.md) |
+| 读取现有工程参数，隔离改参并跑全年仿真 | `pvsyst_project_handoff`、`pvsyst_run_engineering_task` | [工程修订与交付](docs/engineering-delivery.md) |
+| 按固定子阵分块模板批量拼装新工程 | `pvsyst_prepare_block_project` | [分块工程准备](docs/block-project-preparation.md) |
+| 生成双坡屋顶住宅 3D 场景、导入绑定并跑全年阴影仿真 | `pvsyst_run_house_task` | [住宅建模任务](docs/native-house-task.md) |
+| 绑定全年逐时负荷，评估集中式 AC 耦合光储方案 | `pvsyst_run_engineering_task` | [AC 光储评估](docs/engineering-storage.md) |
+| 对比两到三个方案的仿真结果并打包交付 ZIP | `pvsyst_compare_engineering_scenarios`、`pvsyst_export_engineering_delivery` | [多方案对比](docs/engineering-scenarios.md) |
 
-默认提供 **8 组、82 个工具**。组件、工程编辑、气象、负荷、控制、仿真与结果等低层 API 见[完整工具参考](docs/tool-reference.md)。
+服务默认注册 **8 组共 82 个工具**。如果需要直接调底层的组件增删改、变体参数编辑、拓扑调整、天气下载转换或 CSV 结果分页读取，见[完整工具参考](docs/tool-reference.md)。
 
-## 安装
+## 安装与环境准备
 
-使用 Windows、Python 3.10+，并自行安装 PVsystCLI。原生 CLI 行为有 8.0.6／8.1.6 的对应证据；受限中文 GUI 路径另有 8.1.6 rev49278／DPI96 要求。请按具体功能证据判断，不按版本号推断全部兼容。
+环境要求：
+- Windows 系统，Python 3.10+
+- 已安装 `PVsystCLI.exe`（已在 8.0.6 与 8.1.6 验证）
+- 涉及桌面窗口自动化的功能（3D 住宅场景导入、DC 线缆设置）要求中文界面 PVsyst 8.1.6 rev49278，显示器缩放 96 DPI（100%）
 
-在本仓库目录执行：
+在仓库根目录执行：
 
 ```powershell
 py -m venv .venv
@@ -33,11 +36,11 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 .\.venv\Scripts\python.exe -m pvsyst_auto
 ```
 
-包元数据与依赖统一由 `pyproject.toml` 管理，包括 MCP SDK 2.x 和 Windows 所需的 `tzdata`。原 `pip install -r requirements.txt` 方式现在安装同一个可编辑包；正式非可编辑安装使用 `pip install .`。
+包依赖（MCP SDK 2.x 与 Windows 时区库 `tzdata`）统一定义在 `pyproject.toml` 中。执行 `pip install -r requirements.txt` 同样会以可编辑模式安装本包；常规安装用 `pip install .`。
 
-## 连接 MCP 客户端
+## 接入 MCP 客户端
 
-配置已安装本包的 Python 解释器。模块启动方式不依赖客户端当前工作目录：
+把客户端的启动命令指向虚拟环境里的 Python 解释器。用 `-m pvsyst_auto`（或安装后生成的 `pvsyst-mcp` 命令）启动时不依赖客户端当前所在的工作目录：
 
 ```json
 {
@@ -54,64 +57,56 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 }
 ```
 
-安装后也可用 `pvsyst-mcp` 命令启动同一 stdio 服务。已有客户端若指向仓库中的 `pvsyst_mcp_server.py`，仍由一个薄兼容入口启动；旧根目录实现模块不逐个保留转发壳。更新包或环境配置后，重启 MCP 客户端。
+仓库根目录保留了 `pvsyst_mcp_server.py` 兼容壳，老配置直接指向该脚本也能正常启动。改了环境变量或更新代码后记得重启 MCP 客户端。
 
-连接后先用 `pvsyst_capabilities` 和 `pvsyst_license_info` 查看 **CLI 自身**支持的参数与许可／配额，再安排原生运行。这些查询不执行仿真；GUI 与 CLI 的许可状态可能不同。凭据和许可资料不进入版本库。
+连上之后建议先调一次 `pvsyst_capabilities` 和 `pvsyst_license_info`，确认本机 CLI 版本支持的命令行选项以及 CLI 许可剩余配额（PVsyst 的 GUI 许可和 CLI 许可是分开计数的）。
 
-### 按任务精简工具发现
+### 按需裁剪暴露的工具组
 
-默认仍提供全部 82 个工具。若某个客户端只做特定任务，可在其现有 `env` 中增加 `PVSYST_TOOL_GROUPS`，例如 `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`；当前只公开对应的 15 个设置／工程／结果工具，其余组不再出现在目录中。省略该变量保持完整工具集。
+一次挂满 82 个工具比较占上下文。如果某个客户端只需要其中几类能力，可以在 `env` 里加上 `PVSYST_TOOL_GROUPS`，比如 `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`，这样就只注册这三组的 15 个工具。不配该变量则默认暴露全量工具。
 
-组键区分大小写：`setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering`。空项、重复项或未知项会在启动时明确报错，不静默选择其它集合。选择仅作用于当前进程，修改后重启；它调整工具发现与调用可用性，不改变原生执行、工作区或工程要求。
+合法的组名（区分大小写）：`setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering`。传了空项、重复项或拼错的组名会在启动时直接报错退出，免得静默漏挂工具。
 
-## 正确理解状态
+## 状态字段说明
 
-| 状态 | 含义 |
+高层工作流工具在返回结果里用固定的状态字段区分“只做了预检”、“只生成了文件”和“真正跑完了 PVsyst 仿真”：
+
+| 状态 / 标志 | 含义 |
 |---|---|
-| `ready` | 预检／预览通过，不等于已运行原生仿真 |
-| `prepared` | 请求的文件已创建，不代表 PVsyst 已消费 |
-| `stage=completed` 且 `native_consumption_verified=true` | 该任务记录的原生执行及输入／输出检查通过 |
-| `needs_review` | 保留来源、模型、工程依据或原生告警的待审事项，即使执行已经完成 |
-| `blocked`／`failed` | 查看问题与保留产物，不暗示自动覆盖或重试 |
+| `ready` | `dry_run` 预检通过，没写盘也没调 PVsyst |
+| `prepared` | 工程或输入文件已落盘，但还没跑仿真 |
+| `stage=completed` 且 `native_consumption_verified=true` | PVsyst 已跑完仿真，且输出文件、全年时间轴和数值列检查通过 |
+| `needs_review` | 流程跑通了，但带有需要人工过目的复核项（例如部分参数沿用了模板默认值、气象时间基准有提示、或未填全工程依据出处） |
+| `blocked` / `failed` | 前置检查未过或仿真报错；现场工程与清单会保留在工作区，排查 `issues` 后换个新工程名重试即可，工具不会自动覆盖已有文件 |
 
-导出或数值比较不会额外运行原生仿真。仅凭历史 CSV 文件名也不足以确定历史输入。模型、天气、硬件拓扑和工程声明仍是明确依赖；运行成功不等于设备或现场设计认证。
-
-## 能力边界
-
-固定／跟踪工程修订、AC 光储评估、双屋面住宅和固定分块准备分别保留自己的文档边界。anchor0 双屋面案例不扩展为任意几何或非零锚定；固定分块不扩展为地形、共享变压器或任意拓扑；AC 自用证据也不扩展为所有混合 DC 端口或储能策略。
-
-物理行为始终使用 PVsyst 原有入口。工作区路径检查、生产冲突保护、进程内锁、原始输入保护和失败留存继续保持；进程内锁不等于跨进程桌面锁。坐标、版本、语言及短时／全年证据在[原生入口地图](docs/native-entry-map.md)中分别标注。
-
-## 代码结构
+## 目录结构
 
 ```text
 src/pvsyst_auto/
-├── api/          # MCP 上下文、严格请求模型与八组接口
-├── workflows/    # 准备、修订、全年执行与交付任务
-├── engineering/  # 简报、输入交接、审查与方案比较
-├── project/      # PRJ/VC、电路、模板及朝向修改
-├── components/   # PAN/OND/BTR、对象编辑和引用来源建模
-├── scene/        # 房屋/PV 作者、读取与空间核对
-├── energy/       # 负荷、储能、损失及电气控制
-├── weather/      # 采集、时基、准备与审查
-├── native/       # 既有 CLI 与受限 Windows GUI 入口
-└── results.py    # 共享原生结果检查与汇总
+├── api/          # MCP 服务注册、严格参数校验中间件、8 个工具组入口
+├── workflows/    # 端到端业务流（模板仿真、工程改参、住宅任务、交付打包）
+├── engineering/  # 可研简报核对、工程输入交接、多方案结果对比
+├── project/      # .PRJ/.VCx 解析、子阵电路树、模板匹配与朝向修改
+├── components/   # .PAN/.OND/.BTR/.GEN 读写、白名单字段编辑、Mode 1 曲线表
+├── scene/        # PVCollada (.pvc2) 房屋与光伏网格生成、回读与空间坐标核对
+├── energy/       # 逐时负荷、储能配置、详细损失标量、功率因数与并网限发
+├── weather/      # Open-Meteo ERA5 下载、标准时对齐、.SIT/.MET 转换与核对
+├── native/       # PVsystCLI.exe 进程封装与受控 Win32 GUI 自动化入口
+└── results.py    # 仿真结果 CSV/PDF 解析与年度指标汇总
 ```
 
-完整任务从 `workflows` 进入，领域读写位于对应模块，原生软件执行位于 `native`。API 层组织请求并调用这些实现，详见[软件包结构](docs/architecture.md)。
+各子模块的详细职责与旧版扁平模块导入路径对照见[软件包结构](docs/architecture.md)，PVsyst 各功能点的支持情况见[功能入口地图](docs/native-entry-map.md)。
 
-公共 Python 适配器入口为：
+如果在 Python 脚本里直接调用底层 CLI 封装：
 
 ```python
 from pvsyst_auto import PVsystCLI, PVsystError
 ```
 
-## 开发
+## 开发与测试
 
-直接使用 Python 模块前先安装可编辑包。公开接口测试位于 `tests/contracts`；使用原生输入的测试需要明确的夹具和对应软件环境。依赖夹具的测试被跳过，不表示已证明原生兼容。
+本地开发先执行 `pip install -e .`。公开接口契约测试放在 `tests/contracts/` 下；涉及真实 PVsyst 样本或调用 `PVsystCLI.exe` 的测试需要通过环境变量指定本机工作区和程序路径。
 
-支持行为和恢复方式见[工具参考](docs/tool-reference.md)和[工程交付](docs/engineering-delivery.md)。
+## 许可证
 
-## 许可
-
-[MIT](LICENSE)。PVsyst 与第三方输入保留各自的所有权及许可条件。
+[MIT](LICENSE)。

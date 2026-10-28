@@ -1,25 +1,23 @@
-# Standard hourly weather input checks
+# Standard hourly weather CSV inspection (`pvsyst_inspect_weather_csv`)
 
-`pvsyst_inspect_weather_csv` reads a PVsyst standard hourly CSV under Meteo. It checks the supported input profile, not native MET payloads, conversion quality, climate suitability or a PV design.
+`pvsyst_inspect_weather_csv(csv_name, expected_year=...)` parses and validates a PVsyst standard hourly weather CSV staged under the workspace `Meteo` directory before you convert it into a `.SIT`/`.MET` pair.
 
-## Format and limits
+## Supported CSV format and reader limits
 
-UTF-8 with optional BOM, semicolon/comma separator, decimal point, distinct named columns and a matching units row are required. Reader limits are 32 MiB, 64 columns, date header within 200 records and at most 20, 000 data records. Accepted identifiers are#Weather data hourly data,#TMY hourly data and the legacy#Meteo hourly data.
+- **Encoding & layout**: UTF-8 (with or without BOM), comma or semicolon delimiter, `.` decimal separator, up to 32 MiB file size, up to 64 columns, header block within the first 200 lines, and at most 20,000 data rows.
+- **Format header line**: Must start with `#Weather data hourly data`, `#TMY hourly data`, or legacy `#Meteo hourly data`.
+- **Required metadata comments**: Site name, country, data source, hourly time step, latitude, longitude, altitude, and timezone (duplicate metadata keys are flagged).
+- **Columns and units**:
+  - Every data column must have a distinct header name and a corresponding entry on the units row immediately below the column header.
+  - `GHI` and `Tamb` are required; `DHI`, `DNI`, wind speed, relative humidity (`RH`), precipitable water, Linke turbidity, and aerosol optical depth are optional (if plane-of-array `POA` irradiance is present, it is flagged in the summary since [`pvsyst_prepare_weather`](weather-preparation.md) only converts horizontal `GHI`/`DHI` and `Tamb`).
+  - Supported radiation units: `W/m²` or `MJ/m²` (converted to `kWh/m²` for monthly summaries). Supported temperature units: `deg.C` or `degC`.
+- **Value range checks**: All values must be finite; irradiance and wind speed must be non-negative; `RH` must be in `[0, 100]`; temperature must be above absolute zero (temperatures outside `[-60, 60] °C` are flagged for review); and diffuse horizontal irradiance must satisfy `DHI <= GHI` after unit normalization.
 
-Required metadata includes site, country, source, hourly step, latitude/longitude, altitude and timezone; duplicate known keys are diagnosed. Year comes from a column or#Year, with explicit expected_year taking priority for coverage. The expected year is a strict integer, not a filename convention.
+## Calendar completeness checks
 
-GHI and Tamb are required; DHI, DNI, wind, RH, precipitable water, Linke turbidity and aerosol optical depth are optional. POA discloses unchecked inverse-transposition/geometry scope. Unknown columns are listed, not silently interpreted.
+The inspector checks that the timestamps form a complete, strictly increasing whole-hour grid (`00:00` through `23:00`) from January 1 to December 31 of the target year (either from `#Year`, the data rows, or the explicit `expected_year` integer argument):
+- `8760` rows for a standard year, or `8784` rows for a leap year (including February 29 and all night hours).
+- Missing hours, duplicate timestamps, out-of-order rows, or non-zero minute offsets are reported in `issues` (up to 50 detailed examples, with total `issue_count` and `issues_truncated`).
+- Returns `valid=true` when all format, range, and calendar checks pass, `valid=false` when errors are found, or `valid=null` when the file uses time-shift conventions or columns outside the standard whole-hour profile.
 
-Radiation units W/m² or MJ/m² are converted only for observed hourly summaries; temperatures in deg.C/degC produce an observed mean. Unsupported units never produce mislabeled summaries, and non-hourly data does not produce an energy sum. Values must be finite; radiation/wind nonnegative, RH within0..100, temperature above absolute zero, and DHI<=GHI after unit conversion. Temperatures outside-60..60°C trigger review, not a meteorological certification rule.
-
-## Calendar and output
-
-The whole-hour interval-start profile requires January1 00: 00 through December31 23: 00, including night and leap day: 8760 or8784 labels. Gaps, duplicates, reversed/invalid labels and unexpected records are diagnosed with bounded examples. Nonzero minutes remain unchanged. missing_hours means missing labels on that expected whole-hour grid, not every possible shifted convention.
-
-valid isfalse for detected issues, null for unchecked conditions only, true when supported checks pass. Explicit time references, nonzero shifts, summarization periods and POA need separate interpretation. Up to50 issue details are returned, with issue_count and issues_truncated. Monthly summaries disclose actual observed samples, not repaired or certified complete totals.
-
-The result contains the input fingerprint; a second byte read detects concurrent changes. This production consistency guard does not establish physical validity or adjust source data.
-
-## Preparation is narrower
-
-`pvsyst_prepare_weather` accepts only GHI, DHI, Tamb, an explicit uppercase ISO alpha-2 country code and local_standard_interval_start. UTC, DST conversion, interval-end remapping, missing values, POA and unmapped columns stop rather than being shifted, filled or dropped. Existing convert_meteo still needs a verified MEF and SIT. See [weather preparation](weather-preparation.md) and[engineering review](weather-engineering-review.md).
+Once a CSV passes inspection with `GHI`, `DHI`, `Tamb`, and `local_standard_interval_start` timestamps, pass it to [`pvsyst_prepare_weather`](weather-preparation.md) to generate the `.SIT` and `.MET` files.

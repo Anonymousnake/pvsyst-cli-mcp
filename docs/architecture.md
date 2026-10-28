@@ -1,54 +1,62 @@
 # 软件包结构
 
-英文首页为[README](../README.md)，中文首页为[README.zh-CN](../README.zh-CN.md)，接口说明见[工具参考](tool-reference.md)。
+项目的安装与快速上手见 [README](../README.md) 或 [README.zh-CN](../README.zh-CN.md)，全部 MCP 工具清单见[工具参考](tool-reference.md)。
 
-## 按职责阅读
+## 模块划分
 
-| 目录 | 职责 | 代表模块 |
+源码采用标准 `src` 布局，统一放在 `src/pvsyst_auto/` 下，按领域切分为 9 个子包和 1 个结果解析模块：
+
+| 目录 / 模块 | 主要职责 | 核心文件 |
 |---|---|---|
-| `api` | MCP协议、严格请求模型、工具注册和共享上下文 | `app`、`context`、`schemas`及八个工具组 |
-| `workflows` | 组合原生与领域能力完成业务任务 | `revision`、`house`、`simulation`、`blocks`、`delivery` |
-| `engineering` | 输入、引用、缺项、工程审查及原生结果比较 | `brief`、`handoff`、`review`、`comparison` |
-| `project` | PRJ/VC、拓扑、模板和朝向控制 | `variants`、`circuit`、`tracking`、`paths` |
-| `components` | 原生组件对象、曲线、商业字段和来源声明 | `store`、`editor`、`pan`、`battery`、`identity` |
-| `scene` | 房屋/PV文件、读取和原生空间核对 | `author`、`reader`、`mapping`、`state` |
-| `energy` | 原生负荷、储能、电气与损失配置 | `profiles`、`storage`、`system`、`power`、`ac` |
-| `weather` | 气象源、时基、准备和审查 | `acquisition`、`preparation`、`review`、`csv` |
-| `native` | CLI和受限Windows原生入口 | `cli`、`project`、`scene`、`horizon`、`dc` |
-| `results.py` | 共用的严格原生结果读取、汇总和比较 | 年度完整性与结果一致性检查 |
+| `api` | MCP 协议层、入参校验、工具分组注册与进程内共享上下文 | `app.py`、`context.py`、`schemas.py` 及 8 个分组模块 |
+| `workflows` | 串联文件准备、GUI/CLI 调用与结果校验的端到端工作流 | `revision.py`、`house.py`、`simulation.py`、`blocks.py`、`delivery.py` |
+| `engineering` | 可研简报核对、工程参数交接单、输入复核与多方案结果对比 | `brief.py`、`handoff.py`、`review.py`、`comparison.py` |
+| `project` | `.PRJ` / `.VCx` 文本解析、逆变器/组串拓扑、模板筛选与朝向控制 | `variants.py`、`circuit.py`、`tracking.py`、`paths.py`、`fileio.py` |
+| `components` | `.PAN` / `.OND` / `.BTR` / `.GEN` 组件库管理、曲线编辑、商业字段与引用创建 | `store.py`、`editor.py`、`pan.py`、`battery.py`、`curves.py`、`identity.py` |
+| `scene` | `.pvc2` 房屋与光伏阵列 3D 网格构建、XML 回读及空间坐标比对 | `author.py`、`reader.py`、`mapping.py`、`state.py` |
+| `energy` | 负荷曲线、储能系统、电气参数与详细损失字段读写 | `profiles.py`、`storage.py`、`system.py`、`power.py`、`ac.py` |
+| `weather` | 地理编码、Open-Meteo ERA5 下载、时基转换、`.SIT`/`.MET` 准备与核对 | `acquisition.py`、`preparation.py`、`review.py`、`csv.py` |
+| `native` | `PVsystCLI.exe` 命令行封装与受控的 Windows GUI 自动化操作 | `cli.py`、`project.py`、`scene.py`、`horizon.py`、`dc.py` |
+| `results.py` | 仿真导出的 CSV 与 PDF 解析、年度能量平衡校核与双结果逐时对比 | `results.py` |
 
-API层组织请求与协议错误，完整任务位于workflows，领域模块负责各自的输入与读写，物理计算和仿真由原生PVsyst执行。
+阅读代码时的经验法则：
+- 想看某个 MCP 工具怎么接请求、转换异常，去 `api/` 下找对应分组文件。
+- 想看一整套任务（比如基于模板改参数并跑全年仿真）怎么编排，看 `workflows/`。
+- 想看某个 PVsyst 字段在文件里叫什么、改值时要联动改哪些 `Flags` 位掩码，去 `project/`、`components/`、`energy/`、`weather/` 或 `scene/`。
+- 想看怎么调 `PVsystCLI.exe` 或怎么用 Win32 消息控制 PVsyst 窗口，看 `native/`。
 
-## MCP上下文
+## MCP 上下文与参数校验
 
-工具按`setup/projects/components/weather/storage/simulation/results/engineering`组织。`api/context.py`持有注册器、未知参数中间件、受控路径助手、进程内唯一CLI及工作区锁。严格请求模型集中在`api/schemas.py`。
+`api/context.py` 维护了进程内唯一的 `PVsystCLI` 实例和工作区重入锁（`RLock`），并挂载了一个前置中间件 `reject_unknown_tool_arguments`。所有 82 个工具都会根据 Python 函数签名严格校验顶层入参，一旦传了未知字段名会直接返回明确的错误提示，避免因为参数名拼写错误而在写文件时静默漏掉配置。复杂嵌套参数的结构校验集中在 `api/schemas.py`。
 
-`api/app.py`导入所选固定工具组、检查活动严格入口的注册完整性，并启动stdio服务。省略`PVSYST_TOOL_GROUPS`时公开全部工具；设置后只公开指定组。各组共用同一上下文，不分别创建CLI或工作区锁。进程内锁不提供跨进程桌面协调。
+`api/app.py` 根据环境变量 `PVSYST_TOOL_GROUPS` 动态导入选定的工具组模块并启动 stdio 服务。未设置该变量时默认加载全部 8 个分组。
 
-## 安装与启动
+需要注意的是，进程内的 `RLock` 只负责同步当前 MCP 服务进程内部的多线程调用；如果你同时在桌面上开着 PVsyst GUI 手动改同一个工程，还是要靠文件 SHA-256 校验（`expected_sha256`）来防止互相覆盖。
 
-`pyproject.toml`是依赖和包元数据来源，使用标准src布局，只打包`pvsyst_auto`。`requirements.txt`提供可编辑安装入口。
+## 打包与兼容入口
+
+`pyproject.toml` 管理构建元数据和运行依赖。安装后可通过下面任一方式启动服务：
 
 ```powershell
 py -m pip install -e .
 py -m pvsyst_auto
+# 或者直接执行 console script：
+pvsyst-mcp
 ```
 
-也可使用安装后的`pvsyst-mcp`命令。原生软件和输入资料由调用者配置；模块及console启动不依赖当前工作目录。
+仓库根目录下的 `pvsyst_mcp_server.py` 仅作为向后兼容的启动脚本保留，内部直接调用 `pvsyst_auto.api.app.main`。
 
-根目录`pvsyst_mcp_server.py`是旧客户端的兼容启动入口，进入同一个app，不转发旧内部模块API。
+## Python 模块导入路径对照
 
-## Python导入
-
-公共适配器入口：
+外部 Python 脚本如果只需要调 CLI，直接从顶层包导入即可：
 
 ```python
 from pvsyst_auto import PVsystCLI, PVsystError
 ```
 
-旧脚本若直接导入扁平实现模块，需改用职责对应的包路径：
+早期脚本如果直接 import 了仓库根目录下的旧扁平模块名，需要按下面的对照表改成新的包路径：
 
-| 原导入 | 包路径 |
+| 旧模块名 | 新包路径 |
 |---|---|
 | `pvsyst_cli` | `pvsyst_auto.native.cli` |
 | `pvsyst_components` | `pvsyst_auto.components.store` |
