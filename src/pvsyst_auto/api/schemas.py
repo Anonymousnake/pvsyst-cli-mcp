@@ -267,6 +267,7 @@ class HouseTaskRequest(BaseModel):
     module_geometry: ModuleGeometry | None = None
     report_pages: list[StrictStr] | None = None
     shading_mode: Literal["linear", "module_layout"] | None = None
+    scene_import_method: Literal["gui", "native"] | None = None
 
 class AfterSunsetDischarge(BaseModel):
     """Native AfterSunset discharge mode; it carries no hour fields."""

@@ -25,6 +25,7 @@
 | `module_geometry` | 组件几何尺寸（`model_name`、`nom_power_wp`、`width_m`、`length_m`、`geometry_depth_m`） |
 | `report_pages` | 可选的原生 PDF 报告页名称列表；省略时输出默认完整报告 |
 | `shading_mode` | 可选；省略时保留原有线性阴影流程，`module_layout` 使用原生组件布局与精细电气阴影计算 |
+| `scene_import_method` | 可选；省略或 `"gui"` 保持现有 GUI 导入（原行为与检查点形状不变），`"native"` 改用免 GUI 的原生导入阶段（仅限下文支持边界）。native 的**导入阶段**只写 STORED 变体；本工具 `pvsyst_run_house_task` 在 `dry_run=false` 且 `confirm=true` 时，会沿同一流程自动继续全年 CLI 仿真，成功后上下文匹配新变体才把 `native_consumption_verified` 置 true。仅当单独调用底层 [`pvsyst_import_house_pv_scene`](tool-reference.md)`(method="native")` 时，才需对返回变体另调 `pvsyst_run_simulation` |
 
 ## Module Layout 电气阴影
 
@@ -47,6 +48,19 @@
 
 全年任务会自动导出 `ShdElec` 电气阴影损失。单独运行仿真时，可通过 `pvsyst_build_sfi(variables="shading")` 生成包含 `GlobShd`、`ShdElec` 的导出定义。逐小时输出中的 `ShdElec` 单位为 `kW`，全年求和得到 `kWh`；零损失也是有效结果。线性模式可能不导出该列，比较结果时按实际列名对齐，保留缺列状态，不自动补零。
 
+## 场景导入方式（`scene_import_method`）
+
+在 `spec` 中加入 `"scene_import_method"` 选择场景导入路线：
+
+- 省略或 `"gui"`：保持现有流程——冷启动自有 PVsyst GUI 进程完成导入、朝向关联、校验与另存，入参、检查点与阶段形状均不变。
+- `"native"`：免 GUI，用已声明的房屋网格与 PV 区域在内存中构建并校验原生场景记录，直接写出一份新变体；**导入阶段**不启动 `PVsyst.exe`、不操作 `INI`/剪贴板/license、不运行仿真。全年仿真由高层 `pvsyst_run_house_task(dry_run=false, confirm=true)` 在同一流程内自动继续执行（见下）。
+
+`"native"` 的支持边界固定：仅两个固定源朝向、两张横装零间距矩形表、源子阵 `1`/`2` 各一条独立组串/一个独立逆变器/一个 MPPT、同一 `PAN`/`OND`，且各分区组件数累加须严格等于源变体组件总数。不满足条件的请求在写入前停止并给出原因，不做暗中修正；条件细节见[住宅与光伏建模](house-pv-modeling.md)。
+
+状态语义：高层 `pvsyst_run_house_task` 的 **native 导入阶段**只产出 STORED 记录（`stored_geometry_verified` / `stored_module_layout_verified` 反映已保存记录），此时 `imported` / `native_geometry_verified` / `native_consumption_verified` 仍为 false——表示 PVsyst 尚未加载或消费该变体，stored 不等于已 load；`native_geometry_verified` 与重载标志不能由 stored 记录伪置。若同时传入 `dry_run=false` 与 `confirm=true`，该次调用会沿原流程自动继续全年 CLI 仿真并产出 CSV/PDF，成功后上下文匹配新变体才把 `native_consumption_verified` 置 true。只有单独调用底层 [`pvsyst_import_house_pv_scene`](tool-reference.md)`(method="native")` 这个导入阶段独立入口时，才需再对返回的变体调用 [`pvsyst_run_simulation`](tool-reference.md) 跑仿真。
+
+窗体事实：`"native"` 的建文件步骤不启动 GUI/CLI、不涉及窗体；但随后用 CLI 运行仿真（`pvsyst_run_simulation`）时，仿真流程自身仍可能用到隐藏的 `TForm`/消息窗体。因此 `"native"` 不等于「零窗体」或「无桌面依赖」，该说明属于 CLI 仿真流程本身，详见[住宅与光伏建模](house-pv-modeling.md)。
+
 ## 执行阶段（`phase`）与产物命名
 
 `dry_run=true` 只做内存预检；正式执行需同时传入 `dry_run=false` 和 `confirm=true`。所有生成的文件统一使用 `<new-project-stem>_house` 前缀（包括 `UserData` 下的 `.pvc2`、`Models` 下的 `.SFI`、`Results` 下的 `_task.json` 清单及 `_run01.csv`/`.pdf`），并按以下阶段推进：
@@ -61,6 +75,8 @@
 | `gui_closed` | 向自有 GUI 进程发送正常关闭指令并等待进程退出（等待上限 20 秒，绝不强杀非自有进程） |
 | `simulated` | 启动全新的 `PVsystCLI.exe` 进程加载刚保存的 `.VCx`，跑完全年仿真并导出 CSV/PDF |
 | `completed` | 核对全年 8760/8784 小时时间轴、数值列、`GlobShd` 阴影列、PDF 与源文件哈希通过，将 `native_consumption_verified` 置为 `true` |
+
+说明：`scene_import_method="native"` 时沿用上表 `native_saved` / `gui_closed` 旧检查点名称，但 native 分支既不启动也不关闭 GUI（`gui_closed` 仅为阶段名，无 GUI 进程操作）；表中这两行的 GUI 描述仅适用于默认 `gui` 路线。
 
 ## 断点续跑（`resume=true`）与仿真重试（`retry_simulation=true`）
 
