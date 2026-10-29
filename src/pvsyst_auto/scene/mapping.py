@@ -41,6 +41,33 @@ def _indexed(blocks, kind, key):
     return result
 
 
+def source_string_ranges(blocks):
+    """Recover each source subarray's declared GLOBAL string range, in appearance order.
+
+    A source subarray declares ``NStringCh`` strings of ``NModSerie`` modules each; native
+    PVsyst numbers those module strings globally in source order, continuing across subarrays
+    (SA1 owns 1..NStringCh, SA2 continues from there).  Keying by ``pvSubArray`` appearance
+    order (never by numeric SubArrayId) keeps that prefix.  Capacity is bound to each GLOBAL
+    string (== the owning subarray's NModSerie), never to a table.
+
+    Returns an insertion-ordered ``{actual_subarray_id: (first, last, capacity)}``.  This is the
+    single shared prefix algorithm for the native builder and the stored-layout reader; it only
+    restores the declaration's ranges and never auto-allocates or renumbers them.  A duplicate
+    or non-positive SubArrayId, or a non-positive NStringCh/NModSerie, raises ValueError.
+    """
+    arrays = _indexed(blocks, "pvSubArray", "SubArrayId")
+    result, first = {}, 1
+    for identifier, block in arrays.items():
+        strings = _integer(block.one("NStringCh")[1])
+        capacity = _integer(block.one("NModSerie")[1])
+        if strings < 1 or capacity < 1:
+            raise ValueError("Source subarray %d requires positive NStringCh and NModSerie" % identifier)
+        last = first + strings - 1
+        result[identifier] = (first, last, capacity)
+        first = last + 1
+    return result
+
+
 def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_lines, source):
     """Preserve both source identities, fixed planes, hardware and exclusive circuit branches."""
     planes = source.get("orientations", [])
@@ -646,10 +673,26 @@ def _matches_single_narrow(arrays, tables, layouts):
         return False
 
 
+def _matches_dual_narrow(arrays, tables, layouts):
+    """True when a two-array stored record is the legacy one-string-per-array template (every
+    source array declares exactly one string), so the original strict verifier keeps owning it
+    and adjudicates any corruption in place.  A two-array record whose source arrays declare two
+    or more strings is the general per-cell profile and takes the capacity invariants instead."""
+    try:
+        if set(arrays) != {1, 2}:
+            return False
+        return all(_integer(array.one("NStringCh")[1]) == 1 for array in arrays.values())
+    except (ValueError, KeyError, OverflowError):
+        return False
+
+
 def _assess_general_module_layout(blocks, lines):
-    """Classify a general single-subarray stored layout as stored_consistent, draft_incomplete
-    or invalid.  Unsupported profiles (portrait, spacing, sharing, non-fixed planes, multiple
-    subarrays) raise so the caller can report needs_review instead of a false stored state."""
+    """Classify a general per-cell stored layout as stored_consistent, draft_incomplete or
+    invalid.  Supports one or two source subarrays, each on its own ordinary fixed plane, with
+    every module cell bound to a source GLOBAL string ordinal (capacity = the owning subarray's
+    NModSerie, never the table).  Unsupported profiles (portrait, spacing, padding, sharing,
+    non-fixed planes, more than two subarrays) raise so the caller reports needs_review instead
+    of a false stored state."""
     owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
     if (len(owners) != 1 or owners[0].path != "PVObject_ModuleLayout"
             or owners[0].one("ModLayoutGlobState")[1] not in ("mlDefStrings", "mlDefInverters")
@@ -659,27 +702,29 @@ def _assess_general_module_layout(blocks, lines):
     planes = _indexed(blocks, "pvOrient", "NoOrient")
     tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
     layouts = [block for block in blocks if block.object_type == "pvMLTable"]
-    if len(arrays) != 1:
-        raise ValueError("General module layout requires exactly one source subarray")
-    if len(planes) != 1:
-        raise ValueError("General module layout requires exactly one source plane")
+    if not 1 <= len(arrays) <= 2:
+        raise ValueError("General module layout supports one or two source subarrays")
     if len(layouts) < 1 or len(tables) != len(layouts):
         raise ValueError("General module layout requires one native 3D table per module-layout table")
-    subarray_id = next(iter(arrays))
-    array = arrays[subarray_id]
-    plane = next(iter(planes.values()))
-    if (plane.one("FieldType")[1] != "FixedPlane" or plane.one("Flags")[1] != "$00"
-            or any(plane.one(key)[1] != "False" for key in ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"))
-            or abs(_number(plane.one("BaseSlope")[1])) > ANGLE_TOL):
-        raise ValueError("General module layout requires an ordinary non-averaged fixed source plane")
-    if _integer(array.one("NoOrientation")[1]) != _integer(plane.one("NoOrient")[1]):
-        raise ValueError("General module layout source subarray must own the single source plane")
-    if "PowerSharingInverterId" in array.fields and array.one("PowerSharingInverterId")[1] != "-1":
-        raise ValueError("General module layout excludes shared inverter inputs")
-    capacity = _integer(array.one("NModSerie")[1])
-    nstrings = _integer(array.one("NStringCh")[1])
-    if capacity < 1 or nstrings < 1:
-        raise ValueError("General module layout requires positive source string capacity")
+    # Each source subarray owns one ordinary non-averaged fixed plane; shared inputs excluded.
+    plane_of = {}
+    for subarray_id, array in arrays.items():
+        orientation = _integer(array.one("NoOrientation")[1])
+        if orientation not in planes:
+            raise ValueError("General module layout source subarray %d owns a missing orientation %d"
+                             % (subarray_id, orientation))
+        plane = planes[orientation]
+        if (plane.one("FieldType")[1] != "FixedPlane" or plane.one("Flags")[1] != "$00"
+                or any(plane.one(key)[1] != "False"
+                       for key in ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"))
+                or abs(_number(plane.one("BaseSlope")[1])) > ANGLE_TOL):
+            raise ValueError("General module layout requires ordinary non-averaged fixed source planes")
+        if "PowerSharingInverterId" in array.fields and array.one("PowerSharingInverterId")[1] != "-1":
+            raise ValueError("General module layout excludes shared inverter inputs")
+        plane_of[subarray_id] = (orientation, plane)
+    ranges = source_string_ranges(blocks)
+    expected_total = sum((last - first + 1) * capacity
+                         for first, last, capacity in ranges.values())
 
     body = lines[owners[0].line:owners[0].end_line - 1]
     declared = [int(match[1]) for line in body
@@ -707,6 +752,8 @@ def _assess_general_module_layout(blocks, lines):
         if identifier not in arrays:
             issues.append("Module-layout table references an unknown source subarray %d" % identifier)
             continue
+        orientation, plane = plane_of[identifier]
+        first, last, capacity = ranges[identifier]
         rows = _integer(layout.one("NLigMod")[1])
         columns = _integer(layout.one("NColMod")[1])
         if rows < 1 or columns < 1:
@@ -718,7 +765,7 @@ def _assess_general_module_layout(blocks, lines):
                 or table.one("Source")[1] != "osPVCollada"
                 or table.path.rsplit("/", 1)[-1] != "PVObject_" + layout.one("NoField3D")[1]
                 or layout.one("NoShed3D")[1] != "1" or layout.one("NIdentical")[1] != "1"
-                or _integer(table.one("NoOrient")[1]) != _integer(array.one("NoOrientation")[1])
+                or _integer(table.one("NoOrient")[1]) != orientation
                 or _integer(table.one("NModInHeight")[1]) != rows
                 or _integer(table.one("NModInWidth")[1]) != columns):
             issues.append("Module-layout table/array/3D reference or mechanical layout disagrees: " + layout.path)
@@ -763,12 +810,15 @@ def _assess_general_module_layout(blocks, lines):
                 cells.append((row, column, glob))
                 if glob == 0:
                     draft = True
+                elif glob < first or glob > last:
+                    issues.append("Module record Module_%d global string %d is outside source subarray "
+                                  "%d's declared range %d..%d" % (index, glob, identifier, first, last))
                 else:
                     string_totals[glob] += 1
             if len(seen) < rows * columns:
                 draft = True
         rows_out.append({"object_path": layout.path, "subarray_id": identifier,
-                         "orientation_id": _integer(array.one("NoOrientation")[1]),
+                         "orientation_id": orientation,
                          "native_table_path": table.path, "native_created_id": reference,
                          "rows": rows, "columns": columns, "module_count": rows * columns,
                          "string_ids": sorted({cell[2] for cell in cells if cell[2] > 0}),
@@ -777,18 +827,14 @@ def _assess_general_module_layout(blocks, lines):
 
     if set(subfields) != set(range(1, len(layouts) + 1)):
         issues.append("Subfield identities do not cover 1..%d exactly once" % len(layouts))
-    expected_total = capacity * nstrings
-    allowed = set(range(1, nstrings + 1))
-    for glob in sorted(string_totals):
-        if glob not in allowed:
-            issues.append("Global string %d is outside the source ordinal range 1..%d" % (glob, nstrings))
-        elif string_totals[glob] > capacity:
-            issues.append("Global string %d holds %d modules, above the %d-module capacity"
-                          % (glob, string_totals[glob], capacity))
-        elif string_totals[glob] < capacity:
-            draft = True
-    if {glob for glob in string_totals if glob in allowed} != allowed:
-        draft = True
+    for subarray_id, (first, last, capacity) in ranges.items():
+        for glob in range(first, last + 1):
+            have = string_totals.get(glob, 0)
+            if have > capacity:
+                issues.append("Global string %d holds %d modules, above the %d-module capacity"
+                              % (glob, have, capacity))
+            elif have < capacity:
+                draft = True
     if total_cells > expected_total:
         issues.append("Module-layout tables declare %d cells, above the %d-module source total"
                       % (total_cells, expected_total))
@@ -800,7 +846,8 @@ def _assess_general_module_layout(blocks, lines):
               "global_state": owners[0].one("ModLayoutGlobState")[1],
               "module_count": total_cells, "native_consumption_verified": False,
               "scope": "Stored native per-cell string layout: capacity bound to the global string "
-                       "(== source NModSerie); strings may span tables and one table may hold several"}
+                       "(== source NModSerie); strings may span tables, a table may hold several, "
+                       "and each global belongs to exactly one source subarray"}
     if issues:
         result["issues"] = issues
     if status == "draft_incomplete":
@@ -822,7 +869,9 @@ def assess_module_layout(blocks, lines):
         layouts = [block for block in blocks if block.object_type == "pvMLTable"]
         ids = list(arrays)
         if ids == [1, 2]:
-            return _verify_narrow_module_layout(blocks, lines)
+            if _matches_dual_narrow(arrays, tables, layouts):
+                return _verify_narrow_module_layout(blocks, lines)
+            return _assess_general_module_layout(blocks, lines)
         if len(ids) == 1:
             if ids == [1] and _matches_single_narrow(arrays, tables, layouts):
                 return _verify_narrow_module_layout(blocks, lines)
