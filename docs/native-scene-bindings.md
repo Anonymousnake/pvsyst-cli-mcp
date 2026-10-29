@@ -21,7 +21,9 @@
 
 活动场景还返回 `shading_scene.module_layout`，用于读取已保存的原生组件布局。`configured=false` 表示没有 `pvModuleLayout`；有布局且 `status="stored_consistent"` 时，会返回 `global_state`、总组件数和逐表子阵/朝向、原生物体引用、行列及组串信息。
 
-当前完整性检查限定为两类已验证模板。其一是双朝向：两个固定朝向、子阵列 `1`/`2` 各自独占一张零间距横装表、一个逆变器/MPPT 和一条 `1..100` 块组件的组串。其二是单朝向 fine 窄模板：唯一固定朝向、单一子阵携带两条源组串（`NStringCh=2`）、恰两张零间距横装表；两表 `NoSubArrayPar=1` 都指向同一子阵（表级可重复引用，与“每表全局组串号”不同），声明序第 k 张表绑定源全局组串 k（`1`/`2`），每表 `NModSerie` 块、两条独立线路（`NInverter=2`、`NInvMPPT=2`、`PowerSharingInverterId=-1`）。这是“恰 2 表 / 2 源串”的窄模板，不是任意 N 表或 N 串；单表 36 块、三表等不在此列。检查会核对原生列表声明数量、模块序号/行列/组串、物体创建引用、朝向和回路计数；缺失、重复或未识别的结构返回 `needs_review`，不会视为布局消失。
+完整性检查按**逐 module cell** 的真值语义，而非“每表一 string / 表数==NModSerie / 只有两表 / global∈{1,2}”的伪限：每个 global string 容量 = 源 `NModSerie`（容量挂串不挂表），串可跨表、一表可多串，表格数与每表格数互相独立。检查核对每表 cell 覆盖（`{(r,c)}` 恰一次）、逐 global 的容量合计 `==NModSerie`、每子阵 ordinals 段完整无重、以及 `NoField3D`/`NoField3DCreated` 唯一场景身份（`NoObjCreated` 全场唯一非 0）；表名是原场景身份，不按稀疏 `SubArrayId` 数字排序。双朝向“每朝向一表单串”、单朝向 fine“恰 2 表 / 2 源串 / 2 逆变器 / 2 总 MPPT”都只是通用不变量在特定取值下的特例，仍过同一函数。需注意：`stored_consistent` 仅是存储/校验层自洽，通用表数下的 `stored_consistent` 不等于已做原生物理消费——目前只有单固定朝向/单子阵/3 表各 12 cell、36 module、2 串跨表的示值经本机 PVsyst 8.1.7 CLI 48h 实跑确认真实消费，其它 N 表仅存储自洽，尚未 Native 消费。
+
+仍**显式拒绝**（返回 `needs_review`/`unsupported`，不静默当作已验证）：`ModOrient!=moLandScape`、非零 `ModSpacingX/Y`/`RowPadding`、`PowerSharingInverterId!=-1`、非 `FixedPlane`/非零 `BaseSlope`、`NoShed3D!=1`、`NIdentical!=1`，以及重复 cell/未知 global/容量不符/未知子阵引用。多子阵/共享/异构/portrait/非零间距/多朝向逐格接线仍属待证边界。`string_layout_state="draft_incomplete"`（含 `global_string=0` 或未覆盖全表）表示可存/可读但不可算，绝不等于 `stored_consistent`。
 
 原生全局状态 `mlDefStrings` 或 `mlDefInverters` 只是保存状态，不表示当前选中了精细计算。布局的 `stored_consistent` 与 `native_consumption_verified=false` 也不构成电气损失计算证明。通过[原生住宅任务](native-house-task.md#module-layout-电气阴影)选用 `shading_mode="module_layout"` 后，导入结果另行记录 GUI 重载后的模式选择，仿真再检查 `ShdElec` 输出。
 

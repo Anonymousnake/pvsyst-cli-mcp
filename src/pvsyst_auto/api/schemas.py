@@ -254,6 +254,26 @@ class ModuleGeometry(BaseModel):
     length_m: StrictNum
     geometry_depth_m: StrictNum
 
+class ModuleCellBinding(BaseModel):
+    """One explicit native module cell; row/col are 1-based grid positions and global_string 0
+    marks an unassigned draft cell. No native string allocation is inferred from a cell."""
+    model_config = ConfigDict(extra="forbid")
+    row: Annotated[StrictInt, Field(ge=1)]
+    col: Annotated[StrictInt, Field(ge=1)]
+    global_string: Annotated[StrictInt, Field(ge=0)]
+
+class TableStringBinding(BaseModel):
+    """Per-table cell wiring keyed by the table's declared name; subarray_id is the real source id."""
+    model_config = ConfigDict(extra="forbid")
+    name: StrictStr
+    subarray_id: Annotated[StrictInt, Field(ge=1)]
+    cells: list[ModuleCellBinding]
+
+class StringLayoutBinding(BaseModel):
+    """Optional sibling of layout: a thin explicit projection of native per-module string wiring."""
+    model_config = ConfigDict(extra="forbid")
+    tables: Annotated[list[TableStringBinding], Field(min_length=1, max_length=64)]
+
 class HouseTaskRequest(BaseModel):
     """Complete authored geometry plus one exact source; no inferred engineering inputs."""
     model_config = ConfigDict(extra="forbid")
@@ -264,6 +284,7 @@ class HouseTaskRequest(BaseModel):
     year: StrictInt
     house: MeshHouseSpec
     layout: NamedPVTablesLayout | PlacedPVTableLayout
+    string_layout: StringLayoutBinding | None = None
     module_geometry: ModuleGeometry | None = None
     report_pages: list[StrictStr] | None = None
     shading_mode: Literal["linear", "module_layout"] | None = None
@@ -555,10 +576,13 @@ class SourcedHouseTaskRequest(BaseModel):
     variant_name: StrictStr
     house: MeshHouseSpec
     layout: NamedPVTablesLayout | PlacedPVTableLayout
+    string_layout: StringLayoutBinding | None = None
     sources: dict[str, SourceTextRequest] = Field(default_factory=dict)
     declarations: list[SourceDeclarationRequest] = Field(default_factory=list)
     goals: SourcedDesignGoals | None = None
     module_geometry: ModuleGeometry | None = None
+    shading_mode: Literal["linear", "module_layout"] | None = None
+    scene_import_method: Literal["gui", "native"] | None = None
 
 class EngineeringChanges(BaseModel):
     model_config = ConfigDict(extra="forbid")

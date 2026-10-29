@@ -6,7 +6,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
-from pvsyst_auto.scene.author import AUTHORING_TOOL, MAX_PARTS, MAX_TABLES, MAX_TRIANGLES, MAX_VERTICES, NS, PV, SceneValidationError, _diagnostic, _finite, build_scene, caller_geometry, check_tables, house_profile, layout_profile, table_profiles
+from pvsyst_auto.scene.author import AUTHORING_TOOL, MAX_PARTS, MAX_TABLES, MAX_TRIANGLES, MAX_VERTICES, NS, PV, SceneValidationError, _diagnostic, _finite, _string_layout_profile, build_scene, caller_geometry, check_tables, house_profile, layout_profile, table_profiles
 
 XML_NS = {"n": NS, "pv": PV}
 MAX_BYTES = 64 * 1024 * 1024
@@ -135,6 +135,7 @@ def read_house_pv_scene(components, scene_name):
             source = _source(asset, _one(racks[0], "n:extra/n:technique/pv:rack"))
             subject = asset.findall("n:subject", XML_NS)
             legacy = not subject
+            binding, binding_state = None, None
             if legacy:
                 if len(racks) != 1 or racks[0].get("id") != "Rack":
                     _fail("asset/subject", "Missing readback recipe for this scene")
@@ -148,7 +149,8 @@ def read_house_pv_scene(components, scene_name):
                 if len(subject) != 1 or _text(asset, "n:contributor/n:authoring_tool") != AUTHORING_TOOL:
                     _fail("asset/subject", "Unrecognized scene authoring metadata")
                 recipe = json.loads(subject[0].text or "")
-                if (not isinstance(recipe, dict) or set(recipe) != {"version", "source", "house", "layout"}
+                recipe_keys = {"version", "source", "house", "layout"}
+                if (not isinstance(recipe, dict) or not recipe_keys <= set(recipe) <= recipe_keys | {"string_layout"}
                         or type(recipe["version"]) is not int or recipe["version"] not in (1, 2)):
                     _fail("asset/subject", "Only complete version 1 or 2 recipes are supported")
                 grouped = recipe["version"] == 2
@@ -189,6 +191,9 @@ def read_house_pv_scene(components, scene_name):
                 source["module_total"] = declared["module_total"]
                 tables = table_profiles(layout, pocket, modules, source)
                 check_tables(pocket, tables)
+                binding = recipe.get("string_layout")
+                if binding is not None:
+                    _, binding_state = _string_layout_profile(binding, tables)
             expected, counts = build_scene(pocket, tables, modules, source, created, recipe)
             if legacy:
                 expected = _legacy_tree(expected)
@@ -206,6 +211,8 @@ def read_house_pv_scene(components, scene_name):
                 required += ["project", "variant", "layout.roof_mesh"]
             else:
                 arguments.update(project=declared["project"], variant=declared["variant"])
+                if binding is not None:
+                    arguments["string_layout"] = binding
             recorded_source = dict(declared, provenance="not-recorded" if legacy else "file-declared",
                                    site=source["site"], tilt_deg=source["tilt_deg"],
                                    collada_azimuth_deg=source["azimuth_deg"])
@@ -217,6 +224,8 @@ def read_house_pv_scene(components, scene_name):
             result.update(status="needs_context" if legacy else "ready", required_inputs=required,
                           source=recorded_source,
                           geometry=counts, create_arguments=arguments)
+            if binding_state is not None:
+                result["string_layout_state"] = binding_state
         except (ValueError, OSError, UnicodeError, ET.ParseError, TypeError, KeyError, OverflowError) as exc:
             result["issues"].append(str(exc))
             result["diagnostics"] = (exc.diagnostics if isinstance(exc, SceneValidationError)

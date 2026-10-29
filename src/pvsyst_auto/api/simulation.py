@@ -72,7 +72,12 @@ def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
     retry_simulation=true chooses NEW attempt names, without rebuilding the saved scene.
     A completed retry-free resume revalidates artifacts and runs no new GUI/simulation.
     Status/phase/issues matter, not just MCP is_error; any unexpected stop retains evidence.
-    Process coordination is one server/workspace RLock, not a global desktop/task service."""
+    Process coordination is one server/workspace RLock, not a global desktop/task service.
+    Optional spec.string_layout is an explicit per-cell wiring block read from the request and
+    stored in the .pvc2 recipe; it is only accepted with scene_import_method='native' and
+    shading_mode='module_layout' (GUI/linear stop before writing, never dropping the wiring).
+    The native importer then reads the binding from that recipe; a draft (global_string=0) is
+    written but blocks native import until complete. Omitting it keeps the historical shape."""
     from pvsyst_auto.workflows.house import run_house_task
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -296,7 +301,10 @@ def pvsyst_run_sourced_house_task(spec: SourcedHouseTaskRequest, dry_run: Strict
     Weather assets/source review are checked; the house path does not add hourly comparison
     against the source weather CSV. It reports weather_native_comparison_performed=false.
     Raw source text is not persisted or echoed; accepted citation provenance is preserved.
-    No new PV/sizing/dispatch model or general job framework."""
+    No new PV/sizing/dispatch model or general job framework.
+    spec.shading_mode/scene_import_method/string_layout are forwarded to the child house request;
+    an explicit string_layout requires scene_import_method='native' with shading_mode='module_layout'
+    and stops before any source preparation otherwise. Omitting them keeps the GUI/linear shape."""
     from pvsyst_auto.workflows.sourced_house import run_sourced_house_task
     current = cli()
     component_store = components()
