@@ -41,9 +41,21 @@ _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _WAIT_TIMEOUT = 0x00000102
 _WAIT_FAILED = 0xFFFFFFFF
 _INFINITE = 0xFFFFFFFF
+# Desktop DACL values for the "no window" path. Create with DESKTOP_ALL_ACCESS
+# so this handle carries WRITE_DAC, which SetUserObjectSecurity needs to attach
+# the deny ACE; the resulting DACL then grants this user every desktop right
+# except DESKTOP_CREATEWINDOW (proven OS primitive: standard ACL only, no
+# hook/patch/injection).
+_DESKTOP_ALL = 0x000F01FF
+_DESKTOP_CREATEWINDOW = 0x0002
+_UOI_NAME = 2
+_TOKEN_QUERY = 0x0008
+_TOKEN_USER = 1
+_DACL_SECURITY_INFORMATION = 0x00000004
 
 _u = ctypes.WinDLL("user32", use_last_error=True)
 _k = ctypes.WinDLL("kernel32", use_last_error=True)
+_adv = ctypes.WinDLL("advapi32", use_last_error=True)
 
 
 class _STARTUPINFOW(ctypes.Structure):
@@ -168,6 +180,37 @@ _DeleteProcThreadAttributeList = _k.DeleteProcThreadAttributeList
 _DeleteProcThreadAttributeList.argtypes = (ctypes.c_void_p,)
 _DeleteProcThreadAttributeList.restype = None
 
+_GetProcessWindowStation = _u.GetProcessWindowStation
+_GetProcessWindowStation.restype = wintypes.HANDLE
+_GetUserObjectInformationW = _u.GetUserObjectInformationW
+_GetUserObjectInformationW.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                       wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+_GetUserObjectInformationW.restype = wintypes.BOOL
+_SetUserObjectSecurity = _u.SetUserObjectSecurity
+_SetUserObjectSecurity.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p)
+_SetUserObjectSecurity.restype = wintypes.BOOL
+
+_GetCurrentProcess = _k.GetCurrentProcess
+_GetCurrentProcess.restype = wintypes.HANDLE
+_LocalFree = _k.LocalFree
+_LocalFree.argtypes = (wintypes.HLOCAL,)
+_LocalFree.restype = wintypes.HLOCAL
+_OpenProcessToken = _adv.OpenProcessToken
+_OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
+_OpenProcessToken.restype = wintypes.BOOL
+_GetTokenInformation = _adv.GetTokenInformation
+_GetTokenInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                 wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+_GetTokenInformation.restype = wintypes.BOOL
+_ConvertSidToStringSidW = _adv.ConvertSidToStringSidW
+_ConvertSidToStringSidW.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR))
+_ConvertSidToStringSidW.restype = wintypes.BOOL
+_ConvertStringSecurityDescriptorToSecurityDescriptorW = (
+    _adv.ConvertStringSecurityDescriptorToSecurityDescriptorW)
+_ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+    wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.ULONG))
+_ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+
 
 def _fail(step: str) -> OSError:
     return OSError(0, "%s failed (winerror %d)" % (step, ctypes.get_last_error()))
@@ -185,8 +228,73 @@ def _read_stream(path: str) -> str:
     return data.decode(locale.getpreferredencoding(False), errors="replace")
 
 
-def run(argv: list[str], cwd, timeout) -> subprocess.CompletedProcess[str]:
+def _current_station_name() -> str:
+    """Name of the window station this process is attached to (borrowed handle)."""
+    hsta = _GetProcessWindowStation()
+    if not hsta:
+        raise _fail("GetProcessWindowStation")
+    needed = wintypes.DWORD(0)
+    _GetUserObjectInformationW(hsta, _UOI_NAME, None, 0, ctypes.byref(needed))
+    if not needed.value:
+        raise _fail("GetUserObjectInformationW(name-size)")
+    buf = ctypes.create_unicode_buffer(needed.value // 2 + 1)
+    if not _GetUserObjectInformationW(hsta, _UOI_NAME, buf, needed.value, ctypes.byref(needed)):
+        raise _fail("GetUserObjectInformationW(name)")
+    return buf.value
+
+
+def _current_user_sid() -> str:
+    """String SID of the token running this process, for the desktop DACL."""
+    token = wintypes.HANDLE()
+    if not _OpenProcessToken(_GetCurrentProcess(), _TOKEN_QUERY, ctypes.byref(token)):
+        raise _fail("OpenProcessToken")
+    try:
+        size = wintypes.DWORD(0)
+        _GetTokenInformation(token, _TOKEN_USER, None, 0, ctypes.byref(size))
+        if not size.value:
+            raise _fail("GetTokenInformation(size)")
+        buffer = ctypes.create_string_buffer(size.value)
+        if not _GetTokenInformation(token, _TOKEN_USER, buffer, size.value, ctypes.byref(size)):
+            raise _fail("GetTokenInformation")
+        sid_ptr = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+        string_sid = wintypes.LPWSTR()
+        if not _ConvertSidToStringSidW(sid_ptr, ctypes.byref(string_sid)):
+            raise _fail("ConvertSidToStringSidW")
+        try:
+            return string_sid.value
+        finally:
+            _LocalFree(ctypes.cast(string_sid, wintypes.HLOCAL))
+    finally:
+        _CloseHandle(token)
+
+
+def _deny_window_creation(hdesk) -> None:
+    """Deny only DESKTOP_CREATEWINDOW to this user on our own new desktop."""
+    sid = _current_user_sid()
+    sddl = "D:(D;;0x%08X;;;%s)(A;;0x%08X;;;%s)" % (
+        _DESKTOP_CREATEWINDOW, sid, _DESKTOP_ALL, sid)
+    psd = ctypes.c_void_p()
+    size = wintypes.ULONG(0)
+    if not _ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl, 1, ctypes.byref(psd), ctypes.byref(size)):
+        raise _fail("ConvertStringSecurityDescriptorToSecurityDescriptorW")
+    try:
+        info = wintypes.DWORD(_DACL_SECURITY_INFORMATION)
+        if not _SetUserObjectSecurity(hdesk, ctypes.byref(info), psd):
+            raise _fail("SetUserObjectSecurity")
+    finally:
+        _LocalFree(psd)
+
+
+def run(argv: list[str], cwd, timeout, *,
+        allow_window_creation: bool = True) -> subprocess.CompletedProcess[str]:
     """Launch ``argv`` on a private non-input desktop and reap its owned tree.
+
+    With ``allow_window_creation=False`` the private desktop additionally denies
+    DESKTOP_CREATEWINDOW to this user before the child starts, so a bare numeric
+    CSV run that must never build a window fails loudly instead of showing one.
+    The desktop always lives on the process's *current* window station (resolved
+    via GetProcessWindowStation, not a hardcoded WinSta0).
 
     Returns ``CompletedProcess[str]`` on exit (any code); raises
     ``subprocess.TimeoutExpired`` (partial output attached) on timeout; raises
@@ -208,9 +316,15 @@ def run(argv: list[str], cwd, timeout) -> subprocess.CompletedProcess[str]:
     hout = herr = hnin = None
     attr = None
     try:
-        hdesk = _CreateDesktopW(desktop_name, None, None, 0, _DESKTOP_ACCESS, None)
+        # Own private desktop on the CURRENT station; names resolve at runtime so
+        # a non-interactive service station works exactly like WinSta0.
+        station = _current_station_name()
+        access = _DESKTOP_ACCESS if allow_window_creation else _DESKTOP_ALL
+        hdesk = _CreateDesktopW(desktop_name, None, None, 0, access, None)
         if not hdesk:
             raise _fail("CreateDesktopW")
+        if not allow_window_creation:
+            _deny_window_creation(hdesk)
 
         hjob = _CreateJobObjectW(None, None)
         if not hjob:
@@ -251,7 +365,7 @@ def run(argv: list[str], cwd, timeout) -> subprocess.CompletedProcess[str]:
 
         siex = _STARTUPINFOEXW()
         siex.StartupInfo.cb = ctypes.sizeof(_STARTUPINFOEXW)
-        siex.StartupInfo.lpDesktop = "WinSta0\\" + desktop_name
+        siex.StartupInfo.lpDesktop = station + "\\" + desktop_name
         siex.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
         siex.StartupInfo.hStdInput = hnin
         siex.StartupInfo.hStdOutput = hout
