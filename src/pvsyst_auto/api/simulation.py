@@ -179,11 +179,8 @@ def pvsyst_run_simulation(project: str, variant: str,
     Optional inputs live in Models (SFI,RVT), Meteo (MET), UserData (DAT),
     UserBatch (batch CSV/RVT), or Sites (SIT). Unsupported options fail early.
     Each run can consume a license execution."""
-    license_state = cli().license_info()
-    if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
-        raise ValueError("PVsystCLI reports no remaining trial executions")
-    return cli().run_simulation(
-        project, variant,
+    current = cli()
+    options = dict(
         sfi=optional_path("Models", sfi_name, ".sfi"),
         out_csv=simulation_csv_path(csv_name),
         report_pdf=optional_path("Results", pdf_name, ".pdf"),
@@ -199,6 +196,12 @@ def pvsyst_run_simulation(project: str, variant: str,
         report_pages=[p.strip() for p in report_pages.split(",")] if report_pages else None,
         recompute_shading=recompute_shading, log_level=log_level,
     )
+    # Pure filename/path/date/output checks run before any license query or help launch.
+    current.preflight_run_simulation(project, variant, **options)
+    license_state = current.license_info()
+    if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
+        raise ValueError("PVsystCLI reports no remaining trial executions")
+    return current.run_simulation(project, variant, **options)
 
 @categorized_tool()
 def pvsyst_simulate_design(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
