@@ -104,9 +104,8 @@ def _pv_bindings(lines, types):
                 for key, values in block.fields.items()}
 
     try:
-        if (any(kind not in ("pvShdArrayTable", "pvShdGenObject") for kind in types)
-                or not 1 <= types.count("pvShdArrayTable") <= 2):
-            raise ValueError("Stored binding review supports one/two PV tables and generic objects only")
+        if any(kind not in ("pvShdArrayTable", "pvShdGenObject") for kind in types):
+            raise ValueError("Stored binding review supports PV tables and generic objects only")
         blocks = objects("\n".join(line.rstrip("\r\n") for line in lines))
         tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
         if len(tables) != types.count("pvShdArrayTable"):
@@ -115,6 +114,11 @@ def _pv_bindings(lines, types):
         arrays = [block for block in blocks if block.object_type == "pvSubArray"]
         if not 1 <= len(planes) <= 2 or not 1 <= len(arrays) <= 2:
             raise ValueError("Stored binding review supports one/two fixed source planes and subarrays")
+        # A single orientation binds up to three tables; two orientations keep the proven two-table cap.
+        max_tables = 3 if len(planes) == 1 else 2
+        if not 1 <= types.count("pvShdArrayTable") <= max_tables:
+            raise ValueError("Stored binding review supports one to three PV tables for a single orientation "
+                             "and one to two for two orientations")
         grouped = {}
         for plane in planes:
             identifier = integer(plane, "NoOrient")

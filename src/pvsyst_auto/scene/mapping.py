@@ -44,12 +44,17 @@ def _indexed(blocks, kind, key):
 def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_lines, source):
     """Preserve both source identities, fixed planes, hardware and exclusive circuit branches."""
     planes = source.get("orientations", [])
-    if [plane["id"] for plane in planes] != [1, 2]:
-        raise ValueError("Grouped verification requires source orientations 1/2")
+    if planes:
+        if [plane["id"] for plane in planes] != [1, 2]:
+            raise ValueError("Grouped verification requires source orientations 1/2")
+    else:
+        planes = [{"id": 1, "module_total": source["module_total"],
+                   "tilt_deg": source["tilt_deg"], "field_azimuth_deg": source["field_azimuth_deg"]}]
+    orientation_ids = [plane["id"] for plane in planes]
     originals = _indexed(source_blocks, "pvOrient", "NoOrient")
     saved = _indexed(target_blocks, "pvOrient", "NoOrient")
-    if set(originals) != {1, 2} or set(saved) != {1, 2}:
-        raise ValueError("Saved variant must preserve exactly the two source orientations")
+    if set(originals) != set(orientation_ids) or set(saved) != set(orientation_ids):
+        raise ValueError("Saved variant must preserve exactly the source orientations")
     orientation_mapping = []
     for plane in planes:
         identifier = plane["id"]
@@ -72,7 +77,7 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
                                     "base_slope_deg": _number(after.one("BaseSlope")[1])})
     originals = _indexed(source_blocks, "pvSubArray", "SubArrayId")
     saved = _indexed(target_blocks, "pvSubArray", "SubArrayId")
-    if len(originals) != 2 or set(originals) != set(saved):
+    if len(originals) != len(planes) or set(originals) != set(saved):
         raise ValueError("Saved variant changed the source subarray identities")
     hardware_mapping = []
     for identifier, before in originals.items():
@@ -121,19 +126,26 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
         checked_inventory = inventory(lines, bounds)
         if checked_inventory["counts_valid"] is not True:
             raise ValueError("Source and saved grouped circuits must both have complete consistent counts")
-    tables = _indexed(target_blocks, "pvShdArrayTable", "NoOrient")
-    if set(tables) != {1, 2}:
-        raise ValueError("Each source orientation must own exactly one native PV table")
+    by_orientation = defaultdict(list)
+    for block in target_blocks:
+        if block.object_type == "pvShdArrayTable":
+            by_orientation[_integer(block.one("NoOrient")[1])].append(block)
+    if set(by_orientation) != set(orientation_ids):
+        raise ValueError("Each source orientation must own native PV tables")
     for plane in planes:
-        table = tables[plane["id"]]
-        if (_integer(table.one("NModInHeight")[1]) * _integer(table.one("NModInWidth")[1])
-                != plane["module_total"]
-                or abs(_number(table.one("DInclin")[1]) - plane["tilt_deg"]) > ANGLE_TOL
-                or abs(_number(table.one("DAzimut")[1]) - plane["field_azimuth_deg"]) > ANGLE_TOL
-                or abs(_number(table.one("BaseSlope")[1])) > ANGLE_TOL):
-            raise ValueError("Native PV table differs from its source orientation/count")
+        owned = by_orientation[plane["id"]]
+        if len(planes) == 2 and len(owned) != 1:
+            raise ValueError("Each source orientation must own exactly one native PV table")
+        if sum(_integer(table.one("NModInHeight")[1]) * _integer(table.one("NModInWidth")[1])
+               for table in owned) != plane["module_total"]:
+            raise ValueError("Native PV tables differ from their source orientation count")
+        for table in owned:
+            if (abs(_number(table.one("DInclin")[1]) - plane["tilt_deg"]) > ANGLE_TOL
+                    or abs(_number(table.one("DAzimut")[1]) - plane["field_azimuth_deg"]) > ANGLE_TOL
+                    or abs(_number(table.one("BaseSlope")[1])) > ANGLE_TOL):
+                raise ValueError("Native PV table differs from its source orientation angles")
     return {"source_hardware_preserved": True, "source_orientations_preserved": True,
-            "source_circuit_preserved": True, "source_orientation_ids": [1, 2],
+            "source_circuit_preserved": True, "source_orientation_ids": orientation_ids,
             "orientation_mapping": orientation_mapping, "hardware_mapping": hardware_mapping,
             "circuit_mapping": [{"subarray_id": row["id"], **row["circuit"]}
                                 for row in checked_inventory["subarrays"]]}
@@ -344,9 +356,20 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
     anchor_turn applies the proven native anchor frame rotation for non-zero anchors; when
     None the recorded zero-anchor path is kept (turn 180, source field azimuth zero).
     """
-    planes = {plane["id"]: plane for plane in source.get("orientations", [])}
-    if set(planes) != {1, 2} or len(tables) != 2 or {table["orientation_id"] for table in tables} != {1, 2}:
-        raise ValueError("PV coordinate verification requires two source tables")
+    source_planes = source.get("orientations") or []
+    if source_planes:
+        planes = {plane["id"]: plane for plane in source_planes}
+        if (set(planes) != {1, 2} or len(tables) != 2
+                or {table["orientation_id"] for table in tables} != {1, 2}):
+            raise ValueError("PV coordinate verification requires two source tables")
+        grouped = True
+    else:
+        planes = {1: {"id": 1, "module_total": source["module_total"],
+                      "tilt_deg": source["tilt_deg"], "azimuth_deg": source["azimuth_deg"],
+                      "field_azimuth_deg": source["field_azimuth_deg"]}}
+        if not 1 <= len(tables) <= 3 or any(table.get("orientation_id", 1) != 1 for table in tables):
+            raise ValueError("PV coordinate verification requires 1..3 single-orientation tables")
+        grouped = False
     if anchor_turn is None:
         if source["field_azimuth_deg"] != 0:
             raise ValueError("PV coordinate verification requires anchor azimuth zero")
@@ -378,17 +401,24 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
                        "rows": _integer(block.one("NModInHeight")[1]),
                        "columns": _integer(block.one("NModInWidth")[1]),
                        "orientation": block.one("ModuleOrient")[1]})
-    if len(native) != 2:
-        raise ValueError("PV verification requires exactly two saved native tables")
+    if len(native) != len(tables):
+        raise ValueError("PV verification requires the saved native table count to match the declaration")
+    if not grouped and sum(table["module_rows"] * table["module_columns"] for table in tables) != source["module_total"]:
+        raise ValueError("Single-orientation PV tables must sum to the source module total")
     mappings, max_origin, max_dimension, max_angle = [], 0.0, 0.0, 0.0
     for table in tables:
-        identifier = table["orientation_id"]
+        identifier = table.get("orientation_id", 1)
         plane = planes[identifier]
-        if (table["module_rows"] * table["module_columns"] != plane["module_total"]
-                or table["tilt_deg"] != plane["tilt_deg"]
-                or table["azimuth_deg"] != plane["azimuth_deg"]
-                or table["rotation_deg"] != source["azimuth_deg"] - plane["azimuth_deg"]):
-            raise ValueError("Source table profile differs from its source orientation")
+        if grouped:
+            if (table["module_rows"] * table["module_columns"] != plane["module_total"]
+                    or table["tilt_deg"] != plane["tilt_deg"]
+                    or table["azimuth_deg"] != plane["azimuth_deg"]
+                    or table["rotation_deg"] != source["azimuth_deg"] - plane["azimuth_deg"]):
+                raise ValueError("Source table profile differs from its source orientation")
+        elif (table["tilt_deg"] != plane["tilt_deg"]
+                or table.get("azimuth_deg", source["azimuth_deg"]) != plane["azimuth_deg"]
+                or table.get("rotation_deg", 0.0) != source["azimuth_deg"] - plane["azimuth_deg"]):
+            raise ValueError("Source table profile differs from its source plane")
         origin = [float(_num(value)) for value in table["origin_m"]]
         expected_origin = list(_rotate_z(tuple(origin), anchor_turn))
         expected_dimensions = {"LongShed": table["column_span_m"], "LargShed": table["slope_span_m"],
