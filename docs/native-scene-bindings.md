@@ -21,7 +21,7 @@
 
 活动场景还返回 `shading_scene.module_layout`，用于读取已保存的原生组件布局。`configured=false` 表示没有 `pvModuleLayout`；有布局且 `status="stored_consistent"` 时，会返回 `global_state`、总组件数和逐表子阵/朝向、原生物体引用、行列及组串信息。
 
-当前完整性检查限定为两个固定朝向、子阵列 `1`/`2` 各自独占一张零间距横装表、一个逆变器/MPPT 和一条 `1..100` 块组件的组串。检查会核对原生列表声明数量、模块序号/行列/组串、物体创建引用、朝向和回路计数；缺失、重复或未识别的结构返回 `needs_review`，不会视为布局消失。
+当前完整性检查限定为两类已验证模板。其一是双朝向：两个固定朝向、子阵列 `1`/`2` 各自独占一张零间距横装表、一个逆变器/MPPT 和一条 `1..100` 块组件的组串。其二是单朝向 fine 窄模板：唯一固定朝向、单一子阵携带两条源组串（`NStringCh=2`）、恰两张零间距横装表；两表 `NoSubArrayPar=1` 都指向同一子阵（表级可重复引用，与“每表全局组串号”不同），声明序第 k 张表绑定源全局组串 k（`1`/`2`），每表 `NModSerie` 块、两条独立线路（`NInverter=2`、`NInvMPPT=2`、`PowerSharingInverterId=-1`）。这是“恰 2 表 / 2 源串”的窄模板，不是任意 N 表或 N 串；单表 36 块、三表等不在此列。检查会核对原生列表声明数量、模块序号/行列/组串、物体创建引用、朝向和回路计数；缺失、重复或未识别的结构返回 `needs_review`，不会视为布局消失。
 
 原生全局状态 `mlDefStrings` 或 `mlDefInverters` 只是保存状态，不表示当前选中了精细计算。布局的 `stored_consistent` 与 `native_consumption_verified=false` 也不构成电气损失计算证明。通过[原生住宅任务](native-house-task.md#module-layout-电气阴影)选用 `shading_mode="module_layout"` 后，导入结果另行记录 GUI 重载后的模式选择，仿真再检查 `ShdElec` 输出。
 
