@@ -23,9 +23,11 @@ NoOrient=1 and the 36 source modules. Single-orientation ``module_layout`` is a 
 profile (one plane, one sub-array carrying two source strings, exactly two landscape tables,
 each table NModSerie modules for 36 total); shapes outside that recipe - a one-table or a
 three-table fine - are refused before any variant is written, and more than three tables is
-still refused. The same method pins the high-level boundary: ``pvsyst_run_house_task`` keeps
-the released two-orientation profile, so a legal single-orientation spec is refused at
-preflight (two orientations required) with no write.
+still refused. The same method pins the high-level boundary: ``pvsyst_run_house_task`` now
+routes a single-orientation spec through the REAL native gate instead of a blanket
+two-orientation pre-reject, so a legal single-orientation linear spec passes preflight
+(ready, no write) while an unsupported single-orientation shape (a three-table fine with no
+binding) is still refused before any write by that gate.
 
 A third method pins the accepted single-orientation two-table/two-string fine profile end to
 end through the public tools: both stored tables keep ``NoSubArrayPar=1`` (a table-level
@@ -431,37 +433,57 @@ class NativeHouseImportBoundary(unittest.TestCase):
                     self.assertFalse(over["native_variant_created"], over)
                     self.assertEqual(project_names(), before)
 
-                    # High-level pvsyst_run_house_task keeps the released two-orientation
-                    # profile: a legal single-orientation spec must stop at preflight as
-                    # blocked with no write, not be silently imported. The spec is built from
-                    # the public scene-read create arguments (real SIT/MET/year fixture), so no
-                    # internal builder/helper is imported and no confirm/simulation is run.
+                    # High-level pvsyst_run_house_task now routes a single-orientation spec
+                    # through the REAL native gate (the blanket two-orientation pre-reject was
+                    # removed for round03's explicit-layout extension). A legal single-orientation
+                    # linear spec therefore passes preflight (ready) with no write; an
+                    # unsupported single-orientation shape is still refused before any write by
+                    # that gate. Both specs are built from the public scene-read create arguments
+                    # (real SIT/MET/year fixture), so no internal builder/helper is imported and
+                    # no confirm/simulation is run.
                     ws.copy(Path("Sites") / "MCP_DESIGN93.SIT",
                             Path("Meteo") / "MCP_DESIGN93.MET")
-                    read = _payload(await session.call_tool(
-                        READ_SCENE_TOOL, {"scene_name": SINGLE_LINEAR_SCENES[0][0]}))
-                    self.assertEqual(read["status"], "ready", read)
-                    create_args = read["create_arguments"]
-                    spec = {
-                        "source_project": create_args["project"],
-                        "source_variant": create_args["variant"],
-                        "new_project": "SINGLE_HIGHLEVEL_GUARD.PRJ",
-                        "variant_name": "High-level single guard",
-                        "year": 2024,
-                        "house": create_args["house"],
-                        "layout": create_args["layout"],
-                        "module_geometry": create_args["module_geometry"],
-                        "shading_mode": "linear",
-                        "scene_import_method": "native",
-                    }
+
+                    async def high_spec(scene, name, shading_mode):
+                        read = _payload(await session.call_tool(
+                            READ_SCENE_TOOL, {"scene_name": scene}))
+                        self.assertEqual(read["status"], "ready", read)
+                        args = read["create_arguments"]
+                        return {
+                            "source_project": args["project"],
+                            "source_variant": args["variant"],
+                            "new_project": name,
+                            "variant_name": "High-level single " + name,
+                            "year": 2024,
+                            "house": args["house"],
+                            "layout": args["layout"],
+                            "module_geometry": args["module_geometry"],
+                            "shading_mode": shading_mode,
+                            "scene_import_method": "native",
+                        }
+
+                    # (a) Legal single-orientation linear -> the real gate admits it: ready, no write.
                     before = project_names()
-                    high = _payload(await session.call_tool(
-                        RUN_HOUSE_TOOL, {"spec": spec, "dry_run": True}))
-                    self.assertIn(high["status"], ("blocked", "needs_attention"), high)
-                    # Blocked by the high-level two-orientation requirement, not a weather or
-                    # duplicate-project miss; nothing was written.
-                    self.assertIn("two-orientation", " ".join(high["issues"]).casefold(), high)
-                    self.assertFalse(high["native_consumption_verified"], high)
+                    legal = _payload(await session.call_tool(
+                        RUN_HOUSE_TOOL, {"spec": await high_spec(
+                            SINGLE_LINEAR_SCENES[0][0], "SINGLE_HIGHLEVEL_LEGAL.PRJ", "linear"),
+                            "dry_run": True}))
+                    self.assertEqual(legal["status"], "ready", legal)
+                    self.assertFalse(legal["native_consumption_verified"], legal)
+                    self.assertEqual(project_names(), before)
+
+                    # (b) Unsupported single-orientation shape (three-table fine, no binding) is
+                    # still refused before any write by the real native gate, NOT by a stale
+                    # two-orientation pre-reject.
+                    reverse = _payload(await session.call_tool(
+                        RUN_HOUSE_TOOL, {"spec": await high_spec(
+                            SINGLE_LINEAR_SCENES[2][0], "SINGLE_HIGHLEVEL_REVERSE.PRJ", "module_layout"),
+                            "dry_run": True}))
+                    self.assertIn(reverse["status"], ("blocked", "needs_attention"), reverse)
+                    issues = " ".join(reverse["issues"]).casefold()
+                    self.assertIn("table", issues, reverse)
+                    self.assertNotIn("two-orientation", issues, reverse)
+                    self.assertFalse(reverse["native_consumption_verified"], reverse)
                     self.assertEqual(project_names(), before)
 
                 for name, data in originals.items():

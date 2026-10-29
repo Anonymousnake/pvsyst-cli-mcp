@@ -163,25 +163,33 @@ def _prepare(store, components, request):
     mode = request.get("shading_mode", "linear")
     if mode not in ("linear", "module_layout"):
         raise ValueError("shading_mode must be linear or module_layout")
-    if mode == "module_layout":
-        native._module_layout_preflight(snap, tables)
-    if request.get("scene_import_method") == "native":
-        # The high-level house task keeps the released two-orientation / two-table profile only.
-        # The single-orientation 1..3 linear recipe is a low-level scene-import capability, so
-        # decide from the REAL source snapshot (parsed planes), never from a caller-supplied
-        # orientation_id or merely from the table count. Reject before any project/scene/SFI write.
-        orientations = snap["source"].get("orientations") or []
-        if len(orientations) != 2 or [item["id"] for item in orientations] != [1, 2]:
+    method = request.get("scene_import_method") or "gui"
+    binding = request.get("string_layout")
+    # An explicit per-cell string_layout is consumed only by the headless native emitter in
+    # module_layout mode. The GUI importer auto-allocates strings and the linear path has no
+    # per-cell layout, so reject before any project/scene/SFI write instead of silently
+    # dropping the declared wiring.
+    if binding is not None:
+        if method != "native":
             raise ValueError(
-                "The high-level native house task requires the released two-orientation "
-                "(two-table) source profile; single-orientation input is available only "
-                "through the low-level scene importer")
-        # Fail before any project/scene/SFI write when the source/layout is outside the
-        # headless adapter's proven two-orientation, landscape zero-spacing, single-MPPT recipe.
+                "An explicit string_layout requires scene_import_method='native'; the GUI import "
+                "path auto-allocates strings and cannot consume declared per-cell wiring")
+        if mode != "module_layout":
+            raise ValueError("An explicit string_layout requires shading_mode='module_layout'")
+    if mode == "module_layout" and method != "native":
+        # GUI automatic wiring keeps its proven dual profile; the headless path is gated below.
+        native._module_layout_preflight(snap, tables)
+    if method == "native":
+        # The real evidence gate. With no binding it keeps the released single 1..3 linear /
+        # 2 fine / dual recipes; an explicit binding is validated against native source
+        # capacity and scene identity inside the gate (never inferred from table count), and
+        # there is no caller-side allocator. Decide from the REAL source snapshot, not a
+        # caller-supplied orientation_id.
         from pvsyst_auto.native.headless import _support_gate
-        _support_gate(snap["source"], tables, source_bytes.decode("utf-8-sig"), mode)
-    if not 1 <= len(tables) <= native.MAX_TABLES_BRIDGED:
-        raise ValueError("The native house task supports only one or two PV regions")
+        _support_gate(snap["source"], tables, source_bytes.decode("utf-8-sig"), mode,
+                      string_layout=binding)
+    elif not 1 <= len(tables) <= native.MAX_TABLES_BRIDGED:
+        raise ValueError("The house task supports only one or two PV regions")
     site_blocks = objects(store._read(paths["site"]).decode("utf-8-sig"))
     if len(site_blocks) != 1 or site_blocks[0].object_type != "pvSite" or any(
             float(site_blocks[0].one(field)[1]) != snap["source"]["site"][field.lower()]
@@ -261,11 +269,12 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     raise FileExistsError("Working project/checkpoint namespace already exists; use a new project or explicit resume")
                 preview = create_house_pv_scene(store, components, project=request["source_project"],
                     variant=request["source_variant"], output_name=plan["scene_name"], house=request["house"],
-                    layout=request["layout"], module_geometry=request.get("module_geometry"), dry_run=True)
+                    layout=request["layout"], module_geometry=request.get("module_geometry"), dry_run=True,
+                    string_layout=request.get("string_layout"))
                 if preview["status"] != "ready":
                     return {**result, "scene_preflight": preview, "issues": preview["issues"]}
-                if not 1 <= preview["geometry"]["pv_table_count"] <= native.MAX_TABLES_BRIDGED:
-                    raise ValueError("The native house task supports only one or two PV regions")
+                if method == "gui" and not 1 <= preview["geometry"]["pv_table_count"] <= native.MAX_TABLES_BRIDGED:
+                    raise ValueError("The house task supports only one or two PV regions")
                 if paths["sfi"].exists():
                     raise FileExistsError("House SFI already exists; choose a new working project")
                 run_stem = Path(request["new_project"]).stem + "_house_run01"
@@ -348,7 +357,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 arguments = recovered.get("create_arguments", {})
                 if (recovered.get("status") != "ready" or arguments.get("project") != request["new_project"]
                         or arguments.get("variant") != "VC0" or arguments.get("house") != house_profile(request["house"])
-                        or arguments.get("layout") != request["layout"]):
+                        or arguments.get("layout") != request["layout"]
+                        or arguments.get("string_layout") != request.get("string_layout")):
                     raise ValueError("Stored scene does not recover the declared house/layout/source")
             if position() >= PHASES.index("native_saved"):
                 if method == "gui":
@@ -394,7 +404,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
             if record["phase"] == "project_created":
                 created = create_house_pv_scene(store, components, project=request["new_project"], variant="VC0",
                     output_name=plan["scene_name"], house=request["house"], layout=request["layout"],
-                    module_geometry=request.get("module_geometry"), dry_run=False)
+                    module_geometry=request.get("module_geometry"), dry_run=False,
+                    string_layout=request.get("string_layout"))
                 record["scene_creation"] = created
                 if created["status"] != "created":
                     raise ValueError("House scene creation stopped: " + str(created["issues"]))

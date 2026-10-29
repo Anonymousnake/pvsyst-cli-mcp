@@ -19,12 +19,13 @@ modules each and two total independent MPPT inputs, table k binding global strin
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from pathlib import Path
 
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.project.circuit import inventory
 from pvsyst_auto.project.fileio import publish_new
-from pvsyst_auto.scene.author import _num, _rotate_z, house_profile
+from pvsyst_auto.scene.author import MAX_TABLES, _num, _rotate_z, house_profile
 from pvsyst_auto.scene.mapping import (
     ANGLE_TOL, COORD_TOL, verify_grouped_hardware, verify_house_geometry,
     verify_module_layout, verify_pv_geometry)
@@ -67,9 +68,9 @@ FORMAT = {
 }
 
 MAX_TABLES_BRIDGED = 2
-# Single-orientation native path: the author/readback layer already round-trips 1..64 tables
-# on one orientation, but only the 1..3 uniform-tilt linear shape is covered by this adapter's
-# stored-record verification today. Keep a conservative cap; the author's 1..64 stays intact.
+# The legacy None recipes stay on the proven 1..3 uniform-tilt single-orientation cap; an
+# explicit per-cell string_layout instead uses the author's real 1..MAX_TABLES contract and
+# the source module-capacity / per-table positive-cell invariants (no table-count cap).
 MAX_TABLES_SINGLE = 3
 
 
@@ -98,15 +99,16 @@ def _anchor_turn(source):
     return 360.0 - source["azimuth_deg"]
 
 
-def _ordinal_tables(tables):
+def _ordinal_tables(tables, max_tables=MAX_TABLES_SINGLE):
     """Order layout profiles: two-orientation groups high orientation first (native save order),
-    single-orientation recipes in declaration order."""
+    single-orientation recipes in declaration order. ``max_tables`` keeps the legacy None cap
+    (1..3) while an explicit per-cell binding allows the author's real 1..MAX_TABLES range."""
     if all("orientation_id" in row for row in tables):
         if len(tables) != MAX_TABLES_BRIDGED:
             raise ValueError("Native two-orientation import bridges exactly two PV tables")
         return sorted(tables, key=lambda row: -row["orientation_id"])
-    if not 1 <= len(tables) <= MAX_TABLES_SINGLE:
-        raise ValueError("Native single-orientation import bridges 1..%d PV tables" % MAX_TABLES_SINGLE)
+    if not 1 <= len(tables) <= max_tables:
+        raise ValueError("Native single-orientation import bridges 1..%d PV tables" % max_tables)
     return list(tables)
 
 
@@ -169,18 +171,20 @@ def _shd_table(idx, noc, profile, group, modules, turn):
             "      End of PVObject pvShdArrayTable"]
 
 
-def build_pvshading(house, tables, modules, source, shading_mode="linear"):
+def build_pvshading(house, tables, modules, source, shading_mode="linear", *, max_tables=MAX_TABLES_SINGLE):
     """Return (pvShading text, {orientation_id: (slot, created)}, object/table counts).
 
     Pure builder: every geometry/PV field is derived from the declaration. No golden
     scene record is read. ``shading_mode`` only selects the complete pvShading.Flags
     template; the module-layout block itself is added separately by the caller.
+    ``max_tables`` is the single-orientation table bound (legacy None 1..3, explicit
+    per-cell binding 1..MAX_TABLES).
     """
     pocket = house_profile(house)
     turn = _anchor_turn(source)
     orientations = source.get("orientations") or []
     groups = {item["id"]: item for item in orientations} if orientations else {1: source}
-    ordered = _ordinal_tables(tables)
+    ordered = _ordinal_tables(tables, max_tables)
     gen_parts = list(reversed(pocket["meshes"]))
     total = len(ordered) + len(gen_parts)
 
@@ -252,14 +256,18 @@ def _parse_electrical(text):
     return planes, subs
 
 
-def _ml_table(ordinal, sub, rows, columns, slot, created, globalStr=None):
+def _ml_table(ordinal, sub, rows, columns, slot, created, globalStr=None, cell_strings=None):
     # NoSubArrayPar is the physical source subarray; the module record's last field is the
     # source GLOBAL string. They coincide on the dual two-array profile (string==array id)
     # but diverge on the single-orientation profile (two strings on one subarray).
-    string_value = sub if globalStr is None else globalStr
-    records = [(i, r, c, string_value)
-               for i, (r, c) in enumerate(
-                   ((r, c) for r in range(1, rows + 1) for c in range(1, columns + 1)), 1)]
+    # cell_strings (explicit per-cell binding) maps every (row, col) to its global string;
+    # globalStr keeps the legacy uniform-per-table scalar path byte-for-byte.
+    positions = ((r, c) for r in range(1, rows + 1) for c in range(1, columns + 1))
+    if cell_strings is None:
+        string_value = sub if globalStr is None else globalStr
+        records = [(i, r, c, string_value) for i, (r, c) in enumerate(positions, 1)]
+    else:
+        records = [(i, r, c, cell_strings[(r, c)]) for i, (r, c) in enumerate(positions, 1)]
     lines = ["      PVObject_%d=pvMLTable" % ordinal,
              "        Comment=MLTable subarray %d" % sub,
              "        Flags=%s" % FORMAT["ml_table_flags"],
@@ -291,17 +299,110 @@ def _ml_table(ordinal, sub, rows, columns, slot, created, globalStr=None):
     return "\n".join(lines)
 
 
-def build_module_layout(source_text, tables, slot_map):
-    """Construct the stored pvModuleLayout for a proven narrow profile.
+def _binding_dict(binding):
+    """Normalize an explicit string layout to a plain dict, or None for the legacy path."""
+    if binding is None:
+        return None
+    if hasattr(binding, "model_dump"):
+        binding = binding.model_dump(exclude_none=True)
+    if not isinstance(binding, dict):
+        raise ValueError("string_layout must be a mapping")
+    return binding
 
-    Two profiles are supported: the dual two-orientation / two-array one-string-per-table
-    recipe (string id == array id), and the single-orientation / one-subarray recipe with two
-    landscape tables, each holding one string of NModSerie modules. In the single profile
-    table k (declaration order) binds source global string k; NoSubArrayPar is 1 for both.
+
+def _explicit_cells(binding, tables, subs):
+    """Validate an explicit per-cell string binding and return per-table cell maps.
+
+    Capacity is per GLOBAL string (= source NModSerie), not per table: a table may hold
+    several strings and a string may span tables. A draft (global_string=0), an incomplete
+    cover, an unknown/extra field, a repeated/out-of-range cell, or a wrong string capacity
+    is refused so the caller can never publish a partial layout. Only the single-subarray
+    (ML1) profile has a proven global-ordinal mapping; multi-subarray is explicitly pending.
+    """
+    binding = _binding_dict(binding)
+    if set(binding) != {"tables"} or not isinstance(binding["tables"], list):
+        raise ValueError("string_layout must contain exactly one 'tables' list")
+    if len(subs) != 1:
+        raise ValueError("Explicit per-cell string layout covers one source subarray only; "
+                         "multi-subarray sharing is not verified")
+    sub_id = next(iter(subs))
+    sub = subs[sub_id]
+    capacity = sub["nmod_serie"]
+    string_count = sub["nstring_ch"]
+    by_name = {table["name"]: table for table in tables}
+    seen, cell_maps, used = set(), {}, defaultdict(int)
+    for entry in binding["tables"]:
+        if not isinstance(entry, dict) or set(entry) != {"name", "subarray_id", "cells"}:
+            raise ValueError("Each binding table requires exactly name, subarray_id and cells")
+        name = entry["name"]
+        if not isinstance(name, str) or name not in by_name or name in seen:
+            raise ValueError("Binding table name must match one declared PV table exactly once: %r" % (name,))
+        seen.add(name)
+        if type(entry["subarray_id"]) is not int or entry["subarray_id"] != sub_id:
+            raise ValueError("Binding subarray_id must equal the sole source subarray %d" % sub_id)
+        profile = by_name[name]
+        rows, columns = profile["module_rows"], profile["module_columns"]
+        if not isinstance(entry["cells"], list):
+            raise ValueError("Binding cells must be a list")
+        cell_map = {}
+        for cell in entry["cells"]:
+            if not isinstance(cell, dict) or set(cell) != {"row", "col", "global_string"}:
+                raise ValueError("Each module cell requires exactly row, col and global_string")
+            row, column, global_string = cell["row"], cell["col"], cell["global_string"]
+            if any(type(value) is not int for value in (row, column, global_string)):
+                raise ValueError("row, col and global_string must be strict integers")
+            if not (1 <= row <= rows and 1 <= column <= columns):
+                raise ValueError("Binding cell (%d, %d) lies outside table %r (%dx%d)"
+                                 % (row, column, name, rows, columns))
+            if (row, column) in cell_map:
+                raise ValueError("Binding repeats cell (%d, %d) in table %r" % (row, column, name))
+            if global_string == 0:
+                raise ValueError("Draft binding: table %r has unassigned cells; complete the "
+                                 "layout before native import" % name)
+            if not 1 <= global_string <= string_count:
+                raise ValueError("global_string %d is outside the source strings 1..%d"
+                                 % (global_string, string_count))
+            cell_map[(row, column)] = global_string
+            used[global_string] += 1
+        if len(cell_map) != rows * columns:
+            raise ValueError("Binding must assign every cell of table %r (expected %d, got %d)"
+                             % (name, rows * columns, len(cell_map)))
+        cell_maps[name] = cell_map
+    if seen != set(by_name):
+        raise ValueError("string_layout must bind every declared table; missing: %s"
+                         % sorted(set(by_name) - seen))
+    for global_string in range(1, string_count + 1):
+        if used[global_string] != capacity:
+            raise ValueError("Global string %d carries %d cells but its source capacity is "
+                             "NModSerie=%d" % (global_string, used[global_string], capacity))
+    return [(by_name[table["name"]], sub_id, cell_maps[table["name"]]) for table in tables]
+
+
+def build_module_layout(source_text, tables, slot_map, string_layout=None):
+    """Construct the stored pvModuleLayout for a proven profile.
+
+    ``string_layout is None`` keeps the legacy dual / single-orientation narrow profiles
+    byte-for-byte. When an explicit binding is supplied, every table names its source
+    subarray and lists each module cell's global string; strings may span tables and a
+    table may hold several strings (capacity is per global string = NModSerie, not per
+    table). Geometry and angles still come from the source; NoField3D/NoField3DCreated are
+    the scene identities in ``slot_map`` keyed by table name. Draft/incomplete/over-capacity
+    bindings raise here, before anything is assembled or published.
     """
     planes, subs = _parse_electrical(source_text)
     blocks, out = [], []
-    if len(subs) == 2:
+    if string_layout is not None:
+        for ordinal, (profile, sub_id, cell_map) in enumerate(
+                _explicit_cells(string_layout, tables, subs), 1):
+            rows, columns = profile["module_rows"], profile["module_columns"]
+            slot, created = slot_map[profile["name"]]
+            blocks.append(_ml_table(ordinal, sub_id, rows, columns, slot, created,
+                                    cell_strings=cell_map))
+            out.append({"subarray_id": sub_id, "table_name": profile["name"],
+                        "no_field_3d_slot": slot, "native_created_id": created,
+                        "rows": rows, "columns": columns, "module_count": rows * columns,
+                        "global_strings": sorted(set(cell_map.values()))})
+    elif len(subs) == 2:
         if set(planes) != {1, 2} or set(subs) != {1, 2}:
             raise ValueError("Module Layout requires source orientations/arrays 1/2")
         by_orientation = {row["orientation_id"]: row for row in tables}
@@ -515,10 +616,56 @@ def _circuit_counts_valid(source_text, subs):
         return False
 
 
-def _support_gate(source, tables, source_text, mode="linear"):
+def _explicit_gate(source, tables, source_text, mode, string_layout):
+    """Source/geometry/capacity gate for an explicit per-cell string binding.
+
+    Replaces the narrow table/string-count caps with invariants: any number of landscape
+    zero-spacing tables on one fixed plane / one subarray, strings assigned per cell under
+    a per-global capacity of NModSerie. Unproven shapes (multi-orientation, multi-subarray,
+    portrait, non-zero spacing/padding, shared inputs, non-fixed planes) are refused with a
+    concrete issue rather than silently treated as verified; no circuit is fabricated.
+    """
+    if mode != "module_layout":
+        raise ValueError("An explicit string_layout requires shading_mode=module_layout")
+    if source.get("orientations"):
+        raise ValueError("Explicit per-cell module layout covers one source orientation only; "
+                         "multi-orientation wiring is not verified")
+    planes, subs = _parse_electrical(source_text)
+    if len(planes) != 1 or len(subs) != 1:
+        raise ValueError("Explicit per-cell module layout covers one source plane and one subarray only; "
+                         "multi-subarray sharing is not verified")
+    if any("orientation_id" in row for row in tables):
+        raise ValueError("The explicit module layout bridges tables without source orientation ids")
+    if not all("name" in row for row in tables):
+        raise ValueError("The explicit module layout requires named PV tables")
+    if not 1 <= len(tables) <= MAX_TABLES:
+        raise ValueError("The explicit module layout bridges 1..%d PV tables" % MAX_TABLES)
+    sub = next(iter(subs.values()))
+    plane = planes[sub["orientation"]]
+    if plane["field_type"] != "FixedPlane" or abs(plane["base_slope_deg"]) > ANGLE_TOL:
+        raise ValueError("Explicit module layout is bounded to ordinary fixed planes (no slope/averaging)")
+    if sub["power_sharing"] != "-1":
+        raise ValueError("Explicit module layout excludes shared inverter inputs; sharing is not verified")
+    if sub["nstr_orient1"] != sub["nstring_ch"]:
+        raise ValueError("Explicit module layout requires every source string on the single orientation")
+    for table in tables:
+        if (table["orientation"] != "landscape" or table["row_spacing_m"] != 0
+                or table["column_spacing_m"] != 0):
+            raise ValueError("Explicit module layout requires landscape zero-spacing tables; "
+                             "portrait or non-zero spacing is not verified")
+    _explicit_cells(string_layout, tables, subs)
+    if not _circuit_counts_valid(source_text, subs):
+        raise ValueError("Explicit module layout requires complete, consistent source circuit counts")
+
+
+def _support_gate(source, tables, source_text, mode="linear", string_layout=None):
     """Reject anything outside the proven native recipes: two orientations / two tables,
     or one orientation / one subarray with either 1..3 linear tables or exactly two
-    landscape tables holding two source strings (single-orientation fine layout)."""
+    landscape tables holding two source strings (single-orientation fine layout).
+    An explicit string_layout takes the general invariants instead of the table-count caps."""
+    if string_layout is not None:
+        _explicit_gate(source, tables, source_text, mode, string_layout)
+        return
     orientations = source.get("orientations") or []
     planes, subs = _parse_electrical(source_text)
     if orientations:
@@ -568,24 +715,30 @@ def _support_gate(source, tables, source_text, mode="linear"):
         raise ValueError("The single-orientation native path bridges 1..%d PV tables" % MAX_TABLES_SINGLE)
 
 
-def _preflight(store, components, scene_name, shading_mode):
+def _preflight(store, components, scene_name, shading_mode, string_layout=None):
     from pvsyst_auto.native.scene import _prepare_source
 
     scene = read_house_pv_scene(components, scene_name)
     if scene.get("status") != "ready":
         return {"status": "needs_context", "issues": [scene.get("issues") or "README scene is not ready"]}
+    if string_layout is None:
+        string_layout = scene.get("create_arguments", {}).get("string_layout")
+    if string_layout is not None and shading_mode != "module_layout":
+        raise ValueError("An explicit string_layout requires shading_mode=module_layout")
     prepared = _prepare_source(store, components, scene, allow_groups=True)
     snap = prepared["snapshot"]
     house = prepared["house"]
     tables = prepared["table_profiles"]
     source = snap["source"]
     source_text = snap["bytes"].decode("utf-8-sig")
-    _support_gate(source, tables, source_text, shading_mode)
+    _support_gate(source, tables, source_text, shading_mode, string_layout)
 
-    pvshading, slot_map = build_pvshading(house, tables, snap["modules"], source, shading_mode)
+    pvshading, slot_map = build_pvshading(
+        house, tables, snap["modules"], source, shading_mode,
+        max_tables=(MAX_TABLES if string_layout is not None else MAX_TABLES_SINGLE))
     layout_text, layout_tables = (None, None)
     if shading_mode == "module_layout":
-        layout_text, layout_tables = build_module_layout(source_text, tables, slot_map)
+        layout_text, layout_tables = build_module_layout(source_text, tables, slot_map, string_layout)
     candidate_text = assemble_variant(source_text, pvshading, layout_text)
     verification = verify_generated(candidate_text, source_text, house, tables, snap["modules"],
                                     source, shading_mode)
@@ -595,8 +748,13 @@ def _preflight(store, components, scene_name, shading_mode):
 
 
 def import_house_pv_scene_native(store, components, scene_name, variant_name,
-                                 dry_run=True, confirm=False, shading_mode="linear"):
-    """Build a native input variant from the declaration without any GUI or simulation."""
+                                 dry_run=True, confirm=False, shading_mode="linear",
+                                 string_layout=None):
+    """Build a native input variant from the declaration without any GUI or simulation.
+
+    ``string_layout`` (explicit per-cell wiring) is optional; when omitted it is read from
+    the recipe's ``create_arguments`` so the public import path needs no extra parameter.
+    """
     result = {"status": "blocked", "stage": "preflight", "method": "native", "dry_run": dry_run,
               "project": None, "source_variant": None, "variant": None, "file": None,
               "native_variant_created": False, "native_geometry_verified": False,
@@ -611,7 +769,7 @@ def import_house_pv_scene_native(store, components, scene_name, variant_name,
             if type(shading_mode) is not str or shading_mode not in ("linear", "module_layout"):
                 raise ValueError("shading_mode must be linear or module_layout")
             store._validate_display_name(variant_name, "variant_name")
-            pre = _preflight(store, components, scene_name, shading_mode)
+            pre = _preflight(store, components, scene_name, shading_mode, string_layout)
             if pre["status"] != "ready":
                 result.update(status=pre["status"], issues=pre["issues"])
                 return result

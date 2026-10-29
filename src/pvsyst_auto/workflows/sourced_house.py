@@ -81,6 +81,15 @@ def run_sourced_house_task(store, components, cli, *, request, binding, dry_run=
         try:
             if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation, accept_source_review)):
                 raise ValueError("Use strict booleans")
+            # Reject an unusable explicit binding before any source-project write, rather than
+            # preparing the source and only failing at the child house stage.
+            if request.get("string_layout") is not None and not (
+                    (request.get("scene_import_method") or "gui") == "native"
+                    and (request.get("shading_mode") or "linear") == "module_layout"):
+                result.update(status="blocked", stage="house_inputs",
+                              issues=["An explicit string_layout requires scene_import_method='native' "
+                                      "and shading_mode='module_layout'; nothing was prepared."])
+                return result
             design = _prune_empty(request["design"])
             if not isinstance(design, dict) or not isinstance(binding, dict):
                 raise ValueError("Provide the design request and the cited-source binding as objects")
@@ -156,6 +165,11 @@ def run_sourced_house_task(store, components, cli, *, request, binding, dry_run=
                 child["module_geometry"] = request["module_geometry"]
             if design.get("report_pages") is not None:
                 child["report_pages"] = design["report_pages"]
+            # Carry the native routing/selector and explicit per-cell binding into the child
+            # house request; these stay absent for the historical GUI/linear shape.
+            for key in ("shading_mode", "scene_import_method", "string_layout"):
+                if request.get(key) is not None:
+                    child[key] = request[key]
             child_resume = house_manifest.exists()
             if child_resume and not resume:
                 raise ValueError("House checkpoint already exists; explicit resume is required")

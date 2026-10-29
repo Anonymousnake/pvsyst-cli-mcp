@@ -19,7 +19,7 @@
 
 ### 单区域与多区域排布
 - **单区域（单张组件表）**：直接在 `layout` 中指定 7 个字段：`module_rows`（行数）、`module_columns`（列数）、`orientation`（`"portrait"` 竖放或 `"landscape"` 横放）、`row_spacing_m`、`column_spacing_m`、`origin_m`（局部起点 `[x, y, z]`）以及承托该阵列的屋面构件名 `roof_mesh`。
-- **同朝向多区域（`tables` 列表）**：当同一个朝向的组件分块摆在屋顶不同位置（例如被烟囱或天窗隔开成左右两块）时，使用 `layout.tables` 列表（作者/读取器接受 1..64 个分区；GUI 自动导入桥最多 1..2 个分区；低层 `method="native"` 线性导入对单朝向 `1..3` 个分区提供存储读写，其有限 3 表 profile 已经公开 product 导入 + CLI 完成真实原生消费验收，见第 5 节；高层 `pvsyst_run_house_task` 仍只接受双朝向）。每个分区带独立的 `name` 和上述 7 个字段，且所有分区的 `module_rows × module_columns` 累加和必须等于源变体子阵列的总组件数（`NModSerie × NStringCh`）。
+- **同朝向多区域（`tables` 列表）**：当同一个朝向的组件分块摆在屋顶不同位置（例如被烟囱或天窗隔开成左右两块）时，使用 `layout.tables` 列表（作者/读取器接受 1..64 个分区；GUI 自动导入桥最多 1..2 个分区；低层 `method="native"` 线性导入对单朝向 `1..3` 个分区提供存储读写，其有限 3 表 profile 已经公开 product 导入 + CLI 完成真实原生消费验收，见第 5 节；高层 `pvsyst_run_house_task` 与低层共用同一原生门，单朝向按已证窄模板或显式 `string_layout` 接线，见第 5 节）。每个分区带独立的 `name` 和上述 7 个字段，且所有分区的 `module_rows × module_columns` 累加和必须等于源变体子阵列的总组件数（`NModSerie × NStringCh`）。
 
 几何校验规则：
 - 所选 `roof_mesh` 必须是法向朝上且倾角/方位角与源变体固定朝向一致的共面屋面网格。
@@ -30,7 +30,7 @@
 
 ## 3. 无损回读与修订（`pvsyst_read_house_pv_scene`）
 
-调用 `pvsyst_read_house_pv_scene(scene_name)` 会解析 `UserData/<scene_name>.pvc2` 中的真实 XML 网格与 PV 支架节点，并用解析出的参数在内存里重新生成一份 XML 与原文件做归一化比对，确保没有漏掉任何未知节点或手改变换。
+调用 `pvsyst_read_house_pv_scene(scene_name)`（`scene_name` 须以 `.pvc2` 结尾，如 `my_house_scene.pvc2`）会解析 `UserData/<scene_name>` 中的真实 XML 网格与 PV 支架节点，并用解析出的参数在内存里重新生成一份 XML 与原文件做归一化比对，确保没有漏掉任何未知节点或手改变换。
 
 返回的 `create_arguments` 字典可以直接拿来修改（比如把烟囱高度从 `6.4 m` 改成 `7.2 m`），然后换一个新的 `output_name` 调 `pvsyst_create_house_pv_scene` 生成修订版场景。
 
@@ -47,13 +47,15 @@
 
 `pvsyst_import_house_pv_scene` 默认仍为 `method="gui"`（第 4 节，行为与字段含义保持不变）；`method="native"` 需显式选择。它从同一份受支持配方在当前工作区构造一个新的原生输入变体：不查阅、不激活、不启动 GUI，不读写 `PVsyst.ini`，不用剪贴板，不启动 `PVsyst.exe`，不消耗许可证，也不运行仿真。该“写入输入文件”步骤不启动任何 GUI 或 CLI 进程，不涉及窗体。
 
-受支持的源配方边界固定（PVsyst 8.1.6、北半球）。线性模式下，双朝向模板已原生验证；单朝向 `1..3` 表模板为本轮新增低层实现、存储读取自洽（`stored_consistent`），其有限 3 表 profile 已用公开 product 导入 + CLI 完成真实原生消费验收（仅限该有限 3 表 profile，不表示 `1..64`、全部模板或高层单朝向已支持，也不作逐表独立归因）：
+受支持的源配方边界固定（PVsyst 8.1.6、北半球）。线性模式下，双朝向模板已原生验证；单朝向 `1..3` 表模板为本轮新增低层实现、存储读取自洽（`stored_consistent`），其有限 3 表 profile 已用公开 product 导入 + 本机 PVsyst 8.1.7 CLI 完成 48h 真实原生消费验收（仅限该有限 3 表 profile，不表示 `1..64`、全部模板或通用显式接线已全支持，也不作逐表独立归因）：
 
 - 双朝向、两张横装零间距组件表：源子阵 `1`/`2` 各一条独立组串/逆变器/MPPT，同一 `PAN`/`OND`，各分区组件数累加须严格等于源变体组件总数。
-- 单朝向、单子阵、`1..3` 张横装零间距组件表：每张表都归同一电气朝向（`NoOrient=1`），子阵列可含多串，各表组件数累加须严格等于源子阵的 `NModSerie × NStringCh`。`1..3` 是 Native 导入阶段当前支持的存储上限；其中 3 表 profile 已完成真实原生消费验收（有限 3 表 profile）。底层作者/读取器仍接受 `1..64` 张表，但 `1..64` 是作者能力，不等于 Native 已支持 `1..64`。
+- 单朝向、单子阵、`1..3` 张横装零间距组件表：每张表都归同一电气朝向（`NoOrient=1`），子阵列可含多串，各表组件数累加须严格等于源子阵的 `NModSerie × NStringCh`。`1..3` 是 Native 导入阶段当前支持的存储上限；其中 3 表 profile 已完成真实原生消费验收（本机 PVsyst 8.1.7 CLI 48h；有限 3 表 profile）。底层作者/读取器仍接受 `1..64` 张表，但 `1..64` 是作者能力，不等于 Native 已支持 `1..64`。
 - 单朝向、单子阵、恰两张横装零间距组件表、子阵携带两条源组串、两台独立逆变器（`NStringCh=2`、`NInverter=2`、`NInvMPPT=2`，2 总独立 MPPT 而非每机 2，每表 `NModSerie` 块、合计 36 块）：低层 `method="native"` 在 `shading_mode="module_layout"` 下接受的本轮 fine 窄模板。两张表都归唯一电气朝向（`NoOrient=1`）且 `NoSubArrayPar=1`——这是表级都指向同一子阵、可重复的引用，与“每张表的全局组串号”是两个不同概念，不能混用。声明序第 k 张表绑定源全局组串 k（`1`/`2`），每表独立线路、同一 `PAN`/`OND`、`PowerSharingInverterId=-1`。它是“恰 2 表 / 2 源串”的窄模板，不是任意 N 表或 N 串；单表 36 块、三表等不属于该模板的布局在写入前被拦截给出明确原因。
 
-来源不匹配、元数据未知或声明相互冲突时，在写入前停止并给出原因，不做暗中修正。负方位角按源 `FieldAzim` 的有符号约定写入（`-45` 即 `-45`，不写成 `315`）。精细模式（`shading_mode="module_layout"`）仅写入与布局配套、已单独验证的完整精细阴影状态（`pvShading.Flags=$20100900`）：双朝向模板保持已验证行为；单朝向仅接受上述“恰 2 表 / 2 源串”fine 窄模板，其余单朝向布局（如单表 36 块、三表）在写入前被拒绝。线性模式写入 `$20000100`；不对其它取值或单个比特的内部语义作推断，也不外推到本模板之外的配方。本次扩展不新增用户参数或开关。
+来源不匹配、元数据未知或声明相互冲突时，在写入前停止并给出原因，不做暗中修正。负方位角按源 `FieldAzim` 的有符号约定写入（`-45` 即 `-45`，不写成 `315`）。精细模式（`shading_mode="module_layout"`）仅写入与布局配套、已单独验证的完整精细阴影状态（`pvShading.Flags=$20100900`）：双朝向模板保持已验证行为；无声明的单朝向仍只接受上述“恰 2 表 / 2 源串”fine 窄模板（单表 36 块、三表 fine 等在写入前被拒绝）。线性模式写入 `$20000100`；不对其它取值或单个比特的内部语义作推断。
+
+**显式逐格接线（`string_layout`，本轮新增）**：在单朝向单子阵上可给出与 `layout` 同级的 `string_layout` 兄弟块，逐 module cell 指定全局组串（`row`/`col` 1 基、`global_string>=0`、`subarray_id` 为真实源子阵 id）。串可跨表、一表可多串；每全局串容量 = 源 `NModSerie`（容量挂串不挂表），因此不再假设“每表一 string / 表数==NModSerie / 只有两表 / global∈{1,2}”。`global_string=0` 表示未分配 draft：`pvsyst_create_house_pv_scene` 与 `pvsyst_read_house_pv_scene` 可保存并回读（`string_layout_state="draft_incomplete"`），但原生 import 前必须补全，否则写入前 `blocked`；重复 cell / 未知 table / 越界 rowcol / 未知 global / 容量过填等 invalid 一律拒绝，不能当 draft 吞掉。显式接线仅在 `method="native"` + `shading_mode="module_layout"` 时消费，`gui`/`linear` 会在写入前拒绝，不悄悄丢弃声明接线。原厂 auto allocation（GUI「自动划分/分配所有」）与显式接线严格分离，不复制也不拟造排串算法；多子阵 / 共享 / 异构 / portrait / 非零间距 / 负 anchor / 多朝向逐格接线仍待 RE 与原生验证。容量关系是**一般关系**（全局串容量 = 源 `NModSerie`，串可跨表、表数与每表格数互相独立），但已获**真实原生物理消费**的只有单一取值：单固定朝向、单子阵、3 张表各 12 cell、36 module、2 串跨表（`g1`=18、`g2`=18）、2 逆变器、2 总 MPPT——本机 PVsyst 8.1.7 CLI 由全新源冷启动跑 48h，CSV `E_Grid`=190.0354 / `Shd`=0、逐时 maxdiff=0 与参考一致。创建阶段返回 `stored_consistent`（四个 native flag 仍为 false），与随后的原生消费是两个阶段。4 表各 9 cell、单表 36 cell 等其它表数只在作者/校验/存储层 `stored_consistent`（0 CLI），**未**做原生消费，因此不表示任意 N 表已被物理支持。本 stage 仍为 **partial**，不宣 full native 完成。
 
 `dry_run=true` 仅在内存中构建并校验原生记录，不写任何文件；可返回明确的预检状态（如 `status="ready_to_import"` 及 `verification` 明细），但 `stored_geometry_verified` 与 `stored_module_layout_verified` 均为 `false`（尚未写盘）。实际写入需 `dry_run=false` 且 `confirm=true`：只新增一个 `.VCx` 变体，不改动源变体、`PAN`/`OND`。
 
@@ -61,7 +63,7 @@
 
 ```python
 result = pvsyst_import_house_pv_scene(
-    scene_name="my_house_scene",
+    scene_name="my_house_scene.pvc2",
     variant_name="Native Import",
     method="native",
     shading_mode="module_layout",

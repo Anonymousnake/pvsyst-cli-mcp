@@ -22,6 +22,7 @@
 | `year` | 仿真年份（整数 `1969..2068`），需与继承的 `.MET` 文件年份一致 |
 | `house` | `kind="mesh"` 的完整具名房屋构件三角网格（墙体、屋面、挑檐、门窗、烟囱、门廊等；详见[住宅与光伏建模](house-pv-modeling.md)） |
 | `layout` | 单区域排布或 `tables` 中的双区域排布，组件总颗数必须与源变体子阵列严格一致 |
+| `string_layout` | 可选；显式 per-module-cell 组串接线声明 `{tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`，作为 `layout` 同级兄弟块，不替换 `layout`。`row`/`col` 1 基、`global_string>=0`（`0`=未分配 draft）、`subarray_id` 为真实源子阵 id。省略即旧行为：旧 recipe v1/v2 形状与字节不变、不升版本、不造 v3。draft 可保存/回读但原生 import 前须补全；显式接线仅在 `scene_import_method="native"` 且 `shading_mode="module_layout"` 时被消费，`gui`/`linear` 会在写入前拒绝而不是悄悄丢弃 |
 | `module_geometry` | 组件几何尺寸（`model_name`、`nom_power_wp`、`width_m`、`length_m`、`geometry_depth_m`） |
 | `report_pages` | 可选的原生 PDF 报告页名称列表；省略时输出默认完整报告 |
 | `shading_mode` | 可选；省略时保留原有线性阴影流程，`module_layout` 使用原生组件布局与精细电气阴影计算 |
@@ -29,9 +30,9 @@
 
 ## Module Layout 电气阴影
 
-对已满足双屋面条件的输入，在 `spec` 中加入 `"shading_mode": "module_layout"`。任务会在 PVsyst 中放置组件、自动分配组串、选中精细计算模式，再另存新变体；不在 MCP 内计算或近似电气阴影。
+对已满足双屋面条件的输入，在 `spec` 中加入 `"shading_mode": "module_layout"`。默认双朝向模板走原厂自动分配（原生水平、左下起、连续填充）；单朝向显式接线则由 `string_layout` 提供并交给免 GUI 的原生 emitter。不在 MCP 内计算或近似电气阴影。
 
-当前入口限定为两个固定朝向、子阵列编号 `1` 和 `2`，每个朝向独占一张横装矩形表，每个子阵列恰好一条 `1..100` 块组件的组串、一个独立逆变器及一个 MPPT，组件间距为零。沿用普通双屋面入口的站点、模型、朝向、坐标及原生版本要求。自动分配采用原生水平、左下起、连续填充方式；自定义接线、跨多表分串及任意多朝向尚未接入。
+默认（无 `string_layout`）入口仍限定两个固定朝向、子阵列 `1`/`2` 各一横装零间距矩形表、每阵一条 `1..100` 块组件独立组串/一个逆变器/一个 MPPT。要显式逐格接线时，在单朝向上给出 `string_layout`：它是原厂逐 cell 全局组串记录的薄投影，**允许串跨表、一表多串**，每全局串容量 = 源 `NModSerie`（容量挂串不挂表），仅 `scene_import_method="native"` + `shading_mode="module_layout"` 消费，`global_string=0` 的 draft 只可存/读、import 前须补全。原厂 auto allocation 与逐格显式接线严格分离；多子阵/共享/异构逆变器、portrait/非零间距、多朝向逐格接线仍待证。单子阵三表各 12 cell（36 module、`g1=18`/`g2=18`、2 逆变器/2 总 MPPT）的单朝向单子阵跨串已由本机 PVsyst 8.1.7 CLI 从全新源冷启动跑 48h 完成真实原生消费（CSV `E_Grid`=190.0354、`Shd`=0、逐时 maxdiff=0 同参考）；创建阶段仍只是 `stored_consistent`（native flag=false），消费为后续独立仿真。其它表数（如 4 表各 9 cell、单表 36 cell）只在存储层 `stored_consistent`（0 CLI），**未**做原生消费，不表示任意 N 表已被物理支持。通用显式接线整体仍标 **partial**，不宣 full native 完成。
 
 已准备好 `.pvc2` 且对应工程在 GUI 中打开时，也可直接调用导入工具：
 
@@ -55,7 +56,7 @@
 - 省略或 `"gui"`：保持现有流程——冷启动自有 PVsyst GUI 进程完成导入、朝向关联、校验与另存，入参、检查点与阶段形状均不变。
 - `"native"`：免 GUI，用已声明的房屋网格与 PV 区域在内存中构建并校验原生场景记录，直接写出一份新变体；**导入阶段**不启动 `PVsyst.exe`、不操作 `INI`/剪贴板/license、不运行仿真。全年仿真由高层 `pvsyst_run_house_task(dry_run=false, confirm=true)` 在同一流程内自动继续执行（见下）。
 
-`"native"` 的支持边界固定：高层 `pvsyst_run_house_task` 原生导入仍只支持双朝向、两张横装零间距矩形表（源子阵 `1`/`2` 各一条独立组串/一个独立逆变器/一个 MPPT，`MAX_TABLES_BRIDGED=2`），不接受单朝向；单朝向源在写入前的预检即被明确拒绝并给出原因，不做 GUI 回退。单朝向、单子阵、`1..3` 张横装零间距矩形表仅由低层 [`pvsyst_import_house_pv_scene`](tool-reference.md)`(method="native")` 导入工具提供存储写入与读取，其单朝向线性 3 表 profile 已用公开 product 导入 + CLI 完成真实原生消费验收（有限 3 表 profile，不作逐表独立归因）；`1..3` 是导入阶段的存储上限，作者仍接受 `1..64` 张表（作者能力不等于 Native 能力）。双朝向与单朝向线性 3 表模板均已原生验证；单朝向模板为本轮新增低层实现、存储读取自洽（`stored_consistent`）。精细 `module_layout` 已对双朝向单串模板验证；单朝向仅接受低层 `method="native"` 的“恰 2 表 / 2 源串 / 2 逆变器 / 2 总 MPPT（`NInvMPPT=2`，非每机 2）”fine 窄模板（详见[住宅与光伏建模](house-pv-modeling.md)），其余单朝向布局在写入前被拒绝。所有模板都要求同一 `PAN`/`OND`，各分区组件数累加须严格等于源变体组件总数。不满足条件的请求在写入前停止并给出原因，不做暗中修正；条件细节见[住宅与光伏建模](house-pv-modeling.md)。
+`"native"` 的支持边界：高层 `pvsyst_run_house_task` 与低层导入共用同一原生门（不再有单独的“仅双朝向”前置拒绝）。无 `string_layout` 时按已证窄模板：双朝向两张横装零间距矩形表（源子阵 `1`/`2` 各一条独立组串/一个逆变器/一个 MPPT），或单朝向单子阵 `1..3` 张横装零间距矩形表（线性）／恰两表两源串 fine（精细）；单朝向线性 3 表 profile 已完成公开 product 导入 + CLI 的真实原生消费验收（有限 3 表 profile，不作逐表独立归因）。给出 `string_layout` 时改走通用显式门：单朝向单子阵、任意合法表数下逐 cell 全局组串、每全局串容量 = `NModSerie`（可串跨表、一表多串）；`0`=未分配 draft 只可存/读、import 前须补全，超容量/重复格/未知串/错误子阵等 invalid 在写入前拒绝。`1..64` 是作者能力，不等于 Native 已支持 1..64。所有模板都要求同一 `PAN`/`OND`，各分区组件数累加须严格等于源变体组件总数。原厂 auto allocation、多子阵/共享/异构、portrait/非零间距、多朝向逐格接线仍待证，不满足条件的请求在写入前停止并给出原因，不做暗中修正；条件细节见[住宅与光伏建模](house-pv-modeling.md)。
 
 状态语义：高层 `pvsyst_run_house_task` 的 **native 导入阶段**只产出 STORED 记录（`stored_geometry_verified` / `stored_module_layout_verified` 反映已保存记录），此时 `imported` / `native_geometry_verified` / `native_consumption_verified` 仍为 false——表示 PVsyst 尚未加载或消费该变体，stored 不等于已 load；`native_geometry_verified` 与重载标志不能由 stored 记录伪置。若同时传入 `dry_run=false` 与 `confirm=true`，该次调用会沿原流程自动继续全年 CLI 仿真并产出 CSV/PDF，成功后上下文匹配新变体才把 `native_consumption_verified` 置 true。只有单独调用底层 [`pvsyst_import_house_pv_scene`](tool-reference.md)`(method="native")` 这个导入阶段独立入口时，才需再对返回的变体调用 [`pvsyst_run_simulation`](tool-reference.md) 跑仿真。
 

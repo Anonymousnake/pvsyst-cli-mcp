@@ -9,7 +9,7 @@ from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.project.domes import create_dome_allocation_variant
 from pvsyst_auto.scene.author import create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, NativeDCUpdates, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
+from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, NativeDCUpdates, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
 from pvsyst_auto.api.context import categorized_tool, cli, components, variant_call
 
 
@@ -733,7 +733,8 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
                                  house: MeshHouseSpec | HouseSpec,
                                  layout: NamedPVTablesLayout | PlacedPVTableLayout | PVTableLayout,
                                  dry_run: StrictBool = True,
-                                 module_geometry: ModuleGeometry | None = None) -> dict:
+                                 module_geometry: ModuleGeometry | None = None,
+                                 string_layout: StringLayoutBinding | None = None) -> dict:
     """Write a complete AI-authored house/PV scene in one call; prefer house.kind='mesh'.
     AI supplies all named architectural meshes (vertices in metres, explicit zero-based
     triangle indices): walls, multiple roof faces, eaves, chimney, window/door geometry,
@@ -789,14 +790,20 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
     creating a file does not prove that PVsyst imports it as a shading scene or consumes it.
     dry_run=true writes nothing and creates no directory. Execution writes only
     UserData/<output_name>.pvc2 with no-overwrite semantics and re-checks both the source
-    variant and PAN bytes. native_consumption_verified and imported stay false."""
+    variant and PAN bytes. native_consumption_verified and imported stay false.
+    Optional string_layout is an explicit per-cell wiring block stored verbatim as a sibling
+    of layout in the .pvc2 recipe. Drafts (any global_string=0 or a partial table) are accepted
+    and written here; only native module_layout import requires a complete binding, and this
+    tool never imports or consumes the scene."""
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
     return create_house_pv_scene(store, component_store, project=project, variant=variant,
                                  output_name=output_name, house=house.model_dump(),
                                  layout=layout.model_dump(exclude_none=True), dry_run=dry_run,
                                  module_geometry=(module_geometry.model_dump()
-                                                  if module_geometry is not None else None))
+                                                  if module_geometry is not None else None),
+                                 string_layout=(string_layout.model_dump(exclude_none=True)
+                                                if string_layout is not None else None))
 
 @categorized_tool()
 def pvsyst_read_house_pv_scene(scene_name: StrictStr) -> dict:
@@ -880,7 +887,25 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
     reflect the STORED record only, while native_geometry_verified/native_module_layout_verified,
     native_consumption_verified and imported stay false because PVsyst has not loaded or consumed
     it; run an explicit simulation to verify consumption. dry_run writes nothing and keeps both
-    stored flags false but still reports the passed precheck. The source variant/PAN are never modified."""
+    stored flags false but still reports the passed precheck. The source variant/PAN are never modified.
+    A scene recipe carrying an explicit string_layout is rejected here for method='gui' or
+    shading_mode='linear' instead of silently ignoring the wiring; such a scene requires
+    method='native' with shading_mode='module_layout', and the binding is read from the recipe
+    (no extra tool argument)."""
+    if not (method == "native" and shading_mode == "module_layout"):
+        # A scene whose recipe carries an explicit binding must not be fed to the GUI/linear
+        # importer, which would silently ignore per-cell wiring. Detect it on the recipe and
+        # stop before any write; old scenes without a binding keep their exact legacy routing.
+        recovered = read_house_pv_scene(components(), scene_name)
+        binding = (recovered.get("create_arguments") or {}).get("string_layout")
+        if binding is not None:
+            return {"status": "blocked", "stage": "preflight", "method": method,
+                    "scene_name": scene_name, "dry_run": dry_run,
+                    "native_consumption_verified": False,
+                    "issues": ["This scene declares an explicit string_layout; it can only be "
+                               "imported with method='native' and shading_mode='module_layout'. "
+                               "The GUI/linear importer auto-allocates strings and will not drop "
+                               "declared per-cell wiring silently."]}
     if method == "native":
         from pvsyst_auto.native.headless import import_house_pv_scene_native
         component_store = components()

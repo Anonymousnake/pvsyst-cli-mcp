@@ -6,7 +6,7 @@ import re
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects
-from pvsyst_auto.scene.mapping import verify_module_layout
+from pvsyst_auto.scene.mapping import assess_module_layout
 
 ACTIVE_BIT = 0x00000100
 SCENE_KEYS = ("Comment", "Flags", "Precision", "FracOmbreMod", "FracOmbreThin", "DisplayedRef")
@@ -68,16 +68,20 @@ def shading_state(lines):
 
 
 def module_layout_state(lines):
-    """Read saved layout integrity without claiming the selected calculation mode."""
+    """Read saved layout integrity without claiming the selected calculation mode.
+
+    The stored record alone (no recipe) is classified as stored_consistent, draft_incomplete,
+    invalid or needs_review; native consumption stays unverified.
+    """
     if not any(line.strip().endswith("=pvModuleLayout") for line in lines):
         return {"configured": False, "status": "absent", "native_consumption_verified": False}
     try:
         normalized = [line.rstrip("\r\n") + "\n" for line in lines]
-        return verify_module_layout(objects("".join(normalized)), normalized)
+        return assess_module_layout(objects("".join(normalized)), normalized)
     except (ValueError, KeyError, OverflowError) as exc:
         return {"configured": True, "status": "needs_review", "issues": [str(exc)],
                 "native_consumption_verified": False,
-                "scope": "Stored layout is outside the verified two-array single-string profile or its references are inconsistent"}
+                "scope": "Stored layout is outside the verified native profile or its references are inconsistent"}
 
 
 def _pv_bindings(lines, types):
@@ -114,11 +118,6 @@ def _pv_bindings(lines, types):
         arrays = [block for block in blocks if block.object_type == "pvSubArray"]
         if not 1 <= len(planes) <= 2 or not 1 <= len(arrays) <= 2:
             raise ValueError("Stored binding review supports one/two fixed source planes and subarrays")
-        # A single orientation binds up to three tables; two orientations keep the proven two-table cap.
-        max_tables = 3 if len(planes) == 1 else 2
-        if not 1 <= types.count("pvShdArrayTable") <= max_tables:
-            raise ValueError("Stored binding review supports one to three PV tables for a single orientation "
-                             "and one to two for two orientations")
         grouped = {}
         for plane in planes:
             identifier = integer(plane, "NoOrient")
@@ -146,6 +145,14 @@ def _pv_bindings(lines, types):
             group = grouped[identifier]
             group["subarray_ids"].append(array_id)
             group["electrical_module_count"] += integer(array, "NModSerie") * integer(array, "NStringCh")
+        # Two orientations keep the proven one-table-per-orientation cap; a single orientation
+        # allows any legal count, bounded only by the source module total (each table >= 1 cell).
+        table_count = types.count("pvShdArrayTable")
+        max_tables = 2 if len(planes) == 2 else sum(
+            group["electrical_module_count"] for group in grouped.values())
+        if not 1 <= table_count <= max_tables:
+            raise ValueError("Stored binding review requires 1..%d PV tables for %d source plane(s)"
+                             % (max_tables, len(planes)))
         for table in tables:
             row = {"object_path": table.path, "values": raw_fields(table)}
             result["tables"].append(row)

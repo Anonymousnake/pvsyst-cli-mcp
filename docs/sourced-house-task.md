@@ -16,6 +16,7 @@
 | `sources`, `declarations` | 规格书来源声明与字段数值/单位摘录（格式同 `pvsyst_prepare_sourced_design`） |
 | `goals` | 可选的 `SourcedDesignGoals`（目标容量也可直接在 `design.target_dc_kw` 中给出，两者不能矛盾） |
 | `house`, `layout`, `module_geometry` | 房屋三维网格、1..2 个 PV 分区排布与组件几何尺寸（格式同 [`pvsyst_run_house_task`](native-house-task.md)） |
+| `string_layout`, `shading_mode`, `scene_import_method` | 可选透传字段：`string_layout` 为显式 per-cell 组串接线兄弟块（`{tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`，见[住宅与光伏建模](house-pv-modeling.md) 第 5 节）；`shading_mode`（`linear`/`module_layout`）与 `scene_import_method`（`gui`/`native`）选择阴影与导入路线。三者原样透传给内部 `pvsyst_run_house_task`；省略时保持旧 None 行为与检查点形状不变，显式 `string_layout` 仅在 `scene_import_method="native"` + `shading_mode="module_layout"` 时进入原生显式门。该透传目前只经 schema 与静态代码路径审阅（高层 sourced 的 dry-run 与全年实跑尚未执行，不应据此认为高层 sourced 已完成全年无窗 PDF 交付） |
 
 ## 状态流转与两步确认开关
 

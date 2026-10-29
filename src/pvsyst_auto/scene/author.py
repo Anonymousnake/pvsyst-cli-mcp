@@ -429,6 +429,72 @@ def table_profiles(layout, house, modules, source):
     return result
 
 
+def _string_layout_profile(string_layout, tables):
+    """Validate the explicit per-cell string binding against resolved table profiles.
+
+    Returns ``(normalized, state)`` where state is ``"complete"`` or ``"draft_incomplete"``.
+    ``string_layout`` of ``None`` (legacy recipe that omits the optional key) returns
+    ``(None, None)`` so the legacy authoring path stays byte-identical.
+    A well-formed but partial binding (missing cells or global_string 0) is a storable draft.
+    Duplicate/unknown table, out-of-range or repeated cell faults raise instead of being kept
+    as a draft; no native auto-allocation or source-capacity rule is derived here.
+    """
+    if string_layout is None:
+        return None, None
+    if not isinstance(string_layout, dict) or set(string_layout) != {"tables"}:
+        raise ValueError("string_layout must declare exactly tables")
+    entries = string_layout["tables"]
+    if not isinstance(entries, list) or not 1 <= len(entries) <= MAX_TABLES:
+        raise ValueError(f"string_layout.tables must hold 1..{MAX_TABLES} table bindings")
+    by_name = {profile["name"]: profile for profile in tables if "name" in profile}
+    normalized, seen_tables, errors, complete = [], set(), [], True
+    for index, entry in enumerate(entries):
+        path = f"string_layout.tables[{index}]"
+        try:
+            if not isinstance(entry, dict) or set(entry) != {"name", "subarray_id", "cells"}:
+                raise ValueError("Each table binding requires exactly name, subarray_id and cells")
+            name = _name(entry["name"])
+            if name in seen_tables:
+                raise ValueError("Each table name may be bound only once")
+            seen_tables.add(name)
+            profile = by_name.get(name)
+            if profile is None:
+                raise ValueError("Binding names a table that is not declared in layout.tables")
+            subarray_id = entry["subarray_id"]
+            if type(subarray_id) is not int or subarray_id < 1:
+                raise ValueError("subarray_id must be a positive strict integer")
+            if not isinstance(entry["cells"], list):
+                raise ValueError("cells must be a list")
+            rows, columns = profile["module_rows"], profile["module_columns"]
+            seen_cells, cells = set(), []
+            for cell in entry["cells"]:
+                if not isinstance(cell, dict) or set(cell) != {"row", "col", "global_string"}:
+                    raise ValueError("Each cell requires exactly row, col and global_string")
+                row, col, glob = cell["row"], cell["col"], cell["global_string"]
+                for label, value in (("row", row), ("col", col)):
+                    if type(value) is not int or value < 1:
+                        raise ValueError(f"{label} must be a positive strict integer")
+                if type(glob) is not int or glob < 0:
+                    raise ValueError("global_string must be a non-negative strict integer (0 = unassigned draft)")
+                if row > rows or col > columns:
+                    raise ValueError(f"cell ({row},{col}) is outside the {rows}x{columns} grid of table {name}")
+                if (row, col) in seen_cells:
+                    raise ValueError(f"cell ({row},{col}) is repeated in table {name}")
+                seen_cells.add((row, col))
+                cells.append({"row": row, "col": col, "global_string": glob})
+            if len(seen_cells) != rows * columns or any(cell["global_string"] == 0 for cell in cells):
+                complete = False
+            normalized.append({"name": name, "subarray_id": subarray_id, "cells": cells})
+        except (ValueError, KeyError, TypeError) as exc:
+            errors.append(_diagnostic("string_layout", path, str(exc),
+                repair_hint="Fix the indicated table/cell binding; explicit string wiring is never auto-allocated."))
+    if errors:
+        raise SceneValidationError(errors)
+    if len(seen_tables) != len(by_name):
+        complete = False
+    return {"tables": normalized}, ("complete" if complete else "draft_incomplete")
+
+
 def _rotate_z(point, degrees):
     angle = math.radians(degrees)
     x, y, z = point
@@ -783,7 +849,7 @@ def build_scene(house, tables, modules, source, created, recipe=None):
 
 
 def create_house_pv_scene(store, components, *, project, variant, output_name, house, layout,
-                          dry_run=True, module_geometry=None):
+                          dry_run=True, module_geometry=None, string_layout=None):
     """Preview or write one new .pvc2; the project, variant and PAN are never written."""
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
               "diagnostics": [], "warnings": [], "artifacts": {},
@@ -803,6 +869,7 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             pocket = house_profile(house)
             tables = table_profiles(layout, pocket, modules, source)
             check_tables(pocket, tables)
+            binding, binding_state = _string_layout_profile(string_layout, tables)
             declared = {"project": project, "variant": variant, "pan": source["pan_name"],
                         "module_total": source["module_total"]}
             if "orientations" in source:
@@ -811,6 +878,8 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             recipe = {"version": 2 if "orientations" in source else 1, "source": declared,
                       "house": {"kind": "mesh"} if pocket["kind"] == "mesh" else house,
                       "layout": layout}
+            if binding is not None:
+                recipe["string_layout"] = binding
             created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             root, counts = build_scene(pocket, tables, modules, source, created, recipe)
             payload = ET.tostring(root, encoding="utf-8", xml_declaration=True)
@@ -837,6 +906,8 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                                  if pocket["kind"] == "mesh" else pocket),
                           layout={"tables": tables} if "tables" in layout else tables[0], geometry=counts,
                           bytes=len(payload))
+            if binding_state is not None:
+                result["string_layout_state"] = binding_state
             result["warnings"].append(
                 "Module metadata provenance: " + modules["metadata_source"] + ". Geometry uses metres; "
                 "only pv:module dimensions use millimetres. Depth is caller-provided geometry. "

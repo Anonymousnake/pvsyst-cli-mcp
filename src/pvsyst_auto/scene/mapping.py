@@ -367,8 +367,8 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
         planes = {1: {"id": 1, "module_total": source["module_total"],
                       "tilt_deg": source["tilt_deg"], "azimuth_deg": source["azimuth_deg"],
                       "field_azimuth_deg": source["field_azimuth_deg"]}}
-        if not 1 <= len(tables) <= 3 or any(table.get("orientation_id", 1) != 1 for table in tables):
-            raise ValueError("PV coordinate verification requires 1..3 single-orientation tables")
+        if not 1 <= len(tables) or any(table.get("orientation_id", 1) != 1 for table in tables):
+            raise ValueError("PV coordinate verification requires single-orientation tables")
         grouped = False
     if anchor_turn is None:
         if source["field_azimuth_deg"] != 0:
@@ -403,8 +403,13 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
                        "orientation": block.one("ModuleOrient")[1]})
     if len(native) != len(tables):
         raise ValueError("PV verification requires the saved native table count to match the declaration")
-    if not grouped and sum(table["module_rows"] * table["module_columns"] for table in tables) != source["module_total"]:
-        raise ValueError("Single-orientation PV tables must sum to the source module total")
+    if not grouped:
+        # Real count invariant: positive cells per table, summing to the source module total
+        # (no fixed table-count cap; strings/cells may be distributed over any legal tables).
+        if any(table["module_rows"] < 1 or table["module_columns"] < 1 for table in tables):
+            raise ValueError("Single-orientation PV tables require positive module cells")
+        if sum(table["module_rows"] * table["module_columns"] for table in tables) != source["module_total"]:
+            raise ValueError("Single-orientation PV tables must sum to the source module total")
     mappings, max_origin, max_dimension, max_angle = [], 0.0, 0.0, 0.0
     for table in tables:
         identifier = table.get("orientation_id", 1)
@@ -461,7 +466,7 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
             "pv_geometry_scope": "source origins, planes, dimensions, module layout and NoOrient links; anchor frame rotation"}
 
 
-def verify_module_layout(blocks, lines):
+def _verify_narrow_module_layout(blocks, lines):
     """Check a saved native module layout: the two-array / one-string-per-table profile, or
     the narrow single-orientation / one-subarray two-table / two-global-string profile.
     Shading physics and native consumption are excluded."""
@@ -592,3 +597,245 @@ def verify_module_layout(blocks, lines):
             "native_consumption_verified": False,
             "scope": "Stored native8.1.6 landscape/zero-spacing layout: two-array one-string-per-table, or "
                      "single-orientation two-table two-global-string; simulation mode and consumption are separate"}
+
+
+# ---------------------------------------------------------------------------
+# General per-cell string-layout verification (round03)
+#
+# The native pvMLTable record is a per-cell projection: every module cell carries a
+# global string ordinal, so a string may span several tables and one table may hold
+# several strings.  Capacity is bound to the global string (== the source subarray
+# NModSerie), never to the table.  The two narrow profiles above stay on their proven
+# strict path; this covers the general single-subarray shape, e.g. three tables of
+# twelve cells with gid1 = A12 + B6 and gid2 = B6 + C12.
+
+_MODULE_RECORD = re.compile(r"([0-9]+),([0-9]+),([0-9]+),([0-9]+),")
+
+
+def _review(issues):
+    return {"configured": True, "status": "needs_review", "issues": list(issues),
+            "native_consumption_verified": False,
+            "scope": "Stored layout is outside the verified native profile or its references are inconsistent"}
+
+
+def _matches_single_narrow(arrays, tables, layouts):
+    """True when the stored record is exactly the legacy single-orientation template, so the
+    original strict checks (not the general capacity invariants) keep owning it."""
+    try:
+        if len(tables) != 2 or len(layouts) != 2:
+            return False
+        sub = next(iter(arrays.values()))
+        capacity = _integer(sub.one("NModSerie")[1])
+        strings = []
+        for layout in layouts:
+            rows = _integer(layout.one("NLigMod")[1])
+            columns = _integer(layout.one("NColMod")[1])
+            if rows * columns != capacity:
+                return False
+            seen = set()
+            for index in range(1, rows * columns + 1):
+                match = _MODULE_RECORD.fullmatch(layout.one("Module_%d" % index)[1])
+                if match is None:
+                    return False
+                seen.add(match[4])
+            if len(seen) != 1:
+                return False
+            strings.append(next(iter(seen)))
+        return sorted(int(value) for value in strings) == [1, 2]
+    except (ValueError, KeyError, OverflowError):
+        return False
+
+
+def _assess_general_module_layout(blocks, lines):
+    """Classify a general single-subarray stored layout as stored_consistent, draft_incomplete
+    or invalid.  Unsupported profiles (portrait, spacing, sharing, non-fixed planes, multiple
+    subarrays) raise so the caller can report needs_review instead of a false stored state."""
+    owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
+    if (len(owners) != 1 or owners[0].path != "PVObject_ModuleLayout"
+            or owners[0].one("ModLayoutGlobState")[1] not in ("mlDefStrings", "mlDefInverters")
+            or owners[0].one("SubFieldsOrigin")[1] != "so3DShadings"):
+        raise ValueError("Module Layout owner record is not a defined native module layout")
+    arrays = _indexed(blocks, "pvSubArray", "SubArrayId")
+    planes = _indexed(blocks, "pvOrient", "NoOrient")
+    tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
+    layouts = [block for block in blocks if block.object_type == "pvMLTable"]
+    if len(arrays) != 1:
+        raise ValueError("General module layout requires exactly one source subarray")
+    if len(planes) != 1:
+        raise ValueError("General module layout requires exactly one source plane")
+    if len(layouts) < 1 or len(tables) != len(layouts):
+        raise ValueError("General module layout requires one native 3D table per module-layout table")
+    subarray_id = next(iter(arrays))
+    array = arrays[subarray_id]
+    plane = next(iter(planes.values()))
+    if (plane.one("FieldType")[1] != "FixedPlane" or plane.one("Flags")[1] != "$00"
+            or any(plane.one(key)[1] != "False" for key in ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"))
+            or abs(_number(plane.one("BaseSlope")[1])) > ANGLE_TOL):
+        raise ValueError("General module layout requires an ordinary non-averaged fixed source plane")
+    if _integer(array.one("NoOrientation")[1]) != _integer(plane.one("NoOrient")[1]):
+        raise ValueError("General module layout source subarray must own the single source plane")
+    if "PowerSharingInverterId" in array.fields and array.one("PowerSharingInverterId")[1] != "-1":
+        raise ValueError("General module layout excludes shared inverter inputs")
+    capacity = _integer(array.one("NModSerie")[1])
+    nstrings = _integer(array.one("NStringCh")[1])
+    if capacity < 1 or nstrings < 1:
+        raise ValueError("General module layout requires positive source string capacity")
+
+    body = lines[owners[0].line:owners[0].end_line - 1]
+    declared = [int(match[1]) for line in body
+                if (match := re.fullmatch(r"\s*SubFields, list of=([0-9]+) PVObjects\s*", line))]
+    issues, draft = [], False
+    if declared != [len(layouts)] or sum(line.strip() == "End of SubFields" for line in body) != 1:
+        issues.append("Declared subfield list does not match the module-layout tables")
+    created = _indexed(tables, "pvShdArrayTable", "NoObjCreated")
+    scene_objects = [block for block in blocks
+                     if re.fullmatch(r"PVObject_Ombrage/PVObject_[1-9][0-9]*", block.path)]
+    identities = [_integer(block.one("NoObjCreated")[1]) for block in scene_objects]
+    if len(created) != len(tables) or 0 in identities or len(identities) != len(set(identities)):
+        issues.append("Native object creation references are missing, repeated or zero")
+
+    subfields, rows_out, string_totals, total_cells = set(), [], defaultdict(int), 0
+    for layout in layouts:
+        if layout.path.rsplit("/", 1)[0] != owners[0].path:
+            issues.append("Module-layout table lies outside its owning layout: " + layout.path)
+            continue
+        subfield = _integer(layout.one("NoSubField")[1])
+        if subfield in subfields:
+            issues.append("Repeated subfield identity %d" % subfield)
+        subfields.add(subfield)
+        identifier = _integer(layout.one("NoSubArrayPar")[1])
+        if identifier not in arrays:
+            issues.append("Module-layout table references an unknown source subarray %d" % identifier)
+            continue
+        rows = _integer(layout.one("NLigMod")[1])
+        columns = _integer(layout.one("NColMod")[1])
+        if rows < 1 or columns < 1:
+            issues.append("Module-layout table has a non-positive grid: " + layout.path)
+            continue
+        reference = _integer(layout.one("NoField3DCreated")[1])
+        table = created.get(reference)
+        if (table is None or table.one("Version")[1] != "8.1.6"
+                or table.one("Source")[1] != "osPVCollada"
+                or table.path.rsplit("/", 1)[-1] != "PVObject_" + layout.one("NoField3D")[1]
+                or layout.one("NoShed3D")[1] != "1" or layout.one("NIdentical")[1] != "1"
+                or _integer(table.one("NoOrient")[1]) != _integer(array.one("NoOrientation")[1])
+                or _integer(table.one("NModInHeight")[1]) != rows
+                or _integer(table.one("NModInWidth")[1]) != columns):
+            issues.append("Module-layout table/array/3D reference or mechanical layout disagrees: " + layout.path)
+            continue
+        if (layout.one("ModLayoutState")[1] != "mlDefStrings"
+                or layout.one("ModOrient")[1] != "moLandScape"
+                or table.one("ModuleOrient")[1] != "moLandScape"):
+            raise ValueError("General module layout supports only landscape defined-string tables")
+        if (_number(layout.one("ModSpacingX")[1]) != 0 or _number(layout.one("ModSpacingY")[1]) != 0
+                or _number(layout.one("RowPadding")[1]) != 0
+                or _number(table.one("ModSpacingX")[1]) != 0 or _number(table.one("ModSpacingY")[1]) != 0):
+            raise ValueError("General module layout excludes non-zero native spacing or row padding")
+        for table_key, plane_key in (("DInclin", "FieldTilt"), ("DAzimut", "FieldAzim"), ("BaseSlope", "BaseSlope")):
+            if abs(_number(table.one(table_key)[1]) - _number(plane.one(plane_key)[1])) > ANGLE_TOL:
+                issues.append("PV table angles disagree with the source plane for " + layout.path)
+        total_cells += rows * columns
+
+        section = lines[layout.line:layout.end_line - 1]
+        declared_cells = [int(match[1]) for line in section
+                          if (match := re.fullmatch(r"\s*Modules, list of=([0-9]+) tModule\s*", line))]
+        present = sorted(int(key[7:]) for key in layout.fields
+                         if key.startswith("Module_") and key[7:].isdigit())
+        cells, seen = [], set()
+        if present != list(range(1, len(present) + 1)):
+            issues.append("Module records are not a contiguous 1..N run in " + layout.path)
+        elif declared_cells != [len(present)]:
+            issues.append("Declared module count disagrees with %d records in %s" % (len(present), layout.path))
+        else:
+            for index in present:
+                match = _MODULE_RECORD.fullmatch(layout.one("Module_%d" % index)[1])
+                if match is None:
+                    issues.append("Module record Module_%d is not a complete cell tuple" % index)
+                    continue
+                sequence, row, column, glob = (int(value) for value in match.groups())
+                if sequence != index or not 1 <= row <= rows or not 1 <= column <= columns:
+                    issues.append("Module record Module_%d has an out-of-range sequence or cell" % index)
+                    continue
+                if (row, column) in seen:
+                    issues.append("Module record Module_%d repeats cell (%d,%d)" % (index, row, column))
+                    continue
+                seen.add((row, column))
+                cells.append((row, column, glob))
+                if glob == 0:
+                    draft = True
+                else:
+                    string_totals[glob] += 1
+            if len(seen) < rows * columns:
+                draft = True
+        rows_out.append({"object_path": layout.path, "subarray_id": identifier,
+                         "orientation_id": _integer(array.one("NoOrientation")[1]),
+                         "native_table_path": table.path, "native_created_id": reference,
+                         "rows": rows, "columns": columns, "module_count": rows * columns,
+                         "string_ids": sorted({cell[2] for cell in cells if cell[2] > 0}),
+                         "state": layout.one("ModLayoutState")[1],
+                         "module_orientation": layout.one("ModOrient")[1]})
+
+    if set(subfields) != set(range(1, len(layouts) + 1)):
+        issues.append("Subfield identities do not cover 1..%d exactly once" % len(layouts))
+    expected_total = capacity * nstrings
+    allowed = set(range(1, nstrings + 1))
+    for glob in sorted(string_totals):
+        if glob not in allowed:
+            issues.append("Global string %d is outside the source ordinal range 1..%d" % (glob, nstrings))
+        elif string_totals[glob] > capacity:
+            issues.append("Global string %d holds %d modules, above the %d-module capacity"
+                          % (glob, string_totals[glob], capacity))
+        elif string_totals[glob] < capacity:
+            draft = True
+    if {glob for glob in string_totals if glob in allowed} != allowed:
+        draft = True
+    if total_cells > expected_total:
+        issues.append("Module-layout tables declare %d cells, above the %d-module source total"
+                      % (total_cells, expected_total))
+    elif total_cells < expected_total:
+        draft = True
+
+    status = "invalid" if issues else ("draft_incomplete" if draft else "stored_consistent")
+    result = {"configured": True, "status": status, "tables": rows_out,
+              "global_state": owners[0].one("ModLayoutGlobState")[1],
+              "module_count": total_cells, "native_consumption_verified": False,
+              "scope": "Stored native per-cell string layout: capacity bound to the global string "
+                       "(== source NModSerie); strings may span tables and one table may hold several"}
+    if issues:
+        result["issues"] = issues
+    if status == "draft_incomplete":
+        result["unassigned_note"] = ("Some module cells are unassigned (global 0) or the tables are "
+                                     "incomplete; storable draft, not importable")
+    return result
+
+
+def assess_module_layout(blocks, lines):
+    """Read-only classifier for a stored module layout: stored_consistent, draft_incomplete,
+    invalid or needs_review.  Never raises for a present layout, so a raw VC without a recipe
+    can still be judged."""
+    owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
+    if not owners:
+        return {"configured": False, "status": "absent", "native_consumption_verified": False}
+    try:
+        arrays = _indexed(blocks, "pvSubArray", "SubArrayId")
+        tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
+        layouts = [block for block in blocks if block.object_type == "pvMLTable"]
+        ids = list(arrays)
+        if ids == [1, 2]:
+            return _verify_narrow_module_layout(blocks, lines)
+        if len(ids) == 1:
+            if ids == [1] and _matches_single_narrow(arrays, tables, layouts):
+                return _verify_narrow_module_layout(blocks, lines)
+            return _assess_general_module_layout(blocks, lines)
+        return _review(["Module Layout source arrays are outside the verified one/two-subarray profiles"])
+    except (ValueError, KeyError, OverflowError) as exc:
+        return _review([str(exc)])
+
+
+def verify_module_layout(blocks, lines):
+    """Strict stored-layout check used by native import and the GUI verifier: return the
+    classification only when it is stored_consistent, else raise with its issues."""
+    result = assess_module_layout(blocks, lines)
+    if result.get("status") != "stored_consistent":
+        raise ValueError("; ".join(result.get("issues") or [result.get("status", "unverified module layout")]))
+    return result
