@@ -70,3 +70,15 @@ cover summary notes params horizon shadings usersneeds results econeval circuit 
 ## 失败保留与回滚
 
 模板工程本身全程只读。执行任务时会先在 `Results` 下创建独占的任务清单 JSON，并在克隆出的新工程上分步修改。万一中途失败，已生成的工作工程、备份、`.SFI` 和日志都会保留在磁盘上方便排查；清单里的 `recovery` 字段按逆序列出了可直接传给 `pvsyst_restore_variant` 和 `pvsyst_restore_project_sources` 的回滚参数。
+
+## 纯预检：非法请求在启动任何原生进程前被拒
+
+`pvsyst_run_simulation` 在真正调用 `PVsystCLI` 之前先做一轮纯预检：不建目录、不写文件、不启动任何子进程，只依据请求参数与工作区本身判定。命中任一项即以字段级错误返回，且**零个 PVsystCLI 进程、零个结果文件**：
+
+- `project`/`variant` 必须存在于工作区；
+- 必须请求 CSV 或 PDF 输出（或批处理参数），批处理与单文件输出互斥，批处理 RVT 需批处理参数；
+- `sfi`/`rvt`/`met`/`sit`/参数文件必须后缀正确且存在；
+- `time_step`、`start_date`/`end_date`（`MM.DD`、`YY.MM.DD` 或 `YYYY.MM.DD`）与 `report_pages` 合法；
+- 输出 CSV/PDF 文件名必须尚未存在，批处理逐时输出名唯一。
+
+上述错误文案沿用既有预检契约，未为新实现改写。**零进程保证只适用于在纯预检阶段即被拒绝的非法请求。** 纯预检通过后，合法请求仍会真实调用 `PVsystCLI`（真实 license 查询，TRIAL 且剩余执行次数为 0 会被拒；`help` 选项校验；原生仿真），返回形状不变。因此纯预检只是启动前的参数与工作区校验，**不代表原生仿真整体无进程或无界面**——合法执行会照常启动原生 CLI 进程，PDF、批处理等运行也保持既有原生行为。
