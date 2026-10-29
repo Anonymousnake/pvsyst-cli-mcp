@@ -49,6 +49,13 @@ def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
     Optional spec.shading_mode=module_layout invokes the native detailed electrical
     layout path for two landscape zero-spacing, single-string groups and exports
     ShdElec. Omitting it preserves the original request/checkpoint representation.
+    Optional spec.scene_import_method="native" routes the SAME supported two-fixed-table
+    recipe through the existing headless native importer (no GUI/INI/clipboard) and records
+    the new variant as STORED-only: stored_geometry_verified (and stored_module_layout_verified
+    for module_layout) may be true, while imported/native_geometry_verified/native_reload_verified
+    and native_consumption_verified stay false until the normal CLI simulation consumes that VC.
+    Omitting it keeps the original GUI import route and request/checkpoint shape; unsupported
+    recipes stop with a concrete issue before writing and there is no silent GUI fallback.
     Preview writes nothing/does not activate or launch GUI; cold execution requires
     dry_run=false and confirm=true, configured DataPath and NO preexisting native GUI.
     It exclusively creates a working PRJ/VC0, PVC2 and SFI, opens one owned GUI, imports/
