@@ -25,6 +25,8 @@
 - 想看某个 PVsyst 字段在文件里叫什么、改值时要联动改哪些 `Flags` 位掩码，去 `project/`、`components/`、`energy/`、`weather/` 或 `scene/`。
 - 想看怎么调 `PVsystCLI.exe` 或怎么用 Win32 消息控制 PVsyst 窗口，看 `native/`。
 
+Windows 上所有原始 CLI 调用统一经 `native/cli.PVsystCLI._run` 在私有非输入桌面启动的隔离机制、边界与验收状态，见[原生 CLI 私有非输入桌面隔离](native-cli-isolation.md)。
+
 ## MCP 上下文与参数校验
 
 `api/context.py` 维护了进程内唯一的 `PVsystCLI` 实例和工作区重入锁（`RLock`），并挂载了一个前置中间件 `reject_unknown_tool_arguments`。所有 82 个工具都会根据 Python 函数签名严格校验顶层入参，一旦传了未知字段名会直接返回明确的错误提示，避免因为参数名拼写错误而在写文件时静默漏掉配置。复杂嵌套参数的结构校验集中在 `api/schemas.py`。

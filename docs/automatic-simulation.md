@@ -4,6 +4,7 @@
 
 - 如果想连组件检索、模板自动匹配和在线天气下载也一起包办，见更高层的 [`pvsyst_simulate_design`](single-design-inputs.md)。
 - 如果模板是无限水平轴跟踪器（`UnlimTracking`），同一工具会自动走跟踪分支，详见[跟踪模板流程](tracking-template-flow.md)。
+- Windows 下这里所有 `PVsystCLI.exe` 调用都经 `native/cli.PVsystCLI._run` 在私有非输入桌面隔离启动（不改计算结果），机制与验收状态见[原生 CLI 私有非输入桌面隔离](native-cli-isolation.md)。
 
 ## 固定倾角模式入参
 

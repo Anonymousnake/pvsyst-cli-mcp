@@ -165,10 +165,16 @@ class PVsystCLI:
 
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
         # Argument arrays preserve spaces in paths; serialize CLI operations on one workspace.
+        argv = [str(self.cli), *args]
         with self._lock:
-            return subprocess.run([str(self.cli), *args], cwd=self.cli.parent,
-                                  capture_output=True, text=True, errors="replace",
-                                  timeout=self.timeout, check=False)
+            if os.name == "nt":
+                # Every real CLI call runs on its own private, non-input desktop
+                # inside an owned Job; same argv/cwd/env/output/exit/timeout shape.
+                from pvsyst_auto.native import _winlaunch
+                return _winlaunch.run(argv, self.cli.parent, self.timeout)
+            return subprocess.run(argv, cwd=self.cli.parent, capture_output=True,
+                                  text=True, errors="replace", timeout=self.timeout,
+                                  check=False)
 
     @staticmethod
     def _output(result: subprocess.CompletedProcess[str]) -> str:
