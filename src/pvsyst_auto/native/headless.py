@@ -12,7 +12,9 @@ verifiers. The stored record is verified before it is written; native loading/co
 remains a separate, unverified step. Only the record that this adapter can prove is
 written: either two fixed source orientations with one landscape zero-spacing table each
 and one independent string/inverter/MPPT per array, or one orientation / one subarray with
-1..3 linear landscape zero-spacing tables sharing the source PAN/OND.
+1..3 linear landscape zero-spacing tables sharing the source PAN/OND, or (fine layout) one
+orientation / one subarray with exactly two landscape zero-spacing tables of NModSerie
+modules each and two total independent MPPT inputs, table k binding global string k.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ import re
 from pathlib import Path
 
 from pvsyst_auto.components.editor import objects
+from pvsyst_auto.project.circuit import inventory
 from pvsyst_auto.project.fileio import publish_new
 from pvsyst_auto.scene.author import _num, _rotate_z, house_profile
 from pvsyst_auto.scene.mapping import (
@@ -195,7 +198,11 @@ def build_pvshading(house, tables, modules, source, shading_mode="linear"):
         native_profile = {**profile, "orientation_id": oid}
         lines += _shd_table(idx, noc, native_profile, groups[oid], modules, turn)
         lines.append("")
-        slot_map[oid] = (idx, noc)
+        # Key by the real table identity: a dual profile carries orientation_id (unique per table),
+        # a single-orientation profile carries only its name (two tables share orientation 1, so an
+        # orientation key would overwrite the first slot). build_module_layout looks up the same key.
+        key = oid if "orientation_id" in profile else profile["name"]
+        slot_map[key] = (idx, noc)
         noc += 1
         idx += 1
     for part in gen_parts:
@@ -245,8 +252,12 @@ def _parse_electrical(text):
     return planes, subs
 
 
-def _ml_table(ordinal, sub, rows, columns, slot, created):
-    records = [(i, r, c, sub)
+def _ml_table(ordinal, sub, rows, columns, slot, created, globalStr=None):
+    # NoSubArrayPar is the physical source subarray; the module record's last field is the
+    # source GLOBAL string. They coincide on the dual two-array profile (string==array id)
+    # but diverge on the single-orientation profile (two strings on one subarray).
+    string_value = sub if globalStr is None else globalStr
+    records = [(i, r, c, string_value)
                for i, (r, c) in enumerate(
                    ((r, c) for r in range(1, rows + 1) for c in range(1, columns + 1)), 1)]
     lines = ["      PVObject_%d=pvMLTable" % ordinal,
@@ -281,35 +292,68 @@ def _ml_table(ordinal, sub, rows, columns, slot, created):
 
 
 def build_module_layout(source_text, tables, slot_map):
-    """Construct the stored pvModuleLayout for the two-array single-string template."""
+    """Construct the stored pvModuleLayout for a proven narrow profile.
+
+    Two profiles are supported: the dual two-orientation / two-array one-string-per-table
+    recipe (string id == array id), and the single-orientation / one-subarray recipe with two
+    landscape tables, each holding one string of NModSerie modules. In the single profile
+    table k (declaration order) binds source global string k; NoSubArrayPar is 1 for both.
+    """
     planes, subs = _parse_electrical(source_text)
-    if set(planes) != {1, 2} or set(subs) != {1, 2}:
-        raise ValueError("Module Layout requires source orientations/arrays 1/2")
-    by_orientation = {row["orientation_id"]: row for row in tables}
-    if {row["orientation_id"] for row in tables} != {1, 2} or {s["orientation"] for s in subs.values()} != {1, 2}:
-        raise ValueError("Module Layout requires two source tables, one per orientation")
     blocks, out = [], []
-    for ordinal, sub_id in enumerate(sorted(subs), 1):
-        sub = subs[sub_id]
+    if len(subs) == 2:
+        if set(planes) != {1, 2} or set(subs) != {1, 2}:
+            raise ValueError("Module Layout requires source orientations/arrays 1/2")
+        by_orientation = {row["orientation_id"]: row for row in tables}
+        if {row["orientation_id"] for row in tables} != {1, 2} or {s["orientation"] for s in subs.values()} != {1, 2}:
+            raise ValueError("Module Layout requires two source tables, one per orientation")
+        for ordinal, sub_id in enumerate(sorted(subs), 1):
+            sub = subs[sub_id]
+            plane = planes[sub["orientation"]]
+            profile = by_orientation[sub["orientation"]]
+            rows, columns = profile["module_rows"], profile["module_columns"]
+            if (sub["nstring_ch"] != 1 or sub["ninverter"] != 1 or sub["ninvmppt"] != 1
+                    or sub["power_sharing"] != "-1" or sub["nstr_orient1"] != sub["nstring_ch"]
+                    or sub["nmod_serie"] != rows * columns
+                    or not 1 <= rows * columns <= 100
+                    or profile["orientation"] != "landscape"
+                    or profile["row_spacing_m"] != 0 or profile["column_spacing_m"] != 0):
+                raise ValueError("Module Layout requires one independent string of 1..100 modules and one "
+                                 "inverter/MPPT per array on a landscape zero-spacing table")
+            if (abs(profile["tilt_deg"] - plane["tilt_deg"]) > ANGLE_TOL
+                    or abs(plane["base_slope_deg"]) > ANGLE_TOL):
+                raise ValueError("PV table plane differs from its source orientation on subarray %d" % sub_id)
+            slot, created = slot_map[sub["orientation"]]
+            blocks.append(_ml_table(ordinal, sub_id, rows, columns, slot, created))
+            out.append({"subarray_id": sub_id, "orientation_id": sub["orientation"],
+                        "no_field_3d_slot": slot, "native_created_id": created,
+                        "rows": rows, "columns": columns, "module_count": rows * columns})
+    elif len(subs) == 1:
+        if len(planes) != 1:
+            raise ValueError("Single-orientation module layout requires one source plane")
+        if len(tables) != 2 or any("orientation_id" in row for row in tables):
+            raise ValueError("Single-orientation module layout requires exactly two declaration-ordered tables")
+        sub_id, sub = next(iter(subs.items()))
         plane = planes[sub["orientation"]]
-        profile = by_orientation[sub["orientation"]]
-        rows, columns = profile["module_rows"], profile["module_columns"]
-        if (sub["nstring_ch"] != 1 or sub["ninverter"] != 1 or sub["ninvmppt"] != 1
-                or sub["power_sharing"] != "-1" or sub["nstr_orient1"] != sub["nstring_ch"]
-                or sub["nmod_serie"] != rows * columns
-                or not 1 <= rows * columns <= 100
-                or profile["orientation"] != "landscape"
-                or profile["row_spacing_m"] != 0 or profile["column_spacing_m"] != 0):
-            raise ValueError("Module Layout requires one independent string of 1..100 modules and one "
-                             "inverter/MPPT per array on a landscape zero-spacing table")
-        if (abs(profile["tilt_deg"] - plane["tilt_deg"]) > ANGLE_TOL
-                or abs(plane["base_slope_deg"]) > ANGLE_TOL):
-            raise ValueError("PV table plane differs from its source orientation on subarray %d" % sub_id)
-        slot, created = slot_map[sub["orientation"]]
-        blocks.append(_ml_table(ordinal, sub_id, rows, columns, slot, created))
-        out.append({"subarray_id": sub_id, "orientation_id": sub["orientation"],
-                    "no_field_3d_slot": slot, "native_created_id": created,
-                    "rows": rows, "columns": columns, "module_count": rows * columns})
+        if (sub["nstring_ch"] != 2 or sub["ninverter"] != 2 or sub["ninvmppt"] != 2
+                or sub["power_sharing"] != "-1" or sub["nstr_orient1"] != 2):
+            raise ValueError("Single-orientation module layout requires two inverters, two strings and two total MPPT inputs")
+        for k, profile in enumerate(tables, 1):
+            rows, columns = profile["module_rows"], profile["module_columns"]
+            if (profile["orientation"] != "landscape" or profile["row_spacing_m"] != 0
+                    or profile["column_spacing_m"] != 0 or rows * columns != sub["nmod_serie"]
+                    or not 1 <= rows * columns <= 100):
+                raise ValueError("Single-orientation layout tables must be landscape zero-spacing NModSerie blocks")
+            if (abs(profile["tilt_deg"] - plane["tilt_deg"]) > ANGLE_TOL
+                    or abs(plane["base_slope_deg"]) > ANGLE_TOL):
+                raise ValueError("PV table plane differs from its source orientation")
+            slot, created = slot_map[profile["name"]]
+            blocks.append(_ml_table(k, sub_id, rows, columns, slot, created, globalStr=k))
+            out.append({"subarray_id": sub_id, "orientation_id": sub["orientation"],
+                        "string_id": k, "no_field_3d_slot": slot, "native_created_id": created,
+                        "rows": rows, "columns": columns, "module_count": rows * columns})
+    else:
+        raise ValueError("Module layout requires one or two source subarrays")
     body = ["  PVObject_ModuleLayout=pvModuleLayout",
             "    Comment=Module layout (constructed)",
             "    Flags=%s" % FORMAT["ml_owner_flags"],
@@ -459,9 +503,22 @@ def _next_variant_id(store, project):
     return "VC%d" % number
 
 
+def _circuit_counts_valid(source_text, subs):
+    """Complete, consistent source circuit counts for the given subarray bounds."""
+    arrays = {int(block.one("SubArrayId")[1]): (block.line - 1, block.end_line - 1)
+              for block in objects(source_text) if block.object_type == "pvSubArray"}
+    if set(arrays) != set(subs):
+        return False
+    try:
+        return inventory(source_text.splitlines(True), arrays)["counts_valid"] is True
+    except (ValueError, KeyError):
+        return False
+
+
 def _support_gate(source, tables, source_text, mode="linear"):
-    """Reject anything outside the two proven native recipes: two orientations / two tables,
-    or one orientation / one subarray with 1..3 linear tables (single-orientation path)."""
+    """Reject anything outside the proven native recipes: two orientations / two tables,
+    or one orientation / one subarray with either 1..3 linear tables or exactly two
+    landscape tables holding two source strings (single-orientation fine layout)."""
     orientations = source.get("orientations") or []
     planes, subs = _parse_electrical(source_text)
     if orientations:
@@ -480,13 +537,10 @@ def _support_gate(source, tables, source_text, mode="linear"):
                     or sub["power_sharing"] != "-1" or sub["nstr_orient1"] != sub["nstring_ch"]):
                 raise ValueError("The native method requires one independent string/inverter/MPPT per array")
         return
-    if mode != "linear":
-        raise ValueError("The single-orientation native path supports linear shading only")
     if len(planes) != 1 or set(subs) != {1}:
         raise ValueError("The single-orientation native path requires one source plane and one subarray")
-    if not 1 <= len(tables) <= MAX_TABLES_SINGLE or any("orientation_id" in row for row in tables):
-        raise ValueError("The single-orientation native path bridges 1..%d tables without source orientation ids"
-                         % MAX_TABLES_SINGLE)
+    if any("orientation_id" in row for row in tables):
+        raise ValueError("The single-orientation native path bridges tables without source orientation ids")
     if not all("name" in row for row in tables):
         raise ValueError("The single-orientation native path requires named PV tables")
     for table in tables:
@@ -498,6 +552,20 @@ def _support_gate(source, tables, source_text, mode="linear"):
         raise ValueError("The source subarray must reference the sole source plane")
     if sub["power_sharing"] != "-1" or sub["nstr_orient1"] != sub["nstring_ch"]:
         raise ValueError("The single-orientation native path requires all strings on one orientation and no sharing")
+    if mode == "module_layout":
+        if len(tables) != 2:
+            raise ValueError("The single-orientation module layout requires exactly two PV tables")
+        if (sub["nstring_ch"] != 2 or sub["ninverter"] != 2 or sub["ninvmppt"] != 2):
+            raise ValueError("The single-orientation module layout requires two inverters, two source strings and two total MPPT inputs")
+        if any(table["module_rows"] * table["module_columns"] != sub["nmod_serie"] for table in tables):
+            raise ValueError("Each single-orientation layout table must hold exactly NModSerie modules")
+        if not _circuit_counts_valid(source_text, subs):
+            raise ValueError("The single-orientation module layout requires complete consistent source circuit counts")
+        return
+    if mode != "linear":
+        raise ValueError("The single-orientation native path supports linear or module_layout shading")
+    if not 1 <= len(tables) <= MAX_TABLES_SINGLE:
+        raise ValueError("The single-orientation native path bridges 1..%d PV tables" % MAX_TABLES_SINGLE)
 
 
 def _preflight(store, components, scene_name, shading_mode):

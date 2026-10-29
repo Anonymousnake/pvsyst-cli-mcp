@@ -462,18 +462,25 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
 
 
 def verify_module_layout(blocks, lines):
-    """Check the saved native two-array, one-string-per-table layout, not shading physics."""
+    """Check a saved native module layout: the two-array / one-string-per-table profile, or
+    the narrow single-orientation / one-subarray two-table / two-global-string profile.
+    Shading physics and native consumption are excluded."""
     owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
     arrays = _indexed(blocks, "pvSubArray", "SubArrayId")
     tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
     layouts = [block for block in blocks if block.object_type == "pvMLTable"]
+    single = list(arrays) == [1]
+    expected_arrays = [1] if single else [1, 2]
     if (len(owners) != 1 or owners[0].path != "PVObject_ModuleLayout"
-            or list(arrays) != [1, 2] or len(tables) != 2 or len(layouts) != 2
+            or list(arrays) != expected_arrays or len(tables) != 2 or len(layouts) != 2
             or owners[0].one("ModLayoutGlobState")[1] not in ("mlDefStrings", "mlDefInverters")
             or owners[0].one("SubFieldsOrigin")[1] != "so3DShadings"):
-        raise ValueError("Module Layout review requires two native 3D tables and source arrays 1/2 with defined strings")
+        raise ValueError("Module Layout review requires two native 3D tables and defined source strings")
     planes = _indexed(blocks, "pvOrient", "NoOrient")
-    if set(planes) != {1, 2} or {_integer(array.one("NoOrientation")[1]) for array in arrays.values()} != {1, 2}:
+    if single:
+        if set(planes) != {1} or {_integer(array.one("NoOrientation")[1]) for array in arrays.values()} != {1}:
+            raise ValueError("Single-orientation module layout requires one source plane and one source subarray")
+    elif set(planes) != {1, 2} or {_integer(array.one("NoOrientation")[1]) for array in arrays.values()} != {1, 2}:
         raise ValueError("Module Layout source arrays must own two existing distinct orientations 1/2")
     for plane in planes.values():
         if (plane.one("FieldType")[1] != "FixedPlane" or plane.one("Flags")[1] != "$00"
@@ -493,7 +500,7 @@ def verify_module_layout(blocks, lines):
     identities = [_integer(block.one("NoObjCreated")[1]) for block in scene_objects]
     if len(created) != 2 or 0 in identities or len(identities) != len(set(identities)):
         raise ValueError("Module Layout requires unique native object creation references")
-    result, used, subfields = [], set(), set()
+    result, used, subfields, used_strings = [], set(), set(), set()
     for layout in layouts:
         if layout.path.rsplit("/", 1)[0] != owners[0].path:
             raise ValueError("Module Layout table lies outside its owning layout")
@@ -502,15 +509,21 @@ def verify_module_layout(blocks, lines):
             raise ValueError("Module Layout has a missing or repeated subfield identity")
         subfields.add(subfield)
         identifier = _integer(layout.one("NoSubArrayPar")[1])
-        if identifier not in arrays or identifier in used:
+        if identifier not in arrays or (not single and identifier in used):
             raise ValueError("Module Layout has a missing or repeated source array")
         used.add(identifier)
         array = arrays[identifier]
         rows, columns = (_integer(layout.one(key)[1]) for key in ("NLigMod", "NColMod"))
         count = rows * columns
         if (not rows or not columns or not 1 <= count <= 100
-                or _integer(array.one("NModSerie")[1]) != count
-                or any(array.one(key)[1] != "1" for key in ("NStringCh", "NInverter", "NInvMPPT"))):
+                or _integer(array.one("NModSerie")[1]) != count):
+            raise ValueError("Module Layout requires one string of NModSerie modules per table")
+        if single:
+            if (_integer(array.one("NStringCh")[1]) != 2 or _integer(array.one("NInverter")[1]) != 2
+                    or _integer(array.one("NInvMPPT")[1]) != 2 or "NStrOrient1" not in array.fields
+                    or _integer(array.one("NStrOrient1")[1]) != 2):
+                raise ValueError("Single-orientation module layout requires two inverters, two strings and two total MPPT inputs")
+        elif any(array.one(key)[1] != "1" for key in ("NStringCh", "NInverter", "NInvMPPT")):
             raise ValueError("Module Layout review requires one independent string of 1..100 modules per array")
         if "PowerSharingInverterId" in array.fields and array.one("PowerSharingInverterId")[1] != "-1":
             raise ValueError("Module Layout single-string review excludes shared inverter inputs")
@@ -543,24 +556,39 @@ def verify_module_layout(blocks, lines):
         if (declared != [count] or sum(line.strip() == "End of List Modules" for line in body) != 1
                 or fields != ["Module_%d" % index for index in range(1, count + 1)]):
             raise ValueError("Module Layout declared module count or records are missing or unexpected")
-        cells = set()
+        cells, strings_seen = set(), set()
         for index in range(1, count + 1):
             raw = layout.one("Module_%d" % index)[1]
             if not re.fullmatch(r"[1-9][0-9]*,[1-9][0-9]*,[1-9][0-9]*,[1-9][0-9]*,", raw):
                 raise ValueError("Module Layout requires complete positive native module/string records")
             sequence, row, column, string = map(int, raw.rstrip(",").split(","))
             if (sequence != index or not 1 <= row <= rows or not 1 <= column <= columns
-                    or string != identifier or (row, column) in cells):
-                raise ValueError("Module Layout contains an unassigned, repeated or mismatched module/string cell")
+                    or (row, column) in cells):
+                raise ValueError("Module Layout contains an unassigned or repeated module cell")
             cells.add((row, column))
+            strings_seen.add(string)
+        if single:
+            if len(strings_seen) != 1:
+                raise ValueError("Each single-orientation layout table must hold exactly one global string")
+            string_id = strings_seen.pop()
+            if string_id not in (1, 2) or string_id in used_strings:
+                raise ValueError("Single-orientation module layout must assign global strings 1 and 2 once each")
+            used_strings.add(string_id)
+        else:
+            string_id = identifier
+            if strings_seen != {identifier}:
+                raise ValueError("Module Layout contains an unassigned, repeated or mismatched module/string cell")
         result.append({"object_path": layout.path, "subarray_id": identifier,
                        "orientation_id": _integer(array.one("NoOrientation")[1]),
                        "native_table_path": table.path, "native_created_id": reference,
                        "rows": rows, "columns": columns, "module_count": count,
-                       "string_id": identifier, "state": layout.one("ModLayoutState")[1],
+                       "string_id": string_id, "state": layout.one("ModLayoutState")[1],
                        "module_orientation": layout.one("ModOrient")[1]})
+    if single and used_strings != {1, 2}:
+        raise ValueError("Single-orientation module layout must assign both global strings 1 and 2 exactly")
     return {"configured": True, "status": "stored_consistent", "tables": result,
             "global_state": owners[0].one("ModLayoutGlobState")[1],
             "module_count": sum(row["module_count"] for row in result),
             "native_consumption_verified": False,
-            "scope": "Stored native8.1.6 two-array landscape/zero-spacing single-string layout only; simulation mode and consumption are separate"}
+            "scope": "Stored native8.1.6 landscape/zero-spacing layout: two-array one-string-per-table, or "
+                     "single-orientation two-table two-global-string; simulation mode and consumption are separate"}
