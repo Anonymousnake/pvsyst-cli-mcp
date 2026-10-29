@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from itertools import product
 
 from pvsyst_auto.project.circuit import circuit_nodes, inventory
-from pvsyst_auto.scene.author import MAX_VERTICES, _dot, _num, _sub
+from pvsyst_auto.scene.author import MAX_VERTICES, _dot, _num, _rotate_z, _sub
 
 # Native 8.1.6 writes six decimals; the retained case coordinates differ by up
 # to 8e-6 m. This adapter comparison tolerance is not a placement offset.
@@ -299,20 +299,25 @@ def _same_mesh(expected, triangles, actual, polygons):
     return residual if source_loops == saved_loops else None
 
 
-def verify_house_geometry(blocks, lines, house, source):
+def verify_house_geometry(blocks, lines, house, source, *, anchor_turn=None):
     """Match every source mesh by world position and oriented polygon boundaries.
 
-    This bounded path uses only the observed zero-azimuth source anchor: native
-    coordinates negate source X/Y and preserve Z. Other anchors remain closed.
+    anchor_turn applies the proven native anchor frame rotation (360 - orientation-1
+    COLLADA azimuth) for non-zero anchors. When it is None the recorded zero-anchor path
+    is kept (turn 180, source field azimuth zero).
     """
-    if house.get("kind") != "mesh" or source["field_azimuth_deg"] != 0:
-        raise ValueError("House coordinate verification is recorded only for mesh scenes with source anchor azimuth zero")
+    if house.get("kind") != "mesh":
+        raise ValueError("House coordinate verification requires a mesh house")
+    if anchor_turn is None:
+        if source["field_azimuth_deg"] != 0:
+            raise ValueError("House coordinate verification is recorded only for mesh scenes with source anchor azimuth zero")
+        anchor_turn = 180.0
     native = [(block, *_native_mesh(block, lines)) for block in blocks if block.object_type == "pvShdGenObject"]
     if len(native) != len(house["meshes"]):
         raise ValueError("Native and source house mesh counts differ")
     mappings, max_residual = [], 0.0
     for part in house["meshes"]:
-        expected = [(-point[0], -point[1], point[2]) for point in part["vertices"]]
+        expected = [_rotate_z(tuple(point), anchor_turn) for point in part["vertices"]]
         bounds = _bounds(expected)
         matches = []
         for index, (block, points, faces) in enumerate(native):
@@ -330,19 +335,22 @@ def verify_house_geometry(blocks, lines, house, source):
                          "native_polygons": len(faces), "max_coordinate_residual_m": residual})
     return {"house_geometry_verified": True, "house_mapping": mappings,
             "house_coordinate_tolerance_m": COORD_TOL, "house_max_coordinate_residual_m": max_residual,
-            "house_geometry_scope": "source mesh positions and oriented planar boundaries; anchor azimuth zero"}
+            "house_geometry_scope": "source mesh positions and oriented planar boundaries; anchor frame rotation"}
 
 
-def verify_pv_geometry(blocks, tables, modules, source):
+def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
     """Match source regions to explicitly repositioned native tables, then check their links.
 
-    No importer displacement is inferred or accepted. The native origin must
-    match the emitted source origin after the recorded anchor-zero XY conversion.
+    anchor_turn applies the proven native anchor frame rotation for non-zero anchors; when
+    None the recorded zero-anchor path is kept (turn 180, source field azimuth zero).
     """
     planes = {plane["id"]: plane for plane in source.get("orientations", [])}
-    if (source["field_azimuth_deg"] != 0 or set(planes) != {1, 2} or len(tables) != 2
-            or {table["orientation_id"] for table in tables} != {1, 2}):
-        raise ValueError("PV coordinate verification requires two source tables and anchor azimuth zero")
+    if set(planes) != {1, 2} or len(tables) != 2 or {table["orientation_id"] for table in tables} != {1, 2}:
+        raise ValueError("PV coordinate verification requires two source tables")
+    if anchor_turn is None:
+        if source["field_azimuth_deg"] != 0:
+            raise ValueError("PV coordinate verification requires anchor azimuth zero")
+        anchor_turn = 180.0
     native = []
     for block in blocks:
         if block.object_type != "pvShdArrayTable":
@@ -382,7 +390,7 @@ def verify_pv_geometry(blocks, tables, modules, source):
                 or table["rotation_deg"] != source["azimuth_deg"] - plane["azimuth_deg"]):
             raise ValueError("Source table profile differs from its source orientation")
         origin = [float(_num(value)) for value in table["origin_m"]]
-        expected_origin = [-origin[0], -origin[1], origin[2]]
+        expected_origin = list(_rotate_z(tuple(origin), anchor_turn))
         expected_dimensions = {"LongShed": table["column_span_m"], "LargShed": table["slope_span_m"],
                                "ModSpacingX": table["column_spacing_m"], "ModSpacingY": table["row_spacing_m"],
                                "module_width_m": modules["width_m"], "module_length_m": modules["length_m"]}
@@ -420,7 +428,7 @@ def verify_pv_geometry(blocks, tables, modules, source):
             "pv_coordinate_tolerance_m": COORD_TOL, "pv_angle_tolerance_deg": ANGLE_TOL,
             "pv_max_coordinate_residual_m": max_origin, "pv_max_dimension_residual_m": max_dimension,
             "pv_max_angle_residual_deg": max_angle,
-            "pv_geometry_scope": "source origins, planes, dimensions, module layout and NoOrient links; anchor azimuth zero"}
+            "pv_geometry_scope": "source origins, planes, dimensions, module layout and NoOrient links; anchor frame rotation"}
 
 
 def verify_module_layout(blocks, lines):

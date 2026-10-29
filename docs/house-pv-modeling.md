@@ -3,7 +3,7 @@
 在 PVsyst 8.1.6 中，3D 近阴影场景支持导入基于 COLLADA 1.5 扩展的 PVCollada 2.0（`.pvc2`）XML 格式。本模块提供三个递进的工具来管理住宅 3D 场景：
 1. `pvsyst_create_house_pv_scene`：将结构化的房屋三维网格（`house`）与屋顶光伏排布（`layout`）序列化为工作区 `UserData` 下的 `.pvc2` 文件。
 2. `pvsyst_read_house_pv_scene`：从已有的 `.pvc2` XML 中无损解析并还原出当初的 `house` 和 `layout` 参数，方便在此基础上微调尺寸后另存新场景。
-3. `pvsyst_import_house_pv_scene`：驱动已打开的 PVsyst 8.1.6 GUI 导入 `.pvc2` 文件、绑定屋顶朝向、校验几何有效性并计算阴影表，最后另存为新 `.VCx` 变体。
+3. `pvsyst_import_house_pv_scene`：默认以 `method="gui"` 驱动已打开的 PVsyst 8.1.6 GUI 导入 `.pvc2` 文件、绑定屋顶朝向、校验几何有效性并计算阴影表，最后另存为新 `.VCx` 变体；或以 `method="native"` 在不启动 GUI、不运行仿真的情况下构造新的原生输入变体（见第 5 节）。
 
 如果要从头到尾一键跑完“生成场景 → 启动 GUI 导入另存 → 退出 GUI → 调 CLI 跑全年仿真”，请直接使用高层任务入口 [`pvsyst_run_house_task`](native-house-task.md)（双坡屋顶场景另见[双朝向住宅场景](grouped-house-scenes.md)）。
 
@@ -42,3 +42,28 @@
 3. 执行原生几何有效性检查与阴影因子表计算，最后通过 `SaveAs` 另存为新 `.VCx` 变体并回读校验。
 
 关于 PVsyst 官方对 PVCollada 格式和朝向管理窗口的说明，可参考 [PV Collada file format](https://www.pvsyst.com/help/project-design/shadings/near-shadings-import/pv-collada-file-format.html) 与 [Orientation management window](https://www.pvsyst.com/help/project-design/shadings/near-shadings-orientations/orientation-management-window.html)。
+
+## 5. 无 GUI 原生导入（`method="native"`）
+
+`pvsyst_import_house_pv_scene` 默认仍为 `method="gui"`（第 4 节，行为与字段含义保持不变）；`method="native"` 需显式选择。它从同一份受支持配方在当前工作区构造一个新的原生输入变体：不查阅、不激活、不启动 GUI，不读写 `PVsyst.ini`，不用剪贴板，不启动 `PVsyst.exe`，不消耗许可证，也不运行仿真。该“写入输入文件”步骤不启动任何 GUI 或 CLI 进程，不涉及窗体。
+
+受支持的源配方边界固定（PVsyst 8.1.6、北半球）：两个固定源朝向、两张横装零间距组件表、源子阵 1/2 各一条独立组串/逆变器/MPPT、同一 `PAN`/`OND`，且各分区组件数累加须严格等于源变体的组件总数。来源不匹配、元数据未知或声明相互冲突时，在写入前停止并给出原因，不做暗中修正。负方位角按源 `FieldAzim` 的有符号约定写入（`-45` 即 `-45`，不写成 `315`）。精细模式（`shading_mode="module_layout"`）写入与布局配套、已单独验证的完整精细阴影状态（`pvShading.Flags=$20100900`），线性模式（`"linear"`）写入 `$20000100`；不对其它取值或单个比特的内部语义作推断，也不外推到本模板之外的配方。
+
+`dry_run=true` 仅在内存中构建并校验原生记录，不写任何文件；可返回明确的预检状态（如 `status="ready_to_import"` 及 `verification` 明细），但 `stored_geometry_verified` 与 `stored_module_layout_verified` 均为 `false`（尚未写盘）。实际写入需 `dry_run=false` 且 `confirm=true`：只新增一个 `.VCx` 变体，不改动源变体、`PAN`/`OND`。
+
+成功时 `status="native_variant_created"`，返回新变体的 `project`、`variant` 与 `file`（以及源 `source_variant`）。此时只表示“已写入并通过存储记录校验”：`stored_geometry_verified` 在执行成功后才为 `true`，`stored_module_layout_verified` 仅在执行成功且确已写入并核对布局记录后才为 `true`（线性模式无布局记录，该项不适用）。`stored_*` 只说明写入的记录正确，`imported`、`native_consumption_verified`、`native_geometry_verified`、`native_module_layout_verified` 均为 `false`——PVsyst 尚未加载或消费它；必须再用 `pvsyst_run_simulation` 对该返回变体显式运行，才能证明原生消费。未运行仿真不会自动消耗许可证。
+
+```python
+result = pvsyst_import_house_pv_scene(
+    scene_name="my_house_scene",
+    variant_name="Native Import",
+    method="native",
+    shading_mode="module_layout",
+    dry_run=False,
+    confirm=True,
+)
+# result["status"] == "native_variant_created"
+# result["project"], result["variant"], result["file"] 指向新建的原生输入变体
+```
+
+窗体事实：`method="native"` 的建文件步骤不启动 GUI/CLI、不涉及窗体；但随后用 CLI 运行仿真（`pvsyst_run_simulation`）时，仿真流程自身会用到隐藏的 `TForm`/消息窗体。`pvsyst_import_house_pv_scene(..., method="native")` 无需 GUI 操作、无需 `PVsyst.exe`、通常没有可见窗体，但这不等于“零窗体”或“无桌面依赖”。该说明属于 CLI 仿真流程本身，不限于 `method="gui"`。

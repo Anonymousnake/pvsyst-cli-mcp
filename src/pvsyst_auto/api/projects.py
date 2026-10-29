@@ -840,7 +840,8 @@ def pvsyst_open_native_project(project: StrictStr, dry_run: StrictBool = True,
 @categorized_tool()
 def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
                                    dry_run: StrictBool = True, confirm: StrictBool = False,
-                                   shading_mode: Literal["linear", "module_layout"] = "linear") -> dict:
+                                   shading_mode: Literal["linear", "module_layout"] = "linear",
+                                   method: Literal["gui", "native"] = "gui") -> dict:
     """Import a generated house/PV scene using the already open native PVsyst GUI.
     This bounded Windows path targets Chinese PVsyst 8.1.6 rev49278 with native
     logical DPI96 and the recorded physical window metrics, with
@@ -868,7 +869,26 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
     fixed source groups, one landscape zero-spacing table and one independent string
     (1..100 modules, one inverter/MPPT) per source array1/2. The saved module cells and
     native table/array links are checked; the selected mode is checked after GUI reload.
-    Use pvsyst_run_simulation on the returned variant for energy/shading consumption."""
+    Use pvsyst_run_simulation on the returned variant for energy/shading consumption.
+    method="native" (opt-in) builds a NEW native input variant from the same supported
+    recipe without any GUI, INI, clipboard, licence or engine action. It supports only two
+    fixed orientations, two landscape zero-spacing tables, source arrays 1/2 with one
+    independent string/inverter/MPPT each and the same PAN/OND; unsupported recipes stop
+    before writing. dry_run builds and verifies the native records in memory only.
+    Execution requires dry_run=false AND confirm=true and writes one new variant; the
+    status is native_variant_created; stored_geometry_verified/stored_module_layout_verified
+    reflect the STORED record only, while native_geometry_verified/native_module_layout_verified,
+    native_consumption_verified and imported stay false because PVsyst has not loaded or consumed
+    it; run an explicit simulation to verify consumption. dry_run writes nothing and keeps both
+    stored flags false but still reports the passed precheck. The source variant/PAN are never modified."""
+    if method == "native":
+        from pvsyst_auto.native.headless import import_house_pv_scene_native
+        component_store = components()
+        store = VariantStore(component_store.workspace, component_store, component_store.lock)
+        return import_house_pv_scene_native(store, component_store, scene_name, variant_name,
+                                            dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
+    if method != "gui":
+        raise ValueError("method must be gui or native")
     from pvsyst_auto.native.scene import import_house_pv_scene
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
