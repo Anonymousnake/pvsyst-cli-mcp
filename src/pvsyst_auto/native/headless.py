@@ -10,8 +10,9 @@ PVsyst.exe or drives a GUI, and never runs a simulation.
 Construction reuses the product reader/author/coordinate maths and the product read-only
 verifiers. The stored record is verified before it is written; native loading/consumption
 remains a separate, unverified step. Only the record that this adapter can prove is
-written: two fixed source orientations, two landscape zero-spacing tables, arrays 1/2 with
-one independent string/inverter/MPPT each and the same PAN/OND.
+written: either two fixed source orientations with one landscape zero-spacing table each
+and one independent string/inverter/MPPT per array, or one orientation / one subarray with
+1..3 linear landscape zero-spacing tables sharing the source PAN/OND.
 """
 from __future__ import annotations
 
@@ -63,6 +64,10 @@ FORMAT = {
 }
 
 MAX_TABLES_BRIDGED = 2
+# Single-orientation native path: the author/readback layer already round-trips 1..64 tables
+# on one orientation, but only the 1..3 uniform-tilt linear shape is covered by this adapter's
+# stored-record verification today. Keep a conservative cap; the author's 1..64 stays intact.
+MAX_TABLES_SINGLE = 3
 
 
 def _n6(value):
@@ -83,15 +88,23 @@ def _anchor_turn(source):
     anchor is derived from the recorded source frame and has only static coverage, so it
     is not a substitute for a full native negative acceptance.
     """
-    group = next(item for item in source["orientations"] if item["id"] == 1)
-    return 360.0 - group["azimuth_deg"]
+    orientations = source.get("orientations") or []
+    if orientations:
+        group = next(item for item in orientations if item["id"] == 1)
+        return 360.0 - group["azimuth_deg"]
+    return 360.0 - source["azimuth_deg"]
 
 
 def _ordinal_tables(tables):
-    """One layout profile per source orientation, high orientation first (native save order)."""
-    if len(tables) != MAX_TABLES_BRIDGED:
-        raise ValueError("Native import bridges exactly two PV tables")
-    return sorted(tables, key=lambda row: -row["orientation_id"])
+    """Order layout profiles: two-orientation groups high orientation first (native save order),
+    single-orientation recipes in declaration order."""
+    if all("orientation_id" in row for row in tables):
+        if len(tables) != MAX_TABLES_BRIDGED:
+            raise ValueError("Native two-orientation import bridges exactly two PV tables")
+        return sorted(tables, key=lambda row: -row["orientation_id"])
+    if not 1 <= len(tables) <= MAX_TABLES_SINGLE:
+        raise ValueError("Native single-orientation import bridges 1..%d PV tables" % MAX_TABLES_SINGLE)
+    return list(tables)
 
 
 def _shd_object(idx, noc, world, faces):
@@ -162,7 +175,8 @@ def build_pvshading(house, tables, modules, source, shading_mode="linear"):
     """
     pocket = house_profile(house)
     turn = _anchor_turn(source)
-    groups = {item["id"]: item for item in source["orientations"]}
+    orientations = source.get("orientations") or []
+    groups = {item["id"]: item for item in orientations} if orientations else {1: source}
     ordered = _ordinal_tables(tables)
     gen_parts = list(reversed(pocket["meshes"]))
     total = len(ordered) + len(gen_parts)
@@ -177,8 +191,9 @@ def build_pvshading(house, tables, modules, source, shading_mode="linear"):
     slot_map = {}
     noc, idx = 2, 1
     for profile in ordered:
-        oid = profile["orientation_id"]
-        lines += _shd_table(idx, noc, profile, groups[oid], modules, turn)
+        oid = profile.get("orientation_id", 1)
+        native_profile = {**profile, "orientation_id": oid}
+        lines += _shd_table(idx, noc, native_profile, groups[oid], modules, turn)
         lines.append("")
         slot_map[oid] = (idx, noc)
         noc += 1
@@ -365,12 +380,13 @@ def assemble_variant(base_text, pvshading, module_layout=None):
 def _verify_source_table_geometry(blocks, tables, modules, source):
     """Table origins/spans/angles versus the signed source profiles using the real anchor turn."""
     turn = _anchor_turn(source)
-    planes = {plane["id"]: plane for plane in source["orientations"]}
+    orientations = source.get("orientations") or []
+    planes = ({plane["id"]: plane for plane in orientations} if orientations else {1: source})
     native = [block for block in blocks if block.object_type == "pvShdArrayTable"]
-    if len(native) != 2:
-        raise ValueError("Generated scene does not hold exactly two native PV tables")
+    if len(native) != len(tables):
+        raise ValueError("Generated scene native PV table count does not match the declaration")
     for table in tables:
-        oid = table["orientation_id"]
+        oid = table.get("orientation_id", 1)
         origin = [float(_num(value)) for value in table["origin_m"]]
         expected = _rotate_z(tuple(origin), turn)
         matches = []
@@ -391,7 +407,7 @@ def _verify_source_table_geometry(blocks, tables, modules, source):
         if len(matches) != 1:
             raise ValueError("Generated PV table for orientation %d has no unique geometry match" % oid)
         native.remove(matches[0])
-    return {"table_count": 2, "coordinate_tolerance_m": COORD_TOL, "angle_tolerance_deg": ANGLE_TOL}
+    return {"table_count": len(tables), "coordinate_tolerance_m": COORD_TOL, "angle_tolerance_deg": ANGLE_TOL}
 
 
 def verify_generated(text, source_text, house, tables, modules, source, shading_mode):
@@ -443,23 +459,45 @@ def _next_variant_id(store, project):
     return "VC%d" % number
 
 
-def _support_gate(source, tables, source_text):
+def _support_gate(source, tables, source_text, mode="linear"):
+    """Reject anything outside the two proven native recipes: two orientations / two tables,
+    or one orientation / one subarray with 1..3 linear tables (single-orientation path)."""
     orientations = source.get("orientations") or []
-    if len(orientations) != 2 or {item["id"] for item in orientations} != {1, 2}:
-        raise ValueError("The native method supports exactly two source orientations 1/2")
-    if len(tables) != 2 or {row["orientation_id"] for row in tables} != {1, 2}:
-        raise ValueError("The native method requires one PV table per source orientation")
+    planes, subs = _parse_electrical(source_text)
+    if orientations:
+        if len(orientations) != 2 or {item["id"] for item in orientations} != {1, 2}:
+            raise ValueError("The native method supports exactly two source orientations 1/2")
+        if len(tables) != 2 or {row["orientation_id"] for row in tables} != {1, 2}:
+            raise ValueError("The native method requires one PV table per source orientation")
+        if set(subs) != {1, 2} or {row["orientation"] for row in subs.values()} != {1, 2}:
+            raise ValueError("The native method requires source arrays 1/2 on distinct orientations")
+        for table in tables:
+            if (table["orientation"] != "landscape" or table["row_spacing_m"] != 0
+                    or table["column_spacing_m"] != 0):
+                raise ValueError("The native method requires landscape zero-spacing tables")
+        for sub in subs.values():
+            if (sub["nstring_ch"] != 1 or sub["ninverter"] != 1 or sub["ninvmppt"] != 1
+                    or sub["power_sharing"] != "-1" or sub["nstr_orient1"] != sub["nstring_ch"]):
+                raise ValueError("The native method requires one independent string/inverter/MPPT per array")
+        return
+    if mode != "linear":
+        raise ValueError("The single-orientation native path supports linear shading only")
+    if len(planes) != 1 or set(subs) != {1}:
+        raise ValueError("The single-orientation native path requires one source plane and one subarray")
+    if not 1 <= len(tables) <= MAX_TABLES_SINGLE or any("orientation_id" in row for row in tables):
+        raise ValueError("The single-orientation native path bridges 1..%d tables without source orientation ids"
+                         % MAX_TABLES_SINGLE)
+    if not all("name" in row for row in tables):
+        raise ValueError("The single-orientation native path requires named PV tables")
     for table in tables:
         if (table["orientation"] != "landscape" or table["row_spacing_m"] != 0
                 or table["column_spacing_m"] != 0):
-            raise ValueError("The native method requires landscape zero-spacing tables")
-    _, subs = _parse_electrical(source_text)
-    if set(subs) != {1, 2} or {row["orientation"] for row in subs.values()} != {1, 2}:
-        raise ValueError("The native method requires source arrays 1/2 on distinct orientations")
-    for sub in subs.values():
-        if (sub["nstring_ch"] != 1 or sub["ninverter"] != 1 or sub["ninvmppt"] != 1
-                or sub["power_sharing"] != "-1" or sub["nstr_orient1"] != sub["nstring_ch"]):
-            raise ValueError("The native method requires one independent string/inverter/MPPT per array")
+            raise ValueError("The single-orientation native path requires landscape zero-spacing tables")
+    sub = subs[1]
+    if sub["orientation"] not in planes:
+        raise ValueError("The source subarray must reference the sole source plane")
+    if sub["power_sharing"] != "-1" or sub["nstr_orient1"] != sub["nstring_ch"]:
+        raise ValueError("The single-orientation native path requires all strings on one orientation and no sharing")
 
 
 def _preflight(store, components, scene_name, shading_mode):
@@ -468,16 +506,13 @@ def _preflight(store, components, scene_name, shading_mode):
     scene = read_house_pv_scene(components, scene_name)
     if scene.get("status") != "ready":
         return {"status": "needs_context", "issues": [scene.get("issues") or "README scene is not ready"]}
-    if not scene.get("source", {}).get("orientations"):
-        return {"status": "needs_context",
-                "issues": ["The native method requires a two-orientation grouped scene recipe"]}
     prepared = _prepare_source(store, components, scene, allow_groups=True)
     snap = prepared["snapshot"]
     house = prepared["house"]
     tables = prepared["table_profiles"]
     source = snap["source"]
     source_text = snap["bytes"].decode("utf-8-sig")
-    _support_gate(source, tables, source_text)
+    _support_gate(source, tables, source_text, shading_mode)
 
     pvshading, slot_map = build_pvshading(house, tables, snap["modules"], source, shading_mode)
     layout_text, layout_tables = (None, None)

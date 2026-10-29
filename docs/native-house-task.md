@@ -55,7 +55,7 @@
 - 省略或 `"gui"`：保持现有流程——冷启动自有 PVsyst GUI 进程完成导入、朝向关联、校验与另存，入参、检查点与阶段形状均不变。
 - `"native"`：免 GUI，用已声明的房屋网格与 PV 区域在内存中构建并校验原生场景记录，直接写出一份新变体；**导入阶段**不启动 `PVsyst.exe`、不操作 `INI`/剪贴板/license、不运行仿真。全年仿真由高层 `pvsyst_run_house_task(dry_run=false, confirm=true)` 在同一流程内自动继续执行（见下）。
 
-`"native"` 的支持边界固定：仅两个固定源朝向、两张横装零间距矩形表、源子阵 `1`/`2` 各一条独立组串/一个独立逆变器/一个 MPPT、同一 `PAN`/`OND`，且各分区组件数累加须严格等于源变体组件总数。不满足条件的请求在写入前停止并给出原因，不做暗中修正；条件细节见[住宅与光伏建模](house-pv-modeling.md)。
+`"native"` 的支持边界固定：高层 `pvsyst_run_house_task` 原生导入仍只支持双朝向、两张横装零间距矩形表（源子阵 `1`/`2` 各一条独立组串/一个独立逆变器/一个 MPPT，`MAX_TABLES_BRIDGED=2`），不接受单朝向；单朝向源在写入前的预检即被明确拒绝并给出原因，不做 GUI 回退。单朝向、单子阵、`1..3` 张横装零间距矩形表仅由低层 [`pvsyst_import_house_pv_scene`](tool-reference.md)`(method="native")` 导入工具提供存储写入与读取，其单朝向线性 3 表 profile 已用公开 product 导入 + CLI 完成真实原生消费验收（有限 3 表 profile，不作逐表独立归因）；`1..3` 是导入阶段的存储上限，作者仍接受 `1..64` 张表（作者能力不等于 Native 能力）。双朝向与单朝向线性 3 表模板均已原生验证；单朝向模板为本轮新增低层实现、存储读取自洽（`stored_consistent`）。精细 `module_layout` 仍只对双朝向单串模板写入并已验证，单朝向场景的 `module_layout` 在写入前被拒绝。所有模板都要求同一 `PAN`/`OND`，各分区组件数累加须严格等于源变体组件总数。不满足条件的请求在写入前停止并给出原因，不做暗中修正；条件细节见[住宅与光伏建模](house-pv-modeling.md)。
 
 状态语义：高层 `pvsyst_run_house_task` 的 **native 导入阶段**只产出 STORED 记录（`stored_geometry_verified` / `stored_module_layout_verified` 反映已保存记录），此时 `imported` / `native_geometry_verified` / `native_consumption_verified` 仍为 false——表示 PVsyst 尚未加载或消费该变体，stored 不等于已 load；`native_geometry_verified` 与重载标志不能由 stored 记录伪置。若同时传入 `dry_run=false` 与 `confirm=true`，该次调用会沿原流程自动继续全年 CLI 仿真并产出 CSV/PDF，成功后上下文匹配新变体才把 `native_consumption_verified` 置 true。只有单独调用底层 [`pvsyst_import_house_pv_scene`](tool-reference.md)`(method="native")` 这个导入阶段独立入口时，才需再对返回的变体调用 [`pvsyst_run_simulation`](tool-reference.md) 跑仿真。
 

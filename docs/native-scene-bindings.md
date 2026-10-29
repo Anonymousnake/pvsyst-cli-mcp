@@ -27,10 +27,10 @@
 
 ## 三种绑定状态（`status`）
 
-该检查支持包含 1..2 张 PVCollada 导入的 `pvShdArrayTable`、1..2 个普通非平均固定朝向和 1..2 个子阵列的 PVsyst 8.1.6 变体（若变体是空场景，则不附加 `pv_bindings` 字段）：
+该检查支持 PVsyst 8.1.6 变体中 1..2 个普通非平均固定朝向、1..2 个子阵列：单固定朝向时对应 1..3 张 PVCollada 导入的 `pvShdArrayTable`，双固定朝向时对应 1..2 张（若变体是空场景，则不附加 `pv_bindings` 字段）：
 
 - **`stored_consistent`**：所有 PV 表的 `NoOrient` 引用均指向存在的固定朝向，表格的倾角、方位角、底面坡度与目标固定朝向完全一致，且每个朝向下的 3D 表格组件总数恰好等于对应子阵列的 `NModSerie × NStringCh`。
 - **`needs_review`**：发现朝向引用缺失、表格角度与系统朝向不一致，或者某个朝向下的 3D 组件数与电气子阵列组件数对不上（具体差异见 `issues`）。
-- **`unsupported`**：场景包含超过 2 张表、使用了跟踪/平均朝向或非有限坐标等超出当前检查规则的结构（此时 `shading_scene` 仍保持 `active` 状态并保留原始字段摘要）。
+- **`unsupported`**：场景的表数超出其朝向对应上限（单朝向超过 3 张、双朝向超过 2 张）、使用了跟踪/平均朝向或非有限坐标等超出当前检查规则的结构（此时 `shading_scene` 仍保持 `active` 状态并保留原始字段摘要）。
 
 **需要注意的一点**：`stored_consistent` 只代表 `.VCx` 里保存的朝向引用、角度和组件颗数自洽；如果你在 3D 编辑器里把整张光伏表平移偏离了屋顶（只改了 `DOrigine` 坐标，没改朝向和颗数），`stored_consistent` 依然会是真。要连同屋面空间坐标一起做 `0.00002 m` 精度的完整核对，需走 [`pvsyst_run_house_task`](native-house-task.md) 的场景归位与重载校验流程（详见[场景身份说明](native-scene-identity-map.md)和[双屋面交付](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。

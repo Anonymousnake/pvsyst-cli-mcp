@@ -166,10 +166,20 @@ def _prepare(store, components, request):
     if mode == "module_layout":
         native._module_layout_preflight(snap, tables)
     if request.get("scene_import_method") == "native":
+        # The high-level house task keeps the released two-orientation / two-table profile only.
+        # The single-orientation 1..3 linear recipe is a low-level scene-import capability, so
+        # decide from the REAL source snapshot (parsed planes), never from a caller-supplied
+        # orientation_id or merely from the table count. Reject before any project/scene/SFI write.
+        orientations = snap["source"].get("orientations") or []
+        if len(orientations) != 2 or [item["id"] for item in orientations] != [1, 2]:
+            raise ValueError(
+                "The high-level native house task requires the released two-orientation "
+                "(two-table) source profile; single-orientation input is available only "
+                "through the low-level scene importer")
         # Fail before any project/scene/SFI write when the source/layout is outside the
         # headless adapter's proven two-orientation, landscape zero-spacing, single-MPPT recipe.
         from pvsyst_auto.native.headless import _support_gate
-        _support_gate(snap["source"], tables, source_bytes.decode("utf-8-sig"))
+        _support_gate(snap["source"], tables, source_bytes.decode("utf-8-sig"), mode)
     if not 1 <= len(tables) <= native.MAX_TABLES_BRIDGED:
         raise ValueError("The native house task supports only one or two PV regions")
     site_blocks = objects(store._read(paths["site"]).decode("utf-8-sig"))
