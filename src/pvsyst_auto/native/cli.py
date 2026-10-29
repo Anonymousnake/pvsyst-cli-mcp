@@ -85,6 +85,21 @@ def validate_report_pages(pages):
         raise ValueError("Unknown or empty PDF report page list")
 
 
+def _is_plain_csv_run(args) -> bool:
+    """True only for a bare hourly-CSV numeric simulation.
+
+    ``run-simulation`` with an ``-ocf:`` CSV target and none of ``-rpf:`` (PDF),
+    ``-bpf:`` (batch params) or ``-brf:`` (batch RVT). That path needs no window,
+    so it is the only one allowed to deny DESKTOP_CREATEWINDOW; PDF and batch keep
+    the old private-desktop behavior that may create windows.
+    """
+    if not args or args[0] != "run-simulation":
+        return False
+    has_csv = any(arg.startswith("-ocf:") for arg in args)
+    keeps_windows = any(arg.startswith(("-rpf:", "-bpf:", "-brf:")) for arg in args)
+    return has_csv and not keeps_windows
+
+
 def build_sfi(path: str | os.PathLike, variables: list[str] | str,
               comment: str = "Hourly Results") -> Path:
     """Create an hourly SFI from verified groups or explicit vi* identifiers."""
@@ -170,8 +185,11 @@ class PVsystCLI:
             if os.name == "nt":
                 # Every real CLI call runs on its own private, non-input desktop
                 # inside an owned Job; same argv/cwd/env/output/exit/timeout shape.
+                # A bare hourly-CSV numeric run also denies DESKTOP_CREATEWINDOW on
+                # that desktop; PDF/batch/other commands keep the old behavior.
                 from pvsyst_auto.native import _winlaunch
-                return _winlaunch.run(argv, self.cli.parent, self.timeout)
+                return _winlaunch.run(argv, self.cli.parent, self.timeout,
+                                      allow_window_creation=not _is_plain_csv_run(args))
             return subprocess.run(argv, cwd=self.cli.parent, capture_output=True,
                                   text=True, errors="replace", timeout=self.timeout,
                                   check=False)
