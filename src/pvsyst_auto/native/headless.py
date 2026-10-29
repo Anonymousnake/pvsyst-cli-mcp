@@ -15,6 +15,14 @@ and one independent string/inverter/MPPT per array, or one orientation / one sub
 1..3 linear landscape zero-spacing tables sharing the source PAN/OND, or (fine layout) one
 orientation / one subarray with exactly two landscape zero-spacing tables of NModSerie
 modules each and two total independent MPPT inputs, table k binding global string k.
+
+An explicit per-cell ``string_layout`` is the general path: every table names its source
+subarray and every cell carries a global string ordinal, so several strings may share a
+table and a string may span tables. Capacity is bound to the global string (the owning
+source subarray's NModSerie); the global string intervals come from the source subarray
+declaration order (``scene.mapping.source_string_ranges``), so a table can never borrow a
+string from another subarray. One or more source subarrays (each on its own fixed plane)
+are supported; nothing is auto-allocated.
 """
 from __future__ import annotations
 
@@ -27,7 +35,7 @@ from pvsyst_auto.project.circuit import inventory
 from pvsyst_auto.project.fileio import publish_new
 from pvsyst_auto.scene.author import MAX_TABLES, _num, _rotate_z, house_profile
 from pvsyst_auto.scene.mapping import (
-    ANGLE_TOL, COORD_TOL, verify_grouped_hardware, verify_house_geometry,
+    ANGLE_TOL, COORD_TOL, source_string_ranges, verify_grouped_hardware, verify_house_geometry,
     verify_module_layout, verify_pv_geometry)
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.scene.state import shading_state
@@ -234,8 +242,12 @@ def build_pvshading(house, tables, modules, source, shading_mode="linear", *, ma
 
 # --------------------------------------------------------------------- electrical layout
 def _parse_electrical(text):
+    return _parse_electrical_blocks(objects(text))
+
+
+def _parse_electrical_blocks(blocks):
     planes, subs = {}, {}
-    for block in objects(text):
+    for block in blocks:
         if block.object_type == "pvOrient":
             planes[int(block.one("NoOrient")[1])] = {
                 "field_type": block.one("FieldType")[1],
@@ -310,27 +322,26 @@ def _binding_dict(binding):
     return binding
 
 
-def _explicit_cells(binding, tables, subs):
+def _explicit_cells(binding, tables, subs, ranges):
     """Validate an explicit per-cell string binding and return per-table cell maps.
 
-    Capacity is per GLOBAL string (= source NModSerie), not per table: a table may hold
-    several strings and a string may span tables. A draft (global_string=0), an incomplete
-    cover, an unknown/extra field, a repeated/out-of-range cell, or a wrong string capacity
-    is refused so the caller can never publish a partial layout. Only the single-subarray
-    (ML1) profile has a proven global-ordinal mapping; multi-subarray is explicitly pending.
+    Capacity is per GLOBAL string (= the owning source subarray's NModSerie), not per table:
+    a table may hold several strings and a string may span tables. ``ranges`` is the source
+    ``source_string_ranges(objects(source_text))`` map ``{subarray_id: (first, last,
+    modules_per_string)}`` in original subarray order; it fixes each subarray's global string
+    interval, so a cell can never borrow a string from another subarray even when the global
+    total capacity would still add up. A draft (global_string=0), an incomplete cover, an
+    unknown/extra field, a repeated/out-of-range cell, a wrong table/subarray orientation or a
+    wrong per-string capacity is refused so the caller can never publish a partial layout.
     """
     binding = _binding_dict(binding)
     if set(binding) != {"tables"} or not isinstance(binding["tables"], list):
         raise ValueError("string_layout must contain exactly one 'tables' list")
-    if len(subs) != 1:
-        raise ValueError("Explicit per-cell string layout covers one source subarray only; "
-                         "multi-subarray sharing is not verified")
-    sub_id = next(iter(subs))
-    sub = subs[sub_id]
-    capacity = sub["nmod_serie"]
-    string_count = sub["nstring_ch"]
+    if set(ranges) != set(subs):
+        raise ValueError("Source string ranges do not cover exactly the declared subarrays")
     by_name = {table["name"]: table for table in tables}
-    seen, cell_maps, used = set(), {}, defaultdict(int)
+    seen, cell_maps, table_sub = set(), {}, {}
+    used = defaultdict(int)
     for entry in binding["tables"]:
         if not isinstance(entry, dict) or set(entry) != {"name", "subarray_id", "cells"}:
             raise ValueError("Each binding table requires exactly name, subarray_id and cells")
@@ -338,9 +349,15 @@ def _explicit_cells(binding, tables, subs):
         if not isinstance(name, str) or name not in by_name or name in seen:
             raise ValueError("Binding table name must match one declared PV table exactly once: %r" % (name,))
         seen.add(name)
-        if type(entry["subarray_id"]) is not int or entry["subarray_id"] != sub_id:
-            raise ValueError("Binding subarray_id must equal the sole source subarray %d" % sub_id)
+        sub_id = entry["subarray_id"]
+        if type(sub_id) is not int or sub_id not in subs:
+            raise ValueError("Binding subarray_id must be a declared source subarray: %r" % (sub_id,))
+        first, last, modules_per_string = ranges[sub_id]
         profile = by_name[name]
+        orientation = profile.get("orientation_id", subs[sub_id]["orientation"])
+        if orientation != subs[sub_id]["orientation"]:
+            raise ValueError("Binding table %r occupies orientation %d but source subarray %d owns "
+                             "orientation %d" % (name, orientation, sub_id, subs[sub_id]["orientation"]))
         rows, columns = profile["module_rows"], profile["module_columns"]
         if not isinstance(entry["cells"], list):
             raise ValueError("Binding cells must be a list")
@@ -359,23 +376,26 @@ def _explicit_cells(binding, tables, subs):
             if global_string == 0:
                 raise ValueError("Draft binding: table %r has unassigned cells; complete the "
                                  "layout before native import" % name)
-            if not 1 <= global_string <= string_count:
-                raise ValueError("global_string %d is outside the source strings 1..%d"
-                                 % (global_string, string_count))
+            if not first <= global_string <= last:
+                raise ValueError("global_string %d is outside source subarray %d strings %d..%d"
+                                 % (global_string, sub_id, first, last))
             cell_map[(row, column)] = global_string
             used[global_string] += 1
         if len(cell_map) != rows * columns:
             raise ValueError("Binding must assign every cell of table %r (expected %d, got %d)"
                              % (name, rows * columns, len(cell_map)))
         cell_maps[name] = cell_map
+        table_sub[name] = sub_id
     if seen != set(by_name):
         raise ValueError("string_layout must bind every declared table; missing: %s"
                          % sorted(set(by_name) - seen))
-    for global_string in range(1, string_count + 1):
-        if used[global_string] != capacity:
-            raise ValueError("Global string %d carries %d cells but its source capacity is "
-                             "NModSerie=%d" % (global_string, used[global_string], capacity))
-    return [(by_name[table["name"]], sub_id, cell_maps[table["name"]]) for table in tables]
+    for sub_id, (first, last, modules_per_string) in ranges.items():
+        for global_string in range(first, last + 1):
+            if used[global_string] != modules_per_string:
+                raise ValueError("Global string %d carries %d cells but its source capacity is "
+                                 "NModSerie=%d" % (global_string, used[global_string], modules_per_string))
+    return [(by_name[table["name"]], table_sub[table["name"]], cell_maps[table["name"]])
+            for table in tables]
 
 
 def build_module_layout(source_text, tables, slot_map, string_layout=None):
@@ -386,16 +406,21 @@ def build_module_layout(source_text, tables, slot_map, string_layout=None):
     subarray and lists each module cell's global string; strings may span tables and a
     table may hold several strings (capacity is per global string = NModSerie, not per
     table). Geometry and angles still come from the source; NoField3D/NoField3DCreated are
-    the scene identities in ``slot_map`` keyed by table name. Draft/incomplete/over-capacity
-    bindings raise here, before anything is assembled or published.
+    the scene identities build_pvshading stored in ``slot_map`` keyed by the same identity
+    it used (``orientation_id`` for grouped tables, the table name otherwise), never guessed
+    from declaration order. Draft/incomplete/over-capacity or cross-subarray bindings raise
+    here, before anything is assembled or published.
     """
-    planes, subs = _parse_electrical(source_text)
+    source_blocks = objects(source_text)
+    planes, subs = _parse_electrical_blocks(source_blocks)
     blocks, out = [], []
     if string_layout is not None:
+        ranges = source_string_ranges(source_blocks)
         for ordinal, (profile, sub_id, cell_map) in enumerate(
-                _explicit_cells(string_layout, tables, subs), 1):
+                _explicit_cells(string_layout, tables, subs, ranges), 1):
             rows, columns = profile["module_rows"], profile["module_columns"]
-            slot, created = slot_map[profile["name"]]
+            key = profile["orientation_id"] if "orientation_id" in profile else profile["name"]
+            slot, created = slot_map[key]
             blocks.append(_ml_table(ordinal, sub_id, rows, columns, slot, created,
                                     cell_strings=cell_map))
             out.append({"subarray_id": sub_id, "table_name": profile["name"],
@@ -619,41 +644,56 @@ def _circuit_counts_valid(source_text, subs):
 def _explicit_gate(source, tables, source_text, mode, string_layout):
     """Source/geometry/capacity gate for an explicit per-cell string binding.
 
-    Replaces the narrow table/string-count caps with invariants: any number of landscape
-    zero-spacing tables on one fixed plane / one subarray, strings assigned per cell under
-    a per-global capacity of NModSerie. Unproven shapes (multi-orientation, multi-subarray,
-    portrait, non-zero spacing/padding, shared inputs, non-fixed planes) are refused with a
-    concrete issue rather than silently treated as verified; no circuit is fabricated.
+    Replaces the narrow table/string-count caps with the real source invariants inside the
+    author/reader profile: a single-orientation source accepts 1..MAX_TABLES (the author limit
+    of 64) landscape zero-spacing tables, all bound to its one ordinary fixed plane, while a
+    grouped two-orientation source stays at the structural one-table-per-orientation profile
+    (two tables). Strings are assigned per cell under a per-global capacity of the owning
+    subarray's NModSerie -- a table may hold several strings and a string may span tables -- and
+    the subarray/string/table counts and global string intervals follow the actual source
+    declaration order (never an exact-2 template or a numeric id sort). These are author/reader
+    profile bounds, not a claim about native software limits or native consumption. Unproven
+    shapes (portrait, non-zero spacing/padding, shared inputs, non-fixed/sloped planes, more
+    than two grouped orientations, or a table whose orientation disagrees with its subarray) are
+    refused with a concrete issue rather than silently treated as verified; no circuit is
+    fabricated.
     """
     if mode != "module_layout":
         raise ValueError("An explicit string_layout requires shading_mode=module_layout")
-    if source.get("orientations"):
-        raise ValueError("Explicit per-cell module layout covers one source orientation only; "
-                         "multi-orientation wiring is not verified")
-    planes, subs = _parse_electrical(source_text)
-    if len(planes) != 1 or len(subs) != 1:
-        raise ValueError("Explicit per-cell module layout covers one source plane and one subarray only; "
-                         "multi-subarray sharing is not verified")
-    if any("orientation_id" in row for row in tables):
-        raise ValueError("The explicit module layout bridges tables without source orientation ids")
+    source_blocks = objects(source_text)
+    planes, subs = _parse_electrical_blocks(source_blocks)
+    ranges = source_string_ranges(source_blocks)
     if not all("name" in row for row in tables):
         raise ValueError("The explicit module layout requires named PV tables")
     if not 1 <= len(tables) <= MAX_TABLES:
         raise ValueError("The explicit module layout bridges 1..%d PV tables" % MAX_TABLES)
-    sub = next(iter(subs.values()))
-    plane = planes[sub["orientation"]]
-    if plane["field_type"] != "FixedPlane" or abs(plane["base_slope_deg"]) > ANGLE_TOL:
-        raise ValueError("Explicit module layout is bounded to ordinary fixed planes (no slope/averaging)")
-    if sub["power_sharing"] != "-1":
-        raise ValueError("Explicit module layout excludes shared inverter inputs; sharing is not verified")
-    if sub["nstr_orient1"] != sub["nstring_ch"]:
-        raise ValueError("Explicit module layout requires every source string on the single orientation")
+    for sub_id, sub in subs.items():
+        if sub["nstring_ch"] < 1 or sub["nmod_serie"] < 1:
+            raise ValueError("Source subarray %d requires positive NStringCh/NModSerie" % sub_id)
+        if sub["orientation"] not in planes:
+            raise ValueError("Source subarray %d references a missing source orientation %d"
+                             % (sub_id, sub["orientation"]))
+        plane = planes[sub["orientation"]]
+        if plane["field_type"] != "FixedPlane" or abs(plane["base_slope_deg"]) > ANGLE_TOL:
+            raise ValueError("Explicit module layout is bounded to ordinary fixed planes (no slope/averaging)")
+        if sub["power_sharing"] != "-1":
+            raise ValueError("Explicit module layout excludes shared inverter inputs; sharing is not verified")
+        if sub["nstr_orient1"] != sub["nstring_ch"]:
+            raise ValueError("Explicit module layout requires every source string on the single orientation")
+    if source.get("orientations"):
+        if any("orientation_id" not in row for row in tables):
+            raise ValueError("A grouped source requires every explicit table to carry its source orientation_id")
+    else:
+        if len(planes) != 1 or len(subs) != 1:
+            raise ValueError("The single-orientation explicit module layout covers one source plane and one subarray")
+        if any("orientation_id" in row for row in tables):
+            raise ValueError("The explicit module layout bridges tables without source orientation ids")
     for table in tables:
         if (table["orientation"] != "landscape" or table["row_spacing_m"] != 0
                 or table["column_spacing_m"] != 0):
             raise ValueError("Explicit module layout requires landscape zero-spacing tables; "
                              "portrait or non-zero spacing is not verified")
-    _explicit_cells(string_layout, tables, subs)
+    _explicit_cells(string_layout, tables, subs, ranges)
     if not _circuit_counts_valid(source_text, subs):
         raise ValueError("Explicit module layout requires complete, consistent source circuit counts")
 
