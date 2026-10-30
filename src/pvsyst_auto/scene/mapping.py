@@ -859,7 +859,15 @@ def _assess_general_module_layout(blocks, lines):
 def assess_module_layout(blocks, lines):
     """Read-only classifier for a stored module layout: stored_consistent, draft_incomplete,
     invalid or needs_review.  Never raises for a present layout, so a raw VC without a recipe
-    can still be judged."""
+    can still be judged.
+
+    The two-subarray branch keys on the real source structure (two distinct positive
+    ``SubArrayId`` values in appearance order), not a ``{1, 2}`` numeric whitelist: the legacy
+    one-string-per-array template still owns ``{1, 2}`` through ``_matches_dual_narrow``, while
+    any other pair (e.g. sparse ``7, 2``) takes the general per-cell path whose capacities come
+    from ``source_string_ranges`` (position/prefix order, never a numeric id sort).  This matches
+    the explicit builder's source-data range and keeps the legacy None ``{1, 2}`` gate in
+    ``_support_gate`` untouched."""
     owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
     if not owners:
         return {"configured": False, "status": "absent", "native_consumption_verified": False}
@@ -868,7 +876,7 @@ def assess_module_layout(blocks, lines):
         tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
         layouts = [block for block in blocks if block.object_type == "pvMLTable"]
         ids = list(arrays)
-        if ids == [1, 2]:
+        if len(ids) == 2:
             if _matches_dual_narrow(arrays, tables, layouts):
                 return _verify_narrow_module_layout(blocks, lines)
             return _assess_general_module_layout(blocks, lines)
