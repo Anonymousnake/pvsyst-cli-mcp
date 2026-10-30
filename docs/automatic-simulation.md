@@ -67,6 +67,12 @@ cover summary notes params horizon shadings usersneeds results econeval circuit 
 
 注意：页面标识合法只代表 CLI 接受该参数，实际 PDF 里能不能打出那一页取决于变体本身是否启用了对应模块（比如没配地平线或没激活 P50/P90 时，选了 `horizon` 或 `p50p90` 也不会凭空多出一页）。
 
+## 公开 48h 算例（非全年，边界提示）
+
+除本页的模板驱动全年仿真外，另有两条**公开 48h 算例**已由本机 PVsyst 8.1.7 CLI 冷跑真实 Native 消费验证，返回逐时 CSV（两者均无 `E_Grid`，属非并网系统）：泵水（`pumping`，48×16，含 `Pump_ON`/`H_Pump`/`FlRate`/`WPumped`/`E_Hydro`/`P_Effic` 等泵/水力变量）与离网 DC 电网（`dcgrid`，48×12，含 `EUseful`/`E_User`/`E_Avail`/`SolFrac`/`U_User` 等 DC 负载变量）。
+
+这两条仅证明对应 fixture/变量的 48h 真实消费；**CRC 校验、组件/逆变器模型及模式（system kind、时间步、批处理等）并未全部支持或验证**，超出该算例的变量组合、系统类型与全年时间轴仍需另行取证。
+
 ## 失败保留与回滚
 
 模板工程本身全程只读。执行任务时会先在 `Results` 下创建独占的任务清单 JSON，并在克隆出的新工程上分步修改。万一中途失败，已生成的工作工程、备份、`.SFI` 和日志都会保留在磁盘上方便排查；清单里的 `recovery` 字段按逆序列出了可直接传给 `pvsyst_restore_variant` 和 `pvsyst_restore_project_sources` 的回滚参数。
