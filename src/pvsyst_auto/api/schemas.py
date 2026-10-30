@@ -275,7 +275,12 @@ class StringLayoutBinding(BaseModel):
     tables: Annotated[list[TableStringBinding], Field(min_length=1, max_length=64)]
 
 class HouseTaskRequest(BaseModel):
-    """Complete authored geometry plus one exact source; no inferred engineering inputs."""
+    """Complete authored geometry plus one exact source; no inferred engineering inputs.
+
+    Optional report_pdf selects the report artifact: omitted/None/True keeps the original
+    default PDF, while an explicit False requests the CSV-only output. StrictBool rejects
+    0/1 or 'false' so the mode is never coerced; omitting it keeps the historical shape.
+    """
     model_config = ConfigDict(extra="forbid")
     source_project: StrictStr
     source_variant: StrictStr
@@ -287,6 +292,7 @@ class HouseTaskRequest(BaseModel):
     string_layout: StringLayoutBinding | None = None
     module_geometry: ModuleGeometry | None = None
     report_pages: list[StrictStr] | None = None
+    report_pdf: StrictBool | None = None
     shading_mode: Literal["linear", "module_layout"] | None = None
     scene_import_method: Literal["gui", "native"] | None = None
 
@@ -569,7 +575,12 @@ class SourcedDesignGoals(BaseModel):
     design_basis_extra: StrictStr | None = None
 
 class SourcedHouseTaskRequest(BaseModel):
-    """Cited source inputs plus the existing preparation and house schemas."""
+    """Cited source inputs plus the existing preparation and house schemas.
+
+    report_pdf mirrors HouseTaskRequest: omitted/None/True keeps the original default PDF,
+    an explicit False requests the CSV-only child house run, and False is forwarded rather
+    than dropped. Omitting it adds no key, preserving the historical request/checkpoint shape.
+    """
     model_config = ConfigDict(extra="forbid")
     design: SingleDesignRequest
     new_project: StrictStr
@@ -581,6 +592,7 @@ class SourcedHouseTaskRequest(BaseModel):
     declarations: list[SourceDeclarationRequest] = Field(default_factory=list)
     goals: SourcedDesignGoals | None = None
     module_geometry: ModuleGeometry | None = None
+    report_pdf: StrictBool | None = None
     shading_mode: Literal["linear", "module_layout"] | None = None
     scene_import_method: Literal["gui", "native"] | None = None
 

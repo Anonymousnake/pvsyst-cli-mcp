@@ -3,7 +3,7 @@
 `pvsyst_run_sourced_house_task` 将三条已有的工作流串成一个统一调用：
 1. [`pvsyst_prepare_sourced_design`](weather-engineering-review.md)：从规格书原文摘录（`sources` + `declarations`）中提取温度系数、电压电流限值和极值温度，组装 `electrical_design` 包络。
 2. [`pvsyst_prepare_design_project`](design-project-preparation.md)：根据组装好的电气包络匹配模板、规划整数串并联容量、准备气象文件，落盘生成不跑全年仿真的源工程（`<source-stem>_prepare_<year>.json`）。
-3. [`pvsyst_run_house_task`](native-house-task.md)：基于刚生成的源工程构建 `.pvc2` 房屋网格、启动 PVsyst 8.1.6 GUI 导入并绑定屋顶朝向、另存新变体、退出 GUI，最后用 `PVsystCLI.exe` 跑出带 3D 阴影的全年 CSV/PDF 报告（`<final-stem>_house_task.json`）。
+3. [`pvsyst_run_house_task`](native-house-task.md)：基于刚生成的源工程构建 `.pvc2` 房屋网格、启动 PVsyst 8.1.6 GUI 导入并绑定屋顶朝向、另存新变体、退出 GUI，最后用 `PVsystCLI.exe` 跑出带 3D 阴影的全年 CSV/PDF 报告（`<final-stem>_house_task.json`）。传入 `report_pdf: false` 时同一流程只产出 CSV-only 报告（见下表透传字段，默认仍是 PDF）。
 
 这样整个过程只需要跑**最后那一次**带 3D 阴影的全年 CLI 仿真，中间准备源工程时不会白跑一次无阴影全年。
 
@@ -16,7 +16,7 @@
 | `sources`, `declarations` | 规格书来源声明与字段数值/单位摘录（格式同 `pvsyst_prepare_sourced_design`） |
 | `goals` | 可选的 `SourcedDesignGoals`（目标容量也可直接在 `design.target_dc_kw` 中给出，两者不能矛盾） |
 | `house`, `layout`, `module_geometry` | 房屋三维网格、1..2 个 PV 分区排布与组件几何尺寸（格式同 [`pvsyst_run_house_task`](native-house-task.md)） |
-| `string_layout`, `shading_mode`, `scene_import_method` | 可选透传字段：`string_layout` 为显式 per-cell 组串接线兄弟块（`{tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`，见[住宅与光伏建模](house-pv-modeling.md) 第 5 节）；`shading_mode`（`linear`/`module_layout`）与 `scene_import_method`（`gui`/`native`）选择阴影与导入路线。三者原样透传给内部 `pvsyst_run_house_task`；省略时保持旧 None 行为与检查点形状不变，显式 `string_layout` 仅在 `scene_import_method="native"` + `shading_mode="module_layout"` 时进入原生显式门。该透传目前只经 schema 与静态代码路径审阅（高层 sourced 的 dry-run 与全年实跑尚未执行，不应据此认为高层 sourced 已完成全年无窗 PDF 交付） |
+| `string_layout`, `shading_mode`, `scene_import_method`, `report_pdf` | 可选透传字段：`string_layout` 为显式 per-cell 组串接线兄弟块（`{tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`，见[住宅与光伏建模](house-pv-modeling.md) 第 5 节）；`shading_mode`（`linear`/`module_layout`）与 `scene_import_method`（`gui`/`native`）选择阴影与导入路线；`report_pdf`（`StrictBool`，默认 `null`）语义同 [`pvsyst_run_house_task`](native-house-task.md)：省略/`None`/`True` 保留原 CSV+PDF（原 PDF 默认 `True` 不改），`False` 选择 CSV-only 且随 `False` 透传给子 house。均原样透传给内部 `pvsyst_run_house_task`；省略时保持旧 None 行为与检查点形状不变，显式 `string_layout` 仅在 `scene_import_method="native"` + `shading_mode="module_layout"` 时进入原生显式门。注意高层 sourced 的 dry 仍**先走原许可（lic）校验**，本波不实际发放该工具、也不 patch 许可或伪造事实让 forward 案例通过；`report_pdf` 经 sourced 链本波只验证 wire 发布、`StrictBool` 严格拒绝、省略/`None` 旧形状与 `False` 透传给子 house，完整 prepared-source→child house 原生全年与 resume 未执行、仍 open，不应据此认为高层 sourced 已完成（CSV-only 或 PDF 的）全年交付 |
 
 ## 状态流转与两步确认开关
 

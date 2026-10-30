@@ -165,6 +165,11 @@ def run_sourced_house_task(store, components, cli, *, request, binding, dry_run=
                 child["module_geometry"] = request["module_geometry"]
             if design.get("report_pages") is not None:
                 child["report_pages"] = design["report_pages"]
+            # Forward the CSV-only selector whenever the caller set it: False must reach the
+            # child house run instead of being dropped, while an omitted/None value adds no key
+            # and so preserves the historical request/checkpoint shape.
+            if request.get("report_pdf") is not None:
+                child["report_pdf"] = request["report_pdf"]
             # Carry the native routing/selector and explicit per-cell binding into the child
             # house request; these stay absent for the historical GUI/linear shape.
             for key in ("shading_mode", "scene_import_method", "string_layout"):

@@ -61,7 +61,7 @@ def _close_owned(proc, cli):
             "reason": "Only owned project/home received native close; no dialog dismissal or forced termination"}
 
 
-def _annual(csv_path, pdf_path, request, plan, variant):
+def _annual(csv_path, pdf_path, request, plan, variant, *, require_pdf=True):
     expected = {"Project": request["new_project"], "Simulation variant": Path(request["new_project"]).stem + "." + variant,
                 "Geographical Site": plan["site"], "Weather data": plan["met"]}
     context = {}
@@ -85,9 +85,10 @@ def _annual(csv_path, pdf_path, request, plan, variant):
         if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in row[1:]):
             raise ValueError("Native house output contains missing/nonfinite numeric data")
         rows += 1
-    with pdf_path.open("rb") as stream:
-        if stream.read(5) != b"%PDF-":
-            raise ValueError("Native house report is not a PDF")
+    if require_pdf:
+        with pdf_path.open("rb") as stream:
+            if stream.read(5) != b"%PDF-":
+                raise ValueError("Native house report is not a PDF")
     electrical = {}
     if request.get("shading_mode") == "module_layout":
         if units.get("ShdElec") != "kW":
@@ -240,6 +241,11 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
             method = request.get("scene_import_method") or "gui"
             if method not in ("gui", "native"):
                 raise ValueError("scene_import_method must be gui or native")
+            # Any value except an explicit False keeps the original CSV+PDF contract
+            # (absent/None/True). An explicit False requests the CSV-only native path,
+            # so no PDF output is expected and the CLI runs as a plain CSV (windowless).
+            require_pdf = request.get("report_pdf") is not False
+            guard_keys = {"csv", "pdf"} if require_pdf else {"csv"}
             paths, plan = _prepare(store, components, request)
             sources = {key: path for key, path in paths.items() if key in ("source_project", "source_variant", "site", "met", "pan", "ond")}
             if resume:
@@ -255,7 +261,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     raise ValueError("Checkpoint schema/request/phase differs; it is not a resumable task")
                 if PHASES.index(record["phase"]) >= PHASES.index("simulated") and (
                         not record["runs"] or not isinstance(record.get("output_guards"), dict)
-                        or set(record["output_guards"]) != {"csv", "pdf"}
+                        or set(record["output_guards"]) != guard_keys
                         or record["runs"][-1].get("status") != "returned"
                         or not isinstance(record["runs"][-1].get("native"), dict)
                         or not isinstance(record["runs"][-1]["native"].get("warnings"), list)):
@@ -279,7 +285,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     raise FileExistsError("House SFI already exists; choose a new working project")
                 run_stem = Path(request["new_project"]).stem + "_house_run01"
                 if any(workspace_file(store.workspace, "Results", run_stem + "." + ext, "." + ext).exists()
-                       for ext in ("csv", "pdf")):
+                       for ext in (("csv", "pdf") if require_pdf else ("csv",))):
                     raise FileExistsError("House first-run outputs already exist; choose a new working project")
                 record = {"schema": 1, "request": request, "phase": "initialized", "status": "ready",
                           "issues": [], "warnings": preview["warnings"], "runs": [], "guards": {},
@@ -483,17 +489,24 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 stem = Path(request["new_project"]).stem + f"_house_run{number:02d}"
                 csv_path = workspace_file(store.workspace, "Results", stem + ".csv", ".csv")
                 pdf_path = workspace_file(store.workspace, "Results", stem + ".pdf", ".pdf")
-                if csv_path.exists() or pdf_path.exists():
+                if csv_path.exists() or (require_pdf and pdf_path.exists()):
                     raise FileExistsError("Simulation outputs already exist; no native overwrite/retry")
-                attempt = {"number": number, "status": "running", "csv": csv_path.name, "pdf": pdf_path.name}
+                attempt = {"number": number, "status": "running", "csv": csv_path.name}
+                if require_pdf:
+                    attempt["pdf"] = pdf_path.name
                 record["runs"].append(attempt)
                 _save(paths["manifest"], record)
                 run = cli.run_simulation(request["new_project"], record["variant"], sfi=paths["sfi"],
-                    out_csv=csv_path, report_pdf=pdf_path, site=paths["site"], met=paths["met"], time_step="hour",
+                    out_csv=csv_path, report_pdf=pdf_path if require_pdf else None, site=paths["site"],
+                    met=paths["met"], time_step="hour",
                     start_date=f"{request['year']}.01.01", end_date=f"{request['year']}.12.31",
-                    report_language="en", report_pages=request.get("report_pages"), recompute_shading=True, log_level=3)
+                    report_language="en" if require_pdf else None,
+                    report_pages=request.get("report_pages") if require_pdf else None,
+                    recompute_shading=True, log_level=3)
                 attempt.update(status="returned", native=run)
-                record["output_guards"] = {"csv": fingerprint(csv_path), "pdf": fingerprint(pdf_path)}
+                record["output_guards"] = {"csv": fingerprint(csv_path)}
+                if require_pdf:
+                    record["output_guards"]["pdf"] = fingerprint(pdf_path)
                 stage("simulated")
             if position() >= PHASES.index("simulated"):
                 unchanged()
@@ -502,18 +515,23 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 stem = Path(request["new_project"]).stem + f"_house_run{number:02d}"
                 csv_path = workspace_file(store.workspace, "Results", stem + ".csv", ".csv")
                 pdf_path = workspace_file(store.workspace, "Results", stem + ".pdf", ".pdf")
-                if ({"csv": fingerprint(csv_path), "pdf": fingerprint(pdf_path)} != record["output_guards"]
-                        or attempt["csv"] != csv_path.name or attempt["pdf"] != pdf_path.name or attempt["status"] != "returned"):
+                current_guards = {"csv": fingerprint(csv_path)}
+                if require_pdf:
+                    current_guards["pdf"] = fingerprint(pdf_path)
+                if (current_guards != record["output_guards"]
+                        or attempt["csv"] != csv_path.name or (require_pdf and attempt.get("pdf") != pdf_path.name) or attempt["status"] != "returned"):
                     raise ValueError("Recorded native outputs changed or do not match this task attempt")
-                verified = _annual(csv_path, pdf_path, request, plan, record["variant"])
+                verified = _annual(csv_path, pdf_path, request, plan, record["variant"], require_pdf=require_pdf)
                 unchanged()
-                if {"csv": fingerprint(csv_path), "pdf": fingerprint(pdf_path)} != record["output_guards"]:
+                if current_guards != record["output_guards"]:
                     raise ValueError("Native outputs changed during validation")
                 record.update(verified, native_consumption_verified=True,
                                status="needs_review" if (attempt["native"]["warnings"] or verified["metrics"]["diagnostic_flags"]
                                    or record.get("input_handoff", {}).get("status") == "needs_review") else "completed",
                               phase="completed", stage="completed")
-                record["artifacts"].update(csv=str(csv_path), pdf=str(pdf_path))
+                record["artifacts"].update(csv=str(csv_path))
+                if require_pdf:
+                    record["artifacts"]["pdf"] = str(pdf_path)
                 if record.get("operation") == "engineering_house":
                     record["result_files"] = dict(record["output_guards"])
                     # Retire a capability notice emitted by the earlier scene-author
