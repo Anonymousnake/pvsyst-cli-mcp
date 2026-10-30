@@ -161,8 +161,6 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
         raise ValueError("Each source orientation must own native PV tables")
     for plane in planes:
         owned = by_orientation[plane["id"]]
-        if len(planes) == 2 and len(owned) != 1:
-            raise ValueError("Each source orientation must own exactly one native PV table")
         if sum(_integer(table.one("NModInHeight")[1]) * _integer(table.one("NModInWidth")[1])
                for table in owned) != plane["module_total"]:
             raise ValueError("Native PV tables differ from their source orientation count")
@@ -386,9 +384,15 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
     source_planes = source.get("orientations") or []
     if source_planes:
         planes = {plane["id"]: plane for plane in source_planes}
-        if (set(planes) != {1, 2} or len(tables) != 2
-                or {table["orientation_id"] for table in tables} != {1, 2}):
-            raise ValueError("PV coordinate verification requires two source tables")
+        if (set(planes) != {1, 2} or len(tables) < 1
+                or any(table.get("orientation_id") not in planes for table in tables)):
+            raise ValueError("PV coordinate verification requires source-oriented tables for orientations 1/2")
+        per_orientation = defaultdict(int)
+        for table in tables:
+            per_orientation[table["orientation_id"]] += table["module_rows"] * table["module_columns"]
+        for identifier, plane in planes.items():
+            if per_orientation.get(identifier, 0) != plane["module_total"]:
+                raise ValueError("Source tables for orientation %d must sum to the source module total" % identifier)
         grouped = True
     else:
         planes = {1: {"id": 1, "module_total": source["module_total"],
@@ -442,8 +446,7 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
         identifier = table.get("orientation_id", 1)
         plane = planes[identifier]
         if grouped:
-            if (table["module_rows"] * table["module_columns"] != plane["module_total"]
-                    or table["tilt_deg"] != plane["tilt_deg"]
+            if (table["tilt_deg"] != plane["tilt_deg"]
                     or table["azimuth_deg"] != plane["azimuth_deg"]
                     or table["rotation_deg"] != source["azimuth_deg"] - plane["azimuth_deg"]):
                 raise ValueError("Source table profile differs from its source orientation")
@@ -674,12 +677,13 @@ def _matches_single_narrow(arrays, tables, layouts):
 
 
 def _matches_dual_narrow(arrays, tables, layouts):
-    """True when a two-array stored record is the legacy one-string-per-array template (every
-    source array declares exactly one string), so the original strict verifier keeps owning it
-    and adjudicates any corruption in place.  A two-array record whose source arrays declare two
-    or more strings is the general per-cell profile and takes the capacity invariants instead."""
+    """True when a two-array stored record is the legacy one-string-per-array template with one
+    table per orientation (every source array declares exactly one string), so the original
+    strict verifier keeps owning it and adjudicates any corruption in place.  A two-array record
+    whose source arrays declare two or more strings, or that splits an orientation over more than
+    one table, is the general per-cell profile and takes the capacity invariants instead."""
     try:
-        if set(arrays) != {1, 2}:
+        if set(arrays) != {1, 2} or len(tables) != 2 or len(layouts) != 2:
             return False
         return all(_integer(array.one("NStringCh")[1]) == 1 for array in arrays.values())
     except (ValueError, KeyError, OverflowError):
@@ -859,7 +863,15 @@ def _assess_general_module_layout(blocks, lines):
 def assess_module_layout(blocks, lines):
     """Read-only classifier for a stored module layout: stored_consistent, draft_incomplete,
     invalid or needs_review.  Never raises for a present layout, so a raw VC without a recipe
-    can still be judged."""
+    can still be judged.
+
+    The two-subarray branch keys on the real source structure (two distinct positive
+    ``SubArrayId`` values in appearance order), not a ``{1, 2}`` numeric whitelist: the legacy
+    one-string-per-array template still owns ``{1, 2}`` through ``_matches_dual_narrow``, while
+    any other pair (e.g. sparse ``7, 2``) takes the general per-cell path whose capacities come
+    from ``source_string_ranges`` (position/prefix order, never a numeric id sort).  This matches
+    the explicit builder's source-data range and keeps the legacy None ``{1, 2}`` gate in
+    ``_support_gate`` untouched."""
     owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
     if not owners:
         return {"configured": False, "status": "absent", "native_consumption_verified": False}
@@ -868,7 +880,7 @@ def assess_module_layout(blocks, lines):
         tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
         layouts = [block for block in blocks if block.object_type == "pvMLTable"]
         ids = list(arrays)
-        if ids == [1, 2]:
+        if len(ids) == 2:
             if _matches_dual_narrow(arrays, tables, layouts):
                 return _verify_narrow_module_layout(blocks, lines)
             return _assess_general_module_layout(blocks, lines)

@@ -167,26 +167,30 @@ def read_house_pv_scene(components, scene_name):
                 layout = recipe["layout"]
                 if grouped:
                     groups = declared["orientations"]
-                    if (not isinstance(groups, list) or len(groups) != 2 or len(racks) != 2
+                    if (not isinstance(groups, list) or len(groups) != 2
                             or any(not isinstance(item, dict) or set(item) != {"id", "module_total"}
                                    or type(item["id"]) is not int or type(item["module_total"]) is not int
                                    or item["module_total"] < 1 for item in groups)
                             or [item["id"] for item in groups] != [1, 2]
                             or sum(item["module_total"] for item in groups) != declared["module_total"]):
                         _fail("asset/subject#source", "Version 2 requires complete source groups 1/2 and their exact total")
-                    if (not isinstance(layout, dict) or set(layout) != {"tables"}
-                            or not isinstance(layout["tables"], list) or len(layout["tables"]) != 2):
-                        _fail("asset/subject#layout", "Version 2 requires two named source-oriented tables")
-                    profiles = []
-                    for index, entry in enumerate(layout["tables"]):
+                    entries = layout["tables"] if isinstance(layout, dict) and set(layout) == {"tables"} else None
+                    if (not isinstance(entries, list) or not 1 <= len(entries) <= MAX_TABLES
+                            or len(racks) != len(entries)):
+                        _fail("asset/subject#layout", "Version 2 requires one rack per named source-oriented table")
+                    first_rack = {}
+                    for index, entry in enumerate(entries):
                         identifier = entry.get("orientation_id") if isinstance(entry, dict) else None
                         if type(identifier) is not int or identifier not in (1, 2):
                             _fail("asset/subject#layout", "Table orientation identity must be a strict source ID")
-                        plane = _source(asset, _one(racks[index], "n:extra/n:technique/pv:rack"))
-                        profiles.append(dict(plane, id=identifier, module_total=groups[identifier - 1]["module_total"]))
-                    profiles.sort(key=lambda item: item["id"])
-                    if [item["id"] for item in profiles] != [1, 2]:
-                        _fail("asset/subject#layout", "Each source orientation must be assigned exactly once")
+                        first_rack.setdefault(identifier, index)
+                    if set(first_rack) != {1, 2}:
+                        _fail("asset/subject#layout", "Each source orientation must own at least one table")
+                    profiles = []
+                    for item in groups:
+                        plane = _source(asset, _one(racks[first_rack[item["id"]]],
+                                                    "n:extra/n:technique/pv:rack"))
+                        profiles.append(dict(plane, id=item["id"], module_total=item["module_total"]))
                     source = dict(profiles[0], orientations=profiles)
                 source["module_total"] = declared["module_total"]
                 tables = table_profiles(layout, pocket, modules, source)

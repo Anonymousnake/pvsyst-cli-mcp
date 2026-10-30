@@ -380,7 +380,13 @@ def layout_profile(layout, modules, total, source_tilt, *, placed=False):
 
 
 def table_profiles(layout, house, modules, source):
-    """Keep legacy tables unchanged; two source groups require one explicit table each."""
+    """Keep legacy tables unchanged; grouped sources accept one or more tables per orientation.
+
+    A grouped (version 2) layout may split a source orientation across several named tables:
+    each table still names its ``orientation_id`` and every per-orientation module total must
+    equal that source group's ``NModSerie x NStringCh``.  The single-table-per-orientation
+    recipe stays valid and unchanged (its one table already equals the group total).
+    """
     groups = {item["id"]: item for item in source.get("orientations", [])}
     if not isinstance(layout, dict) or "tables" not in layout:
         if groups:
@@ -390,9 +396,8 @@ def table_profiles(layout, house, modules, source):
     if (house["kind"] != "mesh" or set(layout) != {"tables"}
             or not isinstance(layout["tables"], list) or not 1 <= len(layout["tables"]) <= MAX_TABLES):
         raise ValueError(f"Named tables require a mesh house and 1..{MAX_TABLES} table entries")
-    if groups and len(layout["tables"]) != 2:
-        raise ValueError("Grouped authoring requires exactly one table per orientation")
-    result, names, errors, assigned = [], set(), [], set()
+    per_group = {identifier: 0 for identifier in groups}
+    result, names, errors = [], set(), []
     for index, entry in enumerate(layout["tables"]):
         path = f"layout.tables[{index}]"
         try:
@@ -406,13 +411,13 @@ def table_profiles(layout, house, modules, source):
             group = source
             if groups:
                 identifier = entry["orientation_id"]
-                if type(identifier) is not int or identifier not in groups or identifier in assigned:
-                    raise ValueError("orientation_id must select each of source orientations 1/2 exactly once")
-                assigned.add(identifier)
+                if type(identifier) is not int or identifier not in groups:
+                    raise ValueError("orientation_id must select a source orientation 1/2")
                 group = groups[identifier]
             profile = layout_profile({key: entry[key] for key in PLACED_LAYOUT_KEYS}, modules,
-                                     group["module_total"] if groups else None, group["tilt_deg"], placed=True)
+                                     None, group["tilt_deg"], placed=True)
             if groups:
+                per_group[identifier] += profile["module_rows"] * profile["module_columns"]
                 profile.update(orientation_id=identifier, azimuth_deg=group["azimuth_deg"],
                                rotation_deg=source["azimuth_deg"] - group["azimuth_deg"])
             result.append(profile | {"name": name})
@@ -421,6 +426,13 @@ def table_profiles(layout, house, modules, source):
                                       repair_hint="Correct this named table without changing other valid regions."))
     if errors:
         raise SceneValidationError(errors)
+    if groups:
+        for identifier, group in groups.items():
+            if per_group[identifier] != group["module_total"]:
+                raise SceneValidationError([_diagnostic("pv_group_total", "layout.tables",
+                    "Orientation %d tables hold %d modules, not the source group total %d"
+                    % (identifier, per_group[identifier], group["module_total"]),
+                    repair_hint="Allocate exactly the source group's modules across its tables.")])
     total = sum(table["module_rows"] * table["module_columns"] for table in result)
     if total != source["module_total"]:
         raise SceneValidationError([_diagnostic("pv_module_total", "layout.tables",

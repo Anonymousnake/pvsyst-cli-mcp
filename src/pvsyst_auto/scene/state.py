@@ -145,11 +145,10 @@ def _pv_bindings(lines, types):
             group = grouped[identifier]
             group["subarray_ids"].append(array_id)
             group["electrical_module_count"] += integer(array, "NModSerie") * integer(array, "NStringCh")
-        # Two orientations keep the proven one-table-per-orientation cap; a single orientation
-        # allows any legal count, bounded only by the source module total (each table >= 1 cell).
+        # Tables may be split per orientation; the per-orientation module-count equality below
+        # still requires each orientation's tables to sum to its electrical total.
         table_count = types.count("pvShdArrayTable")
-        max_tables = 2 if len(planes) == 2 else sum(
-            group["electrical_module_count"] for group in grouped.values())
+        max_tables = sum(group["electrical_module_count"] for group in grouped.values())
         if not 1 <= table_count <= max_tables:
             raise ValueError("Stored binding review requires 1..%d PV tables for %d source plane(s)"
                              % (max_tables, len(planes)))

@@ -10,11 +10,12 @@ PVsyst.exe or drives a GUI, and never runs a simulation.
 Construction reuses the product reader/author/coordinate maths and the product read-only
 verifiers. The stored record is verified before it is written; native loading/consumption
 remains a separate, unverified step. Only the record that this adapter can prove is
-written: either two fixed source orientations with one landscape zero-spacing table each
-and one independent string/inverter/MPPT per array, or one orientation / one subarray with
-1..3 linear landscape zero-spacing tables sharing the source PAN/OND, or (fine layout) one
-orientation / one subarray with exactly two landscape zero-spacing tables of NModSerie
-modules each and two total independent MPPT inputs, table k binding global string k.
+written: two fixed source orientations (each on one or more landscape zero-spacing tables via
+an explicit per-cell binding, or one landscape zero-spacing table per orientation on the
+legacy one-string-per-array profile), or one orientation / one subarray with 1..3 linear
+landscape zero-spacing tables sharing the source PAN/OND, or (fine layout) one orientation /
+one subarray with exactly two landscape zero-spacing tables of NModSerie modules each and two
+total independent MPPT inputs, table k binding global string k.
 
 An explicit per-cell ``string_layout`` is the general path: every table names its source
 subarray and every cell carries a global string ordinal, so several strings may share a
@@ -108,13 +109,14 @@ def _anchor_turn(source):
 
 
 def _ordinal_tables(tables, max_tables=MAX_TABLES_SINGLE):
-    """Order layout profiles: two-orientation groups high orientation first (native save order),
-    single-orientation recipes in declaration order. ``max_tables`` keeps the legacy None cap
-    (1..3) while an explicit per-cell binding allows the author's real 1..MAX_TABLES range."""
+    """Order layout profiles: grouped tables high orientation first (native save order, then by
+    table name), single-orientation recipes in declaration order. ``max_tables`` keeps the
+    legacy None cap (1..3) while an explicit per-cell binding allows the author's real
+    1..MAX_TABLES range; a source orientation may be split over several tables."""
     if all("orientation_id" in row for row in tables):
-        if len(tables) != MAX_TABLES_BRIDGED:
-            raise ValueError("Native two-orientation import bridges exactly two PV tables")
-        return sorted(tables, key=lambda row: -row["orientation_id"])
+        if not 1 <= len(tables) <= max_tables:
+            raise ValueError("Native grouped import bridges 1..%d PV tables" % max_tables)
+        return sorted(tables, key=lambda row: (-row["orientation_id"], row["name"]))
     if not 1 <= len(tables) <= max_tables:
         raise ValueError("Native single-orientation import bridges 1..%d PV tables" % max_tables)
     return list(tables)
@@ -210,10 +212,11 @@ def build_pvshading(house, tables, modules, source, shading_mode="linear", *, ma
         native_profile = {**profile, "orientation_id": oid}
         lines += _shd_table(idx, noc, native_profile, groups[oid], modules, turn)
         lines.append("")
-        # Key by the real table identity: a dual profile carries orientation_id (unique per table),
-        # a single-orientation profile carries only its name (two tables share orientation 1, so an
-        # orientation key would overwrite the first slot). build_module_layout looks up the same key.
-        key = oid if "orientation_id" in profile else profile["name"]
+        # Key by the real table identity (its unique name): a source orientation may own several
+        # tables now, so an orientation key is no longer unique. Every profile that reaches the
+        # module layout has a name (grouped and named single-orientation recipes); the unnamed
+        # legacy linear profile never builds a layout, so its fallback key is unused.
+        key = profile["name"] if "name" in profile else oid
         slot_map[key] = (idx, noc)
         noc += 1
         idx += 1
@@ -406,9 +409,8 @@ def build_module_layout(source_text, tables, slot_map, string_layout=None):
     subarray and lists each module cell's global string; strings may span tables and a
     table may hold several strings (capacity is per global string = NModSerie, not per
     table). Geometry and angles still come from the source; NoField3D/NoField3DCreated are
-    the scene identities build_pvshading stored in ``slot_map`` keyed by the same identity
-    it used (``orientation_id`` for grouped tables, the table name otherwise), never guessed
-    from declaration order. Draft/incomplete/over-capacity or cross-subarray bindings raise
+    the scene identities build_pvshading stored in ``slot_map`` keyed by each table's unique
+    name, never guessed from declaration order. Draft/incomplete/over-capacity or cross-subarray bindings raise
     here, before anything is assembled or published.
     """
     source_blocks = objects(source_text)
@@ -419,7 +421,7 @@ def build_module_layout(source_text, tables, slot_map, string_layout=None):
         for ordinal, (profile, sub_id, cell_map) in enumerate(
                 _explicit_cells(string_layout, tables, subs, ranges), 1):
             rows, columns = profile["module_rows"], profile["module_columns"]
-            key = profile["orientation_id"] if "orientation_id" in profile else profile["name"]
+            key = profile["name"] if "name" in profile else profile["orientation_id"]
             slot, created = slot_map[key]
             blocks.append(_ml_table(ordinal, sub_id, rows, columns, slot, created,
                                     cell_strings=cell_map))
@@ -449,7 +451,7 @@ def build_module_layout(source_text, tables, slot_map, string_layout=None):
             if (abs(profile["tilt_deg"] - plane["tilt_deg"]) > ANGLE_TOL
                     or abs(plane["base_slope_deg"]) > ANGLE_TOL):
                 raise ValueError("PV table plane differs from its source orientation on subarray %d" % sub_id)
-            slot, created = slot_map[sub["orientation"]]
+            slot, created = slot_map[by_orientation[sub["orientation"]]["name"]]
             blocks.append(_ml_table(ordinal, sub_id, rows, columns, slot, created))
             out.append({"subarray_id": sub_id, "orientation_id": sub["orientation"],
                         "no_field_3d_slot": slot, "native_created_id": created,
@@ -647,8 +649,9 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
     Replaces the narrow table/string-count caps with the real source invariants inside the
     author/reader profile: a single-orientation source accepts 1..MAX_TABLES (the author limit
     of 64) landscape zero-spacing tables, all bound to its one ordinary fixed plane, while a
-    grouped two-orientation source stays at the structural one-table-per-orientation profile
-    (two tables). Strings are assigned per cell under a per-global capacity of the owning
+    grouped two-orientation source may split each orientation over one or more tables (every
+    table names its ``orientation_id``; its tables must sum to that group's module total).
+    Strings are assigned per cell under a per-global capacity of the owning
     subarray's NModSerie -- a table may hold several strings and a string may span tables -- and
     the subarray/string/table counts and global string intervals follow the actual source
     declaration order (never an exact-2 template or a numeric id sort). These are author/reader
