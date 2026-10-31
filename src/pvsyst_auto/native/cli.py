@@ -409,7 +409,8 @@ class PVsystCLI:
         if summary.exists():
             raise ValueError(f"Batch summary already exists: {summary.name}")
         before = {p.name: (p.stat().st_size, p.stat().st_mtime_ns)
-                  for p in batch_dir.glob("*Results.CSV") if p.is_file()}
+                  for p in (batch_dir.iterdir() if batch_dir.is_dir() else ())
+                  if p.is_file() and is_batch_summary_name(p.name)}
         return names, before, summary
 
     def preflight_run_simulation(self, project: str, variant: str, *,
@@ -554,8 +555,10 @@ class PVsystCLI:
         hourly = []
         runs = None
         if batch_params:
-            changed = [p for p in workspace_folder(self.workspace, "UserBatch").glob("*Results.CSV")
-                       if p.is_file() and batch_before.get(p.name) !=
+            batch_dir = workspace_folder(self.workspace, "UserBatch")
+            changed = [p for p in (batch_dir.iterdir() if batch_dir.is_dir() else ())
+                       if p.is_file() and is_batch_summary_name(p.name)
+                       and batch_before.get(p.name) !=
                        (p.stat().st_size, p.stat().st_mtime_ns)]
             # Only the summary named after the parameters file belongs to this run.
             if len(changed) != 1 or changed[0].name.casefold() != batch_summary.name.casefold():
