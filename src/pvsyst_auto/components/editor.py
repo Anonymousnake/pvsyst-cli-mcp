@@ -10,7 +10,12 @@ import re
 from dataclasses import dataclass, field
 
 
-ASSIGNMENT = re.compile(r"^([ \t]*)([A-Za-z_][A-Za-z0-9_]*)([ \t]*=[ \t]*)(.*?)([ \t]*)$")
+# A native object's serialized key may carry an `#N` index (e.g.
+# `PVObject_ShdDiffuseFactTable#1=pvShdFTable`). The name charset must accept `#` so the
+# `pvShdFTable` block actually opens; otherwise its `End of PVObject pvShdFTable` close
+# mismatches the enclosing object's frame. Only the value decides the object type, so this
+# widens nothing beyond the key spelling.
+ASSIGNMENT = re.compile(r"^([ \t]*)([A-Za-z_][A-Za-z0-9_#]*)([ \t]*=[ \t]*)(.*?)([ \t]*)$")
 # Every boundary str.splitlines honours; inside a value it would start a new record.
 LINE_BREAK = re.compile(r"[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
 CURVE_PATHS = frozenset(f"Converter/{name}" for name in

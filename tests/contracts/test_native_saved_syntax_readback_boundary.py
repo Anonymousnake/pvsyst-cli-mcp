@@ -105,8 +105,70 @@ def _variant_text():
     return "\r\n".join(lines) + "\r\n"
 
 
+def _indexed_shading_variant_text():
+    """Minimal 8.1.7 shape with `#N`-indexed shading factor tables.
+
+    PVsyst serializes repeated shading-factor-table objects under keys such as
+    ``PVObject_ShdDiffuseFactTable#1``.  The key spelling is not an identifier; only the
+    right-hand ``pvShdFTable`` value names the logical object, and the object closes with
+    ``End of PVObject pvShdFTable``.  Each table nests a ``TInterpole2D`` interpolation
+    grid (the factor-interpolation cache) closed by ``End of TInterpole2D``.  A tokenizer
+    that rejects ``#`` in the key misses the block open, so the close hits the enclosing
+    ``pvOrient`` frame and the whole-file scan raises ``Unmatched object closing tag``.
+    """
+    lines = []
+
+    def add(line):
+        lines.append(line)
+
+    add("PVObject_=pvVCalcul"); add("  Version=8.1.7"); add("  Flags=$00104001")
+    add("  Comment=Indexed Shading Fixture")
+    add("  PVObject_SiteSimul=pvSite"); add("    Latitude=45.0"); add("    Longitude=8.0")
+    add("  End of PVObject pvSite")
+    add("  Orientations, list of=1 TOrientGroup")
+    add("    PVObject_=pvOrient"); add("      Comment=Fixed plane with indexed factor tables")
+    add("      Version=8.1.6"); add("      Flags=$00"); add("      NoOrient=1")
+    add("      FieldType=FixedPlane"); add("      FieldTilt=25.0"); add("      FieldAzim=20.0")
+    add("      BaseSlope=0"); add("      UsesTiltAver=False"); add("      UsesAzimAver=False")
+    add("      UsesSlopeAver=False")
+    for key in ("PVObject_ShdTableLin", "PVObject_ShdDiffuseFactTable#1",
+                "PVObject_ShdDiffuseFactTable#2"):
+        add("      %s=pvShdFTable" % key)
+        add("        Flags=$00"); add("        CalcVersion=8.1.0"); add("        FOCalcul=foLinear")
+        add("        SFTable=TInterpole2D"); add("          NBinX=2,2,"); add("          ExtX=0,1,")
+        add("          XDeb=0.0,1.0,"); add("          YDeb=0.0,1.0,")
+        add("          Line_2=0.0000,0.0000,"); add("          Line_1=0.0000,1.0000,")
+        add("        End of TInterpole2D")
+        add("      End of PVObject pvShdFTable")
+    add("    End of TOrientGroup")
+    add("  End of Orientations")
+    add("  PVObject_PVMainArray=pvMainArray")
+    add("  PVObject_SystemCircuit=pvCircuit"); add("  Version=8.1.6"); add("  BaseNode=Start")
+    add("InjectionPointNode Start;"); add("Children=Start"); add("  NElements=1")
+    add("  SubArrayId=1"); add("  SubArrayName=Array A")
+    add("InjectionPointNode End;"); add("  BaseNode=End"); add("  End of PVObject pvCircuit")
+    add("  PVObject_=pvSubArray"); add("    Comment=Array A"); add("    SubArrayId=1")
+    add("    NoOrientation=1"); add("    Version=8.1.6"); add("    PVModule=module.PAN")
+    add("    GInverter=inverter.OND"); add("    NModSerie=15"); add("    NStringCh=2")
+    add("    NStrOrient1=2"); add("    NInverter=1"); add("    NInvMPPT=1")
+    add("  End of PVObject pvSubArray")
+    add("  End of PVObject pvMainArray")
+    add("  PVObject_System=pvSystem"); add("    SystemType=Grid"); add("  End of PVObject pvSystem")
+    # The four Delphi-class close aliases must all keep closing around the indexed tables.
+    add("  PVObject_Ageing=pvAgeing"); add("    Flags=$00"); add("  End of TAgeing")
+    add("  PVObject_=pvDomeOrient"); add("    NoOrient=9"); add("    IsMainOrient=False")
+    add("  End of TDomeOrientGroup")
+    add("  PVObject_SimulFich=pvSimulFile"); add("    Flags=$00"); add("    FileNameWr=Sim.CSV")
+    add("  End of TSimulFich")
+    # Unknown/future object: tolerated and preserved, never dropped.
+    add("  PVObject_Future=pvFutureThing"); add("    UnknownField=anything")
+    add("  End of PVObject pvFutureThing")
+    add("End of PVObject pvVCalcul")
+    return "\r\n".join(lines) + "\r\n"
+
+
 class _Workspace:
-    def __init__(self):
+    def __init__(self, text=None):
         self.tmp = Path(tempfile.mkdtemp(prefix="pvsyst-native-saved-"))
         self.root = self.tmp / "PVsyst8.1_Data"
         for folder in ("Projects", "ComposPV", "Results"):
@@ -114,8 +176,9 @@ class _Workspace:
         (self.root / "Projects" / "Demo.PRJ").write_bytes(
             b"PVObject_=pvProject\r\nEnd of PVObject pvProject\r\n")
         # Native persistence writes a UTF-8 BOM and CRLF; keep them for the fixture.
+        body = text if text is not None else _variant_text()
         (self.root / "Projects" / "Demo.VC0").write_bytes(
-            b"\xef\xbb\xbf" + _variant_text().encode("utf-8"))
+            b"\xef\xbb\xbf" + body.encode("utf-8"))
         self.cli = self.root / "PVsystCLI.exe"
         self.cli.write_bytes(FAKE_CLI)
 
@@ -214,6 +277,76 @@ class NativeSavedSyntaxReadbackBoundary(unittest.TestCase):
                     self.assertEqual([(o["id"], o["values"]["FieldAzim"]) for o in replayed["orientations"]],
                                      [(1, "20.0"), (2, "-70.0"), (3, "110.0")], replayed)
                     self.assertNotIn("Unmatched object closing tag", json.dumps(replayed))
+            ok = True
+        finally:
+            ws.cleanup(ok)
+
+
+    def test_indexed_shading_table_read_and_display_name_save(self):
+        asyncio.run(self._run_indexed())
+
+    async def _run_indexed(self):
+        ws = _Workspace(_indexed_shading_variant_text())
+        before = ws.variant_bytes()
+        ok = False
+        try:
+            async with stdio_client(ws.params()) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+
+                    async def call(tool, args):
+                        return _payload(await session.call_tool(tool, args))
+
+                    # 1) Pure read must not surface the unmatched-close parser error.
+                    params = await call(READ_VARIANT_TOOL, {"project": "Demo.PRJ", "variant": "VC0"})
+                    self.assertNotIn("Unmatched object closing tag", json.dumps(params))
+                    self.assertEqual([(o["id"], o["values"]["FieldTilt"], o["values"]["FieldAzim"])
+                                      for o in params["orientations"]], [(1, "25.0", "20.0")],
+                                     params["orientations"])
+                    self.assertEqual([(s["id"], s["values"]["NModSerie"], s["values"]["NStringCh"])
+                                      for s in params["subarrays"]], [(1, "15", "2")], params["subarrays"])
+
+                    # 2) Display-name plan parses the whole file, indexed keys included.
+                    sha256 = params["sha256"]
+                    planned = await call(UPDATE_VARIANT_TOOL, {
+                        "project": "Demo.PRJ", "variant": "VC0", "expected_sha256": sha256,
+                        "variant_name": "Renamed Indexed", "dry_run": True})
+                    self.assertEqual(planned["name_change"],
+                                     {"before": "Indexed Shading Fixture", "after": "Renamed Indexed"}, planned)
+
+                    # 3) Real save: only the Comment line changes; indexed table keys, the
+                    #    nested TInterpole2D grid and the unknown block survive byte-for-byte.
+                    await call(UPDATE_VARIANT_TOOL, {
+                        "project": "Demo.PRJ", "variant": "VC0", "expected_sha256": sha256,
+                        "variant_name": "Renamed Indexed", "dry_run": False})
+                    after = ws.variant_bytes()
+                    old_lines, new_lines = before.split(b"\r\n"), after.split(b"\r\n")
+                    self.assertEqual(len(old_lines), len(new_lines))
+                    changed = [(i, old_lines[i], new_lines[i])
+                               for i in range(len(old_lines)) if old_lines[i] != new_lines[i]]
+                    self.assertEqual(len(changed), 1, changed)
+                    self.assertEqual(changed[0][1], b"  Comment=Indexed Shading Fixture", changed)
+                    self.assertEqual(changed[0][2], b"  Comment=Renamed Indexed", changed)
+                    self.assertTrue(after.startswith(b"\xef\xbb\xbf"))
+                    self.assertEqual(after.count(b"\r\n"), after.count(b"\n"))
+                    text = after.decode("utf-8-sig")
+                    for token in ("PVObject_ShdDiffuseFactTable#1=pvShdFTable",
+                                  "PVObject_ShdDiffuseFactTable#2=pvShdFTable",
+                                  "SFTable=TInterpole2D", "End of TInterpole2D",
+                                  "Line_1=0.0000,1.0000,", "pvFutureThing",
+                                  "End of TOrientGroup", "End of TAgeing",
+                                  "End of TDomeOrientGroup", "End of TSimulFich"):
+                        self.assertIn(token, text)
+                    self.assertEqual(text.count("End of TInterpole2D"), 3)
+                    self.assertEqual(text.count("End of PVObject pvShdFTable"), 3)
+
+                    # 4) Re-read after save: same values, no parser error.
+                    replayed = await call(READ_VARIANT_TOOL, {"project": "Demo.PRJ", "variant": "VC0"})
+                    self.assertNotIn("Unmatched object closing tag", json.dumps(replayed))
+                    self.assertEqual([(o["id"], o["values"]["FieldTilt"], o["values"]["FieldAzim"])
+                                      for o in replayed["orientations"]], [(1, "25.0", "20.0")], replayed)
+                    self.assertEqual([(s["id"], s["values"]["NModSerie"], s["values"]["NStringCh"])
+                                      for s in replayed["subarrays"]], [(1, "15", "2")], replayed)
             ok = True
         finally:
             ws.cleanup(ok)
