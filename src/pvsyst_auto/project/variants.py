@@ -359,6 +359,33 @@ class VariantStore:
                 return {name: values[0] for name in names
                         if len(values := [FIELD.fullmatch(lines[i].rstrip("\r\n"))[2]
                                          for i in self._field_indices(lines, bounds, name)]) == 1}
+
+            def single(bounds, name):
+                indices = self._field_indices(lines, bounds, name)
+                return FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] if len(indices) == 1 else None
+
+            def inverter_state(bounds):
+                # Stored per-subarray inverter/module declaration read back verbatim, typed.
+                # PNomAC_InMPPT is the file's own value (an actual float), never derived from
+                # the OND PNomConv/NbMPPT; a missing, malformed or non-finite value is omitted
+                # rather than reported as 0. Used by the shared public readback API.
+                state = {}
+                for name in ("PVModule", "GInverter"):
+                    if (text := single(bounds, name)) is not None:
+                        state[name] = text
+                for name in ("NInverter", "NInvMPPT", "PowerSharingInverterId"):
+                    text = single(bounds, name)
+                    if text is not None and re.fullmatch(r"-?[0-9]+", text):
+                        state[name] = int(text)
+                if (text := single(bounds, "PNomAC_InMPPT")) is not None:
+                    try:
+                        value = float(text)
+                    except ValueError:
+                        value = None
+                    if value is not None and math.isfinite(value):
+                        state["PNomAC_InMPPT"] = value
+                return state
+
             orientations = []
             for index, line in enumerate(lines):
                 if line.strip() != "PVObject_=pvOrient":
@@ -406,9 +433,21 @@ class VariantStore:
                      "peak_shaving": peak_shaving_state(lines),
                       "grid_storage": grid_storage_state(lines, system),
                      "shading_scene": shading_state(lines),
+                    "source_metadata": {
+                        "stored_source_values": True,
+                        "note": ("subarrays[].inverter_state reports the STORED declaration values read "
+                                 "verbatim from the variant file for each SubArrayId, and is not a computed "
+                                 "or Original-verified quantity. Subarrays are listed in numeric-ascending "
+                                 "SubArrayId order (the existing public presentation order), kept distinct "
+                                 "from the native NoStringGlob allocation order (raw source-list appearance). "
+                                 "Original PVsyst may normalize them on load/import (e.g. PNomAC_InMPPT 3.75 -> "
+                                 "2.50); a legal file declaration/edit does not prove the original software "
+                                 "accepted that numeric value. A missing, malformed or non-finite field is "
+                                 "omitted, never 0.")},
                     "subarrays": [{"id": identifier, "values": fields(bounds, (
                         "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT", "NoOrientation",
                         "VBkUpEncl_syst", "VBkUpDecl_syst", "LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI", "PQualityModP", "Flags")),
+                        "inverter_state": inverter_state(bounds),
                         "string_mismatch": string_mismatch_state(lines, bounds),
                         "iam": iam_model_state(lines, bounds)}
                                   for identifier, bounds in sorted(arrays.items())]}

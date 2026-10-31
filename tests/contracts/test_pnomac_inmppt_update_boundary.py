@@ -83,6 +83,30 @@ def _subarrays(text):
     return seen
 
 
+def _state_by_id(params):
+    return {s["id"]: s["inverter_state"] for s in params["subarrays"]}
+
+
+def _raw_vc(blocks):
+    return ("PVObject_=pvVCalcul\n  Comment=PNomAC readback\n  Version=8.1.6\n"
+            + "".join(blocks) + "End of PVObject pvVCalcul\n")
+
+
+def _sa(sa, ond, module="Generic_Mono_300W.PAN", pnom=None):
+    body = ("  PVObject_=pvSubArray\n"
+            f"    SubArrayId={sa}\n"
+            f"    PVModule={module}\n"
+            f"    GInverter={ond}\n"
+            "    NModSerie=15\n"
+            "    NStringCh=2\n"
+            "    NInverter=1\n"
+            "    NInvMPPT=1\n"
+            "    PowerSharingInverterId=-1\n")
+    if pnom is not None:
+        body += f"    PNomAC_InMPPT={pnom}\n"
+    return body + "  End of PVObject pvSubArray\n"
+
+
 class PNomACInMPPTContract(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="pvsyst-pnomac-contract-")
@@ -198,6 +222,88 @@ class PNomACInMPPTContract(unittest.IsolatedAsyncioTestCase):
                     "expected_sha256": await self._sha(session, "VC9"), "subarray_id": 1,
                     "subarray_updates": {"PNomAC_InMPPT": 3.75}})
                 self.assertTrue(result.is_error, result.content)
+
+    async def _get(self, session, variant="VC0", project="PNOM.PRJ"):
+        result = await session.call_tool(GET_TOOL, {"project": project, "variant": variant})
+        self.assertFalse(result.is_error, result.content)
+        return _payload(result)
+
+    async def test_readback_reports_stored_per_sa_inverter_state(self):
+        """get_variant_parameters now returns a typed per-SA inverter_state (stored declarations)."""
+        async with stdio_client(self._params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                body = await self._get(session)
+                self.assertEqual([s["id"] for s in body["subarrays"]], [1, 2, 3])
+                states = _state_by_id(body)
+                for sa, ond, _ in GROUPS:
+                    state = states[sa]
+                    self.assertEqual(state["PVModule"], "SameModule.PAN")
+                    self.assertEqual(state["GInverter"], ond)
+                    self.assertEqual(state["NInverter"], 1)
+                    self.assertEqual(state["NInvMPPT"], 1)
+                    self.assertEqual(state["PowerSharingInverterId"], -1)
+                    self.assertIsInstance(state["PNomAC_InMPPT"], float)
+                    self.assertEqual(state["PNomAC_InMPPT"], 7.50)
+                meta = body["source_metadata"]
+                self.assertTrue(meta["stored_source_values"])
+                self.assertIn("normalize", meta["note"])
+                self.assertIn("does not prove", meta["note"])
+
+    async def test_before_after_pnom_reads_actual_stored_float(self):
+        """Read 3.75 -> edit to 2.50 -> read 2.50, as the actual stored float (never derived)."""
+        (self.projects / "PNOM.VC8").write_text(_raw_vc(
+            [_sa(1, "Generic_7.5kW_Unbalanced.OND", pnom="3.75")]), encoding="utf-8")
+        async with stdio_client(self._params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                before = _state_by_id(await self._get(session, "VC8"))
+                self.assertEqual(before[1]["GInverter"], "Generic_7.5kW_Unbalanced.OND")
+                self.assertIsInstance(before[1]["PNomAC_InMPPT"], float)
+                self.assertEqual(before[1]["PNomAC_InMPPT"], 3.75)
+                sha = (await self._get(session, "VC8"))["sha256"]
+                result = await session.call_tool(UPDATE_TOOL, {
+                    "project": "PNOM.PRJ", "variant": "VC8", "expected_sha256": sha,
+                    "subarray_id": 1, "subarray_updates": {"PNomAC_InMPPT": 2.50}})
+                self.assertFalse(result.is_error, result.content)
+                after = _state_by_id(await self._get(session, "VC8"))
+                self.assertIsInstance(after[1]["PNomAC_InMPPT"], float)
+                self.assertEqual(after[1]["PNomAC_InMPPT"], 2.50)
+        self.assertIn("PNomAC_InMPPT=2.50", (self.projects / "PNOM.VC8").read_text(encoding="utf-8"))
+
+    async def test_missing_and_invalid_pnom_are_omitted_not_zero(self):
+        """Absent / non-finite / non-numeric PNomAC_InMPPT stays identifiably missing, never 0."""
+        (self.projects / "PNOM.VC7").write_text(_raw_vc([
+            _sa(1, "A.OND"), _sa(2, "B.OND", pnom="nan"), _sa(3, "C.OND", pnom="abc")]),
+            encoding="utf-8")
+        async with stdio_client(self._params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                states = _state_by_id(await self._get(session, "VC7"))
+                for sa in (1, 2, 3):
+                    self.assertNotIn("PNomAC_InMPPT", states[sa], states[sa])
+                    self.assertNotEqual(states[sa].get("PNomAC_InMPPT"), 0.0)
+                    self.assertEqual(states[sa]["NInvMPPT"], 1)  # other fields still read
+
+    async def test_sparse_subarray_ids_read_sorted_by_id(self):
+        """Sparse ids present numeric-ascending [2,7] publicly while the file stays 7,2 source order."""
+        (self.projects / "PNOM.VC6").write_text(_raw_vc([
+            _sa(7, "S7.OND", pnom="1.25"), _sa(2, "S2.OND", pnom="9.00")]), encoding="utf-8")
+        async with stdio_client(self._params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                body = await self._get(session, "VC6")
+                # Existing public presentation order stays numeric-ascending SubArrayId,
+                # never the raw file appearance order.
+                self.assertEqual([s["id"] for s in body["subarrays"]], [2, 7])
+                states = _state_by_id(body)
+                self.assertEqual(states[2]["PNomAC_InMPPT"], 9.00)
+                self.assertEqual(states[7]["PNomAC_InMPPT"], 1.25)
+                self.assertEqual(states[2]["GInverter"], "S2.OND")
+                self.assertEqual(states[7]["GInverter"], "S7.OND")
+        # The stored file keeps its original 7-then-2 source appearance order, untouched.
+        raw = (self.projects / "PNOM.VC6").read_text(encoding="utf-8")
+        self.assertLess(raw.index("SubArrayId=7"), raw.index("SubArrayId=2"))
 
 
 if __name__ == "__main__":
