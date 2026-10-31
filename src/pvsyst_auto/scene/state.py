@@ -6,7 +6,7 @@ import re
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects
-from pvsyst_auto.scene.mapping import assess_module_layout
+from pvsyst_auto.scene.mapping import PV_TABLE_SOURCES, assess_module_layout
 
 ACTIVE_BIT = 0x00000100
 SCENE_KEYS = ("Comment", "Flags", "Precision", "FracOmbreMod", "FracOmbreThin", "DisplayedRef")
@@ -116,8 +116,8 @@ def _pv_bindings(lines, types):
             raise ValueError("PV table records must belong to the declared shading list")
         planes = [block for block in blocks if block.object_type == "pvOrient"]
         arrays = [block for block in blocks if block.object_type == "pvSubArray"]
-        if not 1 <= len(planes) <= 2 or not 1 <= len(arrays) <= 2:
-            raise ValueError("Stored binding review supports one/two fixed source planes and subarrays")
+        if len(planes) < 1 or len(arrays) < 1:
+            raise ValueError("Stored binding review supports one or more fixed source planes and subarrays")
         grouped = {}
         for plane in planes:
             identifier = integer(plane, "NoOrient")
@@ -155,8 +155,8 @@ def _pv_bindings(lines, types):
         for table in tables:
             row = {"object_path": table.path, "values": raw_fields(table)}
             result["tables"].append(row)
-            if table.one("Version")[1] != "8.1.6" or table.one("Source")[1] != "osPVCollada":
-                raise ValueError("PV table declarations are mapped only for native8.1.6 PVCollada records")
+            if (table.one("Source")[1], table.one("Version")[1]) not in PV_TABLE_SOURCES:
+                raise ValueError("PV table declarations are mapped only for verified osPVCollada 8.1.6/8.1.7 records")
             identifier = integer(table, "NoOrient")
             module_count = integer(table, "NModInHeight") * integer(table, "NModInWidth")
             origin = [float(number(value)) for value in table.one("DOrigine")[1].split(",")]

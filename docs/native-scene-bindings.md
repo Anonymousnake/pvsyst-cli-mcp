@@ -25,16 +25,16 @@
 
 两个源子阵的逐格绑定按**真实源结构**判定（两个互异正整数 `SubArrayId`，按文件出现顺序），不再使用 `{1,2}` 数字白名单。例如源子阵 id 依文件顺序为 `7,2`（各自 2 串 × 18 块，全局串 1/2 属 7、3/4 属 2）时，`stored_consistent` 判定与回读都按位置序 `[7,2]`（而非数字排序 `[2,7]`），两表各 36 块、共 72 块；容量仍挂每个全局串（= 所属源 `NModSerie`）。此稀疏限定仍只覆盖**两个固定朝向、每朝向一表、无功率共享、非 portrait、零间距**的边界；legacy None（无 `string_layout`）路径仍要求源子阵 `{1,2}`，不变。
 
-仍**显式拒绝**（返回 `needs_review`/`unsupported`，不静默当作已验证）：`ModOrient!=moLandScape`、非零 `ModSpacingX/Y`/`RowPadding`、`PowerSharingInverterId!=-1`、非 `FixedPlane`/非零 `BaseSlope`、`NoShed3D!=1`、`NIdentical!=1`，以及重复 cell/未知 global/容量不符/未知子阵引用。两个普通固定朝向（每朝向各自 table/global 的 grouped source-data 映射，如多子阵 2×2：两源子阵各两串、72 块）已可存储/回读并校验为多 global 串（存储层 `stored_consistent`），且该 2×2/72 块示值已由原 engine 冷跑 48h 真实 Native 消费（详见上节；两平面 Tilt/Azim 相同，不证不同角度）；同一普通固定朝向也可拆成多张表：每表列 `orientation_id`，按朝向分组的组件数求和须等于该源子阵的 `NModSerie×NStringCh`——该“每朝向多 table”形状（例如 72 块 3 表：朝向 1 两张 18 块表承载 global 1/2、朝向 2 一张 36 块表承载 global 3/4）已可创建/回读/导入为 `stored_consistent`；其中 3 表 18/18/36、Az 0/90、声明 0.5 m 正净距的一例已由本机 PVsyst 8.1.7 CLI 冷跑 48h 真实原生消费（逐时 14 列全有限，单次观测非 golden；0.5 m 为调用方设计输入，非软件最小值），而零间距同屋面场景即使存储层 `stored_consistent`、原生仍因 PV 场穿透被拒，故存储自洽不等于原生合法；仍属待证边界的是超过两个固定朝向，以及共享/异构/portrait/非零间距的逐格接线。`string_layout_state="draft_incomplete"`（含 `global_string=0` 或未覆盖全表）表示可存/可读但不可算，绝不等于 `stored_consistent`。
+仍**显式拒绝**（返回 `needs_review`/`unsupported`，不静默当作已验证）：`ModOrient!=moLandScape`、非零 `ModSpacingX/Y`/`RowPadding`、`PowerSharingInverterId!=-1`、非 `FixedPlane`/非零 `BaseSlope`、`NoShed3D!=1`、`NIdentical!=1`，以及重复 cell/未知 global/容量不符/未知子阵引用。两个普通固定朝向（每朝向各自 table/global 的 grouped source-data 映射，如多子阵 2×2：两源子阵各两串、72 块）已可存储/回读并校验为多 global 串（存储层 `stored_consistent`），且该 2×2/72 块示值已由原 engine 冷跑 48h 真实 Native 消费（详见上节；两平面 Tilt/Azim 相同，不证不同角度）；同一普通固定朝向也可拆成多张表：每表列 `orientation_id`，按朝向分组的组件数求和须等于该源子阵的 `NModSerie×NStringCh`——该“每朝向多 table”形状（例如 72 块 3 表：朝向 1 两张 18 块表承载 global 1/2、朝向 2 一张 36 块表承载 global 3/4）已可创建/回读/导入为 `stored_consistent`；其中 3 表 18/18/36、Az 0/90、声明 0.5 m 正净距的一例已由本机 PVsyst 8.1.7 CLI 冷跑 48h 真实原生消费（逐时 14 列全有限，单次观测非 golden；0.5 m 为调用方设计输入，非软件最小值），而零间距同屋面场景即使存储层 `stored_consistent`、原生仍因 PV 场穿透被拒，故存储自洽不等于原生合法；仍属待证边界的是任意 N（超过两个固定朝向）——其中单个三固定朝向案例已观测原生消费后的 3 组几何/布局计算态与 `ShdElec` 缓存，但精细电气损失独立精度（无 A/B 能量对照）未证；以及共享/异构/portrait/非零间距的逐格接线仍未做原生消费。`string_layout_state="draft_incomplete"`（含 `global_string=0` 或未覆盖全表）表示可存/可读但不可算，绝不等于 `stored_consistent`。
 
 原生全局状态 `mlDefStrings` 或 `mlDefInverters` 只是保存状态，不表示当前选中了精细计算。布局的 `stored_consistent` 与 `native_consumption_verified=false` 也不构成电气损失计算证明。通过[原生住宅任务](native-house-task.md#module-layout-电气阴影)选用 `shading_mode="module_layout"` 后，导入结果另行记录 GUI 重载后的模式选择，仿真再检查 `ShdElec` 输出。
 
 ## 三种绑定状态（`status`）
 
-该检查支持 PVsyst 8.1.6 变体中 1..2 个普通非平均固定朝向、1..2 个子阵列：单固定朝向时对应 1..3 张 PVCollada 导入的 `pvShdArrayTable`，双固定朝向时对应 1..2 张（若变体是空场景，则不附加 `pv_bindings` 字段）：
+该检查（存储层核对）支持 PVsyst 8.1.6 变体中一个或多个普通非平均固定朝向及其对应子阵列：每个朝向可对应一张或多张 `pvShdArrayTable`，全场景表数上限为该变体全部朝向电气组件数之和（`1..Σ NModSerie×NStringCh`），逐朝向的表组件数之和仍须等于该朝向电气组件数（若变体是空场景，则不附加 `pv_bindings` 字段）：
 
 - **`stored_consistent`**：所有 PV 表的 `NoOrient` 引用均指向存在的固定朝向，表格的倾角、方位角、底面坡度与目标固定朝向完全一致，且每个朝向下的 3D 表格组件总数恰好等于对应子阵列的 `NModSerie × NStringCh`。
 - **`needs_review`**：发现朝向引用缺失、表格角度与系统朝向不一致，或者某个朝向下的 3D 组件数与电气子阵列组件数对不上（具体差异见 `issues`）。
-- **`unsupported`**：场景的表数超出其朝向对应上限（单朝向超过 3 张、双朝向超过 2 张）、使用了跟踪/平均朝向或非有限坐标等超出当前检查规则的结构（此时 `shading_scene` 仍保持 `active` 状态并保留原始字段摘要）。
+- **`unsupported`**：全场景 PV 表数为 0 或超过全部朝向电气组件数之和、使用了跟踪/平均朝向或非有限坐标等超出当前检查规则的结构（此时 `shading_scene` 仍保持 `active` 状态并保留原始字段摘要）。
 
 **需要注意的一点**：`stored_consistent` 只代表 `.VCx` 里保存的朝向引用、角度和组件颗数自洽；如果你在 3D 编辑器里把整张光伏表平移偏离了屋顶（只改了 `DOrigine` 坐标，没改朝向和颗数），`stored_consistent` 依然会是真。要连同屋面空间坐标一起做 `0.00002 m` 精度的完整核对，需走 [`pvsyst_run_house_task`](native-house-task.md) 的场景归位与重载校验流程（详见[场景身份说明](native-scene-identity-map.md)和[双屋面交付](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。

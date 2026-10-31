@@ -10,9 +10,10 @@ PVsyst.exe or drives a GUI, and never runs a simulation.
 Construction reuses the product reader/author/coordinate maths and the product read-only
 verifiers. The stored record is verified before it is written; native loading/consumption
 remains a separate, unverified step. Only the record that this adapter can prove is
-written: two fixed source orientations (each on one or more landscape zero-spacing tables via
-an explicit per-cell binding, or one landscape zero-spacing table per orientation on the
-legacy one-string-per-array profile), or one orientation / one subarray with 1..3 linear
+written: two or more grouped fixed source orientations (same PAN/OND; one exclusive source
+subarray per orientation; each on one or more landscape zero-spacing tables via an explicit
+per-cell binding, or one landscape zero-spacing table per orientation on the legacy
+one-string-per-array profile), or one orientation / one subarray with 1..3 linear
 landscape zero-spacing tables sharing the source PAN/OND, or (fine layout) one orientation /
 one subarray with exactly two landscape zero-spacing tables of NModSerie modules each and two
 total independent MPPT inputs, table k binding global string k.
@@ -182,7 +183,7 @@ def _shd_table(idx, noc, profile, group, modules, turn):
 
 
 def build_pvshading(house, tables, modules, source, shading_mode="linear", *, max_tables=MAX_TABLES_SINGLE):
-    """Return (pvShading text, {orientation_id: (slot, created)}, object/table counts).
+    """Return (pvShading text, {table_name: (slot, created)}, object/table counts).
 
     Pure builder: every geometry/PV field is derived from the declaration. No golden
     scene record is read. ``shading_mode`` only selects the complete pvShading.Flags
@@ -646,20 +647,20 @@ def _circuit_counts_valid(source_text, subs):
 def _explicit_gate(source, tables, source_text, mode, string_layout):
     """Source/geometry/capacity gate for an explicit per-cell string binding.
 
-    Replaces the narrow table/string-count caps with the real source invariants inside the
-    author/reader profile: a single-orientation source accepts 1..MAX_TABLES (the author limit
-    of 64) landscape zero-spacing tables, all bound to its one ordinary fixed plane, while a
-    grouped two-orientation source may split each orientation over one or more tables (every
-    table names its ``orientation_id``; its tables must sum to that group's module total).
-    Strings are assigned per cell under a per-global capacity of the owning
-    subarray's NModSerie -- a table may hold several strings and a string may span tables -- and
-    the subarray/string/table counts and global string intervals follow the actual source
-    declaration order (never an exact-2 template or a numeric id sort). These are author/reader
-    profile bounds, not a claim about native software limits or native consumption. Unproven
-    shapes (portrait, non-zero spacing/padding, shared inputs, non-fixed/sloped planes, more
-    than two grouped orientations, or a table whose orientation disagrees with its subarray) are
-    refused with a concrete issue rather than silently treated as verified; no circuit is
-    fabricated.
+    The general path verified here is independent of the source cardinality. A single-orientation
+    source accepts 1..MAX_TABLES (the author limit of 64) landscape zero-spacing tables bound to
+    its one ordinary fixed plane. A grouped source accepts any number of homogeneous fixed
+    orientations: every table names a declared ``orientation_id``, each source orientation owns at
+    least one table, and every orientation's tables sum to that group's module total, so N=1/2/3/...
+    share one loop instead of an exact-2 template. Strings are assigned per cell under a per-global
+    capacity of the owning subarray's NModSerie -- a table may hold several strings and a string may
+    span tables -- and the subarray/string/table counts and global string intervals follow the
+    actual source declaration order (never a numeric id sort). These are author/reader profile
+    bounds, not a claim about native software limits or native consumption. Only the shapes that
+    are actually checked are refused (portrait, non-zero spacing/padding, shared inputs,
+    non-fixed/sloped planes, a table whose orientation is not a declared source orientation, a
+    group whose tables miss its module total, or incomplete cell wiring); nothing is silently
+    treated as verified and no circuit is fabricated.
     """
     if mode != "module_layout":
         raise ValueError("An explicit string_layout requires shading_mode=module_layout")
@@ -686,6 +687,23 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
     if source.get("orientations"):
         if any("orientation_id" not in row for row in tables):
             raise ValueError("A grouped source requires every explicit table to carry its source orientation_id")
+        # Verify the declared source-orientation profile itself (any N, not a ">2 rejected"
+        # template): every table names a real source orientation, every orientation owns at least
+        # one table, and each group's tables hold exactly its module total. This is the gate's own
+        # N-profile check; the per-cell binding/capacity is then enforced by _explicit_cells.
+        orientation_ids = {item["id"] for item in source["orientations"]}
+        if orientation_ids != set(planes):
+            raise ValueError("Declared source orientations do not match the parsed source planes")
+        per_orientation = defaultdict(int)
+        for row in tables:
+            if row["orientation_id"] not in orientation_ids:
+                raise ValueError("Table %r names orientation %r, not a declared source orientation"
+                                 % (row.get("name"), row["orientation_id"]))
+            per_orientation[row["orientation_id"]] += row["module_rows"] * row["module_columns"]
+        for plane in source["orientations"]:
+            if per_orientation.get(plane["id"], 0) != plane["module_total"]:
+                raise ValueError("Orientation %d tables hold %d modules, not the source total %d"
+                                 % (plane["id"], per_orientation.get(plane["id"], 0), plane["module_total"]))
     else:
         if len(planes) != 1 or len(subs) != 1:
             raise ValueError("The single-orientation explicit module layout covers one source plane and one subarray")
@@ -702,10 +720,13 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
 
 
 def _support_gate(source, tables, source_text, mode="linear", string_layout=None):
-    """Reject anything outside the proven native recipes: two orientations / two tables,
-    or one orientation / one subarray with either 1..3 linear tables or exactly two
-    landscape tables holding two source strings (single-orientation fine layout).
-    An explicit string_layout takes the general invariants instead of the table-count caps."""
+    """Reject anything outside the proven native recipes.
+
+    Without an explicit binding the implicit path stays exactly two source orientations / two
+    tables (or one orientation / one subarray with 1..3 linear tables, or the two-table fine
+    layout). Three or more orientations are refused clearly here and must supply an explicit
+    string_layout, which routes to the general per-group invariants instead of these count caps.
+    """
     if string_layout is not None:
         _explicit_gate(source, tables, source_text, mode, string_layout)
         return
@@ -713,7 +734,8 @@ def _support_gate(source, tables, source_text, mode="linear", string_layout=None
     planes, subs = _parse_electrical(source_text)
     if orientations:
         if len(orientations) != 2 or {item["id"] for item in orientations} != {1, 2}:
-            raise ValueError("The native method supports exactly two source orientations 1/2")
+            raise ValueError("The implicit native method supports exactly two source orientations 1/2; "
+                             "three or more require an explicit string_layout")
         if len(tables) != 2 or {row["orientation_id"] for row in tables} != {1, 2}:
             raise ValueError("The native method requires one PV table per source orientation")
         if set(subs) != {1, 2} or {row["orientation"] for row in subs.values()} != {1, 2}:

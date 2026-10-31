@@ -390,7 +390,7 @@ def table_profiles(layout, house, modules, source):
     groups = {item["id"]: item for item in source.get("orientations", [])}
     if not isinstance(layout, dict) or "tables" not in layout:
         if groups:
-            raise ValueError("Two source orientations require two named tables with orientation_id")
+            raise ValueError("Grouped source orientations require named tables with orientation_id")
         return [layout_profile(layout, modules, source["module_total"], source["tilt_deg"],
                                placed=house["kind"] == "mesh")]
     if (house["kind"] != "mesh" or set(layout) != {"tables"}
@@ -412,7 +412,7 @@ def table_profiles(layout, house, modules, source):
             if groups:
                 identifier = entry["orientation_id"]
                 if type(identifier) is not int or identifier not in groups:
-                    raise ValueError("orientation_id must select a source orientation 1/2")
+                    raise ValueError("orientation_id must select a declared source orientation")
                 group = groups[identifier]
             profile = layout_profile({key: entry[key] for key in PLACED_LAYOUT_KEYS}, modules,
                                      None, group["tilt_deg"], placed=True)
@@ -554,9 +554,15 @@ def check_tables(house, tables):
 
 
 def source_profile(store, lines, arrays, system, *, allow_groups=False):
-    """The native bridge stays single-plane; only the authoring path opts into two groups."""
-    if system is None or len(arrays) not in ((1, 2) if allow_groups else (1,)):
-        raise ValueError("Requires one pvSystem and one subarray, or two explicitly grouped authoring subarrays")
+    """The native bridge stays single-plane; only the authoring path opts into grouped sources.
+
+    ``allow_groups`` accepts any number of *homogeneous fixed* source orientations (one ordinary
+    fixed plane and one subarray per group, the same PAN/OND and no sharing/tracking); the
+    single-plane bridge keeps exactly one array.  Orientation profiles are returned in ascending
+    source-orientation id order, and each keeps its own source ``id``/``module_total``/angles.
+    """
+    if system is None or (not allow_groups and len(arrays) != 1):
+        raise ValueError("Requires one pvSystem and one subarray, or explicitly grouped authoring subarrays")
     if root_block(lines, system).one("SystemType")[1] != "Grid":
         raise ValueError("SystemType must be Grid")
     blocks = objects("".join(lines))
@@ -594,8 +600,8 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
         if tilt >= 90.0:
             raise ValueError("FieldTilt must stay below 90 degrees")
         azimuth = _finite(float(plane_root.one("FieldAzim")[1]), "FieldAzim", minimum=-180.0, maximum=180.0)
-        models.append((sub_root.one("PVModule")[1], sub_root.one("GInverter")[1] if len(arrays) == 2 else ""))
-        if len(arrays) == 2:
+        models.append((sub_root.one("PVModule")[1], sub_root.one("GInverter")[1] if len(arrays) > 1 else ""))
+        if len(arrays) > 1:
             branches, owned = store._subarray_branches(lines, arrays, identifier)
             store._require_plane_branch_mode(owned, branches)
             if (owned.one("Version")[1] not in ("8.1.0", "8.1.6")
@@ -605,9 +611,12 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
                 raise ValueError("Grouped authoring requires verified single-orientation exclusive branches")
         profiles.append({"id": int(orientation_id), "module_total": int(series * strings), "tilt_deg": tilt,
                          "field_azimuth_deg": azimuth, "azimuth_deg": (180.0 + azimuth) % 360.0})
-    if len(arrays) == 2 and ({p["id"] for p in profiles} != {1, 2}
-                            or len({tuple(name.casefold() for name in pair) for pair in models}) != 1):
-        raise ValueError("Two authoring groups require distinct orientations 1/2 and the same PAN/OND")
+    if len(arrays) > 1:
+        orientation_ids = [profile["id"] for profile in profiles]
+        if (any(identifier < 1 for identifier in orientation_ids)
+                or len(set(orientation_ids)) != len(orientation_ids)
+                or len({tuple(name.casefold() for name in pair) for pair in models}) != 1):
+            raise ValueError("Grouped authoring requires distinct positive source orientations and the same PAN/OND")
     profiles.sort(key=lambda item: item["id"])
     sit = next((block for block in blocks if block.object_type == "pvSite"
                 and block.path == "PVObject_SiteSimul"), None)
@@ -623,7 +632,7 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
     result = {key: first[key] for key in ("tilt_deg", "field_azimuth_deg", "azimuth_deg")}
     result.update(module_total=sum(p["module_total"] for p in profiles), pan_name=models[0][0],
                   site={"latitude": latitude, "longitude": longitude, "altitude": altitude})
-    if len(profiles) == 2:
+    if len(profiles) > 1:
         result["orientations"] = profiles
     return result
 
@@ -934,7 +943,7 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                 "northern-hemisphere site. House and table share one parent rotation, so the table translation "
                 "is expressed in the house local frame.")
             if "orientations" in source:
-                result["warnings"].append("Two-orientation authoring does not certify native geometry: the bounded native path separately assigns, places, saves and reloads both regions before simulation.")
+                result["warnings"].append("Grouped orientation authoring does not certify native geometry: the bounded native path separately assigns, places, saves and reloads each region before simulation.")
             if pocket["kind"] == "mesh":
                 result["warnings"].append(
                     "House geometry is AI/caller-authored, not reconstructed from a fixed roof template. "

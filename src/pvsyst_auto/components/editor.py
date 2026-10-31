@@ -20,7 +20,9 @@ MAIN_CURVE = "Converter/ProfilPIO"
 AUTO_CURVE_MASK = 0x10
 THREE_VOLTAGE_MASK = 0x1000
 # Native records that close with their Delphi class name rather than their PV object name.
-OBJECT_CLOSE_ALIAS = {"TAgeing": "pvAgeing", "TOrientGroup": "pvOrient", "TDomeOrientGroup": "pvDomeOrient"}
+# 8.1.7 saves the pvSimulFile result cache closed by `End of TSimulFich` (TSimulFich class).
+OBJECT_CLOSE_ALIAS = {"TAgeing": "pvAgeing", "TOrientGroup": "pvOrient",
+                      "TDomeOrientGroup": "pvDomeOrient", "TSimulFich": "pvSimulFile"}
 OBJECT_CLOSE = re.compile(r"\s*End of (?:PVObject )?(pv\w+|TConverter|TCubicProfile|%s)\s*"
                           % "|".join(map(re.escape, OBJECT_CLOSE_ALIAS)))
 
