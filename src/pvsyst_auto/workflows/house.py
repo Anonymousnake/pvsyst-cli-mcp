@@ -118,9 +118,19 @@ def _prepare(store, components, request):
     source_bytes = store._read(paths["source_variant"])
     _, lines = store._text(source_bytes)
     entries = request["layout"].get("tables") if isinstance(request["layout"], dict) else None
-    grouped = (isinstance(entries, list) and len(entries) == 2
-               and all(isinstance(item, dict) and type(item.get("orientation_id")) is int for item in entries)
-               and {item["orientation_id"] for item in entries} == {1, 2})
+    # Grouped authoring route (source_snapshot/source_profile allow_groups) is chosen from the
+    # declared layout, not a caller-supplied source id. Any named layout that assigns regions to
+    # two or more distinct positive source orientations is one grouped source; one orientation
+    # may still span several tables, while a single-plane or repeated-id layout stays on the
+    # single-plane bridge. The real source subarrays and per-group totals are validated by the
+    # existing source_profile -> table_profiles -> check_tables flow below, never by a separate
+    # Native/source permission query.
+    orientation_ids = ([item.get("orientation_id") for item in entries]
+                       if isinstance(entries, list)
+                       and all(isinstance(item, dict) and type(item.get("orientation_id")) is int
+                               for item in entries) else [])
+    grouped = (len(set(orientation_ids)) >= 2
+               and all(identifier >= 1 for identifier in orientation_ids))
     snap = native._source_snapshot(store, components, project, variant, request.get("module_geometry"),
                                    **({"allow_groups": True} if grouped else {}))
     source_site = store._embedded_reference(lines, "PVObject_SiteSimul=pvSite", "End of PVObject pvSite")

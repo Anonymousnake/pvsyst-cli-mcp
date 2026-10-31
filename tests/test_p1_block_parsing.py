@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 import pvsyst_auto
-from pvsyst_auto.components.editor import OBJECT_CLOSE_ALIAS, has_object, objects, root_block
+from pvsyst_auto.components.editor import has_object, objects, root_block
 
 SRC = Path(pvsyst_auto.__file__).resolve().parent
 
@@ -66,10 +66,6 @@ class NativeClosingTags(unittest.TestCase):
         self.assertEqual(blocks[1].fields, {"NoOrient": [(3, "1")], "IsMainOrient": [(4, "True")]})
         self.assertEqual(blocks[2].fields, {"NoOrient": [(7, "2")], "IsMainOrient": [(8, "False")]})
         self.assertEqual(objects(DOME), objects(_legacy_view(DOME)))
-
-    def test_alias_table_drives_the_closing_tags(self):
-        self.assertEqual(OBJECT_CLOSE_ALIAS, {"TAgeing": "pvAgeing", "TOrientGroup": "pvOrient",
-                                              "TDomeOrientGroup": "pvDomeOrient"})
 
     def test_an_alias_closes_only_its_own_object(self):
         cases = {

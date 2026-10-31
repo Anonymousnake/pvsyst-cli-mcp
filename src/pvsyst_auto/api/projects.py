@@ -234,8 +234,9 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     excluded; this does not widen write support.
     Read-only transformers, system_unavailability, peak_shaving and shading_scene expose
     stored native layers, outage periods, strategy and scene declarations. Active
-    shading_scene.pv_bindings additionally exposes one/two native8.1.6 PVCollada PV-table
-    declarations: raw automatic labels/creation counters, stored orientation IDs, module
+    shading_scene.pv_bindings additionally exposes one or more native8.1.6 PVCollada
+    PV-table declarations for one or more ordinary fixed source planes: raw automatic
+    labels/creation counters, stored orientation IDs, module
     counts and native DOrigine metres (NOT house/PVCollada coordinates). Cross-checks
     ordinary fixed-plane references, three angle fields and per-plane saved module totals.
     stored_consistent means these declarations agree, not source geometry/identity,
@@ -751,15 +752,20 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
     Their SUM of module_rows*module_columns must equal the source module total. All use
     the same source PAN. Table names must be unique ignoring case. Coplanar overlapping
     PV rectangles stop; no automatic packing or physical shading approximation is used.
-    Candidate-only dual-plane authoring accepts exactly two ordinary fixed-plane source
+    Candidate-only grouped authoring accepts two or more ordinary fixed-plane source
     subarrays with complete exclusive8.1.0/8.1.6 branches, the same PAN/OND and distinct
-    orientations1/2. Use exactly two named tables with strict orientation_id=1/2, one
-    region per source plane, and each region's count must equal that source subarray.
-    House vertices and every origin_m stay in orientation1's local frame; only each PV
-    node gets its source-relative standard Z rotation. Roof normal/corner checks use
-    that frame. Grouped XY bounding footprints must be disjoint (adapter restriction,
-    not a collision/engineering limit). Writes version2 metadata; native auto-import
-    remains needs_context until per-table identity/geometric verification is bridged.
+    positive source orientations. Use one or more named tables per source group, each
+    table's strict orientation_id set to a real declared source orientation (not a fixed
+    {1,2} whitelist). Grouping is complete: every source subarray must own at least one
+    region, no omitted or invented group is allowed, each group's summed module_rows x
+    module_columns must equal that source subarray's NModSerie x NStringCh, and every
+    table's total must still equal the whole source module count. House vertices and every
+    origin_m stay in the lowest source orientation id's local frame; only each PV node gets
+    its source-relative standard Z rotation. Roof normal/corner checks use that frame.
+    Grouped XY bounding footprints must be disjoint (adapter restriction, not a collision/
+    engineering limit). Writes version2 metadata; adapter-authored grouped tables and
+    native auto-import stay candidate-only until original-software consumption bridges the
+    per-table identity and geometric verification.
     Structured diagnostics locate invalid parts, vertices, triangles or table entries
     with repair hints. Fix those inputs and preview again; authored geometry is not patched.
     module_rows/columns, orientation and row/column_spacing_m remain explicit. Legacy
@@ -767,7 +773,7 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
     stays compatible; do not mix its layout with mesh mode. House parts share the source
     anchor azimuth rotation. The tool only serializes official COLLADA1.5/PVCollada2.0
     geometry and PV semantics; native project, variant and PAN bytes are never modified.
-    Except for the explicit dual-plane candidate above, source requirements stay one Grid
+    Except for the explicit grouped candidate above, source requirements stay one Grid
     pvSystem/subarray/ordinary fixed plane; all modes exclude shading scene/module layout,
     load, storage, P50/P90
     or saved horizon, complete grid counts and a northern-hemisphere site record. Module
@@ -878,10 +884,12 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
     native table/array links are checked; the selected mode is checked after GUI reload.
     Use pvsyst_run_simulation on the returned variant for energy/shading consumption.
     method="native" (opt-in) builds a NEW native input variant from the same supported
-    recipe without any GUI, INI, clipboard, licence or engine action. It supports only two
-    fixed orientations, two landscape zero-spacing tables, source arrays 1/2 with one
-    independent string/inverter/MPPT each and the same PAN/OND; unsupported recipes stop
-    before writing. dry_run builds and verifies the native records in memory only.
+    recipe without any GUI, INI, clipboard, licence or engine action. It accepts two or more
+    GROUPED homogeneous fixed orientations (same PAN/OND, distinct positive source
+    orientations, one exclusive subarray each) on landscape zero-spacing tables carrying an
+    explicit per-cell string_layout, and keeps the legacy single-orientation / one-and-two
+    implicit shapes; unsupported recipes stop before writing. For the grouped N>=3 case this
+    is build/verify-preview only: dry_run builds and verifies the native records in memory.
     Execution requires dry_run=false AND confirm=true and writes one new variant; the
     status is native_variant_created; stored_geometry_verified/stored_module_layout_verified
     reflect the STORED record only, while native_geometry_verified/native_module_layout_verified,

@@ -15,6 +15,16 @@ COORD_TOL = 2e-5
 NORMAL_TOL = 1e-7
 ANGLE_TOL = 1e-6
 
+# Verified stored-state allow-lists (explicit pairs/tokens, never a version prefix).
+# A native 8.1.7 re-save keeps the same osPVCollada PV-table grammar and the same
+# module-layout geometry/counts/module->string assignment; only the engine version
+# token and the post-computation state labels advance.  Unknown sources/versions or
+# unknown states still raise, so a stored_consistent result never claims a second
+# native computation or physical certification.
+PV_TABLE_SOURCES = frozenset({("osPVCollada", "8.1.6"), ("osPVCollada", "8.1.7")})
+MODULE_LAYOUT_GLOBAL_STATES = frozenset({"mlDefStrings", "mlDefInverters", "mlShd3DCalculated"})
+MODULE_LAYOUT_TABLE_STATES = frozenset({"mlDefStrings", "mlDefInverters"})
+
 
 def _number(value):
     result = float(value)
@@ -72,8 +82,10 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
     """Preserve both source identities, fixed planes, hardware and exclusive circuit branches."""
     planes = source.get("orientations", [])
     if planes:
-        if [plane["id"] for plane in planes] != [1, 2]:
-            raise ValueError("Grouped verification requires source orientations 1/2")
+        identifiers = [plane["id"] for plane in planes]
+        if (any(identifier < 1 for identifier in identifiers)
+                or len(set(identifiers)) != len(identifiers)):
+            raise ValueError("Grouped verification requires distinct positive source orientations")
     else:
         planes = [{"id": 1, "module_total": source["module_total"],
                    "tilt_deg": source["tilt_deg"], "field_azimuth_deg": source["field_azimuth_deg"]}]
@@ -106,6 +118,8 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
     saved = _indexed(target_blocks, "pvSubArray", "SubArrayId")
     if len(originals) != len(planes) or set(originals) != set(saved):
         raise ValueError("Saved variant changed the source subarray identities")
+    if {_integer(block.one("NoOrientation")[1]) for block in originals.values()} != set(orientation_ids):
+        raise ValueError("Source subarrays must each own exactly one declared source orientation")
     hardware_mapping = []
     for identifier, before in originals.items():
         after = saved[identifier]
@@ -384,9 +398,9 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
     source_planes = source.get("orientations") or []
     if source_planes:
         planes = {plane["id"]: plane for plane in source_planes}
-        if (set(planes) != {1, 2} or len(tables) < 1
+        if (len(planes) < 2 or len(tables) < 1
                 or any(table.get("orientation_id") not in planes for table in tables)):
-            raise ValueError("PV coordinate verification requires source-oriented tables for orientations 1/2")
+            raise ValueError("PV coordinate verification requires source-oriented tables for the declared orientations")
         per_orientation = defaultdict(int)
         for table in tables:
             per_orientation[table["orientation_id"]] += table["module_rows"] * table["module_columns"]
@@ -692,22 +706,39 @@ def _matches_dual_narrow(arrays, tables, layouts):
 
 def _assess_general_module_layout(blocks, lines):
     """Classify a general per-cell stored layout as stored_consistent, draft_incomplete or
-    invalid.  Supports one or two source subarrays, each on its own ordinary fixed plane, with
+    invalid.  Supports one or more source subarrays, each on its own ordinary fixed plane, with
     every module cell bound to a source GLOBAL string ordinal (capacity = the owning subarray's
-    NModSerie, never the table).  Unsupported profiles (portrait, spacing, padding, sharing,
-    non-fixed planes, more than two subarrays) raise so the caller reports needs_review instead
-    of a false stored state."""
+    NModSerie, never the table).  Above two subarrays the source must be homogeneous fixed
+    (same PAN/OND, one exclusive single-orientation branch each).  Unsupported profiles
+    (portrait, spacing, padding, sharing, non-fixed planes, heterogeneous groups) raise so the
+    caller reports needs_review instead of a false stored state."""
     owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
     if (len(owners) != 1 or owners[0].path != "PVObject_ModuleLayout"
-            or owners[0].one("ModLayoutGlobState")[1] not in ("mlDefStrings", "mlDefInverters")
+            or owners[0].one("ModLayoutGlobState")[1] not in MODULE_LAYOUT_GLOBAL_STATES
             or owners[0].one("SubFieldsOrigin")[1] != "so3DShadings"):
         raise ValueError("Module Layout owner record is not a defined native module layout")
     arrays = _indexed(blocks, "pvSubArray", "SubArrayId")
     planes = _indexed(blocks, "pvOrient", "NoOrient")
     tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
     layouts = [block for block in blocks if block.object_type == "pvMLTable"]
-    if not 1 <= len(arrays) <= 2:
-        raise ValueError("General module layout supports one or two source subarrays")
+    if len(arrays) < 1:
+        raise ValueError("General module layout requires at least one source subarray")
+    if len(arrays) > 2:
+        # Above two groups stay bounded to homogeneous fixed sources with one exclusive
+        # single-orientation branch per subarray; heterogeneous PAN/OND, tracker-averaged or
+        # shared/heterogeneous-string capabilities are not opened by this extension.
+        models = {(array.one("PVModule")[1].casefold(), array.one("GInverter")[1].casefold())
+                  for array in arrays.values()}
+        if len(models) != 1:
+            raise ValueError("General module layout above two subarrays requires the same PAN/OND")
+        for array in arrays.values():
+            strings = _integer(array.one("NStringCh")[1])
+            if ("NStrOrient1" not in array.fields
+                    or _integer(array.one("NStrOrient1")[1]) != strings
+                    or any(key.startswith("NStrOrient") and key != "NStrOrient1"
+                           and array.one(key)[1] != "0" for key in array.fields)):
+                raise ValueError("General module layout above two subarrays requires exclusive "
+                                 "single-orientation string branches")
     if len(layouts) < 1 or len(tables) != len(layouts):
         raise ValueError("General module layout requires one native 3D table per module-layout table")
     # Each source subarray owns one ordinary non-averaged fixed plane; shared inputs excluded.
@@ -765,8 +796,7 @@ def _assess_general_module_layout(blocks, lines):
             continue
         reference = _integer(layout.one("NoField3DCreated")[1])
         table = created.get(reference)
-        if (table is None or table.one("Version")[1] != "8.1.6"
-                or table.one("Source")[1] != "osPVCollada"
+        if (table is None or (table.one("Source")[1], table.one("Version")[1]) not in PV_TABLE_SOURCES
                 or table.path.rsplit("/", 1)[-1] != "PVObject_" + layout.one("NoField3D")[1]
                 or layout.one("NoShed3D")[1] != "1" or layout.one("NIdentical")[1] != "1"
                 or _integer(table.one("NoOrient")[1]) != orientation
@@ -774,10 +804,11 @@ def _assess_general_module_layout(blocks, lines):
                 or _integer(table.one("NModInWidth")[1]) != columns):
             issues.append("Module-layout table/array/3D reference or mechanical layout disagrees: " + layout.path)
             continue
-        if (layout.one("ModLayoutState")[1] != "mlDefStrings"
+        if (layout.one("ModLayoutState")[1] not in MODULE_LAYOUT_TABLE_STATES
                 or layout.one("ModOrient")[1] != "moLandScape"
                 or table.one("ModuleOrient")[1] != "moLandScape"):
-            raise ValueError("General module layout supports only landscape defined-string tables")
+            raise ValueError("General module layout supports only landscape tables with a defined-string "
+                             "or computed-inverter state")
         if (_number(layout.one("ModSpacingX")[1]) != 0 or _number(layout.one("ModSpacingY")[1]) != 0
                 or _number(layout.one("RowPadding")[1]) != 0
                 or _number(table.one("ModSpacingX")[1]) != 0 or _number(table.one("ModSpacingY")[1]) != 0):
@@ -865,13 +896,13 @@ def assess_module_layout(blocks, lines):
     invalid or needs_review.  Never raises for a present layout, so a raw VC without a recipe
     can still be judged.
 
-    The two-subarray branch keys on the real source structure (two distinct positive
-    ``SubArrayId`` values in appearance order), not a ``{1, 2}`` numeric whitelist: the legacy
-    one-string-per-array template still owns ``{1, 2}`` through ``_matches_dual_narrow``, while
-    any other pair (e.g. sparse ``7, 2``) takes the general per-cell path whose capacities come
-    from ``source_string_ranges`` (position/prefix order, never a numeric id sort).  This matches
-    the explicit builder's source-data range and keeps the legacy None ``{1, 2}`` gate in
-    ``_support_gate`` untouched."""
+    The dispatch keys on the real source structure (distinct positive ``SubArrayId`` values in
+    appearance order), not a ``{1, 2}`` numeric whitelist: the legacy one-string-per-array and
+    single-orientation templates still own ``{1, 2}`` / ``[1]`` through the narrow matchers,
+    while any other pair (e.g. sparse ``7, 2``) or more than two groups takes the general
+    per-cell path whose capacities come from ``source_string_ranges`` (position/prefix order,
+    never a numeric id sort).  This matches the explicit builder's source-data range and keeps
+    the legacy None ``{1, 2}`` gate in ``_support_gate`` untouched."""
     owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
     if not owners:
         return {"configured": False, "status": "absent", "native_consumption_verified": False}
@@ -880,15 +911,13 @@ def assess_module_layout(blocks, lines):
         tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
         layouts = [block for block in blocks if block.object_type == "pvMLTable"]
         ids = list(arrays)
-        if len(ids) == 2:
-            if _matches_dual_narrow(arrays, tables, layouts):
-                return _verify_narrow_module_layout(blocks, lines)
+        if len(ids) == 2 and _matches_dual_narrow(arrays, tables, layouts):
+            return _verify_narrow_module_layout(blocks, lines)
+        if len(ids) == 1 and ids == [1] and _matches_single_narrow(arrays, tables, layouts):
+            return _verify_narrow_module_layout(blocks, lines)
+        if len(ids) >= 1:
             return _assess_general_module_layout(blocks, lines)
-        if len(ids) == 1:
-            if ids == [1] and _matches_single_narrow(arrays, tables, layouts):
-                return _verify_narrow_module_layout(blocks, lines)
-            return _assess_general_module_layout(blocks, lines)
-        return _review(["Module Layout source arrays are outside the verified one/two-subarray profiles"])
+        return _review(["Module Layout has no source subarrays"])
     except (ValueError, KeyError, OverflowError) as exc:
         return _review([str(exc)])
 
