@@ -350,6 +350,13 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     Returns module_quality default_before/default_after; restore recovers default
     mode. No native-default calculation, tolerance inference or model fitting;
     this bounded paired mapping is verified on an unshaded generic mono grid case.
+    PNomAC_InMPPT is a separate subarray_updates key: the stored per-MPPT nominal AC
+    power in kW, written only when that subarray already declares the field. It must
+    be a positive finite number (zero, negative, NaN and infinity stop before any
+    write); there is no guessed hardware ceiling and no derivation from the OND
+    PNomConv or NbMPPT. This edits the existing declaration only: it does not add
+    fields, resize MPPT inputs or allocate strings, and it is not an inverter power
+    calculation.
     generator_updates
     supports text 8.1.0/8.1.6 SystemType=Battery: enabled (only system Flags bit 0x20),
     filename (existing GEN), operating_power_kw (>0), and thresholds mapping

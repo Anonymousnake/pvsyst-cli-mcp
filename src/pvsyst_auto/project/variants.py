@@ -440,7 +440,12 @@ class VariantStore:
                             "NoOrientation": (1, 2147483647), "NInvMPPT": (1, 10000),
                             "VBkUpEncl_syst": (0, 1),
                             "VBkUpDecl_syst": (0, 1), "LIDLoss": (0, 100), "PMismMPP": (0, 100),
-                             "ModuleQualityLoss": (-5, 20)}
+                             "ModuleQualityLoss": (-5, 20),
+                             # Per-MPPT nominal AC power (kW). Positive and finite only; the
+                             # upper bound is intentionally the unbounded float sentinel rather
+                             # than a guessed hardware limit. Written as an existing declaration,
+                             # never derived here from the OND PNomConv/NbMPPT.
+                             "PNomAC_InMPPT": (0, math.inf)}
         allowed_orientation = {"FieldTilt": (0, 90), "FieldAzim": (-180, 180)}
         allowed_main_array = {"UFactor": (15, 100)}
         requested = ((subarray_updates, allowed_subarray), (orientation_updates, allowed_orientation),
@@ -618,6 +623,8 @@ class VariantStore:
                             or not math.isfinite(value) or not allowed[name][0] <= value <= allowed[name][1]
                             or name in ("NModSerie", "NInverter", "NStringCh", "NInvMPPT", "NoOrientation") and int(value) != value):
                         raise ValueError(f"Invalid {name} value")
+                    if name == "PNomAC_InMPPT" and value <= 0:
+                        raise ValueError(f"Invalid {name} value")
                     if name == "ModuleQualityLoss":
                         for field in ("PQualityModU", "PQualityModI"):
                             indices = self._field_indices(lines, bounds, field)
@@ -634,7 +641,8 @@ class VariantStore:
                     old = lines[index]
                     prefix = old[:old.index("=") + 1]
                     ending = "\r\n" if old.endswith("\r\n") else "\n" if old.endswith("\n") else ""
-                    rendered = str(int(value)) if name == "NModSerie" else f"{value:.3f}"
+                    rendered = (str(int(value)) if name == "NModSerie"
+                                else f"{value:.2f}" if name == "PNomAC_InMPPT" else f"{value:.3f}")
                     lines[index] = f"{prefix}{rendered}{ending}"
             capacity = None
             assignment = None
