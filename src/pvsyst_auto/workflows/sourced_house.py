@@ -90,6 +90,14 @@ def run_sourced_house_task(store, components, cli, *, request, binding, dry_run=
                               issues=["An explicit string_layout requires scene_import_method='native' "
                                       "and shading_mode='module_layout'; nothing was prepared."])
                 return result
+            # A strict no-window request cannot be delivered by the GUI import method; reject
+            # before any source preparation so a windowless request never prepares a project.
+            if request.get("allow_window_creation") is False and (
+                    (request.get("scene_import_method") or "gui") != "native"):
+                result.update(status="blocked", stage="house_inputs",
+                              issues=["allow_window_creation=false requires scene_import_method='native'; "
+                                      "the GUI import method opens the native window, so nothing was prepared."])
+                return result
             design = _prune_empty(request["design"])
             if not isinstance(design, dict) or not isinstance(binding, dict):
                 raise ValueError("Provide the design request and the cited-source binding as objects")
@@ -170,9 +178,10 @@ def run_sourced_house_task(store, components, cli, *, request, binding, dry_run=
             # and so preserves the historical request/checkpoint shape.
             if request.get("report_pdf") is not None:
                 child["report_pdf"] = request["report_pdf"]
-            # Carry the native routing/selector and explicit per-cell binding into the child
-            # house request; these stay absent for the historical GUI/linear shape.
-            for key in ("shading_mode", "scene_import_method", "string_layout"):
+            # Carry the native routing/selector, explicit per-cell binding and the per-request
+            # window policy into the child house request; these stay absent for the historical
+            # GUI/linear shape (is-not-None, so an explicit False is forwarded, never dropped).
+            for key in ("shading_mode", "scene_import_method", "string_layout", "allow_window_creation"):
                 if request.get(key) is not None:
                     child[key] = request[key]
             child_resume = house_manifest.exists()

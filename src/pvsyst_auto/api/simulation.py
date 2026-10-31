@@ -43,7 +43,8 @@ def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
     or guessed. AI supplies a complete mesh house and one/two placed PV regions in spec;
     all module counts/source-PAN metadata and native8.1.6CN/DPI96 boundaries remain.
     Two source orientations require one explicitly named region per orientation1/2,
-    the same PAN/OND, anchor azimuth zero and distinct source planes. Native table
+    the same source PAN with each subarray's own inherited OND, anchor azimuth zero
+    and distinct source planes. Native table
     properties assign each plane and place its declared coordinates; SHD exports,
     saved VC and actual GUI reload verify every mesh/region before the annual run.
     Optional spec.shading_mode=module_layout invokes the native detailed electrical
@@ -77,7 +78,13 @@ def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
     stored in the .pvc2 recipe; it is only accepted with scene_import_method='native' and
     shading_mode='module_layout' (GUI/linear stop before writing, never dropping the wiring).
     The native importer then reads the binding from that recipe; a draft (global_string=0) is
-    written but blocks native import until complete. Omitting it keeps the historical shape."""
+    written but blocks native import until complete. Omitting it keeps the historical shape.
+    Optional spec.allow_window_creation selects the Native window policy for the final CLI
+    simulation: omitted/None keeps the historical default, an explicit False always denies
+    window creation for this run, and True allows. A strict False is incompatible with the GUI
+    import method (which inherently opens the native window) and is rejected in preflight
+    before any write or GUI action instead of silently switching the default method. False
+    constrains Native window creation; it does not assert every task is already GUI-free."""
     from pvsyst_auto.workflows.house import run_house_task
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -170,7 +177,8 @@ def pvsyst_run_simulation(project: str, variant: str,
                           time_step: str = "", start_date: str = "", end_date: str = "",
                           report_language: str = "", report_pages: str = "",
                           recompute_shading: bool | None = None,
-                          log_level: int | None = None) -> dict:
+                          log_level: int | None = None,
+                          allow_window_creation: bool | None = None) -> dict:
     """Run an existing project/variant. Regular CSV/PDF go to Results.
     For a single run, csv_name accepts a bare filename (e.g. run01) or a .csv
     filename (run01.csv); both create Results/run01.csv. Existing outputs are
@@ -178,6 +186,13 @@ def pvsyst_run_simulation(project: str, variant: str,
     the CLI generates UserBatch/UserHourly outputs automatically.
     Optional inputs live in Models (SFI,RVT), Meteo (MET), UserData (DAT),
     UserBatch (batch CSV/RVT), or Sites (SIT). Unsupported options fail early.
+    Optional allow_window_creation selects the Native window policy for this one
+    request, threaded to the option-help and simulation CLI processes it starts:
+    omitted/None keeps the historical per-command default (a bare hourly CSV is
+    already windowless; PDF/batch keep the old behavior), an explicit False always
+    denies window creation for this run without falling back to an allowing desktop
+    or GUI, and True explicitly allows. False constrains Native window creation; it
+    does not assert that every task is already certified GUI-free.
     Each run can consume a license execution."""
     current = cli()
     options = dict(
@@ -195,10 +210,11 @@ def pvsyst_run_simulation(project: str, variant: str,
         report_language=report_language or None,
         report_pages=[p.strip() for p in report_pages.split(",")] if report_pages else None,
         recompute_shading=recompute_shading, log_level=log_level,
+        allow_window_creation=allow_window_creation,
     )
     # Pure filename/path/date/output checks run before any license query or help launch.
     current.preflight_run_simulation(project, variant, **options)
-    license_state = current.license_info()
+    license_state = current.license_info(allow_window_creation=allow_window_creation)
     if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
         raise ValueError("PVsystCLI reports no remaining trial executions")
     return current.run_simulation(project, variant, **options)
@@ -307,7 +323,11 @@ def pvsyst_run_sourced_house_task(spec: SourcedHouseTaskRequest, dry_run: Strict
     No new PV/sizing/dispatch model or general job framework.
     spec.shading_mode/scene_import_method/string_layout are forwarded to the child house request;
     an explicit string_layout requires scene_import_method='native' with shading_mode='module_layout'
-    and stops before any source preparation otherwise. Omitting them keeps the GUI/linear shape."""
+    and stops before any source preparation otherwise. Omitting them keeps the GUI/linear shape.
+    spec.allow_window_creation is forwarded unchanged to the child house request (False is carried,
+    not dropped): omitted/None keeps the historical default, False always denies Native window
+    creation for the final run, True allows. A strict False with the GUI import method is rejected
+    before any source preparation, so a windowless request never prepares a project first."""
     from pvsyst_auto.workflows.sourced_house import run_sourced_house_task
     current = cli()
     component_store = components()

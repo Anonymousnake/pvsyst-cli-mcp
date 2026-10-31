@@ -251,6 +251,13 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
             method = request.get("scene_import_method") or "gui"
             if method not in ("gui", "native"):
                 raise ValueError("scene_import_method must be gui or native")
+            # A strict no-window request cannot be delivered by the GUI import method, which
+            # inherently opens the native window. Reject in preflight before any project/scene
+            # write or GUI side effect; never silently switch the default method to native.
+            if request.get("allow_window_creation") is False and method != "native":
+                raise ValueError(
+                    "allow_window_creation=false requires scene_import_method='native'; the GUI "
+                    "import method opens the native window and cannot honor a windowless request")
             # Any value except an explicit False keeps the original CSV+PDF contract
             # (absent/None/True). An explicit False requests the CSV-only native path,
             # so no PDF output is expected and the CLI runs as a plain CSV (windowless).
@@ -512,7 +519,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     start_date=f"{request['year']}.01.01", end_date=f"{request['year']}.12.31",
                     report_language="en" if require_pdf else None,
                     report_pages=request.get("report_pages") if require_pdf else None,
-                    recompute_shading=True, log_level=3)
+                    recompute_shading=True, log_level=3,
+                    allow_window_creation=request.get("allow_window_creation"))
                 attempt.update(status="returned", native=run)
                 record["output_guards"] = {"csv": fingerprint(csv_path)}
                 if require_pdf:

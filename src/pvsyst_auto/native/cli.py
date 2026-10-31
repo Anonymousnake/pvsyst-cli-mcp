@@ -190,17 +190,27 @@ class PVsystCLI:
         self._lock = threading.RLock()
 
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        # Historical entry: every call keeps its per-command default window policy.
+        return self._launch(args, allow_window_creation=None)
+
+    def _launch(self, args, *,
+                allow_window_creation: bool | None) -> subprocess.CompletedProcess[str]:
         # Argument arrays preserve spaces in paths; serialize CLI operations on one workspace.
         argv = [str(self.cli), *args]
         with self._lock:
             if os.name == "nt":
                 # Every real CLI call runs on its own private, non-input desktop
                 # inside an owned Job; same argv/cwd/env/output/exit/timeout shape.
-                # A bare hourly-CSV numeric run also denies DESKTOP_CREATEWINDOW on
-                # that desktop; PDF/batch/other commands keep the old behavior.
+                # allow_window_creation=None keeps the per-command default: a bare
+                # hourly-CSV numeric run denies DESKTOP_CREATEWINDOW on that desktop,
+                # while PDF/batch/other commands keep the old behavior. An explicit
+                # False always denies (never falls back to an allowing desktop); True
+                # always allows. The value is per call and never stored globally.
                 from pvsyst_auto.native import _winlaunch
+                allow = ((not _is_plain_csv_run(args)) if allow_window_creation is None
+                         else allow_window_creation)
                 return _winlaunch.run(argv, self.cli.parent, self.timeout,
-                                      allow_window_creation=not _is_plain_csv_run(args))
+                                      allow_window_creation=allow)
             return subprocess.run(argv, cwd=self.cli.parent, capture_output=True,
                                   text=True, errors="replace", timeout=self.timeout,
                                   check=False)
@@ -227,14 +237,19 @@ class PVsystCLI:
             return value.decode(locale.getpreferredencoding(False), errors="replace")
         return value or ""
 
-    def _checked_run(self, label: str, *args: str) -> subprocess.CompletedProcess[str]:
+    def _checked_run(self, label: str, *args: str,
+                     allow_window_creation: bool | None = None) -> subprocess.CompletedProcess[str]:
         """Run one command; a timeout raises PVsystError, never the raw TimeoutExpired.
 
         TimeoutExpired carries the complete command line, so only the redacted partial
         capture leaves this adapter, attached as `diagnostics`.
         """
         try:
-            return self._run(*args)
+            if allow_window_creation is None:
+                # Historical default path: unchanged call shape so any _run replacement
+                # (tests, subclass) keeps working exactly as before.
+                return self._run(*args)
+            return self._launch(args, allow_window_creation=allow_window_creation)
         except subprocess.TimeoutExpired as exc:
             # subprocess.run fills TimeoutExpired stdout/stderr with the partial capture.
             captured = (self._captured_text(exc.stdout) + "\n"
@@ -255,26 +270,29 @@ class PVsystCLI:
                               diagnostics=text)
         return text
 
-    def command_help(self, command: str = "") -> str:
+    def command_help(self, command: str = "", *,
+                     allow_window_creation: bool | None = None) -> str:
         if command not in self._help_cache:
-            result = self._checked_run("PVsystCLI help", "help", *([command] if command else []))
+            result = self._checked_run("PVsystCLI help", "help", *([command] if command else []),
+                                       allow_window_creation=allow_window_creation)
             text = self._output(result).strip()
             if result.returncode != 0 or "Unknown command" in text:
                 raise PVsystError(f"CLI does not support {command or 'help'}")
             self._help_cache[command] = text
         return self._help_cache[command]
 
-    def _options(self, command: str) -> set[str]:
+    def _options(self, command: str, *, allow_window_creation: bool | None = None) -> set[str]:
         return set(re.findall(r"(?m)^\s*--([a-z][a-z-]+)(?=\||:|\s)",
-                              self.command_help(command)))
+                              self.command_help(command, allow_window_creation=allow_window_creation)))
 
     def capabilities(self) -> dict[str, list[str]]:
         main = self.command_help()
         commands = re.findall(r"(?m)^\s+([a-z][a-z-]+):", main)
         return {name: sorted(self._options(name)) for name in commands}
 
-    def _require(self, command: str, option: str) -> None:
-        if option not in self._options(command):
+    def _require(self, command: str, option: str, *,
+                 allow_window_creation: bool | None = None) -> None:
+        if option not in self._options(command, allow_window_creation=allow_window_creation):
             raise PVsystError(f"Installed PVsystCLI lacks {command} --{option}")
 
     def version(self) -> str:
@@ -286,8 +304,9 @@ class PVsystCLI:
             raise PVsystError("PVsystCLI version query returned no output")
         return lines[0]
 
-    def license_info(self) -> dict:
-        result = self._checked_run("PVsystCLI license query", "lic-info")
+    def license_info(self, *, allow_window_creation: bool | None = None) -> dict:
+        result = self._checked_run("PVsystCLI license query", "lic-info",
+                                   allow_window_creation=allow_window_creation)
         text = self._output(result)
         if result.returncode != 0:
             raise PVsystError("PVsystCLI license query failed")
@@ -429,8 +448,13 @@ class PVsystCLI:
                                  report_language: str | None = None,
                                  report_pages: list[str] | None = None,
                                  recompute_shading: bool | None = None,
-                                 log_level: int | None = None) -> dict:
+                                 log_level: int | None = None,
+                                 allow_window_creation: bool | None = None) -> dict:
         """Pure pre-launch checks for run_simulation: no mkdir, no output, no child CLI.
+
+        ``allow_window_creation`` is accepted only so the public call signature stays
+        uniform with ``run_simulation``; this pure check launches nothing and so never
+        selects a window policy itself.
 
         Everything decidable from the arguments and workspace alone is rejected here
         before any license query or help launch: project/variant existence, output
@@ -497,33 +521,41 @@ class PVsystCLI:
                        report_language: str | None = None,
                        report_pages: list[str] | None = None,
                        recompute_shading: bool | None = None,
-                       log_level: int | None = None) -> dict:
+                       log_level: int | None = None,
+                       allow_window_creation: bool | None = None) -> dict:
+        # allow_window_creation selects the Native window policy for THIS request and is
+        # threaded to every CLI process this call starts (option help, the run). None keeps
+        # the historical per-command default; False constrains Native window creation for
+        # this run (it never means every task is already certified GUI-free); True allows.
         pre = self.preflight_run_simulation(
             project, variant, sfi=sfi, out_csv=out_csv, met=met, report_pdf=report_pdf,
             rvt=rvt, params=params, batch_params=batch_params, batch_rvt=batch_rvt,
             site=site, synthetic_weather=synthetic_weather, time_step=time_step,
             start_date=start_date, end_date=end_date, report_language=report_language,
             report_pages=report_pages, recompute_shading=recompute_shading,
-            log_level=log_level)
+            log_level=log_level, allow_window_creation=allow_window_creation)
         project, variant, inputs = pre["project"], pre["variant"], pre["inputs"]
         args = ["run-simulation", f"-w:{self.workspace}", f"-p:{project}", f"-v:{variant}"]
         for option, flag, _ext in _RUN_SIM_INPUTS:
             path = inputs[option]
             if path:
-                self._require("run-simulation", option)
+                self._require("run-simulation", option, allow_window_creation=allow_window_creation)
                 args.append(f"-{flag}:{path}")
         if synthetic_weather:
-            self._require("run-simulation", "synthetic-weatherdata-generation")
+            self._require("run-simulation", "synthetic-weatherdata-generation",
+                          allow_window_creation=allow_window_creation)
             args.append("-swg")
         if time_step:
-            self._require("run-simulation", "time-step")
+            self._require("run-simulation", "time-step", allow_window_creation=allow_window_creation)
             args.append(f"-ts:{time_step}")
         for flag, value in (("sd", start_date), ("ed", end_date)):
             if value:
-                self._require("run-simulation", "start-date" if flag == "sd" else "end-date")
+                self._require("run-simulation", "start-date" if flag == "sd" else "end-date",
+                              allow_window_creation=allow_window_creation)
                 args.append(f"-{flag}:{value}")
         if report_language:
-            langs = re.search(r"Available language:\s*\[([^]]+)\]", self.command_help("run-simulation"))
+            langs = re.search(r"Available language:\s*\[([^]]+)\]",
+                              self.command_help("run-simulation", allow_window_creation=allow_window_creation))
             allowed = langs.group(1).split(", ") if langs else ["en", "fr", "de", "es", "it", "pt", "tr", "ko", "zh", "ja", "pl", "ru"]
             if report_language not in allowed:
                 raise ValueError(f"Unsupported report language: {report_language}")
@@ -531,7 +563,8 @@ class PVsystCLI:
         if report_pages is not None:
             args.append("-rp:" + ",".join(report_pages))
         if recompute_shading is not None:
-            self._require("run-simulation", "recompute-shadingfactors-tables")
+            self._require("run-simulation", "recompute-shadingfactors-tables",
+                          allow_window_creation=allow_window_creation)
             args.append("-rst:1" if recompute_shading else "-rst:0")
         level = self._log_level(log_level)
         if level:
@@ -544,7 +577,7 @@ class PVsystCLI:
             args.append(f"-rpf:{pdf_target}")
         batch_names, batch_before, batch_summary = (self._batch_outputs(inputs["batch-params-file"])
                                                     if batch_params else ([], {}, None))
-        result = self._checked_run("Simulation", *args)
+        result = self._checked_run("Simulation", *args, allow_window_creation=allow_window_creation)
         text = self._output(result)
         if (result.returncode != 0
                 or (log_level in (None, 3) and "Simulation done in " not in text)
