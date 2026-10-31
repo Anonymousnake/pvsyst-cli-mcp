@@ -89,9 +89,9 @@ ARRAY = """  PVObject_=pvSubArray
     SubArrayId={id}
     NoOrientation={orient}
     Version=8.1.6
-    PowerSharingInverterId=-1
+    PowerSharingInverterId={ps}
     PVModule={pan}
-    GInverter=inverter.OND
+    GInverter={ond}
     NModSerie=15
     NStringCh=2
     NStrOrient1=2
@@ -102,6 +102,11 @@ ARRAY = """  PVObject_=pvSubArray
 GROUPS3 = [{"id": 1, "name": "Array A", "tilt": 25.0, "azimuth": 20.0},
            {"id": 2, "name": "Array B", "tilt": 25.0, "azimuth": -70.0},
            {"id": 3, "name": "Array C", "tilt": 25.0, "azimuth": 110.0}]
+# Same PAN, one distinct OND reference per exclusive subarray: geometry is shared, the inverter
+# is inherited electrical identity. Placeholders only (no vendor file, no physics is computed).
+HETERO3 = [{"id": 1, "name": "Array A", "tilt": 25.0, "azimuth": 20.0, "ond": "inverterA.OND"},
+           {"id": 2, "name": "Array B", "tilt": 25.0, "azimuth": -70.0, "ond": "inverterB.OND"},
+           {"id": 3, "name": "Array C", "tilt": 25.0, "azimuth": 110.0, "ond": "inverterC.OND"}]
 MODULE = {"model_name": "Mono 300 Wp", "nom_power_wp": 300.0,
           "width_m": 0.992, "length_m": 1.640, "geometry_depth_m": 0.035}
 
@@ -121,7 +126,8 @@ def _source_text(groups):
     text += "Children=End\nInjectionPointNode End;\n  BaseNode=End\n  End of PVObject pvCircuit\n"
     for g in groups:
         text += ARRAY.format(id=g["id"], name=g["name"], orient=g.get("orient", g["id"]),
-                             pan=g.get("pan", "module.PAN"))
+                             pan=g.get("pan", "module.PAN"), ond=g.get("ond", "inverter.OND"),
+                             ps=g.get("power_sharing", "-1"))
     text += "  End of PVObject pvMainArray\n"
     text += "  PVObject_System=pvSystem\n    SystemType=Grid\n  End of PVObject pvSystem\n"
     text += "  PVObject_Ombrage=pvShading\n    Flags=$00\n  End of PVObject pvShading\n"
@@ -296,6 +302,116 @@ class MultiOrientationNativeBoundary(unittest.TestCase):
             ok = True
         finally:
             ws.cleanup(ok)
+
+    def test_same_pan_different_ond_per_subarray(self):
+        asyncio.run(self._hetero_positive())
+
+    async def _hetero_positive(self):
+        ws = _Workspace(HETERO3)
+        before = ws.project_bytes()
+        ok = False
+        try:
+            async with stdio_client(ws.params()) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+
+                    async def call(tool, args):
+                        return _payload(await session.call_tool(tool, args))
+
+                    tables = _tables(HETERO3)
+                    args = {"project": "Demo.PRJ", "variant": "VC1", "output_name": "Hetero3.pvc2",
+                            "house": _house(tables, HETERO3), "layout": {"tables": tables},
+                            "module_geometry": MODULE, "string_layout": _binding(tables, HETERO3)}
+                    created = await call(CREATE_TOOL, dict(args, dry_run=False))
+                    self.assertEqual(created["status"], "created", created)
+                    self.assertEqual([o["id"] for o in created["source"]["orientations"]], [1, 2, 3])
+                    self.assertEqual([o["module_total"] for o in created["source"]["orientations"]],
+                                     [30, 30, 30])
+                    self.assertEqual(ws.project_bytes(), before, "source variant must be unchanged")
+
+                    loaded = await call(READ_SCENE_TOOL, {"scene_name": "Hetero3.pvc2"})
+                    self.assertEqual(loaded["status"], "ready", loaded)
+                    self.assertEqual([o["id"] for o in loaded["source"]["orientation_geometry"]],
+                                     [1, 2, 3])
+
+                    preview = await call(IMPORT_TOOL, {"scene_name": "Hetero3.pvc2",
+                                                       "variant_name": "Hetero3", "method": "native",
+                                                       "shading_mode": "module_layout", "dry_run": True})
+                    self.assertEqual(preview["status"], "ready_to_import", preview)
+                    self.assertTrue(preview["precheck_passed"], preview)
+                    ver = preview["verification"]
+                    self.assertEqual(ver["pv_bindings"], "stored_consistent", ver)
+                    self.assertEqual(ver["module_layout"]["status"], "stored_consistent", ver)
+                    self.assertEqual(ver["module_layout"]["module_count"], 90, ver)
+                    hardware = ver["hardware"]
+                    self.assertEqual(hardware["source_orientation_ids"], [1, 2, 3], hardware)
+                    # Every subarray keeps the one shared PAN, but its own OND identity.
+                    self.assertEqual([row["pan"] for row in hardware["hardware_mapping"]],
+                                     ["module.PAN", "module.PAN", "module.PAN"], hardware)
+                    self.assertEqual([row["ond"] for row in hardware["hardware_mapping"]],
+                                     ["inverterA.OND", "inverterB.OND", "inverterC.OND"], hardware)
+                    self.assertEqual([row["mppt_inputs"] for row in hardware["hardware_mapping"]],
+                                     [1, 1, 1], hardware)
+                    for key in NATIVE_NOT_LOADED:
+                        self.assertFalse(preview[key], key)
+                    self.assertEqual(list((ws.root / "Results").iterdir()), [])
+            ok = True
+        finally:
+            ws.cleanup(ok)
+
+    def test_heterogeneous_ond_negatives(self):
+        asyncio.run(self._hetero_negatives())
+
+    async def _hetero_negatives(self):
+        # (label, groups, expected stage, needle in the public issue text)
+        cases = [
+            ("pan_diff", [dict(HETERO3[0]), dict(HETERO3[1], pan="other.PAN"), dict(HETERO3[2])],
+             "create", "same pan"),
+            ("tracker", [dict(HETERO3[0]), dict(HETERO3[1], field_type="Tracking"), dict(HETERO3[2])],
+             "create", "fixed"),
+            ("sharing", [dict(HETERO3[0]), dict(HETERO3[1], power_sharing="0"), dict(HETERO3[2])],
+             "create", "shared"),
+            ("foreign", HETERO3, "import", ""),
+        ]
+        for label, groups, stage, needle in cases:
+            with self.subTest(label=label):
+                ws = _Workspace(groups)
+                before = ws.project_bytes()
+                ok = False
+                try:
+                    async with stdio_client(ws.params()) as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+
+                            async def call(tool, args):
+                                return _payload(await session.call_tool(tool, args))
+
+                            tables = _tables(groups)
+                            args = {"project": "Demo.PRJ", "variant": "VC1",
+                                    "output_name": label + ".pvc2", "house": _house(tables, groups),
+                                    "layout": {"tables": tables}, "module_geometry": MODULE,
+                                    "string_layout": _binding(tables, groups)}
+                            if label == "foreign":
+                                # A per-cell global_string outside subarray 1's source range (1..2).
+                                args["string_layout"]["tables"][0]["cells"][0]["global_string"] = 3
+                            created = await call(CREATE_TOOL, dict(args, dry_run=False))
+                            if stage == "create":
+                                self.assertEqual(created["status"], "blocked", created)
+                                self.assertIn(needle, " ".join(created["issues"]).lower())
+                                self.assertEqual(ws.project_bytes(), before,
+                                                 "a refused create must not touch the source variant")
+                            else:
+                                self.assertEqual(created["status"], "created", created)
+                                preview = await call(IMPORT_TOOL, {
+                                    "scene_name": label + ".pvc2", "variant_name": label,
+                                    "method": "native", "shading_mode": "module_layout",
+                                    "dry_run": True})
+                                self.assertEqual(preview["status"], "blocked", preview)
+                                self.assertFalse(preview["native_variant_created"], preview)
+                                self.assertIn(needle, " ".join(preview["issues"]).lower())
+                    ok = True
+                finally:
+                    ws.cleanup(ok)
 
     def test_legacy_single_two_and_sparse_still_route(self):
         asyncio.run(self._legacy())

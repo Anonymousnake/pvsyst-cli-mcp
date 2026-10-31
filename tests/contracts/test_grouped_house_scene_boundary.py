@@ -119,13 +119,30 @@ class GroupedHouseSceneBoundary(unittest.TestCase):
                     self.assertEqual((await call(create, replay))["status"], "created")
                     variant_file = root / "Projects" / "DUAL_ROOF_INPUT.VC1"
                     original_variant = variant_file.read_bytes()
-                    needle = b"GInverter=Generic_9kW.OND"
-                    prefix, found, suffix = original_variant.rpartition(needle)
-                    self.assertTrue(found)
-                    variant_file.write_bytes(prefix + b"GInverter=Different.OND" + suffix)
-                    mixed = await call(create, dict(args, output_name="MixedModels.pvc2"))
-                    self.assertEqual(mixed["status"], "blocked", mixed)
-                    self.assertTrue(any("same PAN/OND" in issue for issue in mixed["issues"]), mixed)
+
+                    def swap_first(field, value):
+                        lines = original_variant.split(b"\n")
+                        for i, line in enumerate(lines):
+                            body = line.rstrip(b"\r")
+                            if body.strip().startswith(field):
+                                indent = body[:len(body) - len(body.lstrip())]
+                                lines[i] = indent + field + value + (b"\r" if line.endswith(b"\r") else b"")
+                                break
+                        else:
+                            self.fail("fixture has no " + field.decode())
+                        return b"\n".join(lines)
+
+                    # Same PAN with a different OND per subarray is inherited electrical identity
+                    # only, so the shared-geometry authoring now proceeds; the source is untouched.
+                    variant_file.write_bytes(swap_first(b"GInverter=", b"Different.OND"))
+                    mixed_ond = await call(create, dict(args, output_name="MixedOnd.pvc2"))
+                    self.assertEqual(mixed_ond["status"], "created", mixed_ond)
+                    variant_file.write_bytes(original_variant)
+                    # A different PAN per subarray is still refused: geometry would need per-SA dims.
+                    variant_file.write_bytes(swap_first(b"PVModule=", b"Different.PAN"))
+                    mixed_pan = await call(create, dict(args, output_name="MixedPan.pvc2"))
+                    self.assertEqual(mixed_pan["status"], "blocked", mixed_pan)
+                    self.assertTrue(any("same PAN" in issue for issue in mixed_pan["issues"]), mixed_pan)
                     variant_file.write_bytes(original_variant)
                     await call("pvsyst_clone_variant", {"project": args["project"], "source_variant": "VC1", "new_variant": "VC3"})
                     for identifier, azimuth in ((1, 30.0), (2, 120.0)):

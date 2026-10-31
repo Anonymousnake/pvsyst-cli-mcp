@@ -556,10 +556,12 @@ def check_tables(house, tables):
 def source_profile(store, lines, arrays, system, *, allow_groups=False):
     """The native bridge stays single-plane; only the authoring path opts into grouped sources.
 
-    ``allow_groups`` accepts any number of *homogeneous fixed* source orientations (one ordinary
-    fixed plane and one subarray per group, the same PAN/OND and no sharing/tracking); the
-    single-plane bridge keeps exactly one array.  Orientation profiles are returned in ascending
-    source-orientation id order, and each keeps its own source ``id``/``module_total``/angles.
+    ``allow_groups`` accepts any number of *homogeneous-PAN fixed* source orientations (one
+    ordinary fixed plane and one subarray per group, the same PAN and no sharing/tracking); a
+    different OND per subarray is inherited electrical identity only (geometry stays the one
+    shared module dict), so it is not part of this authoring gate.  The single-plane bridge keeps
+    exactly one array.  Orientation profiles are returned in ascending source-orientation id
+    order, and each keeps its own source ``id``/``module_total``/angles.
     """
     if system is None or (not allow_groups and len(arrays) != 1):
         raise ValueError("Requires one pvSystem and one subarray, or explicitly grouped authoring subarrays")
@@ -615,8 +617,8 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
         orientation_ids = [profile["id"] for profile in profiles]
         if (any(identifier < 1 for identifier in orientation_ids)
                 or len(set(orientation_ids)) != len(orientation_ids)
-                or len({tuple(name.casefold() for name in pair) for pair in models}) != 1):
-            raise ValueError("Grouped authoring requires distinct positive source orientations and the same PAN/OND")
+                or len({pair[0].casefold() for pair in models}) != 1):
+            raise ValueError("Grouped authoring requires distinct positive source orientations and the same PAN")
     profiles.sort(key=lambda item: item["id"])
     sit = next((block for block in blocks if block.object_type == "pvSite"
                 and block.path == "PVObject_SiteSimul"), None)

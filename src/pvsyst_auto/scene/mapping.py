@@ -708,10 +708,11 @@ def _assess_general_module_layout(blocks, lines):
     """Classify a general per-cell stored layout as stored_consistent, draft_incomplete or
     invalid.  Supports one or more source subarrays, each on its own ordinary fixed plane, with
     every module cell bound to a source GLOBAL string ordinal (capacity = the owning subarray's
-    NModSerie, never the table).  Above two subarrays the source must be homogeneous fixed
-    (same PAN/OND, one exclusive single-orientation branch each).  Unsupported profiles
-    (portrait, spacing, padding, sharing, non-fixed planes, heterogeneous groups) raise so the
-    caller reports needs_review instead of a false stored state."""
+    NModSerie, never the table).  Above two subarrays the source must be homogeneous-PAN fixed
+    (same PAN, one exclusive single-orientation branch each); a different OND per subarray is
+    inherited electrical identity and does not change the shared module geometry.  Unsupported
+    profiles (portrait, spacing, padding, sharing, non-fixed planes, heterogeneous-PAN groups)
+    raise so the caller reports needs_review instead of a false stored state."""
     owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
     if (len(owners) != 1 or owners[0].path != "PVObject_ModuleLayout"
             or owners[0].one("ModLayoutGlobState")[1] not in MODULE_LAYOUT_GLOBAL_STATES
@@ -724,13 +725,13 @@ def _assess_general_module_layout(blocks, lines):
     if len(arrays) < 1:
         raise ValueError("General module layout requires at least one source subarray")
     if len(arrays) > 2:
-        # Above two groups stay bounded to homogeneous fixed sources with one exclusive
-        # single-orientation branch per subarray; heterogeneous PAN/OND, tracker-averaged or
-        # shared/heterogeneous-string capabilities are not opened by this extension.
-        models = {(array.one("PVModule")[1].casefold(), array.one("GInverter")[1].casefold())
-                  for array in arrays.values()}
-        if len(models) != 1:
-            raise ValueError("General module layout above two subarrays requires the same PAN/OND")
+        # Above two groups stay bounded to homogeneous-PAN fixed sources with one exclusive
+        # single-orientation branch per subarray; a different OND per subarray is electrical
+        # identity only, while heterogeneous PAN, tracker-averaged or shared/heterogeneous-string
+        # capabilities are not opened by this extension.
+        pans = {array.one("PVModule")[1].casefold() for array in arrays.values()}
+        if len(pans) != 1:
+            raise ValueError("General module layout above two subarrays requires the same PAN")
         for array in arrays.values():
             strings = _integer(array.one("NStringCh")[1])
             if ("NStrOrient1" not in array.fields
