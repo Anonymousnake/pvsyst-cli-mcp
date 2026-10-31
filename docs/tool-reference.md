@@ -135,6 +135,8 @@ Detailed guides: [automatic simulation](automatic-simulation.md), [single-design
 
 See [result comparison](result-comparison-verification.md) for side-by-side diffs of two result CSVs.
 
+**Batch summary naming.** `pvsyst_read_batch_results` accepts both the indexed and the legacy (unindexed) summary names derived from a batch-parameters file: `<name>BatchParams[_<n>].CSV` yields `<name>BatchResults[_<n>].CSV`, where the optional index `n` is a non-negative integer (including `0`). Malformed names, subdirectory paths and path escapes are rejected, and only `UserBatch` is read. In the original control the summary is written next to its batch-parameters file (the `.CSV` named by `ParamsFileName`), while ordinary product runs place it under `UserBatch`; the two locations differ. This tool only parses an existing summary — GUI-free / headless batch production is not verified here.
+
 ## Parameter & variant guides
 
 `pvsyst_update_variant_parameters` applies one domain update per transaction (optionally paired with `variant_name`) so flag mutations stay isolated:

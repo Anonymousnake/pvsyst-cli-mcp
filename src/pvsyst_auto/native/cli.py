@@ -387,8 +387,8 @@ class PVsystCLI:
 
     def _batch_outputs(self, batch_params: Path) -> tuple[list[str], dict[str, tuple[int, int]], Path]:
         """Validate hourly output names before a batch can write workspace files."""
-        if not batch_params.stem.lower().endswith("params"):
-            raise ValueError("Batch parameters filename must end in Params.CSV")
+        summary = workspace_file(self.workspace, "UserBatch",
+                                 batch_summary_name(batch_params.name), ".csv")
         workspace_folder(self.workspace, "UserHourly")
         batch_dir = workspace_folder(self.workspace, "UserBatch")
         names: list[str] = []
@@ -406,8 +406,6 @@ class PVsystCLI:
                         if workspace_file(self.workspace, "UserHourly", name, ".csv").exists():
                             raise ValueError(f"Batch hourly output already exists: {name}")
                         names.append(name)
-        summary = workspace_file(self.workspace, "UserBatch",
-                                 batch_params.stem[:-6] + "Results.CSV", ".csv")
         if summary.exists():
             raise ValueError(f"Batch summary already exists: {summary.name}")
         before = {p.name: (p.stat().st_size, p.stat().st_mtime_ns)
@@ -656,6 +654,23 @@ class PVsystCLI:
         if not target.is_file():
             raise PVsystError("Site creation did not produce a SIT file", diagnostics=text)
         return {"sit": str(target), "diagnostics": text, "warnings": _weather_warnings(text)}
+
+
+_BATCH_NAME = re.compile(r"(?P<prefix>.*?)(?P<kind>params|results)(?P<index>_\d+)?\.csv", re.IGNORECASE)
+
+
+def batch_summary_name(params_filename: str) -> str:
+    """Derive <prefix>Results[_<n>].CSV from a <prefix>Params[_<n>].CSV batch file."""
+    match = _BATCH_NAME.fullmatch(params_filename)
+    if match is None or match.group("kind").lower() != "params":
+        raise ValueError("Batch parameters filename must be <name>Params[_<n>].CSV")
+    return f"{match.group('prefix')}Results{match.group('index') or ''}.CSV"
+
+
+def is_batch_summary_name(filename: str) -> bool:
+    """True for the documented <prefix>Results[_<n>].CSV batch summary names."""
+    match = _BATCH_NAME.fullmatch(filename)
+    return match is not None and match.group("kind").lower() == "results"
 
 
 def parse_batch_results(path: str | os.PathLike,
