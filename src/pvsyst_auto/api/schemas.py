@@ -280,6 +280,10 @@ class HouseTaskRequest(BaseModel):
     Optional report_pdf selects the report artifact: omitted/None/True keeps the original
     default PDF, while an explicit False requests the CSV-only output. StrictBool rejects
     0/1 or 'false' so the mode is never coerced; omitting it keeps the historical shape.
+    Optional allow_window_creation selects the Native window policy for the final CLI run:
+    omitted/None keeps the historical default, an explicit False always denies window
+    creation (rejected in preflight when combined with the GUI import method), True allows.
+    StrictBool rejects 0/1 or 'false' so a windowless request is never coerced.
     """
     model_config = ConfigDict(extra="forbid")
     source_project: StrictStr
@@ -295,6 +299,7 @@ class HouseTaskRequest(BaseModel):
     report_pdf: StrictBool | None = None
     shading_mode: Literal["linear", "module_layout"] | None = None
     scene_import_method: Literal["gui", "native"] | None = None
+    allow_window_creation: StrictBool | None = None
 
 class AfterSunsetDischarge(BaseModel):
     """Native AfterSunset discharge mode; it carries no hour fields."""
@@ -580,6 +585,10 @@ class SourcedHouseTaskRequest(BaseModel):
     report_pdf mirrors HouseTaskRequest: omitted/None/True keeps the original default PDF,
     an explicit False requests the CSV-only child house run, and False is forwarded rather
     than dropped. Omitting it adds no key, preserving the historical request/checkpoint shape.
+    allow_window_creation mirrors HouseTaskRequest and is forwarded unchanged to the child;
+    omitted/None keeps the historical default, False always denies Native window creation for
+    the final run (rejected before source preparation when combined with the GUI import
+    method), True allows. StrictBool rejects 0/1 or 'false'.
     """
     model_config = ConfigDict(extra="forbid")
     design: SingleDesignRequest
@@ -595,6 +604,7 @@ class SourcedHouseTaskRequest(BaseModel):
     report_pdf: StrictBool | None = None
     shading_mode: Literal["linear", "module_layout"] | None = None
     scene_import_method: Literal["gui", "native"] | None = None
+    allow_window_creation: StrictBool | None = None
 
 class EngineeringChanges(BaseModel):
     model_config = ConfigDict(extra="forbid")

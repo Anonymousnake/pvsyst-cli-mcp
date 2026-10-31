@@ -10,10 +10,10 @@ PVsyst.exe or drives a GUI, and never runs a simulation.
 Construction reuses the product reader/author/coordinate maths and the product read-only
 verifiers. The stored record is verified before it is written; native loading/consumption
 remains a separate, unverified step. Only the record that this adapter can prove is
-written: two or more grouped fixed source orientations (same PAN/OND; one exclusive source
-subarray per orientation; each on one or more landscape zero-spacing tables via an explicit
-per-cell binding, or one landscape zero-spacing table per orientation on the legacy
-one-string-per-array profile), or one orientation / one subarray with 1..3 linear
+written: two or more grouped fixed source orientations on one source PAN, each with its own
+inherited OND (one exclusive source subarray per orientation; each on one or more landscape
+zero-spacing tables via an explicit per-cell binding, or one landscape zero-spacing table per
+orientation on the legacy one-string-per-array profile), or one orientation / one subarray with 1..3 linear
 landscape zero-spacing tables sharing the source PAN/OND, or (fine layout) one orientation /
 one subarray with exactly two landscape zero-spacing tables of NModSerie modules each and two
 total independent MPPT inputs, table k binding global string k.
@@ -649,8 +649,9 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
 
     The general path verified here is independent of the source cardinality. A single-orientation
     source accepts 1..MAX_TABLES (the author limit of 64) landscape zero-spacing tables bound to
-    its one ordinary fixed plane. A grouped source accepts any number of homogeneous fixed
-    orientations: every table names a declared ``orientation_id``, each source orientation owns at
+    its one ordinary fixed plane. A grouped source accepts any number of fixed orientations on
+    one source PAN (each subarray inherits its own OND): every table names a declared
+    ``orientation_id``, each source orientation owns at
     least one table, and every orientation's tables sum to that group's module total, so N=1/2/3/...
     share one loop instead of an exact-2 template. Strings are assigned per cell under a per-global
     capacity of the owning subarray's NModSerie -- a table may hold several strings and a string may
