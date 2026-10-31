@@ -12,9 +12,11 @@ Pinned behaviour of ``pvsyst_update_variant_parameters(subarray_updates=...)``:
   bound to a different ``GInverter`` and starting at the shared source value
   7.50, edits each one independently to its own per-MPPT value (same-PAN /
   different-OND authoring, different MPP).
-- The value must be strictly positive and finite. Zero, negative, a JSON boolean,
-  a numeric string, NaN and infinity are refused before any byte is written; a
-  subarray without the declaration is refused too (it is an edit, not a create).
+- The value must be strictly positive and finite *in its stored 2-dp form*. Zero,
+  negative, a JSON boolean, a numeric string, NaN and infinity are refused before
+  any byte is written, and a tiny positive that would serialize to 0.00 is refused
+  too (the saved declaration never becomes zero); a subarray without the declaration
+  is refused as well (it is an edit, not a create).
 - It is a declaration write only: no OND PNomConv/NbMPPT derivation, no MPPT
   resize, no inverter power calculation.
 """
@@ -159,6 +161,29 @@ class PNomACInMPPTContract(unittest.IsolatedAsyncioTestCase):
                         refused = True  # transport may reject non-finite JSON first
                     self.assertTrue(refused, f"{bad!r} must be rejected")
                     self.assertEqual(self.variant_path.read_bytes(), before)
+
+    async def test_tiny_positive_that_serializes_to_zero_is_refused_without_writing(self):
+        before = self.variant_path.read_bytes()
+        async with stdio_client(self._params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                # 0.004 is positive and finite but its 2-dp stored form is 0.00:
+                # it must be refused before any byte is written, never saved as zero.
+                result = await session.call_tool(UPDATE_TOOL, {
+                    "project": "PNOM.PRJ", "variant": "VC0",
+                    "expected_sha256": await self._sha(session), "subarray_id": 1,
+                    "subarray_updates": {"PNomAC_InMPPT": 0.004}})
+                self.assertTrue(result.is_error, f"0.004 must be rejected: {result.content}")
+                self.assertEqual(self.variant_path.read_bytes(), before)
+                # The smallest representable positive 2-dp value stays accepted (no over-reject).
+                result = await session.call_tool(UPDATE_TOOL, {
+                    "project": "PNOM.PRJ", "variant": "VC0",
+                    "expected_sha256": await self._sha(session), "subarray_id": 1,
+                    "subarray_updates": {"PNomAC_InMPPT": 0.01}})
+                self.assertFalse(result.is_error, result.content)
+        group = _subarrays(self.variant_path.read_bytes().decode("utf-8-sig"))[1]
+        self.assertEqual(group["PNomAC_InMPPT"], "0.01")
+        self.assertTrue(self.variant_path.read_bytes().startswith(b"\xef\xbb\xbf"))
 
     async def test_absent_declaration_is_refused(self):
         (self.projects / "PNOM.VC9").write_text(

@@ -623,7 +623,9 @@ class VariantStore:
                             or not math.isfinite(value) or not allowed[name][0] <= value <= allowed[name][1]
                             or name in ("NModSerie", "NInverter", "NStringCh", "NInvMPPT", "NoOrientation") and int(value) != value):
                         raise ValueError(f"Invalid {name} value")
-                    if name == "PNomAC_InMPPT" and value <= 0:
+                    # The stored 2-dp form must stay strictly positive: a tiny positive
+                    # that serializes to 0.00 is refused, not silently written as zero.
+                    if name == "PNomAC_InMPPT" and float(f"{value:.2f}") <= 0:
                         raise ValueError(f"Invalid {name} value")
                     if name == "ModuleQualityLoss":
                         for field in ("PQualityModU", "PQualityModI"):
