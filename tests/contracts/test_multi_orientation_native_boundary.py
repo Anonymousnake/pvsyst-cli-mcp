@@ -425,6 +425,18 @@ class MultiOrientationNativeBoundary(unittest.TestCase):
                 self.assertGreaterEqual(run.get("batch_runs") or 0, 1, run)
                 for path in run.get("batch_hourly") or []:
                     self.assertTrue(Path(path).is_file(), "missing hourly CSV: %s" % path)
+                # Optional Unicode text-integrity boundary: when the config declares an expected
+                # non-ASCII display name, the ORIGINAL 8.1.7 save must keep the UTF-8 BOM and the
+                # degree bytes, never the C3 82 C2 B0 mojibake. This is a file-byte assertion, not
+                # an extra reader: the numeric run and two pure reads stay the same.
+                if config.get("expect_unicode"):
+                    saved_file = workspace / "Projects" / (Path(project).stem + "." + variant)
+                    data = saved_file.read_bytes()
+                    self.assertTrue(data.startswith(b"\xef\xbb\xbf"), "native save lost the UTF-8 BOM")
+                    self.assertNotIn(b"\xc3\x82\xc2\xb0", data, "degree became Â° after native save")
+                    self.assertIn(b"\xc2\xb0", data, "degree bytes missing after native save")
+                    self.assertIn(config["display_name"].encode("utf-8"), data,
+                                  "Unicode display name was re-encoded by the native save")
                 # Pure re-read #1, AFTER consumption: the persisted source data must survive the native
                 # save. The 8.1.7 after-file's stored layout classification may move off
                 # stored_consistent (mlShd3DCalculated / non-PVCollada source), so assert the STATIC

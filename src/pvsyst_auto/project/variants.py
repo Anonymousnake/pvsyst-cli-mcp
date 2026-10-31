@@ -184,10 +184,17 @@ class VariantStore:
             raise ValueError(f"Invalid {field}: require 1..80 UTF-8 bytes of printable text without surrounding whitespace")
 
     @staticmethod
-    def _display_name_prefix(data: bytes, name: str, add_utf8_bom: bool, field: str) -> bytes:
+    def _display_name_prefix(data: bytes, name: str, add_utf8_bom: bool, field: str,
+                             content: str | None = None) -> bytes:
         bom = data.startswith(b"\xef\xbb\xbf")
         if not name.isascii() and not bom and not add_utf8_bom:
             raise ValueError(f"Non-ASCII {field} values require UTF-8 BOM; use add_utf8_bom=true explicitly")
+        # The native file reader treats a BOM-less file as Windows-1252, so a variant whose
+        # *content* already carries non-ASCII (e.g. a fixed-plane `Comment=...25.0°...`) must
+        # still be BOM-marked or the original software re-saves the degree as `Â°`. Existing
+        # ASCII-only legacy files keep their no-BOM shape.
+        if content is not None and not content.isascii():
+            return b"\xef\xbb\xbf"
         return b"\xef\xbb\xbf" if bom or add_utf8_bom else b""
 
     @staticmethod

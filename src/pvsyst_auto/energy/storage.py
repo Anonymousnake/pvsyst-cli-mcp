@@ -206,7 +206,11 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
                 candidate_text = "".join(lines[:bounds[0]]) + local + "".join(lines[bounds[1]+1:])
                 availability_snapshot = (input_path, input_bytes)
                 result["grid_availability"] = metadata
-            candidate=(b"\xef\xbb\xbf" if original.startswith(b"\xef\xbb\xbf") else b"")+candidate_text.encode("utf-8")
+            # Content-aware BOM through the shared boundary: keep the source marker, and also
+            # mark a BOM-less source whose rebuilt body already carries non-ASCII.
+            candidate=(store._display_name_prefix(original, new_variant, False, "variant_name",
+                                                  content=candidate_text)
+                       + candidate_text.encode("utf-8"))
             _, checked = store._text(candidate)
             _, checked_system = store._sections(checked)
             verified, _, _ = storage_state(checked, checked_system)

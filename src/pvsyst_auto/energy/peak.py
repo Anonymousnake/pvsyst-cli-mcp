@@ -208,12 +208,17 @@ def create_peak_shaving_variant(store, *, project, source_variant, new_variant, 
             name_change = None
             if variant_name is not None:
                 store._validate_display_name(variant_name, "variant_name")
-                bom_prefix = store._display_name_prefix(original, variant_name, add_utf8_bom, "variant_name")
                 name_line, = store._display_name_fields(candidate_lines, complete=True)
                 before = candidate_lines[name_line].partition("=")[2].strip()
                 candidate_lines[name_line] = replace_value(candidate_lines[name_line], variant_name)
                 name_change = {"before": before, "after": variant_name}
             candidate_text = "".join(candidate_lines)
+            # A BOM-less VC is read as Windows-1252, so a non-ASCII body forces the BOM too.
+            if variant_name is not None:
+                bom_prefix = store._display_name_prefix(original, variant_name, add_utf8_bom,
+                                                        "variant_name", content=candidate_text)
+            elif not candidate_text.isascii():
+                bom_prefix = BOM
             candidate = bom_prefix + candidate_text.encode("utf-8")
             _, checked = store._text(candidate)
             checked_arrays, _ = store._sections(checked)

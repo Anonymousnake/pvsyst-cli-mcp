@@ -120,8 +120,12 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             # Insert at the start of the closing line so its indentation stays on that line.
             closing = candidate_text.rfind("\n", 0, candidate_text.rindex("End of PVObject pvVCalcul")) + 1
             candidate_text = candidate_text[:closing] + load + newline.join(storage_lines) + newline + candidate_text[closing:]
-            bom = original.startswith(b"\xef\xbb\xbf") or not battery["file_name"].isascii() or not str(profile).isascii()
-            candidate = (b"\xef\xbb\xbf" if bom else b"") + candidate_text.encode("utf-8")
+            # Reuse the shared boundary with the FINAL body. The declared battery filename and
+            # load profile path are already embedded in candidate_text, so the old explicit
+            # ASCII checks are subsumed; a non-ASCII inherited body still forces the BOM.
+            bom_prefix = store._display_name_prefix(original, new_variant, False, "variant_name",
+                                                    content=candidate_text)
+            candidate = bom_prefix + candidate_text.encode("utf-8")
             _, checked = store._text(candidate)
             _, checked_system = store._sections(checked)
             configured, _, _ = storage_state(checked, checked_system)
@@ -132,7 +136,7 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
                           configuration=configured, battery_temperature_monthly_c=temperatures,
                           cycle_sow=cycle, static_sow=static, load_encoding=encoding, year=record["year"],
                           utc_offset_hours=record["utc_offset_hours"], diff=diff[:32000], diff_truncated=len(diff)>32000,
-                          bom_added=bom and not original.startswith(b"\xef\xbb\xbf"))
+                          bom_added=bool(bom_prefix) and not original.startswith(b"\xef\xbb\xbf"))
             result["warnings"].append("This constructs native centralized AC-coupled storage, not hybrid DC battery ports or a grid-charging tariff controller. DC port/BMS compatibility and hardware sizing are not certified.")
             result["warnings"].append("Battery model/counts/temperature/SOW and efficiencies are caller-declared, not inferred from PV or climate. SOCDischSelf is the WeakGrid self-use reserve; it remains unused as a backup reserve under SelfConsumption.")
             result["warnings"].append(f"TempBattRef has no separate input: it repeats the first (January) declared monthly battery temperature, {decimal_text(temperatures[0])} C. This adapter choice is not a declared or verified battery reference temperature.")
