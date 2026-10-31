@@ -22,6 +22,18 @@ PVsyst 8.1.6 在读取 `.PRJ` 和 `.VCx` 时有个老毛病：如果文件开头
 - 当你传入包含中文等非 ASCII 字符的 `project_name` 时，如果原 `.PRJ` 没有 UTF-8 BOM，工具会要求你显式传入 `add_utf8_bom=true`（并在返回结果中标记 `bom_added=true`）。
 - 如果原文件已经是 UTF-8 中文但因为没 BOM 在 PVsyst 里乱码，你也可以传入相同的 `project_name` 加 `add_utf8_bom=true`，只给文件补上 BOM 头（此时文本 `diff` 为空，但 `changed=true`、`bom_added=true`）。
 
+## 原生变体写出时的 BOM 规则（Native import / 新变体）
+
+同一套“无 BOM 即按 cp1252 读”的规则也适用于 `.VCx` 变体。所有**新写出/重建的原生变体**（native import，以及 load / grid-storage / grid-storage-system 的新变体 writer）现在按**最终正文内容**判断 BOM，而不是只看源文件或显示名：
+
+- 源变体本来有 BOM → 保留；
+- 显示名（`variant_name`）含非 ASCII → 需源文件已有 BOM 或显式 `add_utf8_bom=true`，否则报错；满足条件则保留或补上 BOM；
+- 变体正文本身含非 ASCII（例如从真实 8.0 工程继承来的定倾面注释 `Comment=Fixed, Tilt 25.0°, Azim. 20.0°`）→ 也加 BOM。
+
+原因是：如果只按显示名判断，一个 ASCII 显示名 + 正文含度数符号的变体会被写成“无 BOM 的 UTF-8”，原始软件随后按 cp1252 读回，`°` 变成 `Â°`，再保存就变成双重编码（round17 观测到的乱码路径）。只有纯 ASCII 正文的旧变体继续保持无 BOM 形态，不会被无谓改写。
+
+这条规则只作用于**新写出/重建**的变体；对既有文件的显示名或注释编辑仍然只替换目标行，BOM、CRLF、未知对象与仿真缓存原样保留。它不是对全部文件的批量迁移：CSV、天气档与既有变体的就地编辑都不受影响。对应的公共契约见 `tests/contracts/test_native_text_writer_encoding_boundary.py`。
+
 ## 推荐操作与回滚步骤
 
 1. 如果该工程正在 PVsyst 桌面 GUI 中打开，先在 GUI 中关闭它，防止稍后 GUI 把内存里的旧状态重新写盘覆盖。

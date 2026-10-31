@@ -86,12 +86,17 @@ def create_mv_night_variant(store, *, project, source_variant, new_variant, nigh
             bom_prefix = b"\xef\xbb\xbf" if original.startswith(b"\xef\xbb\xbf") or add_utf8_bom else b""
             if variant_name is not None:
                 store._validate_display_name(variant_name, "variant_name")
-                bom_prefix = store._display_name_prefix(original, variant_name, add_utf8_bom, "variant_name")
                 index, = store._display_name_fields(candidate_lines, complete=True)
                 before = candidate_lines[index].partition("=")[2].strip()
                 candidate_lines[index] = replace_value(candidate_lines[index], variant_name)
                 result["name_change"] = {"before": before, "after": variant_name}
             candidate_text = "".join(candidate_lines)
+            # A BOM-less VC is read as Windows-1252, so a non-ASCII body forces the BOM too.
+            if variant_name is not None:
+                bom_prefix = store._display_name_prefix(original, variant_name, add_utf8_bom,
+                                                        "variant_name", content=candidate_text)
+            elif not candidate_text.isascii():
+                bom_prefix = b"\xef\xbb\xbf"
             candidate = bom_prefix + candidate_text.encode("utf-8")
             _, checked = store._text(candidate)
             _, _, verified = _profile(store, checked)

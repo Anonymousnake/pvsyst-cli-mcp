@@ -865,12 +865,17 @@ def import_house_pv_scene_native(store, components, scene_name, variant_name,
             if any(p.name.casefold() == target.name.casefold() for p in target.parent.iterdir()):
                 raise FileExistsError("Native variant name already exists: " + target.name)
             original = snap["bytes"]
-            bom = store._display_name_prefix(original, variant_name, not variant_name.isascii(), "variant_name")
             lines = pre["candidate_text"].splitlines(keepends=True)
             index, = store._display_name_fields(lines, complete=True)
             from pvsyst_auto.components.editor import replace_value
             lines[index] = replace_value(lines[index], variant_name)
-            candidate = bom + "".join(lines).encode("utf-8")
+            edited = "".join(lines)
+            # The emitted variant is consumed by PVsyst, whose legacy reader treats a BOM-less
+            # file as Windows-1252. Mark UTF-8 when the source already had a BOM, the display
+            # name is non-ASCII, or the content itself carries non-ASCII (e.g. a degree comment).
+            bom = store._display_name_prefix(original, variant_name, not variant_name.isascii(),
+                                             "variant_name", content=edited)
+            candidate = bom + edited.encode("utf-8")
             # Re-verify the exact bytes about to be published; a display-name edit cannot change structure.
             written = verify_generated(candidate.decode("utf-8-sig"), snap["bytes"].decode("utf-8-sig"),
                                        pre["house"], pre["tables"], snap["modules"], pre["source"], shading_mode)

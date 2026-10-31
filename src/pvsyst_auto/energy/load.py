@@ -146,15 +146,19 @@ def create_load_variant(store, *, project, source_variant, new_variant, load_man
                 # Insert at the start of the closing line so its indentation stays on that line.
                 closing = text.rfind("\n", 0, text.rindex("End of PVObject pvVCalcul")) + 1
                 candidate_text = text[:closing] + block + text[closing:]
-            bom = original.startswith(b"\xef\xbb\xbf") or not block.isascii()
-            candidate = (b"\xef\xbb\xbf" if bom else b"") + candidate_text.encode("utf-8")
+            # Reuse the shared display-name/BOM boundary with the FINAL body: a BOM-less source
+            # whose inherited text already carries a degree must still be marked UTF-8, or the
+            # original reader re-saves it as Windows-1252 mojibake.
+            bom_prefix = store._display_name_prefix(original, new_variant, False, "variant_name",
+                                                    content=candidate_text)
+            candidate = bom_prefix + candidate_text.encode("utf-8")
             _, checked = store._text(candidate)
             store._sections(checked)
             result.update(status="ready", project=project, source_variant=source_variant, variant=new_variant,
                           artifacts={"variant": str(target), "load_csv": str(profile)}, year=record["year"],
                           utc_offset_hours=record["utc_offset_hours"], time_basis=record["time_basis"],
                           load_encoding=encoding, annual_load_kwh=math.fsum(power for _, power in values),
-                          bom_added=bom and not original.startswith(b"\xef\xbb\xbf"))
+                          bom_added=bool(bom_prefix) and not original.startswith(b"\xef\xbb\xbf"))
             result["warnings"].append("The load is an explicit embedded hourly snapshot. Later CSV changes require a new binding; file-reading progress logs do not prove CSV consumption.")
             result["warnings"].append("Storage strategy, system flags, site/weather, topology and all non-load fields stay inherited. Verify native E_User and matching simulation year/timezone before claiming consumption.")
             diff = "".join(difflib.unified_diff(text.splitlines(keepends=True), candidate_text.splitlines(keepends=True)))

@@ -194,11 +194,16 @@ def create_ac_cabling_variant(store, *, project, source_variant, new_variant, ac
             bom = b"\xef\xbb\xbf" if original.startswith(b"\xef\xbb\xbf") or add_utf8_bom else b""
             if variant_name is not None:
                 store._validate_display_name(variant_name, "variant_name")
-                bom = store._display_name_prefix(original, variant_name, add_utf8_bom, "variant_name")
                 index, = store._display_name_fields(candidate_lines, complete=True)
                 result["name_change"] = {"before": candidate_lines[index].partition("=")[2].strip(), "after": variant_name}
                 candidate_lines[index] = replace_value(candidate_lines[index], variant_name)
             candidate_text = "".join(candidate_lines)
+            # The emitted VC is read as Windows-1252 when BOM-less, so a non-ASCII body forces the BOM too.
+            if variant_name is not None:
+                bom = store._display_name_prefix(original, variant_name, add_utf8_bom,
+                                                 "variant_name", content=candidate_text)
+            elif not candidate_text.isascii():
+                bom = b"\xef\xbb\xbf"
             candidate = bom + candidate_text.encode("utf-8")
             _, checked = store._text(candidate)
             verified = _profile(store, checked)[0]

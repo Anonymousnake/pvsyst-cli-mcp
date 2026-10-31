@@ -207,7 +207,6 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
     variant_data = store._read(seed_variant)
     project_bom = project_data.startswith(b"\xef\xbb\xbf")
     variant_bom = variant_data.startswith(b"\xef\xbb\xbf")
-    bom = b"\xef\xbb\xbf" if variant_bom else b""
     _, lines = store._text(variant_data)
     arrays, system = store._sections(lines)
     if sorted(arrays) != [SEED_SUBARRAY]:
@@ -270,7 +269,9 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
     block = root_block(lines, arrays[SEED_SUBARRAY])
     port = (scaled["mppt_groups"] or [{}])[0]
 
-    data = bom + "".join(lines).encode("utf-8")
+    # The derived VC is read as Windows-1252 when BOM-less, so a non-ASCII body forces the BOM too.
+    body = "".join(lines)
+    data = (b"\xef\xbb\xbf" if variant_bom or not body.isascii() else b"") + body.encode("utf-8")
     store._require_no_geometry(store._text(data)[1], require_shading_section=True)
     final = store._replace(data, {"PAN": pan_name, "OND": ond_name}, SEED_SUBARRAY)
     _, final_lines = store._text(final)
