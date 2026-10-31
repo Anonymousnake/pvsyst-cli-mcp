@@ -245,7 +245,14 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     Generic meshes are not decoded. These are not computed electrical quantities or
     dispatch. Ageing reports
     its stored template fields; IAM includes native FresnelSmooth/UserProfile point tables
-    without evaluating them. A broader readable P50 root state does not widen writing."""
+    without evaluating them. A broader readable P50 root state does not widen writing.
+    Each subarray also reports an additive inverter_state block with the stored PVModule/GInverter
+    filenames, NInverter/NInvMPPT, PowerSharingInverterId and PNomAC_InMPPT as an actual float. The
+    subarray list keeps its existing numeric-ascending SubArrayId presentation order, kept distinct
+    from the native NoStringGlob allocation order (raw source-list appearance). These are stored
+    declarations: the original software may normalize PNomAC_InMPPT, and a legal declaration/edit is
+    not proof it accepted that numeric value. A missing/malformed/non-finite field is omitted, never
+    reported as 0. This does not derive power."""
     return variant_call("inspect_parameters", project, variant)
 
 @categorized_tool()
