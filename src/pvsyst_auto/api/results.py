@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from mcp.server.mcpserver.exceptions import ToolError
-from pvsyst_auto.native.cli import parse_batch_results, read_result_page, summarize_results
+from pvsyst_auto.native.cli import (is_batch_summary_name, parse_batch_results,
+                                    read_result_page, summarize_results)
 from pvsyst_auto.results import compare_results
 from pvsyst_auto.api.context import categorized_tool, result_path, workspace_path
 
@@ -47,8 +48,8 @@ def pvsyst_read_rows(csv_name: str, columns: str = "E_Grid,PR",
 @categorized_tool()
 def pvsyst_read_batch_results(summary_name: str,
                               columns: str = "E_Grid,PR") -> dict:
-    """Read SIM_* scenario values from a UserBatch/*Results.CSV summary."""
-    if not summary_name.lower().endswith("results.csv"):
+    """Read SIM_* scenario values from a UserBatch/*Results[_<n>].CSV summary."""
+    if not is_batch_summary_name(summary_name):
         raise ValueError("Expected a batch Results.CSV filename")
     target = workspace_path("UserBatch", summary_name, ".csv")
     requested = tuple(s.strip() for s in columns.split(",") if s.strip())
