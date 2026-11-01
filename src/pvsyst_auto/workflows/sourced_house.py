@@ -9,13 +9,139 @@ from pathlib import Path
 import subprocess
 
 from pvsyst_auto.native.cli import PVsystError
-from pvsyst_auto.workflows.design import _prune_empty, prepare_design_project
+from pvsyst_auto.workflows.design import _native_preflight, _prune_empty, prepare_design_project
 from pvsyst_auto.workflows.house import run_house_task
 from pvsyst_auto.native.project import _processes
 from pvsyst_auto.project.paths import project_name, variant_id, workspace_file
 from pvsyst_auto.results import fingerprint
 from pvsyst_auto.weather.preparation import load_weather_manifest
 import pvsyst_auto.native.scene as native
+
+
+PRESERVE_SOURCE_HARDWARE = "preserve_source_hardware"
+
+
+def is_preserve_request(request) -> bool:
+    """Shared branch predicate for the one explicit hardware-preserving mode."""
+    return isinstance(request, dict) and request.get("prepare_mode") == PRESERVE_SOURCE_HARDWARE
+
+
+def _preserve_child_request(request):
+    """Build the child house request from the preserved source and year-only design.
+
+    Only existing HouseTaskRequest members are forwarded, each with the caller's own value,
+    so an explicit native/report_pdf=False/confirm flow is carried unchanged, never re-derived.
+    """
+    design = request["design"]
+    child = {key: request[key] for key in ("new_project", "variant_name", "house", "layout")}
+    child.update(source_project=request["source_project"],
+                 source_variant=request["source_variant"], year=design["year"])
+    if design.get("report_pages") is not None:
+        child["report_pages"] = design["report_pages"]
+    for key in ("module_geometry", "string_layout", "report_pdf", "shading_mode",
+                "scene_import_method", "allow_window_creation"):
+        if request.get(key) is not None:
+            child[key] = request[key]
+    return child
+
+
+def _preserve_source_summary(store, project, variant, plan):
+    """Read-only per-subarray inventory of the preserved source; no wiring or capacity is derived.
+
+    Reads the same declared native subarray fields and per-group module geometry the house task
+    already resolved (plan["source"]/plan["modules"]). A missing/unreadable variant yields the
+    empty shape rather than a fabricated row; kWp is declared nominal only, not a sizing target.
+    """
+    from pvsyst_auto.components.editor import objects
+    normalized = variant_id(variant)
+    summary = {"source_project": project, "source_variant": normalized, "subarrays": [], "subarray_count": 0}
+    groups, default = {}, {}
+    if isinstance(plan, dict):
+        for group in (plan.get("source") or {}).get("orientations") or []:
+            groups[group.get("id")] = group.get("module_geometry") or {}
+        default = plan.get("modules") or {}
+    try:
+        text = store._read(store._path(project, normalized)).decode("utf-8-sig")
+    except (OSError, KeyError):
+        return summary
+
+    def _int(block, key):
+        if key not in block.fields:
+            return None
+        try:
+            return int(block.one(key)[1])
+        except (TypeError, ValueError):
+            return None
+
+    for block in objects(text):
+        if block.object_type != "pvSubArray":
+            continue
+        orientation = _int(block, "NoOrientation")
+        series, strings = _int(block, "NModSerie"), _int(block, "NStringCh")
+        geometry = groups.get(orientation) or {}
+        nom = geometry.get("nom_power", default.get("nom_power"))
+        metadata = geometry.get("metadata_source") or default.get("metadata_source") or "declared-source"
+        kwp = (round(nom * series * strings / 1000.0, 6)
+               if isinstance(nom, (int, float)) and series and strings else None)
+        summary["subarrays"].append({
+            "subarray_id": _int(block, "SubArrayId"),
+            "pv_module": block.one("PVModule")[1] if "PVModule" in block.fields else None,
+            "inverter": block.one("GInverter")[1] if "GInverter" in block.fields else None,
+            "no_orientation": orientation,
+            "n_mod_serie": series,
+            "n_string_ch": strings,
+            "n_inv_mppt": _int(block, "NInvMPPT"),
+            "n_inverter": _int(block, "NInverter"),
+            "power_sharing_inverter_id": _int(block, "PowerSharingInverterId"),
+            "nominal_power_w": nom,
+            "nominal_kwp": kwp,
+            "module_metadata_source": metadata,
+        })
+    summary["subarray_count"] = len(summary["subarrays"])
+    return summary
+
+
+def _run_preserve_source_hardware(store, components, cli, *, request, dry_run=True,
+                                  confirm=False, resume=False, retry_simulation=False):
+    """Preserve the existing source hardware and deliver it through the existing house task.
+
+    Skips prepare_template/global resize/setIndependentMPPT entirely; the source variant is
+    cloned verbatim by run_house_task. Native version/licence is still read through the existing
+    _native_preflight (per-call window policy), and every house guard stays in force.
+    """
+    result = {"status": "blocked", "stage": "source_probe", "issues": [],
+              "prepare_mode": PRESERVE_SOURCE_HARDWARE, "source_preparation": None,
+              "source_summary": None, "house": None, "house_preflight_complete": False,
+              "native_consumption_verified": False, "weather_native_comparison_performed": False}
+    try:
+        if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation)):
+            raise ValueError("Use strict booleans")
+        child = _preserve_child_request(request)
+        preflight, error = _native_preflight(
+            cli, "existing", prepare_only=True,
+            allow_window_creation=request.get("allow_window_creation"))
+        result["native_preflight"] = preflight
+        if error is not None:
+            result.update(status="blocked", stage="native_preflight", issues=[error])
+            return result
+        result["stage"] = "house_delivery"
+        delivered = run_house_task(store, components, cli, request=child, dry_run=dry_run,
+            confirm=confirm, resume=resume, retry_simulation=retry_simulation)
+        result["house"] = delivered
+        result["stage"] = delivered.get("stage") or "house_delivery"
+        result["source_summary"] = _preserve_source_summary(
+            store, request["source_project"], request["source_variant"], delivered.get("plan"))
+        result["house_preflight_complete"] = delivered["status"] in (
+            "ready", "completed", "needs_review", "confirmation_required")
+        result.update(status=delivered["status"],
+                      native_consumption_verified=delivered.get("native_consumption_verified", False))
+        if delivered["status"] in ("completed", "needs_review"):
+            result["stage"] = "completed"
+        return result
+    except (ValueError, OSError, KeyError, TypeError, RuntimeError, PVsystError, subprocess.TimeoutExpired) as exc:
+        result.update(status="blocked", stage="stopped", issues=[str(exc)],
+                      native_consumption_verified=False)
+        return result
 
 
 def _source_checkpoint(store, design, binding):
@@ -72,8 +198,13 @@ def _source_checkpoint(store, design, binding):
             "warnings": warnings, "configuration_summary": record.get("configuration_summary")}
 
 
-def run_sourced_house_task(store, components, cli, *, request, binding, dry_run=True,
+def run_sourced_house_task(store, components, cli, *, request, binding=None, dry_run=True,
                            confirm=False, resume=False, retry_simulation=False, accept_source_review=False):
+    # One shared workflow: the preserve branch reuses the existing house task verbatim and never
+    # builds a loose-component binding; the legacy flow below is untouched.
+    if is_preserve_request(request):
+        return _run_preserve_source_hardware(store, components, cli, request=request,
+            dry_run=dry_run, confirm=confirm, resume=resume, retry_simulation=retry_simulation)
     result = {"status": "blocked", "stage": "source_inputs", "issues": [], "source_binding": binding,
               "source_preparation": None, "house": None, "native_consumption_verified": False,
               "house_preflight_complete": False, "weather_native_comparison_performed": False}
