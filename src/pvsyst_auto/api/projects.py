@@ -217,7 +217,8 @@ def pvsyst_remove_subarray(project: str, variant: str, subarray_id: StrictInt,
 @categorized_tool()
 def pvsyst_get_variant_parameters(project: str, variant: str,
                                   include_saved_results: StrictBool = False,
-                                  include_economics: StrictBool = False) -> dict:
+                                  include_economics: StrictBool = False,
+                                  include_topology: StrictBool = False) -> dict:
     """Inspect orientations, including native SummerTilt/WinterTilt (degrees),
     WinterMonths (raw month bitmask) and UsesTiltAver. Seasonal FieldTilt=0 is not
     the effective seasonal angle; these fields are read-only here, not a mode editor.
@@ -281,10 +282,21 @@ def pvsyst_get_variant_parameters(project: str, variant: str,
     following VarList, so a valid cold source with no result cache still reads the complete
     block. A missing block reports present=false; a structurally unbalanced block raises. The
     default response shape and size are unchanged; only include_economics=True adds this block.
+    An opt-in topology block (include_topology=True) reads the variant's own stored native
+    pvCircuit node tree verbatim: each node's kind, source line and full raw scalar field
+    map (unknown and repeated fields kept), plus an explicit subarray_id/nelements presence
+    flag so an omitted owner (present=False, value=None) stays distinct from an explicit 0
+    (present=True, value="0"). Node order is the native source appearance (never sorted by
+    SubArrayId), and per-block StringNode NElements are reported as stored rather than
+    aggregated. It widens no write support and derives no count, electrical grouping or
+    power allocation; a missing block reports present=false and a malformed block reports an
+    issue rather than an empty verified tree. Default shape and size are unchanged; only
+    include_topology=True adds this block.
     """
     return variant_call("inspect_parameters", project, variant,
                         include_saved_results=include_saved_results,
-                        include_economics=include_economics)
+                        include_economics=include_economics,
+                        include_topology=include_topology)
 
 @categorized_tool()
 def pvsyst_review_project_inputs(project: StrictStr, variant: StrictStr,

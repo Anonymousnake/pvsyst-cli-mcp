@@ -23,6 +23,7 @@
 | 固定分块工程拼装 | `prepare_block_project` | 见[分块工程准备](block-project-preparation.md)；按模板子阵分块的整数倍批量复制组装新工程 |
 | 工程改参、多方案对比与交付 | `project_handoff`、`run_engineering_task`、`compare_engineering_scenarios`、`export_engineering_delivery` | 见[工程修订与交付](engineering-delivery.md)、[多方案对比](engineering-scenarios.md) |
 | 经济性输入读取（只读，可选） | `pvsyst_get_variant_parameters(include_economics=True)` | 读出变体自身持久化的原生 `EconomicEval=TEcoEvaluation` 输入块（原文、去重标量、`InvestmentCosts`/`OperatingCosts`/`Loans` 列表声明）；默认不返回、保持旧响应；不做货币换算或 IRR/LCOE/现金流计算，原生加载/计算未验证 |
+| 共享电路拓扑读取（只读，可选） | `pvsyst_get_variant_parameters(include_topology=True)` | 读出变体自身持久化的原生 `PVObject_SystemCircuit=pvCircuit` 节点树（节点类型、源行号、原始字段含未知字段）；`subarray_id`/`nelements` 带 `present` 标记，省略属主为 `present=false/value=null` 而非 0，显式 0 保持 0；成员按源序不排序，逐 `StringNode` 报 `NElements`；默认不返回、保持旧响应；不推导计数、电气分组或功率分配 |
 | 可研简报与工程输入核对 | `review_engineering_brief`、`review_project_inputs` | 见[工程简报预审](engineering-brief.md)、[工程输入复核](project-input-review.md) |
 | 组件库读写与引用创建 | 组件增删改查、曲线表编辑、`build_sourced_component` | 见[按来源创建组件](sourced-components.md)；新生成的 `.PAN`/`.OND` 落在工作区 `ComposPV` 下 |
 | 电路拓扑与串并联数量 | `validate_variant_structure`、`update_variant_parameters`、`clone/remove_subarray` | 见[并网拓扑与参数编辑](grid-capacity-verification.md)；同步维护子阵列、逆变器组、MPPT 与组串节点计数 |

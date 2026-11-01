@@ -16,7 +16,7 @@ from pvsyst_auto.components.store import ComponentStore, FIELD, MAX_PROJECT_BYTE
 from pvsyst_auto.project.paths import project_path, project_root
 from pvsyst_auto.project import fileio
 from pvsyst_auto.components.generator import state as generator_state, replace_generator
-from pvsyst_auto.project.circuit import inventory as grid_inventory, resize_capacity, circuit_nodes, require_ordinary_mppt, set_power_sharing, set_independent_mppt, transformer_state
+from pvsyst_auto.project.circuit import inventory as grid_inventory, resize_capacity, circuit_nodes, require_ordinary_mppt, set_power_sharing, set_independent_mppt, transformer_state, topology_state
 from pvsyst_auto.components.editor import has_object, objects, replace_value, root_block
 from pvsyst_auto.energy.soiling import soiling_state, replace_soiling
 from pvsyst_auto.native.grid_limit import grid_limit_state, replace_grid_limit
@@ -620,7 +620,8 @@ class VariantStore:
 
     def inspect_parameters(self, project: str, variant: str,
                            include_saved_results: bool = False,
-                           include_economics: bool = False) -> dict:
+                           include_economics: bool = False,
+                           include_topology: bool = False) -> dict:
         with self.lock:
             self._check_project(project)
             data = self._read(self._path(project, variant))
@@ -726,6 +727,8 @@ class VariantStore:
                 result["saved_results"] = _saved_results(text, lines)
             if include_economics:
                 result["economics"] = _economic_block(lines)
+            if include_topology:
+                result["topology"] = topology_state(lines)
             return result
 
     def update_parameters(self, project: str, variant: str, expected_sha256: str,
