@@ -22,6 +22,7 @@
 | 单方案设计与源工程准备 | `simulate_design`、`prepare_design_project`、`prepare_sourced_design` | 见[单方案设计输入](single-design-inputs.md)、[源工程准备](design-project-preparation.md) |
 | 固定分块工程拼装 | `prepare_block_project` | 见[分块工程准备](block-project-preparation.md)；按模板子阵分块的整数倍批量复制组装新工程 |
 | 工程改参、多方案对比与交付 | `project_handoff`、`run_engineering_task`、`compare_engineering_scenarios`、`export_engineering_delivery` | 见[工程修订与交付](engineering-delivery.md)、[多方案对比](engineering-scenarios.md) |
+| 经济性输入读取（只读，可选） | `pvsyst_get_variant_parameters(include_economics=True)` | 读出变体自身持久化的原生 `EconomicEval=TEcoEvaluation` 输入块（原文、去重标量、`InvestmentCosts`/`OperatingCosts`/`Loans` 列表声明）；默认不返回、保持旧响应；不做货币换算或 IRR/LCOE/现金流计算，原生加载/计算未验证 |
 | 可研简报与工程输入核对 | `review_engineering_brief`、`review_project_inputs` | 见[工程简报预审](engineering-brief.md)、[工程输入复核](project-input-review.md) |
 | 组件库读写与引用创建 | 组件增删改查、曲线表编辑、`build_sourced_component` | 见[按来源创建组件](sourced-components.md)；新生成的 `.PAN`/`.OND` 落在工作区 `ComposPV` 下 |
 | 电路拓扑与串并联数量 | `validate_variant_structure`、`update_variant_parameters`、`clone/remove_subarray` | 见[并网拓扑与参数编辑](grid-capacity-verification.md)；同步维护子阵列、逆变器组、MPPT 与组串节点计数 |
@@ -32,7 +33,7 @@
 | 功能项 | 当前支持状态 | 底层字段与注意事项 |
 |---|---|---|
 | 常数热损系数 $U_c$ | MCP 可读写 | `main_array_updates.UFactor`（范围 `15..100` W/m²·K），要求主阵列标准 `Flags`/`Flags2`；见[损失 GUI 往返](loss-gui-roundtrip.md) |
-| 风速热损项 $U_v$ | 仅 GUI 保存对照，未开放写入 | 对应 `pvMainArray.UVFactor`；当前未在 `main_array_updates` 中开放修改 |
+| 风速热损项 $U_v$ | MCP 可读写（present-only） | `main_array_updates.UVFactor`（原生 `Uv` 字面值，仅已有字段可编辑、不建默认/别名）；适配域为任意有限数值（无原生量程/权威单位：字面 `Uw fact; [W/m2K]` 与量纲 `W/m2K per (m/s)` 存 SourceGap，原生数值校验延后）；接受真实跟踪夹具 `$01900400`/`$082A` 的 8.1.0/8.1.6 Grid 主阵（不要求无几何，保留 80 物体场景与跟踪/遮挡字节），编辑后失效自身派生结果缓存并只清 root 仿真位、保留其余控制位；见[损失 GUI 往返](loss-gui-roundtrip.md) |
 | DC 线缆阻值 / 损失率 | MCP 已封装（通过 GUI 桥接） | `pvsyst_create_native_dc_cabling_variant`；驱动已打开的 8.1.6 GUI 填入阻值或百分比，由 PVsyst 自动重算关联字段并另存新变体，见[DC 线缆桥接](native-dc-cabling.md) |
 | AC 线缆 | MCP 已封装 | `pvsyst_create_ac_cabling_variant`；同步更新主阵列使能位、子阵列长度（`0.1 m` 精度）与直接 `InverterNode` 的 `CableDefinition`，见[AC 线缆配置](native-ac-cabling.md) |
 | MV 变压器夜间断开 | MCP 已封装 | `pvsyst_create_mv_night_disconnect_variant`；切换单台默认 MV 变压器的 `NightDisconnect` 与主阵列 bit 29，见[MV 夜间断开](native-mv-night.md) |

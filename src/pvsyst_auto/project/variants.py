@@ -199,6 +199,93 @@ def _saved_results(text: str, lines: list[str]) -> dict:
                  "original software produced, accepts or can recover these results.")}
 
 
+ECON_OPEN = "EconomicEval=TEcoEvaluation"
+ECON_LIST = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*), list of=([0-9]+) ([A-Za-z_][A-Za-z0-9_]*)$")
+
+
+def _economic_block(lines: list[str]) -> dict:
+    """Read the variant's stored native ``EconomicEval=TEcoEvaluation`` input block, verbatim.
+
+    This is a stored-declaration read of one root field of ``pvVCalcul``: the raw text of the
+    block, the native scalars that are unambiguous direct children (duplicate names such as a
+    second ``DiscountRate`` are kept as a list, never flattened), and the direct list
+    declarations (``InvestmentCosts``/``OperatingCosts``/``Loans`` counts and item types).
+    Nothing is unit-converted, price/currency-translated, summed or modelled: no finance,
+    IRR/LCOE or cashflow arithmetic, and no claim the original software evaluates or can
+    recover these inputs (``native_consumption_verified`` is always false).
+
+    Boundary is the explicit ``End of TEcoEvaluation`` tag when present, else the next
+    root-level (indent <= owner) section. It never truncates at the first ``EndTags`` and does
+    not need a following ``VarList``, so a valid cold source with no result cache still yields
+    the complete block. A missing block reports ``present=False``; an unclosed or structurally
+    unbalanced (``End of List`` count != ``list of=`` count) block raises instead of returning
+    partial data.
+    """
+    found = [i for i, line in enumerate(lines) if line.strip() == ECON_OPEN]
+    if not found:
+        return {"present": False}
+    if len(found) > 1:
+        raise ValueError("EconomicEval block is declared more than once")
+    start = found[0]
+    owner_indent = len(lines[start]) - len(lines[start].lstrip(" "))
+    end = terminator = None
+    for i in range(start + 1, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        indent = len(lines[i]) - len(lines[i].lstrip(" "))
+        if indent <= owner_indent:
+            if stripped == "End of TEcoEvaluation":
+                end, terminator = i, "End of TEcoEvaluation"
+            else:
+                end, terminator = i, "root_section_boundary"
+            break
+    if end is None:
+        raise ValueError("EconomicEval block is not closed (no terminating tag or root boundary)")
+    block = lines[start + 1:end]
+    direct = owner_indent + 2
+    scalars: dict[str, list[str]] = {}
+    lists: dict[str, dict] = {}
+    opens = closes = 0
+    for raw in block:
+        text = raw.rstrip("\r\n")
+        stripped = text.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("End of List "):
+            closes += 1
+            continue
+        inner = len(text) - len(text.lstrip(" "))
+        declared = ECON_LIST.match(stripped)
+        if declared:
+            opens += 1
+            if inner == direct:
+                lists[declared.group(1)] = {"type": declared.group(3),
+                                            "declared_count": int(declared.group(2))}
+            continue
+        field = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", stripped)
+        if field and inner == direct:
+            scalars.setdefault(field.group(1), []).append(field.group(2))
+    if opens != closes:
+        raise ValueError("EconomicEval list structure is unbalanced: %d 'list of=' but %d 'End of List'"
+                         % (opens, closes))
+    return {
+        "present": True,
+        "owner": "TEcoEvaluation",
+        "terminator": terminator,
+        "native_type": "TEcoEvaluation",
+        "raw": "".join(block),
+        "scalars": scalars,
+        "lists": lists,
+        "fields_scope": "stored_declaration",
+        "native_consumption_verified": False,
+        "note": ("Verbatim stored native economic-input block from this variant only. No "
+                 "currency conversion, finance/IRR/LCOE arithmetic or output is computed, "
+                 "assumed or verified; how the original software loads or evaluates it, and "
+                 "whether a saved economic result exists, remains unproven."),
+    }
+
+
 class VariantStore:
     def __init__(self, workspace: str | os.PathLike, components: ComponentStore,
                  lock: threading.RLock | None = None):
@@ -503,8 +590,37 @@ class VariantStore:
         if len(flags) != 1 or FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2] not in EMPTY_SHADING_FLAGS:
             raise ValueError("Shading is active or unrecognized: active shading scene")
 
+    @staticmethod
+    def _uv_edit_gate(lines, system, arrays, main_array) -> None:
+        """Gate for the present-only UVFactor (native wind-loss Uv) edit.
+
+        Accepts the genuine observed 8.1.0/8.1.6 Grid main array carrying either the tracker
+        ``$01900400`` or fixed ``$00100400`` Flags with ``$082A`` Flags2. Unlike the constant
+        UFactor editor it does NOT require an unshaded/geometry-free variant: the observed
+        UVFactor fixture is an 80-object shaded tracker with a nonzero-wind MET. This edit
+        rewrites only the stored UV literal and invalidates derived results, so any existing
+        tracking/shading/geometry/economic/input-control fields are preserved verbatim (never
+        stripped, cloned to fixed or default-filled).
+        """
+        kinds = VariantStore._field_indices(lines, system, "SystemType") if system is not None else []
+        versions = [VariantStore._field_indices(lines, bounds, "Version") for bounds in arrays.values()]
+        if (main_array is None or len(kinds) != 1
+                or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
+                or not versions or any(len(indices) != 1
+                                       or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in ("8.1.0", "8.1.6")
+                                       for indices in versions)):
+            raise ValueError("UVFactor editing requires a verified 8.1.0/8.1.6 grid main array")
+        flags = VariantStore._field_indices(lines, main_array, "Flags")
+        flags2 = VariantStore._field_indices(lines, main_array, "Flags2")
+        if (len(flags) != 1 or FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2] not in ("$00100400", "$01900400")
+                or len(flags2) != 1 or FIELD.fullmatch(lines[flags2[0]].rstrip("\r\n"))[2] != "$082A"):
+            raise ValueError("UVFactor editing requires verified main-array Flags/Flags2")
+        if len(VariantStore._field_indices(lines, main_array, "UVFactor")) != 1:
+            raise ValueError("UVFactor must occur exactly once directly on the main array")
+
     def inspect_parameters(self, project: str, variant: str,
-                           include_saved_results: bool = False) -> dict:
+                           include_saved_results: bool = False,
+                           include_economics: bool = False) -> dict:
         with self.lock:
             self._check_project(project)
             data = self._read(self._path(project, variant))
@@ -567,7 +683,7 @@ class VariantStore:
             result = {"project": project, "variant": variant.upper(),
                     "variant_name": FIELD.fullmatch(lines[names[0]].rstrip("\r\n"))[2] if len(names) == 1 else None,
                     "utf8_bom": data.startswith(b"\xef\xbb\xbf"),
-                    "main_array": {"values": fields(main_array, ("UFactor", "Flags", "Flags2", "MVNbTransfos", "VOutTransfo")) if main_array is not None else {},
+                    "main_array": {"values": fields(main_array, ("UFactor", "UVFactor", "Flags", "Flags2", "MVNbTransfos", "VOutTransfo")) if main_array is not None else {},
                                    "soiling": soiling_state(lines, main_array) if main_array is not None else None},
                     "sha256": hashlib.sha256(data).hexdigest(), "orientations": orientations,
                     "system_parameters": fields(system, ("SystemType", "Flags", "TempShift", "TempFixed",
@@ -608,6 +724,8 @@ class VariantStore:
                                   for identifier, bounds in sorted(arrays.items())]}
             if include_saved_results:
                 result["saved_results"] = _saved_results(text, lines)
+            if include_economics:
+                result["economics"] = _economic_block(lines)
             return result
 
     def update_parameters(self, project: str, variant: str, expected_sha256: str,
@@ -644,7 +762,11 @@ class VariantStore:
                              # never derived here from the OND PNomConv/NbMPPT.
                              "PNomAC_InMPPT": (0, math.inf)}
         allowed_orientation = {"FieldTilt": (0, 90), "FieldAzim": (-180, 180)}
-        allowed_main_array = {"UFactor": (15, 100)}
+        # UFactor (constant Uc) keeps its adapter range. UVFactor (native wind-loss Uv) has no
+        # sourced native range, so it uses a finite-but-unbounded adapter domain: any finite
+        # JSON float is accepted, while bool/NaN/inf are refused below. No 0..100 or nonnegative
+        # Native bound is invented here; original validation of the stored value is deferred.
+        allowed_main_array = {"UFactor": (15, 100), "UVFactor": (-math.inf, math.inf)}
         requested = ((subarray_updates, allowed_subarray), (orientation_updates, allowed_orientation),
                      (main_array_updates, allowed_main_array))
         ageing_transaction = ageing_updates is not None or ageing_enabled is not None
@@ -765,7 +887,10 @@ class VariantStore:
                 name_change = {"before": FIELD.fullmatch(lines[index].rstrip("\r\n"))[2], "after": variant_name}
                 lines[index] = replace_value(lines[index], variant_name)
             main_array = self._main_array(lines) if main_array_updates else None
-            if main_array_updates:
+            uv_only = bool(main_array_updates) and set(main_array_updates) == {"UVFactor"}
+            if main_array_updates and "UVFactor" in main_array_updates and not uv_only:
+                raise ValueError("UVFactor edits are a separate transaction; do not combine with UFactor")
+            if main_array_updates and not uv_only:
                 kinds = self._field_indices(lines, system, "SystemType") if system is not None else []
                 versions = [self._field_indices(lines, bounds, "Version") for bounds in arrays.values()]
                 if (main_array is None or len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
@@ -776,6 +901,8 @@ class VariantStore:
                     if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] != expected:
                         raise ValueError("Thermal editing requires verified main-array Flags/Flags2")
                 self._require_no_geometry(lines)
+            elif uv_only:
+                self._uv_edit_gate(lines, system, arrays, main_array)
             if subarray_updates or power_sharing_enabled is not None or independent_mppt_enabled is not None:
                 if not isinstance(subarray_id, int) or isinstance(subarray_id, bool) or subarray_id not in arrays:
                     raise ValueError("Subarray ID does not exist")
@@ -814,6 +941,7 @@ class VariantStore:
                 self._require_no_geometry(lines)
                 self._ordinary_fixed_plane(lines, bounds, allow_missing_flags=True)
                 targets.append((orientation_updates, allowed_orientation, bounds))
+            uv_changed = False
             for changes, allowed, bounds in targets:
                 for name, value in changes.items():
                     if (not isinstance(value, (int, float)) or isinstance(value, bool)
@@ -843,6 +971,8 @@ class VariantStore:
                     rendered = (str(int(value)) if name == "NModSerie"
                                 else f"{value:.2f}" if name == "PNomAC_InMPPT" else f"{value:.3f}")
                     lines[index] = f"{prefix}{rendered}{ending}"
+                    if name == "UVFactor":
+                        uv_changed = rendered != FIELD.fullmatch(old.rstrip("\r\n"))[2]
             capacity = None
             assignment = None
             sharing = None
@@ -1014,6 +1144,16 @@ class VariantStore:
                             seasonal_change = replace_seasonal(lines, self._orientation(lines, 1), seasonal_updates)
                         else:
                             horizon_change = replace_horizon(lines, horizon_updates)
+            # A changed UV factor invalidates this variant's own derived result cache: drop its
+            # root VarList result block and histograms and clear ONLY the root simulation-done
+            # bit, preserving every other bit and every INPUT (economic TEcoEvaluation, hourly
+            # tariff TVar, load/house profiles, geometry, component refs). Reuses the existing
+            # native format helper (no second parser); a malformed cache raises here, before any
+            # write. A no-op value leaves the cache untouched so the transaction stays a no-op.
+            cache_clear = None
+            if uv_changed:
+                from pvsyst_auto.native.headless import strip_result_cache
+                lines, cache_clear = strip_result_cache(lines)
             edited_text = "".join(lines)
             candidate = bom_prefix + edited_text.encode("utf-8")
             self._text(candidate)
@@ -1025,6 +1165,8 @@ class VariantStore:
                 "sha256": hashlib.sha256(candidate).hexdigest(), "changed": candidate != data,
                 "dry_run": dry_run, "diff": diff[:32000],
                 "diff_truncated": len(diff) > 32000 or len(diff.splitlines()) > 500}
+            if cache_clear is not None:
+                result["derived_cache"] = cache_clear
             if soiling_change is not None:
                 result["soiling"] = soiling_change
             if grid_limit_change is not None:

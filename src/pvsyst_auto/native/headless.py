@@ -521,6 +521,52 @@ def _block(lines, start_pred, end_pred):
     raise ValueError("block start not found")
 
 
+def strip_result_cache(lines):
+    """Remove this variant's own derived result cache and clear the root simulation bit.
+
+    Deletes the root-level ``VarList ... TVarSimul`` results block and every
+    ``Histogram=THistogramme`` block, then clears ONLY the root Flags bit 0 (0x1,
+    "simulation done") while preserving every other flag bit. Matching uses ``strip()``,
+    so lines may carry their original EOL; the root Flags rewrite preserves it. A
+    present-but-unclosed cache is malformed and raises; an absent cache is a legal noop
+    (a valid cold source that was never simulated stores none). This removes the *derived
+    result* cache only -- economic ``TEcoEvaluation`` inputs, hourly-tariff ``TVarSimul``,
+    household/load profiles, geometry and component references are left untouched.
+    Returns ``(lines, report)``.
+    """
+    report = {"var_list_removed": False, "histograms_removed": 0,
+              "root_simulation_bit_cleared": False}
+    try:
+        s, e = _block(lines, lambda x: x.startswith("VarList, list of="),
+                      lambda x: x == "End of the List VarList")
+    except ValueError as exc:
+        if "block start not found" not in str(exc):
+            raise
+    else:
+        del lines[s:e + 1]
+        report["var_list_removed"] = True
+    while True:
+        try:
+            s, e = _block(lines, lambda x: x == "Histogram=THistogramme", lambda x: x == "End of THistogramme")
+        except ValueError as exc:
+            if "block start not found" not in str(exc):
+                raise  # a present-but-unclosed histogram is malformed, never silently dropped
+            break
+        del lines[s:e + 1]
+        report["histograms_removed"] += 1
+    root = next((i for i, line in enumerate(lines)
+                 if re.match(r"^  Flags=\$[0-9A-Fa-f]+\s*$", line)), None)
+    if root is None:
+        raise ValueError("root Flags line not found")
+    body = lines[root].rstrip("\r\n")
+    ending = lines[root][len(body):]
+    value = int(body.split("$", 1)[1], 16)
+    if value & 0x1:
+        lines[root] = "  Flags=$%08X%s" % (value & ~0x1, ending)
+        report["root_simulation_bit_cleared"] = True
+    return lines, report
+
+
 def assemble_variant(base_text, pvshading, module_layout=None):
     """Splice the constructed scene into the clean electrical source; strip derived caches."""
     eol = "\r\n" if "\r\n" in base_text else "\n"
@@ -534,33 +580,7 @@ def assemble_variant(base_text, pvshading, module_layout=None):
     # Derived-cache removal is idempotent on a valid cold source: a source that was never
     # simulated carries no VarList block at all, so its absence is a legal noop. A block that
     # IS present must be properly closed -- an unclosed cache is malformed and raises.
-    try:
-        s, e = _block(lines, lambda x: x.startswith("VarList, list of="),
-                      lambda x: x == "End of the List VarList")
-    except ValueError as exc:
-        if "block start not found" not in str(exc):
-            raise
-    else:
-        del lines[s:e + 1]
-    while True:
-        try:
-            s, e = _block(lines, lambda x: x == "Histogram=THistogramme", lambda x: x == "End of THistogramme")
-        except ValueError as exc:
-            if "block start not found" not in str(exc):
-                raise  # a present-but-unclosed histogram is malformed, never silently dropped
-            break
-        del lines[s:e + 1]
-    # Clear ONLY the root "simulation done" bit (0x1) while preserving every other unrelated
-    # flag. A genuine cold source already has it clear (e.g. $00100000) -> noop; a warm source
-    # ($00100001 + VarList results) is reset to the unsimulated state exactly as before. The root
-    # Flags is the two-space field of the outer pvVCalcul object (nested objects indent deeper).
-    root = next((i for i, line in enumerate(lines)
-                 if re.match(r"^  Flags=\$[0-9A-Fa-f]+$", line)), None)
-    if root is None:
-        raise ValueError("root Flags line not found")
-    value = int(lines[root].split("$", 1)[1], 16)
-    if value & 0x1:
-        lines[root] = "  Flags=$%08X" % (value & ~0x1)
+    lines, _ = strip_result_cache(lines)
     if module_layout is not None:
         closing = "End of PVObject pvVCalcul"
         index = max(i for i, line in enumerate(lines) if line == closing)

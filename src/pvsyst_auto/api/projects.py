@@ -216,7 +216,8 @@ def pvsyst_remove_subarray(project: str, variant: str, subarray_id: StrictInt,
 
 @categorized_tool()
 def pvsyst_get_variant_parameters(project: str, variant: str,
-                                  include_saved_results: StrictBool = False) -> dict:
+                                  include_saved_results: StrictBool = False,
+                                  include_economics: StrictBool = False) -> dict:
     """Inspect orientations, including native SummerTilt/WinterTilt (degrees),
     WinterMonths (raw month bitmask) and UsesTiltAver. Seasonal FieldTilt=0 is not
     the effective seasonal angle; these fields are read-only here, not a mode editor.
@@ -268,9 +269,22 @@ def pvsyst_get_variant_parameters(project: str, variant: str,
     result, and it widens no write support. It is emitted only when include_saved_results=True;
     the default keeps the prior response shape untouched, so a caller opts in to the larger
     stored-cache payload.
+    An opt-in economics block (include_economics=True) reads the variant's own stored
+    `EconomicEval=TEcoEvaluation` native economic-INPUT root field verbatim: its raw text, the
+    unambiguous direct native scalars (duplicate names such as a repeated DiscountRate kept as
+    a list, never flattened) and the direct list declarations (InvestmentCosts/OperatingCosts/
+    Loans counts and item types). It is a stored-declaration read only: no currency
+    conversion, no finance/IRR/LCOE/cashflow arithmetic or output, and no claim the original
+    software accepts, evaluates or can recover these inputs (native_consumption_verified is
+    false). The block boundary is the explicit End of TEcoEvaluation tag when present, else the
+    next root-level section; it never truncates at the first EndTags and does not need a
+    following VarList, so a valid cold source with no result cache still reads the complete
+    block. A missing block reports present=false; a structurally unbalanced block raises. The
+    default response shape and size are unchanged; only include_economics=True adds this block.
     """
     return variant_call("inspect_parameters", project, variant,
-                        include_saved_results=include_saved_results)
+                        include_saved_results=include_saved_results,
+                        include_economics=include_economics)
 
 @categorized_tool()
 def pvsyst_review_project_inputs(project: StrictStr, variant: StrictStr,
@@ -348,11 +362,20 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     dry_run returns a candidate hash/diff without writing. Subarray/orientation/
     main-array dictionaries require strict numbers, not booleans or numeric strings.
     main_array_updates supports existing owning UFactor (constant Uc, W/m2/K)
-    in adapter range [15,100]. Requires one Grid main array with Flags=$00100400,
-    Flags2=$082A, all subarrays declared 8.1.0/8.1.6, no active geometry/layout.
-    This changes the whole main array, not the selected subarray. Flags, wind
-    terms, absorptance and efficiency fields are preserved; no fitting, inferred
-    defaults or transient/wind model edits. Low-value behavior is unverified.
+    in adapter range [15,100], and (as its own separate transaction) existing owning
+    UVFactor (native wind-loss Uv, stored literal) when present exactly once. UFactor
+    requires one Grid main array with Flags=$00100400, Flags2=$082A, all subarrays
+    declared 8.1.0/8.1.6, no active geometry/layout. UVFactor accepts a verified
+    8.1.0/8.1.6 Grid main array with Flags=$00100400 or $01900400 and Flags2=$082A,
+    and deliberately does NOT require an unshaded scene (the observed fixture is an
+    80-object shaded tracker with nonzero-wind MET); it edits only the UV literal and
+    invalidates this variant's derived result cache, preserving all tracking/shading/
+    geometry/economic/input control fields byte-for-byte. UVFactor has no sourced
+    native range/unit, so it uses a finite unbounded adapter domain (no invented 0..100
+    or nonnegative Native bound; original validation deferred) and is never created if
+    absent. This changes the whole main array, not the selected subarray. Other flags,
+    absorptance and efficiency fields are preserved; no fitting, inferred defaults or
+    transient/wind model edits. Low-value behavior is unverified.
     Target subarray_id/orientation_id require strict JSON integers, not booleans,
     strings or floats; numeric dictionary values retain their separate rules.
     subarray_updates
