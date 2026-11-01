@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
 
 StrictNum = StrictInt | StrictFloat
@@ -611,6 +611,33 @@ class SourcedHouseTaskRequest(BaseModel):
     shading_mode: Literal["linear", "module_layout"] | None = None
     scene_import_method: Literal["gui", "native"] | None = None
     allow_window_creation: StrictBool | None = None
+    # Explicit high-level reuse: prepare_mode drives the existing source variant unchanged
+    # instead of preparing a new source from design. All three default to None so the legacy
+    # request/checkpoint dump is byte-for-byte unchanged (api/simulation.py dumps exclude_none).
+    prepare_mode: Literal["preserve_source_hardware"] | None = None
+    source_project: StrictStr | None = None
+    source_variant: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def _preserve_source_hardware_contract(self):
+        """Conditional contract: preserve requires a source and year-only design; legacy ignores neither."""
+        if self.prepare_mode != "preserve_source_hardware":
+            if self.source_project is not None or self.source_variant is not None:
+                raise ValueError("source_project/source_variant require prepare_mode='preserve_source_hardware'; "
+                                 "a legacy request never silently ignores them")
+            return self
+        if not (self.source_project or "").strip() or not (self.source_variant or "").strip():
+            raise ValueError("preserve_source_hardware requires non-empty source_project and source_variant")
+        extra = set(self.design.model_fields_set) - {"year", "report_pages"}
+        if extra:
+            raise ValueError("preserve_source_hardware keeps the source hardware verbatim and accepts only "
+                             f"design.year and design.report_pages; remove {sorted(extra)}")
+        if self.design.year is None:
+            raise ValueError("preserve_source_hardware requires an explicit design.year in 1969..2068")
+        if self.sources or self.declarations or self.goals is not None:
+            raise ValueError("preserve_source_hardware reuses the existing source; sources/declarations/goals "
+                             "are a source rewrite and are rejected before any native query or write")
+        return self
 
 class EngineeringChanges(BaseModel):
     model_config = ConfigDict(extra="forbid")

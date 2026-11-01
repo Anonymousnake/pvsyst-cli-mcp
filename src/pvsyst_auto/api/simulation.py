@@ -328,11 +328,18 @@ def pvsyst_run_sourced_house_task(spec: SourcedHouseTaskRequest, dry_run: Strict
     not dropped): omitted/None keeps the historical default, False always denies Native window
     creation for the final run, True allows. A strict False with the GUI import method is rejected
     before any source preparation, so a windowless request never prepares a project first."""
-    from pvsyst_auto.workflows.sourced_house import run_sourced_house_task
+    from pvsyst_auto.workflows.sourced_house import is_preserve_request, run_sourced_house_task
     current = cli()
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
     with store.lock:
+        request = spec.model_dump(exclude_none=True, exclude={"sources", "declarations", "goals"})
+        # Branch before the loose-component/global sourced binding: preserve reuses the existing
+        # source hardware and never needs a single loose PAN/OND file or a fabricated envelope.
+        if is_preserve_request(request):
+            return run_sourced_house_task(store, component_store, current, request=request,
+                dry_run=dry_run, confirm=confirm, resume=resume, retry_simulation=retry_simulation,
+                accept_source_review=accept_source_review)
         goals = spec.goals.model_dump(exclude_none=True) if spec.goals is not None else {}
         if (spec.design.target_dc_kw is not None and "target_dc_kw" not in goals
                 and not any(entry.field == "target_dc_kw" for entry in spec.declarations)):
@@ -340,7 +347,6 @@ def pvsyst_run_sourced_house_task(spec: SourcedHouseTaskRequest, dry_run: Strict
         binding = pvsyst_prepare_sourced_design(
             pan_name=spec.design.module.file_name or "", ond_name=spec.design.inverter.file_name or "",
             sources=spec.sources, declarations=spec.declarations, design=SourcedDesignGoals(**goals))
-        request = spec.model_dump(exclude_none=True, exclude={"sources", "declarations", "goals"})
         return run_sourced_house_task(store, component_store, current, request=request, binding=binding,
             dry_run=dry_run, confirm=confirm, resume=resume, retry_simulation=retry_simulation,
             accept_source_review=accept_source_review)
