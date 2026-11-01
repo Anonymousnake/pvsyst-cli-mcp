@@ -39,7 +39,8 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                        pan_name="", ond_name="", site_name="", met_name="", tilt=None, year=None,
                        dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
                        *, report_pages=None, prepare_only=False, preparation_context=None,
-                       tracking=None, tracking_variant="", nominal_dc_power_kw=None, tracking_power_source=""):
+                       tracking=None, tracking_variant="", nominal_dc_power_kw=None, tracking_power_source="",
+                       allow_window_creation=None):
     tracking_mode = tracking is not None
     request = dict(template_project=template_project, variant=variant, new_project=new_project,
                    pan_name=pan_name, ond_name=ond_name, site_name=site_name, met_name=met_name,
@@ -278,13 +279,13 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             result["nominal_dc_power_kw"] = nominal
             if not prepare_only:
                 for option in ("input-sfi-file", "start-date", "end-date", "time-step"):
-                    cli._require("run-simulation", option)
-            license_state = cli.license_info()
+                    cli._require("run-simulation", option, allow_window_creation=allow_window_creation)
+            license_state = cli.license_info(allow_window_creation=allow_window_creation)
             if (not prepare_only and license_state.get("status") == "TRIAL"
                     and license_state.get("remaining_executions") == 0):
                 raise ValueError("PVsystCLI reports no remaining trial executions")
             result["license"] = license_state
-            result["cli_version"] = cli.version()
+            result["cli_version"] = cli.version(allow_window_creation=allow_window_creation)
             if tracking_mode and result["cli_version"] != "PVsystCLI 8.1.6 (rev. 49278)":
                 raise ValueError("Tracking flow requires the verified native8.1.6rev49278 executable")
         except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:

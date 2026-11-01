@@ -144,7 +144,8 @@ def run_sourced_house_task(store, components, cli, *, request, binding, dry_run=
                 if ((root.exists() and any(store._belongs_to_project(p, final_name) for p in root.iterdir()))
                         or any(workspace_file(store.workspace, folder, name, ext).exists() for folder, name, ext in outputs)):
                     raise FileExistsError("Final house namespace already exists; source preparation was not started")
-                preview = prepare_design_project(cli, store, spec=design, dry_run=True, source_context=binding)
+                preview = prepare_design_project(cli, store, spec=design, dry_run=True,
+                    source_context=binding, allow_window_creation=request.get("allow_window_creation"))
                 result.update(stage="source_preparation", source_preparation=preview)
                 if preview["status"] not in ("ready", "ready_for_weather"):
                     result.update(status=preview["status"], issues=preview.get("issues", []))
@@ -157,7 +158,8 @@ def run_sourced_house_task(store, components, cli, *, request, binding, dry_run=
                     return result
                 if _processes(native, (Path(cli.cli).parent / "PVsyst.exe").resolve()):
                     raise ValueError("Existing PVsyst GUI remains untouched; no source preparation was started")
-                made = prepare_design_project(cli, store, spec=design, dry_run=False, source_context=binding)
+                made = prepare_design_project(cli, store, spec=design, dry_run=False,
+                    source_context=binding, allow_window_creation=request.get("allow_window_creation"))
                 result["source_preparation"] = made
                 if not made.get("prepared") or made["status"] not in ("prepared", "needs_review"):
                     result.update(status="needs_attention", issues=made.get("issues", []))

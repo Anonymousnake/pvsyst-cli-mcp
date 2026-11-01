@@ -257,13 +257,14 @@ class PVsystCLI:
             raise PVsystError(f"{label} timed out after {self.timeout}s",
                               diagnostics=self._redact(captured)) from None
 
-    def _weather_command(self, label: str, args: list[str]) -> str:
+    def _weather_command(self, label: str, args: list[str], *,
+                         allow_window_creation: bool | None = None) -> str:
         """Run one weather command and return its complete redacted output.
 
         A timeout or non-zero exit raises PVsystError with that same output attached as
         `diagnostics`, so the exception message stays short.
         """
-        result = self._checked_run(label, *args)
+        result = self._checked_run(label, *args, allow_window_creation=allow_window_creation)
         text = self._redact(self._output(result))
         if result.returncode != 0:
             raise PVsystError(f"{label} failed with exit code {result.returncode}",
@@ -285,18 +286,20 @@ class PVsystCLI:
         return set(re.findall(r"(?m)^\s*--([a-z][a-z-]+)(?=\||:|\s)",
                               self.command_help(command, allow_window_creation=allow_window_creation)))
 
-    def capabilities(self) -> dict[str, list[str]]:
-        main = self.command_help()
+    def capabilities(self, *, allow_window_creation: bool | None = None) -> dict[str, list[str]]:
+        main = self.command_help(allow_window_creation=allow_window_creation)
         commands = re.findall(r"(?m)^\s+([a-z][a-z-]+):", main)
-        return {name: sorted(self._options(name)) for name in commands}
+        return {name: sorted(self._options(name, allow_window_creation=allow_window_creation))
+                for name in commands}
 
     def _require(self, command: str, option: str, *,
                  allow_window_creation: bool | None = None) -> None:
         if option not in self._options(command, allow_window_creation=allow_window_creation):
             raise PVsystError(f"Installed PVsystCLI lacks {command} --{option}")
 
-    def version(self) -> str:
-        result = self._checked_run("PVsystCLI version query", "version")
+    def version(self, *, allow_window_creation: bool | None = None) -> str:
+        result = self._checked_run("PVsystCLI version query", "version",
+                                   allow_window_creation=allow_window_creation)
         if result.returncode != 0:
             raise PVsystError("PVsystCLI version query failed")
         lines = self._output(result).strip().splitlines()
@@ -616,13 +619,16 @@ class PVsystCLI:
 
     def convert_meteo(self, input_csv: str | os.PathLike, mef: str | os.PathLike,
                       sit: str | os.PathLike, out_met: str | os.PathLike,
-                      timeshift: int = 0, log_level: int | None = None) -> Path:
-        return Path(self.convert_meteo_details(input_csv, mef, sit, out_met, timeshift, log_level)["met"])
+                      timeshift: int = 0, log_level: int | None = None, *,
+                      allow_window_creation: bool | None = None) -> Path:
+        return Path(self.convert_meteo_details(input_csv, mef, sit, out_met, timeshift, log_level,
+                                               allow_window_creation=allow_window_creation)["met"])
 
     @_serialized
     def convert_meteo_details(self, input_csv: str | os.PathLike, mef: str | os.PathLike,
                               sit: str | os.PathLike, out_met: str | os.PathLike,
-                              timeshift: int = 0, log_level: int | None = None) -> dict:
+                              timeshift: int = 0, log_level: int | None = None, *,
+                              allow_window_creation: bool | None = None) -> dict:
         if not -30 <= timeshift <= 30:
             raise ValueError("MEF timeshift must be between -30 and 30")
         sources = [self._input(path, ext) for path, ext in
@@ -633,7 +639,7 @@ class PVsystCLI:
         level = self._log_level(log_level)
         if level:
             args.append(level)
-        text = self._weather_command("Weather conversion", args)
+        text = self._weather_command("Weather conversion", args, allow_window_creation=allow_window_creation)
         if "Conversion ended successfully" not in text or not target.is_file():
             raise PVsystError("Conversion did not produce the expected MET",
                               diagnostics=text)
@@ -645,11 +651,13 @@ class PVsystCLI:
                     *, altitude: float | None = None,
                     timezone: float | None = None, country_code: str = "",
                     region: str = "", source: str = "", albedo: float | None = None,
-                    log_level: int | None = None) -> Path:
+                    log_level: int | None = None,
+                    allow_window_creation: bool | None = None) -> Path:
         return Path(self.create_site_details(
             name, latitude, longitude, weather_csv, out_sit, altitude=altitude,
             timezone=timezone, country_code=country_code, region=region,
-            source=source, albedo=albedo, log_level=log_level)["sit"])
+            source=source, albedo=albedo, log_level=log_level,
+            allow_window_creation=allow_window_creation)["sit"])
 
     @_serialized
     def create_site_details(self, name: str, latitude: float, longitude: float,
@@ -657,8 +665,9 @@ class PVsystCLI:
                             *, altitude: float | None = None,
                             timezone: float | None = None, country_code: str = "",
                             region: str = "", source: str = "", albedo: float | None = None,
-                            log_level: int | None = None) -> dict:
-        self._require("create-site", "site-name")
+                            log_level: int | None = None,
+                            allow_window_creation: bool | None = None) -> dict:
+        self._require("create-site", "site-name", allow_window_creation=allow_window_creation)
         if not name.strip() or "\n" in name or "\r" in name:
             raise ValueError("Site name must be one nonempty line")
         for value, low, high, label in ((latitude, -90, 90, "Latitude"),
@@ -686,7 +695,7 @@ class PVsystCLI:
         level = self._log_level(log_level)
         if level:
             args.append(level)
-        text = self._weather_command("Site creation", args)
+        text = self._weather_command("Site creation", args, allow_window_creation=allow_window_creation)
         if not target.is_file():
             raise PVsystError("Site creation did not produce a SIT file", diagnostics=text)
         return {"sit": str(target), "diagnostics": text, "warnings": _weather_warnings(text)}

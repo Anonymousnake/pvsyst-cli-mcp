@@ -54,12 +54,12 @@ def _workspace_entries(store) -> list:
         return []
 
 
-def _cli_profile(cli) -> dict:
+def _cli_profile(cli, *, allow_window_creation=None) -> dict:
     """Require a readable 8.1 command profile; the installed 8.1 seed is never replaced."""
-    capabilities = cli.capabilities()
+    capabilities = cli.capabilities(allow_window_creation=allow_window_creation)
     if not isinstance(capabilities, dict) or not capabilities:
         raise ValueError("The installed CLI reported no readable command profile")
-    version = str(cli.version()).splitlines()[0].strip()
+    version = str(cli.version(allow_window_creation=allow_window_creation)).splitlines()[0].strip()
     if not CLI_VERSION.search(version):
         raise ValueError(f"The installed CLI is not an 8.1 release ({version!r}); "
                          "the installed 8.1 seed is not replaced by another release")
@@ -191,7 +191,7 @@ def _component_path(store, kind: str, name: str) -> Path:
 
 
 def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
-                        capacity=None, pan_fields=None) -> dict:
+                        capacity=None, pan_fields=None, allow_window_creation=None) -> dict:
     """Build the derived PRJ/VC0 text in memory; nothing is written and the seed is untouched.
 
     ``prj_text`` and ``vc0_text`` are decoded as plain UTF-8 so a seed UTF-8 BOM survives
@@ -200,7 +200,7 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
     ``project_bom_preserved`` and ``variant_bom_preserved``; no combined flag is emitted
     because the two seed members can differ.
     """
-    profile = _cli_profile(cli)
+    profile = _cli_profile(cli, allow_window_creation=allow_window_creation)
     seed_project, seed_variant = _locate_seed(cli)
     project_data = store._read(seed_project)
     store._project_text(project_data)
@@ -346,7 +346,8 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
 
 
 def prepare_standard_template(cli, store, *, ond_electrical, pan_name, ond_name, new_project,
-                              dry_run=True, capacity=None, pan_fields=None) -> dict:
+                              dry_run=True, capacity=None, pan_fields=None,
+                              allow_window_creation=None) -> dict:
     """Create a new workspace PRJ/VC0 from the installed 8.1 demo seed, or preview it.
 
     ``dry_run`` previews the derived structure and, with ``capacity`` and optional
@@ -360,10 +361,11 @@ def prepare_standard_template(cli, store, *, ond_electrical, pan_name, ond_name,
     """
     with store.lock:
         return _prepare(cli, store, ond_electrical, pan_name, ond_name, new_project,
-                        dry_run, capacity, pan_fields)
+                        dry_run, capacity, pan_fields, allow_window_creation)
 
 
-def _prepare(cli, store, ond_electrical, pan_name, ond_name, new_project, dry_run, capacity, pan_fields):
+def _prepare(cli, store, ond_electrical, pan_name, ond_name, new_project, dry_run, capacity, pan_fields,
+             allow_window_creation=None):
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "scope": SCOPE,
               "request": {"project": new_project, "module": pan_name, "inverter": ond_name,
                           "capacity": capacity is not None},
@@ -394,7 +396,8 @@ def _prepare(cli, store, ond_electrical, pan_name, ond_name, new_project, dry_ru
 
     try:
         derived = standard_seed_texts(cli, store, ond_electrical=ond_electrical, pan_name=pan_name,
-                                      ond_name=ond_name, capacity=capacity, pan_fields=pan_fields)
+                                      ond_name=ond_name, capacity=capacity, pan_fields=pan_fields,
+                                      allow_window_creation=allow_window_creation)
     except (ValueError, OSError, KeyError, PVsystError, StopIteration) as exc:
         _issue(result, "seed", cli._redact(str(exc)))
         return result
