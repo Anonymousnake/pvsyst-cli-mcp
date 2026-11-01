@@ -160,6 +160,52 @@ def transformer_state(lines):
     return result
 
 
+def topology_state(lines):
+    """Read the serialized native pvCircuit node tree exactly as stored.
+
+    Every node keeps its kind, source line and its full raw scalar field map, so an
+    unknown or repeated field survives instead of being dropped. ``subarray_id`` and
+    ``nelements`` also carry an explicit ``present`` flag, so an OMITTED owner
+    (``present=False, value=None``) stays distinct from an explicit ``0``
+    (``present=True, value="0"``); this never reinterprets one as the other. Values
+    are the file's own text: the tree is not sorted by SubArrayId (source appearance
+    and member order are kept), no count is derived, and no electrical grouping or
+    power allocation is decided here.
+    """
+    result = {"present": False, "issues": [], "roots": [],
+              "scope": "serialized native pvCircuit node tree with raw stored fields; "
+                       "not electrical sizing, allocation or Original-verified"}
+    starts = [i for i, line in enumerate(lines) if line.strip() == "PVObject_SystemCircuit=pvCircuit"]
+    ends = [i for i, line in enumerate(lines) if line.strip() == "End of PVObject pvCircuit"]
+    if not starts and not ends:
+        return result
+    result["present"] = True
+    try:
+        roots = circuit_nodes(lines)
+    except (UnsupportedCircuit, ValueError) as exc:
+        result["issues"].append(str(exc))
+        return result
+
+    def sole(values):
+        return values[0] if len(values) == 1 else None
+
+    def node_state(node):
+        fields = {key: list(values) for key, values in node.fields.items()}
+        for key, values in node.fields.items():
+            if len(values) > 1:
+                result["issues"].append(f"Circuit line {node.line}: repeated {key}")
+        subarray_id = node.fields.get("SubArrayId", [])
+        nelements = node.fields.get("NElements", [])
+        return {"kind": node.kind, "line": node.line,
+                "subarray_id": {"present": bool(subarray_id), "value": sole(subarray_id)},
+                "nelements": {"present": bool(nelements), "value": sole(nelements)},
+                "fields": fields,
+                "children": [node_state(child) for child in node.children]}
+
+    result["roots"] = [node_state(node) for node in roots]
+    return result
+
+
 def inventory(lines, arrays):
     """Compare serialized inverter/string multiplicities with subarray declarations.
 
