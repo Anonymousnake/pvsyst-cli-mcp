@@ -25,7 +25,7 @@ from pvsyst_auto.native.cli import PVsystError
 from pvsyst_auto.native.project import _project_matches
 from pvsyst_auto.scene.mapping import verify_grouped_hardware, verify_house_geometry, verify_pv_geometry, verify_module_layout
 from pvsyst_auto.project.paths import safe_filename, workspace_file
-from pvsyst_auto.scene.author import _num, check_tables, house_profile, resolve_modules, source_profile, table_profiles
+from pvsyst_auto.scene.author import _num, check_tables, house_profile, resolve_source_geometry, source_profile, table_profiles
 from pvsyst_auto.scene.reader import read_house_pv_scene
 
 EXPECTED_DPI = 96
@@ -513,7 +513,7 @@ def _check_cli(cli):
     return text.strip()
 
 
-def _source_snapshot(store, components, project, variant, module_geometry, *, allow_groups=False):
+def _source_snapshot(store, components, project, variant, module_geometry, *, allow_groups=False, layout=None):
     """Validate the source variant read-only, reusing the production helpers."""
     with store.lock:
         store._check_project(project)
@@ -522,16 +522,17 @@ def _source_snapshot(store, components, project, variant, module_geometry, *, al
         _, lines = store._text(original)
         arrays, system = store._sections(lines)
         source = source_profile(store, lines, arrays, system, allow_groups=allow_groups)
-        modules, pan_snapshot = resolve_modules(components, source["pan_name"], module_geometry)
+        modules, pan_snapshots = resolve_source_geometry(components, source, module_geometry, layout)
     return {"path": path, "bytes": original, "source": source, "modules": modules,
-            "pan_snapshot": pan_snapshot}
+            "pan_snapshot": (pan_snapshots[0] if len(pan_snapshots) == 1 else None),
+            "pan_snapshots": pan_snapshots}
 
 
 def _prepare_source(store, components, scene, *, allow_groups=False):
     """Bind lossless scene geometry to the current source, without driving the GUI."""
     args = scene["create_arguments"]
     snap = _source_snapshot(store, components, args["project"], args["variant"],
-                            args["module_geometry"], allow_groups=allow_groups)
+                            args["module_geometry"], allow_groups=allow_groups, layout=args["layout"])
     recorded, current = scene["source"], snap["source"]
     if recorded["pan"].casefold() != current["pan_name"].casefold():
         _fail("The scene PAN reference differs from the current source variant")
@@ -746,9 +747,8 @@ def _import_house_pv_scene(store, components, cli, scene_name, variant_name, dry
                 return result
             if scene_file.read_bytes() != scene_bytes:
                 _fail("Scene file changed during the native import")
-            if snap["pan_snapshot"] is not None:
-                path, before = snap["pan_snapshot"]
-                if components._read(path) != before:
+            for pan_path, pan_before in snap.get("pan_snapshots") or []:
+                if components._read(pan_path) != pan_before:
                     _fail("Source PAN changed during the native import")
             verification = _verify_new(created, snap["bytes"], pre["parts"], pre["tables"],
                                        snap["source"]["module_total"],

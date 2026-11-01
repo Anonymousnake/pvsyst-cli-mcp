@@ -433,8 +433,8 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
         if len(origin) != 3:
             raise ValueError("Native PV origin requires three coordinates")
         panel = block.one("PanneauPVName")[1].rsplit(";", 2)
-        if len(panel) != 3 or panel[0].casefold() != modules["name"].casefold():
-            raise ValueError("Native PV module name differs from the source module geometry")
+        if len(panel) != 3:
+            raise ValueError("Native PV module name is not a name;width;length record")
         dimensions = {key: _number(block.one(key)[1]) for key in (
             "LongShed", "LargShed", "ModSpacingX", "ModSpacingY")}
         dimensions.update(module_width_m=_number(panel[1]), module_length_m=_number(panel[2]))
@@ -442,6 +442,7 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
                 or any(dimensions[key] < 0 for key in ("ModSpacingX", "ModSpacingY"))):
             raise ValueError("Native PV dimensions/spacing are outside the source geometry range")
         native.append({"block": block, "origin": origin, "dimensions": dimensions,
+                       "panel_name": panel[0],
                        "angles": {key: _number(block.one(key)[1]) for key in ("DInclin", "DAzimut", "BaseSlope")},
                        "rows": _integer(block.one("NModInHeight")[1]),
                        "columns": _integer(block.one("NModInWidth")[1]),
@@ -470,9 +471,10 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
             raise ValueError("Source table profile differs from its source plane")
         origin = [float(_num(value)) for value in table["origin_m"]]
         expected_origin = list(_rotate_z(tuple(origin), anchor_turn))
+        pan_modules = table.get("module_geometry", modules)
         expected_dimensions = {"LongShed": table["column_span_m"], "LargShed": table["slope_span_m"],
                                "ModSpacingX": table["column_spacing_m"], "ModSpacingY": table["row_spacing_m"],
-                               "module_width_m": modules["width_m"], "module_length_m": modules["length_m"]}
+                               "module_width_m": pan_modules["width_m"], "module_length_m": pan_modules["length_m"]}
         expected_dimensions = {key: float(_num(value)) for key, value in expected_dimensions.items()}
         expected_angles = {"DInclin": float(_num(plane["tilt_deg"])),
                            "DAzimut": float(_num(plane["field_azimuth_deg"])), "BaseSlope": 0.0}
@@ -480,7 +482,8 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
         matches = []
         for index, record in enumerate(native):
             if (record["rows"] != table["module_rows"] or record["columns"] != table["module_columns"]
-                    or record["orientation"] != orientation):
+                    or record["orientation"] != orientation
+                    or record["panel_name"].casefold() != pan_modules["name"].casefold()):
                 continue
             coordinate_delta = [actual - expected for actual, expected in zip(record["origin"], expected_origin)]
             dimension_delta = {key: record["dimensions"][key] - value for key, value in expected_dimensions.items()}
@@ -708,11 +711,11 @@ def _assess_general_module_layout(blocks, lines):
     """Classify a general per-cell stored layout as stored_consistent, draft_incomplete or
     invalid.  Supports one or more source subarrays, each on its own ordinary fixed plane, with
     every module cell bound to a source GLOBAL string ordinal (capacity = the owning subarray's
-    NModSerie, never the table).  Above two subarrays the source must be homogeneous-PAN fixed
-    (same PAN, one exclusive single-orientation branch each); a different OND per subarray is
-    inherited electrical identity and does not change the shared module geometry.  Unsupported
-    profiles (portrait, spacing, padding, sharing, non-fixed planes, heterogeneous-PAN groups)
-    raise so the caller reports needs_review instead of a false stored state."""
+    NModSerie, never the table).  Each owner is validated independently for one exclusive
+    single-orientation string branch; the PAN is per owner (homogeneous or heterogeneous) and a
+    different OND per subarray is inherited electrical identity, not a shared module geometry.
+    Unsupported profiles (portrait, spacing, padding, sharing, non-fixed planes) raise so the
+    caller reports needs_review instead of a false stored state."""
     owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
     if (len(owners) != 1 or owners[0].path != "PVObject_ModuleLayout"
             or owners[0].one("ModLayoutGlobState")[1] not in MODULE_LAYOUT_GLOBAL_STATES
@@ -724,22 +727,18 @@ def _assess_general_module_layout(blocks, lines):
     layouts = [block for block in blocks if block.object_type == "pvMLTable"]
     if len(arrays) < 1:
         raise ValueError("General module layout requires at least one source subarray")
-    if len(arrays) > 2:
-        # Above two groups stay bounded to homogeneous-PAN fixed sources with one exclusive
-        # single-orientation branch per subarray; a different OND per subarray is electrical
-        # identity only, while heterogeneous PAN, tracker-averaged or shared/heterogeneous-string
-        # capabilities are not opened by this extension.
-        pans = {array.one("PVModule")[1].casefold() for array in arrays.values()}
-        if len(pans) != 1:
-            raise ValueError("General module layout above two subarrays requires the same PAN")
-        for array in arrays.values():
-            strings = _integer(array.one("NStringCh")[1])
-            if ("NStrOrient1" not in array.fields
-                    or _integer(array.one("NStrOrient1")[1]) != strings
-                    or any(key.startswith("NStrOrient") and key != "NStrOrient1"
-                           and array.one(key)[1] != "0" for key in array.fields)):
-                raise ValueError("General module layout above two subarrays requires exclusive "
-                                 "single-orientation string branches")
+    # Per-owner structural validation for ANY number of source subarrays: each owner must keep
+    # one exclusive single-orientation string branch. The old ">2 subarrays need the same PAN"
+    # shortcut assumed one global modules dict; per-source geometry is now represented, so the
+    # reader validates each owner instead of keying on group count or PAN homogeneity.
+    for array in arrays.values():
+        strings = _integer(array.one("NStringCh")[1])
+        if ("NStrOrient1" not in array.fields
+                or _integer(array.one("NStrOrient1")[1]) != strings
+                or any(key.startswith("NStrOrient") and key != "NStrOrient1"
+                       and array.one(key)[1] != "0" for key in array.fields)):
+            raise ValueError("General module layout requires an exclusive single-orientation "
+                             "string branch per source subarray")
     if len(layouts) < 1 or len(tables) != len(layouts):
         raise ValueError("General module layout requires one native 3D table per module-layout table")
     # Each source subarray owns one ordinary non-averaged fixed plane; shared inputs excluded.

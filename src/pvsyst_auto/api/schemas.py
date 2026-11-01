@@ -224,6 +224,15 @@ class MeshHouseSpec(BaseModel):
     kind: Literal["mesh"]
     meshes: list[HouseMesh]
 
+class ModuleGeometry(BaseModel):
+    """Explicit geometric metadata, checked against a readable loose PAN when present."""
+    model_config = ConfigDict(extra="forbid")
+    model_name: StrictStr
+    nom_power_wp: StrictNum
+    width_m: StrictNum
+    length_m: StrictNum
+    geometry_depth_m: StrictNum
+
 class PlacedPVTableLayout(BaseModel):
     """Explicit local placement over one named, planar, upward-facing roof surface mesh."""
     model_config = ConfigDict(extra="forbid")
@@ -236,23 +245,20 @@ class PlacedPVTableLayout(BaseModel):
     roof_mesh: StrictStr
 
 class NamedPVTableLayout(PlacedPVTableLayout):
-    """One named region; dual-source authoring explicitly selects its stored orientation ID."""
+    """One named region; dual-source authoring explicitly selects its stored orientation ID.
+
+    ``module_geometry`` binds THIS table's module metadata, used only when the source PAN is a
+    built-in database reference without a readable loose file (the opaque reference cannot supply
+    per-source width/length). It never overrides a genuine readable loose PAN; a mismatching
+    geometry is refused so a heterogeneous pair is not silently collapsed to the first PAN."""
     name: StrictStr
     orientation_id: StrictInt | None = None
+    module_geometry: ModuleGeometry | None = None
 
 class NamedPVTablesLayout(BaseModel):
     """Named regions on one source plane, or one region per two explicit source planes."""
     model_config = ConfigDict(extra="forbid")
     tables: Annotated[list[NamedPVTableLayout], Field(min_length=1, max_length=64)]
-
-class ModuleGeometry(BaseModel):
-    """Explicit geometric metadata, checked against a readable loose PAN when present."""
-    model_config = ConfigDict(extra="forbid")
-    model_name: StrictStr
-    nom_power_wp: StrictNum
-    width_m: StrictNum
-    length_m: StrictNum
-    geometry_depth_m: StrictNum
 
 class ModuleCellBinding(BaseModel):
     """One explicit native module cell; row/col are 1-based grid positions and global_string 0

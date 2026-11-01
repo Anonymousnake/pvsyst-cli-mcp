@@ -365,8 +365,11 @@ class MultiOrientationNativeBoundary(unittest.TestCase):
     async def _hetero_negatives(self):
         # (label, groups, expected stage, needle in the public issue text)
         cases = [
+            # A distinct PAN with no per-source/per-table geometry is now rejected for missing
+            # geometry (not the old blanket "same PAN"): the heterogeneous capability is opened
+            # only with per-source dimensions, see test_per_source_pan_geometry_boundary.
             ("pan_diff", [dict(HETERO3[0]), dict(HETERO3[1], pan="other.PAN"), dict(HETERO3[2])],
-             "create", "same pan"),
+             "create", "module geometry"),
             ("tracker", [dict(HETERO3[0]), dict(HETERO3[1], field_type="Tracking"), dict(HETERO3[2])],
              "create", "fixed"),
             ("sharing", [dict(HETERO3[0]), dict(HETERO3[1], power_sharing="0"), dict(HETERO3[2])],
