@@ -587,7 +587,7 @@ def _identity_drift(previous, current):
     return None
 
 
-def _native_preflight(cli, mode, *, prepare_only=False):
+def _native_preflight(cli, mode, *, prepare_only=False, allow_window_creation=None):
     """Read-only capability/licence check run before any weather download.
 
     ``simulate_template`` and ``prepare_weather`` repeat these checks; running them here means a
@@ -597,13 +597,13 @@ def _native_preflight(cli, mode, *, prepare_only=False):
     try:
         if not prepare_only:
             for option in SIMULATION_OPTIONS:
-                cli._require("run-simulation", option)
+                cli._require("run-simulation", option, allow_window_creation=allow_window_creation)
         if mode != "existing":
             for option in SITE_OPTIONS:
-                cli._require("create-site", option)
-            cli.command_help("convert-meteo")
-        state["version"] = cli.version()
-        licence = cli.license_info()
+                cli._require("create-site", option, allow_window_creation=allow_window_creation)
+            cli.command_help("convert-meteo", allow_window_creation=allow_window_creation)
+        state["version"] = cli.version(allow_window_creation=allow_window_creation)
+        licence = cli.license_info(allow_window_creation=allow_window_creation)
         state["license"] = licence
         if not prepare_only and licence.get("status") == "TRIAL" and licence.get("remaining_executions") == 0:
             raise ValueError("PVsystCLI reports no remaining trial executions")
@@ -621,7 +621,8 @@ def _identity(selected):
     return f"{pan['manufacturer']} {pan['model']} / {ond['manufacturer']} {ond['model']}", None
 
 
-def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_context=None):
+def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_context=None,
+                 allow_window_creation=None):
     result = {"status": "blocked", "stage": "spec", "dry_run": dry_run,
               "execution_preflight_complete": False, "issues": [], "warnings": [],
               "selected": None,
@@ -671,7 +672,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         result["issues"] = issues
         return _stop(result, "outputs")
 
-    native, error = _native_preflight(cli, mode, prepare_only=prepare_only)
+    native, error = _native_preflight(cli, mode, prepare_only=prepare_only,
+                                      allow_window_creation=allow_window_creation)
     if error is not None:
         _issue(result, "native_preflight", error)
         return _stop(result, "native_preflight")
@@ -784,7 +786,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             cli, store, ond_electrical=components["OND"]["electrical"],
             pan_name=Path(components["PAN"]["name"]).name,
             ond_name=Path(components["OND"]["name"]).name,
-            new_project=seed_project, dry_run=True, capacity=flat_capacity))
+            new_project=seed_project, dry_run=True, capacity=flat_capacity,
+            allow_window_creation=allow_window_creation))
         if stopped is not None:
             return stopped
         result["preview"]["template_seed"] = seed_preview
@@ -871,7 +874,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
                         f"{country_code} of the acquired place")
         prepare, stopped = _phase(result, "weather_prepare", lambda: prepare_weather(
             cli, csv_name=csv_name, year=year, sit_name=sit_name, met_name=met_name,
-            country_code=country_code, time_basis=TIME_BASIS, dry_run=dry_run))
+            country_code=country_code, time_basis=TIME_BASIS, dry_run=dry_run,
+            allow_window_creation=allow_window_creation))
         if stopped is not None:
             return stopped
         result["preview"]["prepare"] = prepare
@@ -914,7 +918,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         # Projects is part of the verified folder set that the workspace_init step already created.
         seed, stopped = _phase(result, "template_seed", lambda: prepare_standard_template(
             cli, store, ond_electrical=components["OND"]["electrical"], pan_name=pan_name,
-            ond_name=ond_name, new_project=seed_project, dry_run=False, capacity=flat_capacity))
+            ond_name=ond_name, new_project=seed_project, dry_run=False, capacity=flat_capacity,
+            allow_window_creation=allow_window_creation))
         if stopped is not None:
             return stopped
         result["preview"]["template_seed_write"] = seed
@@ -954,12 +959,13 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     if prepare_only and source_context is not None:
         context["preparation_context"]["source_binding"] = source_context
         context["preparation_context"]["review_required"] |= bool(source_context.get("needs_review"))
+    runner_kwargs = {"allow_window_creation": allow_window_creation} if prepare_only else {}
     simulation, stopped = _phase(result, phase_name, lambda: runner(
         cli, store, template_project=template_project, variant=variant, new_project=new_project,
         pan_name=pan_name, ond_name=ond_name, site_name=sit_name, met_name=met_name, tilt=tilt,
         year=year, dry_run=dry_run, capacity=flat_capacity, weather_manifest_name=manifest_name,
         azimuth=azimuth, losses=losses or None,
-        report_pages=spec.get("report_pages"), **context))
+        report_pages=spec.get("report_pages"), **context, **runner_kwargs))
     if stopped is not None:
         result["warnings"].append(RETAINED_NOTE)
         return stopped
@@ -1004,7 +1010,9 @@ def simulate_design(cli, store, *, spec: dict, dry_run=True):
         return _design_flow(cli, store, spec, dry_run)
 
 
-def prepare_design_project(cli, store, *, spec: dict, dry_run=True, source_context=None):
+def prepare_design_project(cli, store, *, spec: dict, dry_run=True, source_context=None,
+                           allow_window_creation=None):
     """Prepare without an annual run; optional already-bound source provenance stays metadata."""
     with store.lock:
-        return _design_flow(cli, store, spec, dry_run, prepare_only=True, source_context=source_context)
+        return _design_flow(cli, store, spec, dry_run, prepare_only=True, source_context=source_context,
+                            allow_window_creation=allow_window_creation)

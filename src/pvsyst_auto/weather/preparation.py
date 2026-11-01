@@ -306,7 +306,7 @@ def check_site(path, report, country_code):
 
 
 def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
-                    country_code="", time_basis="", dry_run=True):
+                    country_code="", time_basis="", dry_run=True, allow_window_creation=None):
     # ponytail: reuse the workspace CLI lock, not a second job/concurrency framework.
     with cli._lock:
         result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
@@ -342,8 +342,8 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
             if any(path.exists() for path in paths.values()):
                 raise FileExistsError("A destination already exists; choose new SIT/MET names")
             for option in ("site-name", "altitude", "timezone", "country-code"):
-                cli._require("create-site", option)
-            cli.command_help("convert-meteo")
+                cli._require("create-site", option, allow_window_creation=allow_window_creation)
+            cli.command_help("convert-meteo", allow_window_creation=allow_window_creation)
             result.update(status="ready", source={"name": source.name, "sha256": report["sha256"]},
                           year=year, country_code=country_code, time_basis=time_basis,
                           artifacts={key: str(path) for key, path in paths.items()},
@@ -388,13 +388,15 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
             result["site_creation"] = cli.create_site_details(meta["#Site"], number(meta["#Latitude"]), number(meta["#Longitude"]),
                             paths["monthly_csv"], sit, altitude=number(meta["#Altitude"]),
                             timezone=number(meta["#Time Zone"]), country_code=country_code,
-                            source=meta["#Data Source"], log_level=3)
+                            source=meta["#Data Source"], log_level=3,
+                            allow_window_creation=allow_window_creation)
             result["warnings"].extend(result["site_creation"]["warnings"])
             result["site_checks"] = check_site(sit, report, country_code)
             result["stage"] = "conversion"
             save()
             result["conversion"] = cli.convert_meteo_details(paths["normalized_csv"], paths["mef"], sit, met,
-                                                              timeshift=0, log_level=3)
+                                                              timeshift=0, log_level=3,
+                                                              allow_window_creation=allow_window_creation)
             result["warnings"].extend(result["conversion"]["warnings"])
             unchanged()
             result["stage"] = "met_declarations"
