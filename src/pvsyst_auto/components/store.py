@@ -1,8 +1,10 @@
 """Workspace-scoped management of PVsyst component files.
 
-Only PAN, OND, BTR and GEN are supported. This is a file manager, not a
+PAN, OND, BTR, GEN and REV are supported. This is a file manager, not a
 replacement for PVsyst's physical model validation. Legacy binary PAN files
-are copied byte-for-byte and are never decoded or edited.
+are copied byte-for-byte and are never decoded or edited. REV is a Sellers
+`pvAddress` text record: only Comment/Person/Address/Town/Country are editable,
+and it carries no electrical curves or commercial IV form.
 """
 from __future__ import annotations
 
@@ -33,6 +35,8 @@ KINDS = {
     "OND": ("Inverters", "Inverters", "pvGInverter"),
     "BTR": ("Batteries", "Batteries", "pvBattery"),
     "GEN": ("Gensets", "Gensets", "pvGenerator"),
+    # REV is the Sellers pvAddress text record; no Manufacturer/Model identity, no curves.
+    "REV": ("Sellers", "Sellers", "pvAddress"),
 }
 COMMON_EDIT = frozenset(("Manufacturer", "Model", "DataSource"))
 EDITABLE = {
@@ -40,9 +44,11 @@ EDITABLE = {
     "OND": COMMON_EDIT | {"PNomConv", "PMaxOUT", "VMppMin", "VMPPMax", "VAbsMax", "EfficMax", "EfficEuro"},
     "BTR": COMMON_EDIT | {"CapNomC10", "CapaRef", "AlphaSOC"},
     "GEN": COMMON_EDIT | {"TypeGen", "PNomGen", "CFuelHor"},
+    "REV": frozenset({"Comment", "Person", "Address", "Town", "Country"}),
 }
+# REV text values are never numeric; only the electrical component families enter NUMERIC.
 NUMERIC = set().union(*(fields - COMMON_EDIT - {"BattTechnol", "TypeGen"}
-                        for fields in EDITABLE.values())) - {"Isc", "muISC"}
+                        for kind, fields in EDITABLE.items() if kind != "REV")) - {"Isc", "muISC"}
 REQUIRED = {
     "PAN": ("Version", "Flags", "Manufacturer", "Model", "Technol", "NCelS", "NCelP", "NDiode", "PNom",
             "GRef", "TRef", "Absorb", "ISC", "Voc", "Imp", "Vmp",
@@ -51,6 +57,8 @@ REQUIRED = {
             "VMppMin", "VMPPMax", "VAbsMax", "EfficMax", "ProfilPIO"),
     "BTR": ("Version", "Flags", "Manufacturer", "Model", "BattTechnol", "CapNomC10", "AlphaSOC"),
     "GEN": ("Version", "Flags", "Manufacturer", "Model", "TypeGen", "PNomGen", "CFuelHor"),
+    # Comment is the only always-present editable text field; Address is optional in native saves.
+    "REV": ("Version", "Flags", "Comment"),
 }
 FIELD = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
 REFERENCE = re.compile(r"^\s*(PVModule|GInverter|BatteryFile|GensetFile)\s*=\s*(\S.*?)\s*$")
@@ -129,7 +137,7 @@ class ComponentStore:
     def _kind(kind: str) -> str:
         value = kind.upper()
         if value not in KINDS:
-            raise ValueError("Component type must be PAN, OND, BTR or GEN")
+            raise ValueError("Component type must be PAN, OND, BTR, GEN or REV")
         return value
 
     def _folder(self, kind: str, library: str = "workspace") -> Path:
@@ -244,7 +252,7 @@ class ComponentStore:
         if stack:
             errors.append("Unclosed nested object or curve")
         fields = self._fields(text)
-        if fields.get("PVObject_Commercial") != ["pvCommercial"]:
+        if kind != "REV" and fields.get("PVObject_Commercial") != ["pvCommercial"]:
             errors.append("Expected one pvCommercial subobject")
         if kind == "OND" and (fields.get("Converter") != ["TConverter"]
                               or fields.get("ProfilPIO") != ["TCubicProfile"]):
@@ -337,12 +345,20 @@ class ComponentStore:
             result["editable_fields"] = sorted(EDITABLE[kind])
             if kind == "PAN":
                 result["scalar_aliases"] = PAN_ALIASES
-            result["curves"] = inspect_curves(kind, self._text(kind, data)[1])
-            if include_curve_csv:
-                result.update(export_curve_csv(kind, result["curves"]))
-            result["commercial"] = commercial_inventory(kind, self._text(kind, data)[1])
-            if kind in ("PAN", "OND"):
-                result["electrical"] = electrical_inventory(kind, self._text(kind, data)[1])
+            if kind == "REV":
+                # pvAddress has no electrical curves and no commercial IV form by design.
+                result["curves"] = {"scope": "REV seller address has no electrical curves",
+                                    "items": [], "truncated": False}
+                result["commercial"] = {"scope": "REV seller address has no commercial IV form",
+                                        "editable": False, "fields": {}, "errors": [],
+                                        "remarks": [], "remarks_count": 0, "remarks_truncated": False}
+            else:
+                result["curves"] = inspect_curves(kind, self._text(kind, data)[1])
+                if include_curve_csv:
+                    result.update(export_curve_csv(kind, result["curves"]))
+                result["commercial"] = commercial_inventory(kind, self._text(kind, data)[1])
+                if kind in ("PAN", "OND"):
+                    result["electrical"] = electrical_inventory(kind, self._text(kind, data)[1])
             fields = result.pop("fields")
             result["field_count"] = len(fields)
             result["fields_truncated"] = (len(fields) > 80 or any(
@@ -524,6 +540,20 @@ class ComponentStore:
               updates: dict[str, str], source_library: str = "workspace") -> dict:
         kind = self._kind(kind)
         with self.lock:
+            if kind == "REV":
+                # pvAddress has no Manufacturer/Model identity; cloning is a byte-preserving
+                # duplicate with optional Comment/Person/Address/Town/Country updates.
+                if not isinstance(updates, dict):
+                    raise ValueError("updates must be a dictionary")
+                source_data = self._read(self._path(kind, source_name, source_library))
+                has_bom = source_data.startswith(b"\xef\xbb\xbf")
+                _, source = self._text(kind, source_data)
+                self._require_valid(self._inspect(kind, source_data), complete=True)
+                candidate = self._replace_fields(kind, source, updates).encode("utf-8") if updates else source_data
+                if has_bom and updates:
+                    candidate = b"\xef\xbb\xbf" + candidate
+                self._require_valid(self._inspect(kind, candidate), complete=True)
+                return self._new(kind, new_name, candidate)
             if not {"Manufacturer", "Model"}.issubset(updates):
                 raise ValueError("Cloning requires new Manufacturer and Model")
             source_data = self._read(self._path(kind, source_name, source_library))
@@ -546,6 +576,12 @@ class ComponentStore:
                remarks: list[str] | None = None,
                curve_csv: dict[str, str] | None = None) -> dict:
         kind = self._kind(kind)
+        if kind == "REV":
+            # Reject inapplicable native-feature edits explicitly; never fabricate curves/IV.
+            if curve_updates is not None or curve_csv is not None or use_file_curve:
+                raise ValueError("REV seller address has no electrical power curves; curve editing is not applicable")
+            if commercial_updates is not None or remarks is not None:
+                raise ValueError("REV seller address has no commercial IV form; edit Comment/Person/Address/Town/Country via updates")
         if curve_csv is not None:
             if curve_updates is not None:
                 raise ValueError("Supply curve_csv or curve_updates, not both")

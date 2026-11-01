@@ -82,6 +82,7 @@ Detailed guides: [project sources & transactions](project-source-verification.md
 | `pvsyst_update_component`, `pvsyst_backup_component`, `pvsyst_restore_component` | Edit allowlisted commercial/electrical fields, remarks, or Mode 1 curve tables with SHA-256 checks and backup/restore |
 | `pvsyst_archive_component`, `pvsyst_restore_archived_component` | Archive an unreferenced component file or restore it from archive |
 | `pvsyst_compare_components`, `pvsyst_project_components` | Diff two component files or list all components referenced by a project |
+| `pvsyst_*_component` with `component_type="REV"` | Sellers `pvAddress` text record: list/get/validate/create/copy/clone/update edit only `Comment`/`Person`/`Address`/`Town`/`Country`; it has no electrical curves or commercial IV form |
 
 Detailed guides: [sourced components](sourced-components.md), [commercial fields](commercial-verification.md), [Mode 1 curve tables](curve-table-verification.md), [OND efficiency curves](ond-curve-verification.md), [BTR capacity curves](btr-capacity-verification.md), [GUI PAN format](gui-pan-verification.md), and [backup generator settings](generator-verification.md).
 
