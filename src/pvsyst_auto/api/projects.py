@@ -215,7 +215,8 @@ def pvsyst_remove_subarray(project: str, variant: str, subarray_id: StrictInt,
     return variant_call("remove_subarray", project, variant, subarray_id, expected_sha256, remove_orientation, shared_member)
 
 @categorized_tool()
-def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
+def pvsyst_get_variant_parameters(project: str, variant: str,
+                                  include_saved_results: StrictBool = False) -> dict:
     """Inspect orientations, including native SummerTilt/WinterTilt (degrees),
     WinterMonths (raw month bitmask) and UsesTiltAver. Seasonal FieldTilt=0 is not
     the effective seasonal angle; these fields are read-only here, not a mode editor.
@@ -252,8 +253,24 @@ def pvsyst_get_variant_parameters(project: str, variant: str) -> dict:
     from the native NoStringGlob allocation order (raw source-list appearance). These are stored
     declarations: the original software may normalize PNomAC_InMPPT, and a legal declaration/edit is
     not proof it accepted that numeric value. A missing/malformed/non-finite field is omitted, never
-    reported as 0. This does not derive power."""
-    return variant_call("inspect_parameters", project, variant)
+    reported as 0. This does not derive power.
+    An opt-in saved_results block reads back the native result cache a batch save wrote into
+    this variant: the pvSimulFile output declaration (FileNameWr/VarIdentWr/Units/TypeValW/
+    columns), every VarList TVarSimul entry in file order with its declared VarType/VarAcc/
+    VarStore/VarModeSS/associations/dates, its stored ValMonth numbers or its untouched packed
+    Day_* rows, plus histogram and pvShdFTable counts. declared_count vs parsed_count and any
+    structural problem are reported in issues, never silently reconciled. A null unit means the
+    VarList declares none, so declared_type carries the native type code instead of an assumed
+    kWh or kW. Packed day rows are returned as stored text because that codec is not decoded
+    here, so the response grows with the stored cache. saved_results.present is false for a
+    variant that stores no results, even when a leftover pvSimulFile header remains. This is a
+    verbatim readback of the saved cache, not a computed, unit-converted or Original-verified
+    result, and it widens no write support. It is emitted only when include_saved_results=True;
+    the default keeps the prior response shape untouched, so a caller opts in to the larger
+    stored-cache payload.
+    """
+    return variant_call("inspect_parameters", project, variant,
+                        include_saved_results=include_saved_results)
 
 @categorized_tool()
 def pvsyst_review_project_inputs(project: StrictStr, variant: StrictStr,
