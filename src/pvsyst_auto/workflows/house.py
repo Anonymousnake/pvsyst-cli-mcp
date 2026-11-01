@@ -129,8 +129,11 @@ def _prepare(store, components, request):
                        if isinstance(entries, list)
                        and all(isinstance(item, dict) and type(item.get("orientation_id")) is int
                                for item in entries) else [])
-    grouped = (len(set(orientation_ids)) >= 2
-               and all(identifier >= 1 for identifier in orientation_ids))
+    # Grouped when two or more distinct orientations, OR when any table names its own source owner
+    # (several subarrays may share one NoOrientation, so the orientation set alone is not enough).
+    grouped = (bool(orientation_ids) and all(identifier >= 1 for identifier in orientation_ids)
+               and (len(set(orientation_ids)) >= 2
+                    or any(item.get("source_subarray_id") is not None for item in entries)))
     snap = native._source_snapshot(store, components, project, variant, request.get("module_geometry"),
                                    **({"allow_groups": True} if grouped else {}), layout=request.get("layout"))
     # A heterogeneous per-source PAN set is carried by the typed per-table geometry forwarded

@@ -196,7 +196,12 @@ def build_pvshading(house, tables, modules, source, shading_mode="linear", *, ma
     pocket = house_profile(house)
     turn = _anchor_turn(source)
     orientations = source.get("orientations") or []
-    groups = {item["id"]: item for item in orientations} if orientations else {1: source}
+    if orientations:
+        # Key by the owning source subarray when the profile carries one (several owners may share
+        # one NoOrientation), else by the orientation id (legacy unique-owner keying).
+        groups = {item.get("subarray_id", item["id"]): item for item in orientations}
+    else:
+        groups = {1: source}
     ordered = _ordinal_tables(tables, max_tables)
     gen_parts = list(reversed(pocket["meshes"]))
     total = len(ordered) + len(gen_parts)
@@ -212,8 +217,9 @@ def build_pvshading(house, tables, modules, source, shading_mode="linear", *, ma
     noc, idx = 2, 1
     for profile in ordered:
         oid = profile.get("orientation_id", 1)
+        owner = profile.get("source_subarray_id", oid)
         native_profile = {**profile, "orientation_id": oid}
-        lines += _shd_table(idx, noc, native_profile, groups[oid], modules, turn)
+        lines += _shd_table(idx, noc, native_profile, groups[owner], modules, turn)
         lines.append("")
         # Key by the real table identity (its unique name): a source orientation may own several
         # tables now, so an orientation key is no longer unique. Every profile that reaches the
@@ -364,6 +370,9 @@ def _explicit_cells(binding, tables, subs, ranges):
         if orientation != subs[sub_id]["orientation"]:
             raise ValueError("Binding table %r occupies orientation %d but source subarray %d owns "
                              "orientation %d" % (name, orientation, sub_id, subs[sub_id]["orientation"]))
+        if "source_subarray_id" in profile and profile["source_subarray_id"] != sub_id:
+            raise ValueError("Binding table %r belongs to source owner %d, not subarray %d"
+                             % (name, profile["source_subarray_id"], sub_id))
         rows, columns = profile["module_rows"], profile["module_columns"]
         if not isinstance(entry["cells"], list):
             raise ValueError("Binding cells must be a list")
@@ -522,21 +531,36 @@ def assemble_variant(base_text, pvshading, module_layout=None):
     s, e = _block(lines, lambda x: x == "PVObject_Ombrage=pvShading",
                   lambda x: x == "End of PVObject pvShading")
     lines = lines[:s] + block + lines[e + 1:]
-    s, e = _block(lines, lambda x: x.startswith("VarList, list of="),
-                  lambda x: x == "End of the List VarList")
-    del lines[s:e + 1]
+    # Derived-cache removal is idempotent on a valid cold source: a source that was never
+    # simulated carries no VarList block at all, so its absence is a legal noop. A block that
+    # IS present must be properly closed -- an unclosed cache is malformed and raises.
+    try:
+        s, e = _block(lines, lambda x: x.startswith("VarList, list of="),
+                      lambda x: x == "End of the List VarList")
+    except ValueError as exc:
+        if "block start not found" not in str(exc):
+            raise
+    else:
+        del lines[s:e + 1]
     while True:
         try:
             s, e = _block(lines, lambda x: x == "Histogram=THistogramme", lambda x: x == "End of THistogramme")
-        except ValueError:
+        except ValueError as exc:
+            if "block start not found" not in str(exc):
+                raise  # a present-but-unclosed histogram is malformed, never silently dropped
             break
         del lines[s:e + 1]
-    for i, line in enumerate(lines):
-        if line == "  Flags=$00100001":
-            lines[i] = "  Flags=$00100000"
-            break
-    else:
-        raise ValueError("root Flags=$00100001 not found")
+    # Clear ONLY the root "simulation done" bit (0x1) while preserving every other unrelated
+    # flag. A genuine cold source already has it clear (e.g. $00100000) -> noop; a warm source
+    # ($00100001 + VarList results) is reset to the unsimulated state exactly as before. The root
+    # Flags is the two-space field of the outer pvVCalcul object (nested objects indent deeper).
+    root = next((i for i, line in enumerate(lines)
+                 if re.match(r"^  Flags=\$[0-9A-Fa-f]+$", line)), None)
+    if root is None:
+        raise ValueError("root Flags line not found")
+    value = int(lines[root].split("$", 1)[1], 16)
+    if value & 0x1:
+        lines[root] = "  Flags=$%08X" % (value & ~0x1)
     if module_layout is not None:
         closing = "End of PVObject pvVCalcul"
         index = max(i for i, line in enumerate(lines) if line == closing)
@@ -697,16 +721,28 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
         orientation_ids = {item["id"] for item in source["orientations"]}
         if orientation_ids != set(planes):
             raise ValueError("Declared source orientations do not match the parsed source planes")
-        per_orientation = defaultdict(int)
+        # Each table's tables must cover exactly its owning source subarray's module total. Several
+        # subarrays may share one orientation, so the invariant is per OWNER (subarray_id), resolved
+        # from the table's explicit source_subarray_id or, for the legacy unique-owner shape, from
+        # its orientation id.
+        owners = {item.get("subarray_id", item["id"]): item for item in source["orientations"]}
+        per_owner = defaultdict(int)
         for row in tables:
             if row["orientation_id"] not in orientation_ids:
                 raise ValueError("Table %r names orientation %r, not a declared source orientation"
                                  % (row.get("name"), row["orientation_id"]))
-            per_orientation[row["orientation_id"]] += row["module_rows"] * row["module_columns"]
-        for plane in source["orientations"]:
-            if per_orientation.get(plane["id"], 0) != plane["module_total"]:
-                raise ValueError("Orientation %d tables hold %d modules, not the source total %d"
-                                 % (plane["id"], per_orientation.get(plane["id"], 0), plane["module_total"]))
+            owner = row.get("source_subarray_id", row["orientation_id"])
+            if owner not in owners:
+                raise ValueError("Table %r names source owner %r, not a declared source subarray"
+                                 % (row.get("name"), owner))
+            if owners[owner]["id"] != row["orientation_id"]:
+                raise ValueError("Table %r source owner %r does not belong to orientation %r"
+                                 % (row.get("name"), owner, row["orientation_id"]))
+            per_owner[owner] += row["module_rows"] * row["module_columns"]
+        for owner, item in owners.items():
+            if per_owner.get(owner, 0) != item["module_total"]:
+                raise ValueError("Source owner %d tables hold %d modules, not the source total %d"
+                                 % (owner, per_owner.get(owner, 0), item["module_total"]))
     else:
         if len(planes) != 1 or len(subs) != 1:
             raise ValueError("The single-orientation explicit module layout covers one source plane and one subarray")

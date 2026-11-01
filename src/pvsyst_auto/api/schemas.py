@@ -253,6 +253,9 @@ class NamedPVTableLayout(PlacedPVTableLayout):
     geometry is refused so a heterogeneous pair is not silently collapsed to the first PAN."""
     name: StrictStr
     orientation_id: StrictInt | None = None
+    # Optional explicit source SubArray owner. Only needed when several source subarrays share one
+    # NoOrientation; omitted keeps the unique-owner (one subarray per orientation) behaviour.
+    source_subarray_id: StrictInt | None = None
     module_geometry: ModuleGeometry | None = None
 
 class NamedPVTablesLayout(BaseModel):
