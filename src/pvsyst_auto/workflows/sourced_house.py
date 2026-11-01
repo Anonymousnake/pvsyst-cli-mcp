@@ -58,7 +58,9 @@ def _preserve_source_summary(store, project, variant, plan):
     groups, default = {}, {}
     if isinstance(plan, dict):
         for group in (plan.get("source") or {}).get("orientations") or []:
-            groups[group.get("id")] = group.get("module_geometry") or {}
+            # Key by the owning source subarray when present (several owners may share one
+            # orientation), else by the orientation id for the legacy unique-owner shape.
+            groups[group.get("subarray_id", group.get("id"))] = group.get("module_geometry") or {}
         default = plan.get("modules") or {}
     try:
         text = store._read(store._path(project, normalized)).decode("utf-8-sig")
@@ -77,8 +79,9 @@ def _preserve_source_summary(store, project, variant, plan):
         if block.object_type != "pvSubArray":
             continue
         orientation = _int(block, "NoOrientation")
+        subarray_id = _int(block, "SubArrayId")
         series, strings = _int(block, "NModSerie"), _int(block, "NStringCh")
-        geometry = groups.get(orientation) or {}
+        geometry = groups.get(subarray_id) or groups.get(orientation) or {}
         nom = geometry.get("nom_power", default.get("nom_power"))
         metadata = geometry.get("metadata_source") or default.get("metadata_source") or "declared-source"
         kwp = (round(nom * series * strings / 1000.0, 6)

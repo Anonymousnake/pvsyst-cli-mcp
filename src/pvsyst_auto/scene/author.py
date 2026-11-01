@@ -214,12 +214,18 @@ def _per_table_geometry(layout):
         geometry = entry.get("module_geometry")
         if geometry is None:
             continue
-        identifier = entry.get("orientation_id")
+        # Key by the owning source subarray when the caller names one (several subarrays may share
+        # an orientation), else by the orientation id (legacy unique-owner keying).
+        identifier = entry.get("source_subarray_id")
+        if identifier is None:
+            identifier = entry.get("orientation_id")
+        elif type(entry.get("orientation_id")) is not int or entry["orientation_id"] < 1:
+            raise ValueError("source_subarray_id requires the table's orientation_id")
         if type(identifier) is not int or identifier < 1:
             raise ValueError("module_geometry is only supported on named tables that declare orientation_id")
         caller_geometry(geometry)  # shape/positivity check; the raw dict is re-validated per group
         if identifier in result and result[identifier] != geometry:
-            raise ValueError("Tables on source orientation %d declare conflicting module_geometry" % identifier)
+            raise ValueError("Tables on source owner %d declare conflicting module_geometry" % identifier)
         result[identifier] = geometry
     return result
 
@@ -245,7 +251,7 @@ def resolve_source_geometry(components, source, module_geometry, layout=None):
     shared = len({group["pan_name"].casefold() for group in groups}) == 1
     snapshots = []
     for group in groups:
-        identity = group["id"]
+        identity = group.get("subarray_id", group["id"])
         requested = explicit.get(identity)
         if requested is None and shared:
             requested = module_geometry
@@ -445,56 +451,83 @@ def layout_profile(layout, modules, total, source_tilt, *, placed=False):
 
 
 def table_profiles(layout, house, modules, source):
-    """Keep legacy tables unchanged; grouped sources accept one or more tables per orientation.
+    """Keep legacy tables unchanged; grouped sources accept one or more tables per source owner.
 
-    A grouped (version 2) layout may split a source orientation across several named tables:
-    each table still names its ``orientation_id`` and every per-orientation module total must
-    equal that source group's ``NModSerie x NStringCh``.  The single-table-per-orientation
-    recipe stays valid and unchanged (its one table already equals the group total).
+    A grouped (version 2) layout may split a source owner across several named tables: each table
+    names its ``orientation_id`` and, when several source subarrays share that orientation, the
+    explicit ``source_subarray_id`` of its owner. Every owner's per-table module total must equal
+    that source owner's ``NModSerie x NStringCh``. The single-table-per-orientation recipe stays
+    valid and unchanged (its one table already equals the group total). A table that names only an
+    orientation which several owners share is refused as ``ambiguous_source_owner``, never resolved
+    by first/numeric/name guess.
     """
-    groups = {item["id"]: item for item in source.get("orientations", [])}
+    profiles = source.get("orientations", [])
+    by_owner, by_orient = {}, {}
+    for item in profiles:
+        by_owner[item.get("subarray_id", item["id"])] = item
+        by_orient.setdefault(item["id"], []).append(item)
     if not isinstance(layout, dict) or "tables" not in layout:
-        if groups:
+        if profiles:
             raise ValueError("Grouped source orientations require named tables with orientation_id")
         return [layout_profile(layout, modules, source["module_total"], source["tilt_deg"],
                                placed=house["kind"] == "mesh")]
     if (house["kind"] != "mesh" or set(layout) != {"tables"}
             or not isinstance(layout["tables"], list) or not 1 <= len(layout["tables"]) <= MAX_TABLES):
         raise ValueError(f"Named tables require a mesh house and 1..{MAX_TABLES} table entries")
-    per_group = {identifier: 0 for identifier in groups}
+    per_group = {owner: 0 for owner in by_owner}
     result, names, errors = [], set(), []
     for index, entry in enumerate(layout["tables"]):
         path = f"layout.tables[{index}]"
         try:
-            keys = set(PLACED_LAYOUT_KEYS) | {"name"} | ({"orientation_id"} if groups else set())
-            if groups and "module_geometry" in entry:
+            if not isinstance(entry, dict):
+                raise ValueError("Each named table requires exactly its name, placement and source orientation fields")
+            keys = set(PLACED_LAYOUT_KEYS) | {"name"}
+            if profiles:
+                keys = keys | {"orientation_id"} | ({"source_subarray_id"} if "source_subarray_id" in entry else set())
+            if profiles and "module_geometry" in entry:
                 keys = keys | {"module_geometry"}
-            if not isinstance(entry, dict) or set(entry) != keys:
+            if set(entry) != keys:
                 raise ValueError("Each named table requires exactly its name, placement and source orientation fields")
             name = _name(entry["name"])
             if name.casefold() in names:
                 raise ValueError("PV table names must be unique, ignoring case")
             names.add(name.casefold())
-            group = source
-            if groups:
+            group, owner = source, None
+            if profiles:
                 identifier = entry["orientation_id"]
-                if type(identifier) is not int or identifier not in groups:
+                if type(identifier) is not int or identifier < 1:
                     raise ValueError("orientation_id must select a declared source orientation")
-                group = groups[identifier]
+                if "source_subarray_id" in entry:
+                    owner = entry["source_subarray_id"]
+                    if type(owner) is not int or owner < 1 or owner not in by_owner:
+                        raise ValueError("source_subarray_id must select a declared source subarray owner")
+                    group = by_owner[owner]
+                    if group["id"] != identifier:
+                        raise ValueError("source_subarray_id %d does not belong to orientation %d"
+                                         % (owner, identifier))
+                else:
+                    candidates = by_orient.get(identifier, [])
+                    if len(candidates) != 1:
+                        raise ValueError("ambiguous_source_owner: orientation %d is owned by %d source "
+                                         "subarrays; declare source_subarray_id" % (identifier, len(candidates)))
+                    group = candidates[0]
+                    owner = group.get("subarray_id", identifier)
             # Per-table geometry wins when present (opaque built-in PAN caller entry, or a readback
             # whose group carrier omits it); otherwise the group's resolved geometry; else the
             # legacy single modules dict. Spans and depth are computed from this table's own module.
             table_modules = modules
-            if groups and entry.get("module_geometry") is not None:
+            if profiles and entry.get("module_geometry") is not None:
                 table_modules = caller_geometry(entry["module_geometry"])
-            elif groups and group.get("module_geometry") is not None:
+            elif profiles and group.get("module_geometry") is not None:
                 table_modules = group["module_geometry"]
             profile = layout_profile({key: entry[key] for key in PLACED_LAYOUT_KEYS}, table_modules,
                                      None, group["tilt_deg"], placed=True)
-            if groups:
-                per_group[identifier] += profile["module_rows"] * profile["module_columns"]
-                profile.update(orientation_id=identifier, azimuth_deg=group["azimuth_deg"],
+            if profiles:
+                per_group[owner] += profile["module_rows"] * profile["module_columns"]
+                profile.update(orientation_id=group["id"], azimuth_deg=group["azimuth_deg"],
                                rotation_deg=source["azimuth_deg"] - group["azimuth_deg"])
+                if "source_subarray_id" in entry:
+                    profile["source_subarray_id"] = owner
                 if table_modules != modules:
                     profile["module_geometry"] = table_modules
             result.append(profile | {"name": name})
@@ -503,12 +536,12 @@ def table_profiles(layout, house, modules, source):
                                       repair_hint="Correct this named table without changing other valid regions."))
     if errors:
         raise SceneValidationError(errors)
-    if groups:
-        for identifier, group in groups.items():
-            if per_group[identifier] != group["module_total"]:
+    if profiles:
+        for owner, group in by_owner.items():
+            if per_group[owner] != group["module_total"]:
                 raise SceneValidationError([_diagnostic("pv_group_total", "layout.tables",
-                    "Orientation %d tables hold %d modules, not the source group total %d"
-                    % (identifier, per_group[identifier], group["module_total"]),
+                    "Source owner %d tables hold %d modules, not the source group total %d"
+                    % (owner, per_group[owner], group["module_total"]),
                     repair_hint="Allocate exactly the source group's modules across its tables.")])
     total = sum(table["module_rows"] * table["module_columns"] for table in result)
     if total != source["module_total"]:
@@ -658,8 +691,10 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
     if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
         raise ValueError("P50/P90 and saved horizon objects are outside this batch")
     store._orientation_list(lines)
-    if sum(block.object_type == "pvOrient" for block in blocks) != len(arrays):
-        raise ValueError("Requires one ordinary fixed plane per subarray")
+    # Referential coverage (every referenced orientation is a declared, fixed plane) replaces the
+    # old one-plane-per-subarray count assumption: several subarrays may share one NoOrientation.
+    # `_orientation_list` already refuses an orientation with no assigned subarray, so no orphan is
+    # silently accepted.
     store._require_no_geometry(lines)
     if grid_inventory(lines, arrays)["counts_valid"] is not True:
         raise ValueError("Requires complete consistent native grid counts")
@@ -690,16 +725,27 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
                            for key in owned.fields)):
                 raise ValueError("Grouped authoring requires verified single-orientation exclusive branches")
         # Each group keeps its own PVModule reference; geometry is resolved per group downstream,
-        # so a genuine heterogeneous pair is not collapsed to one PAN here.
-        profiles.append({"id": int(orientation_id), "module_total": int(series * strings), "tilt_deg": tilt,
+        # so a genuine heterogeneous pair is not collapsed to one PAN here. `subarray_id` is carried
+        # so a same-orientation multi-owner source stays distinguishable by owner; it is dropped
+        # again for the legacy distinct-orientation shape below.
+        profiles.append({"id": int(orientation_id), "subarray_id": int(identifier),
+                         "module_total": int(series * strings), "tilt_deg": tilt,
                          "field_azimuth_deg": azimuth, "azimuth_deg": (180.0 + azimuth) % 360.0,
                          "pan_name": pan_name})
     if len(arrays) > 1:
         orientation_ids = [profile["id"] for profile in profiles]
-        if (any(identifier < 1 for identifier in orientation_ids)
-                or len(set(orientation_ids)) != len(orientation_ids)):
-            raise ValueError("Grouped authoring requires distinct positive source orientations")
-    profiles.sort(key=lambda item: item["id"])
+        if any(identifier < 1 for identifier in orientation_ids):
+            raise ValueError("Grouped authoring requires positive source orientations")
+        if len(set(orientation_ids)) == len(orientation_ids):
+            # One source subarray per orientation: keep the legacy orientation-keyed profile shape.
+            for profile in profiles:
+                profile.pop("subarray_id", None)
+        # else: a shared NoOrientation with several owners is kept owner-keyed (subarray_id) so the
+        # authoring path can bind each table/PAN/geometry/string to its real source owner.
+    else:
+        for profile in profiles:
+            profile.pop("subarray_id", None)
+    profiles.sort(key=lambda item: (item["id"], item.get("subarray_id", item["id"])))
     sit = next((block for block in blocks if block.object_type == "pvSite"
                 and block.path == "PVObject_SiteSimul"), None)
     if sit is None:
@@ -975,10 +1021,24 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             binding, binding_state = _string_layout_profile(string_layout, tables)
             declared = {"project": project, "variant": variant, "pan": source["pan_name"],
                         "module_total": source["module_total"]}
+            version = 1
             if "orientations" in source:
-                declared["orientations"] = [{"id": item["id"], "module_total": item["module_total"]}
-                                             for item in source["orientations"]]
-            recipe = {"version": 2 if "orientations" in source else 1, "source": declared,
+                orientation_ids = [item["id"] for item in source["orientations"]]
+                if len(set(orientation_ids)) == len(orientation_ids):
+                    declared["orientations"] = [{"id": item["id"], "module_total": item["module_total"]}
+                                                 for item in source["orientations"]]
+                    version = 2
+                else:
+                    # Several source subarrays share one NoOrientation. A version-2 orientation list
+                    # requires distinct ids, so this explicit-owner shape is the forced new schema:
+                    # store one record per owner (subarray_id) so the readback can rebuild the
+                    # owner-keyed source without collapsing the shared orientation.
+                    declared["owners"] = [{"subarray_id": item.get("subarray_id", item["id"]),
+                                           "orientation_id": item["id"],
+                                           "module_total": item["module_total"]}
+                                          for item in source["orientations"]]
+                    version = 3
+            recipe = {"version": version, "source": declared,
                       "house": {"kind": "mesh"} if pocket["kind"] == "mesh" else house,
                       "layout": layout}
             if binding is not None:

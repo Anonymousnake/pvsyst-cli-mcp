@@ -81,14 +81,22 @@ def source_string_ranges(blocks):
 def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_lines, source):
     """Preserve both source identities, fixed planes, hardware and exclusive circuit branches."""
     planes = source.get("orientations", [])
+    expected_by_orient = {}
     if planes:
-        identifiers = [plane["id"] for plane in planes]
-        if (any(identifier < 1 for identifier in identifiers)
-                or len(set(identifiers)) != len(identifiers)):
-            raise ValueError("Grouped verification requires distinct positive source orientations")
+        # One orientation record may be shared by several source subarray owners: keep each DISTINCT
+        # orientation record once, and aggregate the module total of every owner that references it.
+        distinct = {}
+        for plane in planes:
+            identifier = plane["id"]
+            if identifier < 1:
+                raise ValueError("Grouped verification requires positive source orientations")
+            distinct.setdefault(identifier, plane)
+            expected_by_orient[identifier] = expected_by_orient.get(identifier, 0) + plane["module_total"]
+        planes = list(distinct.values())
     else:
         planes = [{"id": 1, "module_total": source["module_total"],
                    "tilt_deg": source["tilt_deg"], "field_azimuth_deg": source["field_azimuth_deg"]}]
+        expected_by_orient = {1: source["module_total"]}
     orientation_ids = [plane["id"] for plane in planes]
     originals = _indexed(source_blocks, "pvOrient", "NoOrient")
     saved = _indexed(target_blocks, "pvOrient", "NoOrient")
@@ -116,7 +124,9 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
                                     "base_slope_deg": _number(after.one("BaseSlope")[1])})
     originals = _indexed(source_blocks, "pvSubArray", "SubArrayId")
     saved = _indexed(target_blocks, "pvSubArray", "SubArrayId")
-    if len(originals) != len(planes) or set(originals) != set(saved):
+    # Identity is the SubArray owner set, not a one-subarray-per-orientation count: several owners
+    # may reference one orientation, so compare the preserved owner identities directly.
+    if set(originals) != set(saved):
         raise ValueError("Saved variant changed the source subarray identities")
     if {_integer(block.one("NoOrientation")[1]) for block in originals.values()} != set(orientation_ids):
         raise ValueError("Source subarrays must each own exactly one declared source orientation")
@@ -176,7 +186,7 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
     for plane in planes:
         owned = by_orientation[plane["id"]]
         if sum(_integer(table.one("NModInHeight")[1]) * _integer(table.one("NModInWidth")[1])
-               for table in owned) != plane["module_total"]:
+               for table in owned) != expected_by_orient[plane["id"]]:
             raise ValueError("Native PV tables differ from their source orientation count")
         for table in owned:
             if (abs(_number(table.one("DInclin")[1]) - plane["tilt_deg"]) > ANGLE_TOL
@@ -397,15 +407,17 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
     """
     source_planes = source.get("orientations") or []
     if source_planes:
-        planes = {plane["id"]: plane for plane in source_planes}
-        if (len(planes) < 2 or len(tables) < 1
-                or any(table.get("orientation_id") not in planes for table in tables)):
+        planes, expected_by_orient = {}, {}
+        for plane in source_planes:
+            planes.setdefault(plane["id"], plane)
+            expected_by_orient[plane["id"]] = expected_by_orient.get(plane["id"], 0) + plane["module_total"]
+        if len(tables) < 1 or any(table.get("orientation_id") not in planes for table in tables):
             raise ValueError("PV coordinate verification requires source-oriented tables for the declared orientations")
         per_orientation = defaultdict(int)
         for table in tables:
             per_orientation[table["orientation_id"]] += table["module_rows"] * table["module_columns"]
         for identifier, plane in planes.items():
-            if per_orientation.get(identifier, 0) != plane["module_total"]:
+            if per_orientation.get(identifier, 0) != expected_by_orient[identifier]:
                 raise ValueError("Source tables for orientation %d must sum to the source module total" % identifier)
         grouped = True
     else:
