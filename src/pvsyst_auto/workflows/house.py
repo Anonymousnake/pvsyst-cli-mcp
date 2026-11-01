@@ -132,7 +132,18 @@ def _prepare(store, components, request):
     grouped = (len(set(orientation_ids)) >= 2
                and all(identifier >= 1 for identifier in orientation_ids))
     snap = native._source_snapshot(store, components, project, variant, request.get("module_geometry"),
-                                   **({"allow_groups": True} if grouped else {}))
+                                   **({"allow_groups": True} if grouped else {}), layout=request.get("layout"))
+    # A heterogeneous per-source PAN set is carried by the typed per-table geometry forwarded
+    # through ``layout`` into resolve_source_geometry; the high-level NATIVE path consumes it
+    # per owner instead of collapsing to the first PAN. ``pan_snapshots`` is per-GROUP, so a
+    # readable SAME-PAN multi-group source yields one deduped snapshot and is NOT rejected here;
+    # a duplicate length would only track distinct readable files, never PAN identity. The GUI
+    # import method keeps its old single-module-library bridge limit and states it explicitly.
+    source_groups = snap["source"].get("orientations") or []
+    distinct_pans = {group["pan_name"].casefold() for group in source_groups}
+    if len(distinct_pans) > 1 and (request.get("scene_import_method") or "gui") != "native":
+        raise ValueError("The GUI import method bridges one source PAN; request "
+                         "scene_import_method='native' for a heterogeneous per-source PAN set")
     source_site = store._embedded_reference(lines, "PVObject_SiteSimul=pvSite", "End of PVObject pvSite")
     source_met = store._embedded_reference(lines, "PVObject_MeteoSimul=pvMeteo", "End of PVObject pvMeteo")
     project_text = store._read(paths["source_project"]).decode("utf-8-sig")
@@ -156,8 +167,14 @@ def _prepare(store, components, request):
                 break
         if "PAN" not in component_libraries:
             raise ValueError("Resolved PAN is outside the supported component libraries")
-    sub = next(block for block in objects("".join(lines))
-               if block.object_type == "pvSubArray")
+    sub_blocks = [block for block in objects("".join(lines)) if block.object_type == "pvSubArray"]
+    sub = sub_blocks[0]
+    # component_references.OND mirrors component_references.PAN: expose every DISTINCT actual
+    # per-subarray GInverter reference (not only the first), while a homogeneous single-OND
+    # source keeps its exact original one-string shape. Value-independent declared metadata --
+    # no sizing/curve/MPPT derivation and no electronics curve is read here.
+    ond_names = sorted({block.one("GInverter")[1] for block in sub_blocks if "GInverter" in block.fields})
+    ond_reference = ond_names[0] if len(ond_names) == 1 else (ond_names or sub.one("GInverter")[1])
     for library in ("workspace", "builtin"):
         if library == "builtin" and components.builtin is None:
             continue
@@ -206,15 +223,33 @@ def _prepare(store, components, request):
             float(site_blocks[0].one(field)[1]) != snap["source"]["site"][field.lower()]
             for field in ("Latitude", "Longitude", "Altitude")):
         raise ValueError("Bound SIT coordinates differ from the source scene site")
-    nominal = snap["modules"]["nom_power"] * snap["source"]["module_total"] / 1000
+    if source_groups:
+        # Declaration-level nameplate inventory: each source group's own module count times its
+        # own resolved nominal power. This is not an electrical/MPPT allocation and never reuses
+        # the first PAN; resolve_source_geometry already refused any group without geometry.
+        nominal = 0.0
+        for group in source_groups:
+            geometry = group.get("module_geometry")
+            if not isinstance(geometry, dict) or "nom_power" not in geometry:
+                raise ValueError("Source orientation %d has no resolved nominal module power; "
+                                 "declare its per-source module geometry" % group["id"])
+            nominal += geometry["nom_power"] * group["module_total"] / 1000
+    else:
+        nominal = snap["modules"]["nom_power"] * snap["source"]["module_total"] / 1000
     if not math.isfinite(nominal) or nominal <= 0:
         raise ValueError("Source nameplate capacity is not finite and positive")
+    if len(distinct_pans) <= 1:
+        pan_reference = snap["source"]["pan_name"]
+    else:
+        # Never silently bind a single PAN name to a heterogeneous set: expose each distinct
+        # source PAN reference (per group) for the handoff declaration instead of the first one.
+        pan_reference = sorted({group["pan_name"] for group in source_groups})
     plan = {"site": source_site, "met": source_met, "scene_name": scene_name,
             "nominal_dc_kw": nominal, "shading_mode": mode,
             "house_parts": len(pocket["meshes"]), "pv_tables": len(tables),
             "source": snap["source"], "modules": snap["modules"],
             "tables": tables, "component_libraries": component_libraries,
-            "component_references": {"PAN": snap["source"]["pan_name"], "OND": sub.one("GInverter")[1]},
+            "component_references": {"PAN": pan_reference, "OND": ond_reference},
             "inherited_parameters": store.inspect_parameters(project, variant),
             "inherited_project_parameters": {key: project_root.one(key)[1]
                 for key in ("DesignTempMin", "TempOper", "TempOperMin", "TempOperMax", "TranspositionAlgorithm", "ACLossesRef")
@@ -347,8 +382,14 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 if handoff["status"] == "blocked" or not handoff.get("saved"):
                     raise ValueError("Saved native-house engineering handoff is blocked: " + str(handoff["issues"]))
                 assets = _engineering_assets(paths, plan, record["guards"])
-                database = [{"kind": kind, "name": name, "resolution": "native_database_or_unavailable"}
-                            for kind, name in plan["component_references"].items() if kind not in assets]
+                # ``component_references.PAN`` may be a list for a heterogeneous source set
+                # (one distinct PAN per group). ``database_references`` is consumed by
+                # revision._check_assets, which requires one STRING name per entry
+                # (safe_filename(name)); expand the list into one entry per PAN, never store a
+                # list in ``name``. A single-PAN str keeps its exact original one-entry shape.
+                database = [{"kind": kind, "name": entry, "resolution": "native_database_or_unavailable"}
+                            for kind, name in plan["component_references"].items() if kind not in assets
+                            for entry in (name if isinstance(name, (list, tuple)) else (name,))]
                 record.update(operation="engineering_house", schema_version=1,
                     working_project=request["new_project"], working_variant=record["variant"], year=request["year"],
                     objective="原生住宅交付：" + request["variant_name"], nominal_dc_power_kw=plan["nominal_dc_kw"],

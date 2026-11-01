@@ -138,11 +138,13 @@ class GroupedHouseSceneBoundary(unittest.TestCase):
                     mixed_ond = await call(create, dict(args, output_name="MixedOnd.pvc2"))
                     self.assertEqual(mixed_ond["status"], "created", mixed_ond)
                     variant_file.write_bytes(original_variant)
-                    # A different PAN per subarray is still refused: geometry would need per-SA dims.
+                    # A different PAN per subarray with no per-source geometry is refused for the
+                    # missing dimensions (the heterogeneous capability is opened only with explicit
+                    # per-source geometry; see test_per_source_pan_geometry_boundary).
                     variant_file.write_bytes(swap_first(b"PVModule=", b"Different.PAN"))
                     mixed_pan = await call(create, dict(args, output_name="MixedPan.pvc2"))
                     self.assertEqual(mixed_pan["status"], "blocked", mixed_pan)
-                    self.assertTrue(any("same PAN" in issue for issue in mixed_pan["issues"]), mixed_pan)
+                    self.assertTrue(any("module geometry" in issue for issue in mixed_pan["issues"]), mixed_pan)
                     variant_file.write_bytes(original_variant)
                     await call("pvsyst_clone_variant", {"project": args["project"], "source_variant": "VC1", "new_variant": "VC3"})
                     for identifier, azimuth in ((1, 30.0), (2, 120.0)):

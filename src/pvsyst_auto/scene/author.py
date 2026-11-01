@@ -198,6 +198,71 @@ def resolve_modules(components, pan_name, geometry):
     return module_profile(pan_validation_fields(pan_text), explicit), (pan_path, pan_bytes)
 
 
+def _per_table_geometry(layout):
+    """Explicit per-table module geometry bound by source orientation id (fallback carrier).
+
+    Only named layouts carry it; a request-level ``module_geometry`` stays the single-plane /
+    homogeneous path. Two tables may repeat the same geometry for one orientation but may not
+    disagree, so an opaque reference is never silently given two different sizes."""
+    result = {}
+    tables = layout.get("tables") if isinstance(layout, dict) else None
+    if not isinstance(tables, list):
+        return result
+    for entry in tables:
+        if not isinstance(entry, dict):
+            continue
+        geometry = entry.get("module_geometry")
+        if geometry is None:
+            continue
+        identifier = entry.get("orientation_id")
+        if type(identifier) is not int or identifier < 1:
+            raise ValueError("module_geometry is only supported on named tables that declare orientation_id")
+        caller_geometry(geometry)  # shape/positivity check; the raw dict is re-validated per group
+        if identifier in result and result[identifier] != geometry:
+            raise ValueError("Tables on source orientation %d declare conflicting module_geometry" % identifier)
+        result[identifier] = geometry
+    return result
+
+
+def resolve_source_geometry(components, source, module_geometry, layout=None):
+    """Resolve each source group's module metadata once; never spread the first PAN over all.
+
+    A single-plane source keeps the historical one-``modules`` dict. A grouped source resolves
+    geometry per source orientation: a readable loose/builtin PAN for that group's PVModule first
+    (validating any explicit geometry against it), else the explicit ``module_geometry`` bound to
+    that table/group, else — only when every group shares one PAN — the request-level geometry.
+    A distinct PAN with no resolvable geometry raises instead of reusing another source's size.
+
+    Returns ``(default_modules, pan_snapshots)``; the default is the first group's geometry (the
+    legacy single-model COLLADA element), and ``pan_snapshots`` are the ``(path, bytes)`` pairs
+    actually read so the caller can re-check them for change before writing.
+    """
+    groups = source.get("orientations") or []
+    if not groups:
+        modules, snapshot = resolve_modules(components, source["pan_name"], module_geometry)
+        return modules, ([snapshot] if snapshot is not None else [])
+    explicit = _per_table_geometry(layout)
+    shared = len({group["pan_name"].casefold() for group in groups}) == 1
+    snapshots = []
+    for group in groups:
+        identity = group["id"]
+        requested = explicit.get(identity)
+        if requested is None and shared:
+            requested = module_geometry
+        try:
+            resolved, snapshot = resolve_modules(components, group["pan_name"], requested)
+        except ValueError as exc:
+            raise ValueError(
+                "Source orientation %d needs its own module geometry (%s): %s"
+                % (identity, group["pan_name"], exc)) from None
+        if snapshot is not None and snapshot not in snapshots:
+            # Dedupe by (actual file, bytes): a readable SAME-PAN multi-group source reads the
+            # one file once, so the change-check loop is per distinct file, not per group.
+            snapshots.append(snapshot)
+        group["module_geometry"] = resolved
+    return groups[0]["module_geometry"], snapshots
+
+
 def _vector(values, label):
     if not isinstance(values, list) or len(values) != 3:
         raise ValueError(f"{label} must contain three numbers")
@@ -402,6 +467,8 @@ def table_profiles(layout, house, modules, source):
         path = f"layout.tables[{index}]"
         try:
             keys = set(PLACED_LAYOUT_KEYS) | {"name"} | ({"orientation_id"} if groups else set())
+            if groups and "module_geometry" in entry:
+                keys = keys | {"module_geometry"}
             if not isinstance(entry, dict) or set(entry) != keys:
                 raise ValueError("Each named table requires exactly its name, placement and source orientation fields")
             name = _name(entry["name"])
@@ -414,12 +481,22 @@ def table_profiles(layout, house, modules, source):
                 if type(identifier) is not int or identifier not in groups:
                     raise ValueError("orientation_id must select a declared source orientation")
                 group = groups[identifier]
-            profile = layout_profile({key: entry[key] for key in PLACED_LAYOUT_KEYS}, modules,
+            # Per-table geometry wins when present (opaque built-in PAN caller entry, or a readback
+            # whose group carrier omits it); otherwise the group's resolved geometry; else the
+            # legacy single modules dict. Spans and depth are computed from this table's own module.
+            table_modules = modules
+            if groups and entry.get("module_geometry") is not None:
+                table_modules = caller_geometry(entry["module_geometry"])
+            elif groups and group.get("module_geometry") is not None:
+                table_modules = group["module_geometry"]
+            profile = layout_profile({key: entry[key] for key in PLACED_LAYOUT_KEYS}, table_modules,
                                      None, group["tilt_deg"], placed=True)
             if groups:
                 per_group[identifier] += profile["module_rows"] * profile["module_columns"]
                 profile.update(orientation_id=identifier, azimuth_deg=group["azimuth_deg"],
                                rotation_deg=source["azimuth_deg"] - group["azimuth_deg"])
+                if table_modules != modules:
+                    profile["module_geometry"] = table_modules
             result.append(profile | {"name": name})
         except (ValueError, KeyError) as exc:
             errors.append(_diagnostic("pv_table_input", path, str(exc),
@@ -556,12 +633,13 @@ def check_tables(house, tables):
 def source_profile(store, lines, arrays, system, *, allow_groups=False):
     """The native bridge stays single-plane; only the authoring path opts into grouped sources.
 
-    ``allow_groups`` accepts any number of *homogeneous-PAN fixed* source orientations (one
-    ordinary fixed plane and one subarray per group, the same PAN and no sharing/tracking); a
-    different OND per subarray is inherited electrical identity only (geometry stays the one
-    shared module dict), so it is not part of this authoring gate.  The single-plane bridge keeps
-    exactly one array.  Orientation profiles are returned in ascending source-orientation id
-    order, and each keeps its own source ``id``/``module_total``/angles.
+    ``allow_groups`` accepts any number of ordinary fixed-plane source orientations (one subarray
+    per group, no sharing/tracking).  Each group keeps its own ``PVModule`` reference (``pan_name``)
+    and its own OND identity; the module geometry is resolved per group by
+    :func:`resolve_source_geometry`, so a genuine heterogeneous PAN pair is no longer rejected and
+    never collapsed to one PAN here.  The single-plane bridge keeps exactly one array.  Orientation
+    profiles are returned in ascending source-orientation id order, and each keeps its own source
+    ``id``/``module_total``/angles.
     """
     if system is None or (not allow_groups and len(arrays) != 1):
         raise ValueError("Requires one pvSystem and one subarray, or explicitly grouped authoring subarrays")
@@ -585,7 +663,7 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
     store._require_no_geometry(lines)
     if grid_inventory(lines, arrays)["counts_valid"] is not True:
         raise ValueError("Requires complete consistent native grid counts")
-    profiles, models = [], []
+    profiles = []
     for identifier, bounds in sorted(arrays.items()):
         sub_root = root_block(lines, bounds)
         series = _finite(float(sub_root.one("NModSerie")[1]), "NModSerie", positive=True)
@@ -602,7 +680,7 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
         if tilt >= 90.0:
             raise ValueError("FieldTilt must stay below 90 degrees")
         azimuth = _finite(float(plane_root.one("FieldAzim")[1]), "FieldAzim", minimum=-180.0, maximum=180.0)
-        models.append((sub_root.one("PVModule")[1], sub_root.one("GInverter")[1] if len(arrays) > 1 else ""))
+        pan_name = sub_root.one("PVModule")[1]
         if len(arrays) > 1:
             branches, owned = store._subarray_branches(lines, arrays, identifier)
             store._require_plane_branch_mode(owned, branches)
@@ -611,14 +689,16 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
                     or any(key.startswith("NStrOrient") and key != "NStrOrient1" and owned.one(key)[1] != "0"
                            for key in owned.fields)):
                 raise ValueError("Grouped authoring requires verified single-orientation exclusive branches")
+        # Each group keeps its own PVModule reference; geometry is resolved per group downstream,
+        # so a genuine heterogeneous pair is not collapsed to one PAN here.
         profiles.append({"id": int(orientation_id), "module_total": int(series * strings), "tilt_deg": tilt,
-                         "field_azimuth_deg": azimuth, "azimuth_deg": (180.0 + azimuth) % 360.0})
+                         "field_azimuth_deg": azimuth, "azimuth_deg": (180.0 + azimuth) % 360.0,
+                         "pan_name": pan_name})
     if len(arrays) > 1:
         orientation_ids = [profile["id"] for profile in profiles]
         if (any(identifier < 1 for identifier in orientation_ids)
-                or len(set(orientation_ids)) != len(orientation_ids)
-                or len({pair[0].casefold() for pair in models}) != 1):
-            raise ValueError("Grouped authoring requires distinct positive source orientations and the same PAN")
+                or len(set(orientation_ids)) != len(orientation_ids)):
+            raise ValueError("Grouped authoring requires distinct positive source orientations")
     profiles.sort(key=lambda item: item["id"])
     sit = next((block for block in blocks if block.object_type == "pvSite"
                 and block.path == "PVObject_SiteSimul"), None)
@@ -632,7 +712,7 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
                          "hemisphere; a non-positive site latitude stops here")
     first = profiles[0]
     result = {key: first[key] for key in ("tilt_deg", "field_azimuth_deg", "azimuth_deg")}
-    result.update(module_total=sum(p["module_total"] for p in profiles), pan_name=models[0][0],
+    result.update(module_total=sum(p["module_total"] for p in profiles), pan_name=profiles[0]["pan_name"],
                   site={"latitude": latitude, "longitude": longitude, "altitude": altitude})
     if len(profiles) > 1:
         result["orientations"] = profiles
@@ -888,7 +968,7 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             text, lines = store._text(original)
             arrays, system = store._sections(lines)
             source = source_profile(store, lines, arrays, system, allow_groups=True)
-            modules, pan_snapshot = resolve_modules(components, source["pan_name"], module_geometry)
+            modules, pan_snapshots = resolve_source_geometry(components, source, module_geometry, layout)
             pocket = house_profile(house)
             tables = table_profiles(layout, pocket, modules, source)
             check_tables(pocket, tables)
@@ -956,8 +1036,9 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                 "writing it does not prove that PVsyst imports it as a shading scene or consumes it.")
             if store._read(source_path) != original:
                 raise ValueError("Source variant changed while preparing the scene file")
-            if pan_snapshot is not None and components._read(pan_snapshot[0]) != pan_snapshot[1]:
-                raise ValueError("Source PAN changed while preparing the scene file")
+            for pan_path, pan_bytes in pan_snapshots:
+                if components._read(pan_path) != pan_bytes:
+                    raise ValueError("Source PAN changed while preparing the scene file")
             if dry_run:
                 return result
             result["stage"] = "write"

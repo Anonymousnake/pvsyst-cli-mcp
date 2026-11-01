@@ -152,6 +152,8 @@ def _shd_object(idx, noc, world, faces):
 def _shd_table(idx, noc, profile, group, modules, turn):
     world_origin = _rotate_z(tuple(profile["origin_m"]), turn)
     orient = FORMAT["moduleorient"][profile["orientation"]]
+    # The table's own module geometry (heterogeneous PAN), else the released single modules dict.
+    panel = profile.get("module_geometry") or group.get("module_geometry") or modules
     return ["      PVObject_%d=pvShdArrayTable" % idx,
             "        Version=%s" % FORMAT["version"],
             "        Flags=%s" % FORMAT["table_flags"],
@@ -168,8 +170,8 @@ def _shd_table(idx, noc, profile, group, modules, turn):
             "        Source=%s" % FORMAT["source"],
             "      NElemChamps=%s" % FORMAT["nelemchamps"],
             "      NoOrient=%d" % profile["orientation_id"],
-            "      PanneauPVName=%s;%s;%s" % (modules["name"], _num(modules["width_m"]),
-                                            _num(modules["length_m"])),
+            "      PanneauPVName=%s;%s;%s" % (panel["name"], _num(panel["width_m"]),
+                                            _num(panel["length_m"])),
             "      ModSpacingX=%s" % FORMAT["modspacing"],
             "      ModSpacingY=%s" % FORMAT["modspacing"],
             "      NModInHeight=%d" % profile["module_rows"],
@@ -858,9 +860,8 @@ def import_house_pv_scene_native(store, components, scene_name, variant_name,
             # Source/PAN must still be the inspected bytes before anything is built or published.
             if snap["path"].read_bytes() != snap["bytes"]:
                 raise ValueError("Source variant changed after preflight")
-            if snap["pan_snapshot"] is not None:
-                path, before = snap["pan_snapshot"]
-                if components._read(path) != before:
+            for pan_path, pan_before in snap.get("pan_snapshots") or []:
+                if components._read(pan_path) != pan_before:
                     raise ValueError("Source PAN changed after preflight")
             target = store._path(args["project"], next_variant)
             if any(p.name.casefold() == target.name.casefold() for p in target.parent.iterdir()):
