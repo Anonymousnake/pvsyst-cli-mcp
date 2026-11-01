@@ -292,6 +292,11 @@ def pvsyst_get_variant_parameters(project: str, variant: str,
     power allocation; a missing block reports present=false and a malformed block reports an
     issue rather than an empty verified tree. Default shape and size are unchanged; only
     include_topology=True adds this block.
+    A genuine legacy source (root Version 8.0.x with a single SystemType=DCGrid) additionally
+    reports a bounded read-only legacy_read_scope: the source version and the stored DCGrid
+    declarations (TypeRegul/VNomAlim/VPVMax/RGridPV/RGridAlim) read verbatim. It is a stored
+    declaration read only, not an 8.1 edit/upgrade gate and not native physics; the 8.1 payload
+    is unchanged and other/unknown 8.0 systems are not claimed.
     """
     return variant_call("inspect_parameters", project, variant,
                         include_saved_results=include_saved_results,

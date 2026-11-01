@@ -618,6 +618,45 @@ class VariantStore:
         if len(VariantStore._field_indices(lines, main_array, "UVFactor")) != 1:
             raise ValueError("UVFactor must occur exactly once directly on the main array")
 
+    @staticmethod
+    def _legacy_dcgrid_read_scope(lines, system):
+        """Bounded read-only scope for the known legacy 8.0 DCGrid source form.
+
+        Classifies only the genuine legacy declaration shape: the root ``Version`` is
+        8.0.x AND the single ``SystemType`` is exactly ``DCGrid``. Any other 8.0
+        system, an 8.1 source, or a missing/duplicate signature returns None, so the
+        prior payload is untouched and no general 8.0 support is implied. It reports
+        the stored DCGrid electrical declarations verbatim; no inverter/battery
+        default is invented and this is not a physics or Original-verified quantity.
+        """
+        if system is None:
+            return None
+        header_end = next((i for i in range(1, len(lines))
+                           if lines[i].strip().startswith("PVObject_")), len(lines))
+        root_versions = VariantStore._field_indices(lines, (0, header_end), "Version")
+        kinds = VariantStore._field_indices(lines, system, "SystemType")
+        if len(root_versions) != 1 or len(kinds) != 1:
+            return None
+        version = FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2]
+        system_type = FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2]
+        if not re.fullmatch(r"8\.0(?:\.[0-9]+)?", version) or system_type != "DCGrid":
+            return None
+        declared = {"SystemType": system_type}
+        for name in ("TypeRegul", "VNomAlim", "VPVMax", "RGridPV", "RGridAlim"):
+            indices = VariantStore._field_indices(lines, system, name)
+            if len(indices) == 1:
+                declared[name] = FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]
+        return {
+            "present": True,
+            "readonly": True,
+            "format_family": "DCGrid",
+            "source_version": version,
+            "system_declarations": declared,
+            "note": ("Read-only stored legacy 8.0 DCGrid declarations, verbatim; not an "
+                     "8.1 edit/upgrade gate, not native physics or Original-verified, and "
+                     "no inverter/battery default is added."),
+        }
+
     def inspect_parameters(self, project: str, variant: str,
                            include_saved_results: bool = False,
                            include_economics: bool = False,
@@ -723,6 +762,9 @@ class VariantStore:
                         "string_mismatch": string_mismatch_state(lines, bounds),
                         "iam": iam_model_state(lines, bounds)}
                                   for identifier, bounds in sorted(arrays.items())]}
+            legacy_scope = self._legacy_dcgrid_read_scope(lines, system)
+            if legacy_scope is not None:
+                result["legacy_read_scope"] = legacy_scope
             if include_saved_results:
                 result["saved_results"] = _saved_results(text, lines)
             if include_economics:
