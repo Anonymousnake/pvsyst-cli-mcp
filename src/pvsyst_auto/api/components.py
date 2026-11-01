@@ -11,7 +11,7 @@ from pvsyst_auto.api.context import categorized_tool, component_call, components
 @categorized_tool()
 def pvsyst_list_components(component_type: str, library: str = "workspace",
                            query: str = "", offset: int = 0, limit: int = 100) -> dict:
-    """List PAN, OND, BTR or GEN loose files in workspace or installed DataRO.
+    """List PAN, OND, BTR, GEN or REV loose files in workspace or installed DataRO.
     The encrypted built-in component database is not enumerable."""
     return component_call("list", component_type, library, query, offset, limit)
 
@@ -29,7 +29,9 @@ def pvsyst_get_component(component_type: str, filename: str,
     ISC/Isc and MuISC/muISC spellings. PAN/OND electrical exposes owning-object
     reference-point values/units and missing/ambiguous/invalid declarations;
     serialized temperature coefficients and per-MPPT limits remain unverified.
-    IDCMax=0 is not a positive declared ceiling. Legacy PAN is metadata only."""
+    IDCMax=0 is not a positive declared ceiling. Legacy PAN is metadata only.
+    REV (Sellers pvAddress) exposes Comment/Person/Address/Town/Country as the
+    only editable fields and reports no electrical curves or commercial form."""
     return component_call("inspect", component_type, filename, library, offset, limit, include_curve_csv)
 
 @categorized_tool()
@@ -41,13 +43,13 @@ def pvsyst_validate_component(component_type: str, filename: str,
 @categorized_tool()
 def pvsyst_copy_component(component_type: str, source_name: str, new_name: str,
                           source_library: str = "workspace") -> dict:
-    """Copy a PAN/OND/BTR/GEN into the workspace without overwrite. Legacy PAN
+    """Copy a PAN/OND/BTR/GEN/REV into the workspace without overwrite. Legacy PAN
     bytes are preserved. Source library is workspace or read-only builtin."""
     return component_call("copy", component_type, source_name, new_name, source_library)
 
 @categorized_tool()
 def pvsyst_create_component(component_type: str, filename: str, content: str) -> dict:
-    """Create a NEW PAN/OND/BTR/GEN from complete UTF-8 PVObject_ text in the
+    """Create a NEW PAN/OND/BTR/GEN/REV from complete UTF-8 PVObject_ text in the
     workspace without a template. Checks structure, required fields and known
     hazardous numeric values; only a referencing simulation verifies physics.
     Legacy binary PAN must be imported with pvsyst_copy_component instead."""
@@ -58,6 +60,8 @@ def pvsyst_clone_component(component_type: str, source_name: str, new_name: str,
                            updates: dict[str, str], source_library: str = "workspace") -> dict:
     """Create a new text component from a complete existing template. New
     Manufacturer and Model are required; only verified scalar fields are editable.
+    REV (Sellers pvAddress) has no Manufacturer/Model: cloning duplicates it with
+    optional Comment/Person/Address/Town/Country updates.
     Run a simulation with a variant referencing the new component to verify it."""
     return component_call("clone", component_type, source_name, new_name, updates, source_library)
 
@@ -95,6 +99,8 @@ def pvsyst_update_component(component_type: str, filename: str,
     lines ([] clears); PAN's fifth line may encode functional options.
     These operations require expected_sha256 and share the preview/backup.
     Seller prices, flags and model fitting are separate from this form.
+    REV (Sellers pvAddress) edits only Comment/Person/Address/Town/Country; curve
+    and commercial inputs are rejected as not applicable, not silently ignored.
     curve_csv alternatively accepts one path-to-CSV-text entry; never combine
     it with curve_updates. Header: input_watts,output_watts for OND or
     discharge_hours,relative_capacity for BTR. Use comma-separated decimal
