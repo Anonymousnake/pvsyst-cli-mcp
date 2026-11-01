@@ -43,6 +43,160 @@ FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "G
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
 MAX_ARCHIVE_MEMBERS = 128
 EMPTY_SHADING_FLAGS = ("$00", "$00020000", "$00080000")
+VAR_LIST_HEADER = re.compile(r"^\s*VarList,\s*list of=([0-9]+)\s+TVarSimul\s*$")
+VAR_SIMUL_OPEN = re.compile(r"^\s*VarSimul_([0-9]+)=(.*?)\s*$")
+VAR_SIMUL_CLOSE = re.compile(r"^\s*End of VarSimul=(.*?)\s*$")
+
+
+def _declared_numbers(text: str) -> list[float] | None:
+    """The plain comma-separated numbers a field declares, or None if one is not one."""
+    values = []
+    for item in text.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            values.append(float(item))
+        except ValueError:
+            return None
+    return values or None
+
+
+def _saved_results(text: str, lines: list[str]) -> dict:
+    """Read the result cache a native save wrote into the variant, as stored.
+
+    Returns the ``pvSimulFile`` output declaration, every ``VarList`` ``TVarSimul``
+    entry in file order, and histogram / shading-factor-table counts. A month-
+    resolution entry yields its stored ``ValMonth`` numbers; an hour-resolution entry
+    yields its untouched packed ``Day_*`` rows, because that codec is not decoded
+    here. Nothing is summed, converted, re-modelled or presented as Original-verified:
+    a unit is reported only when the file declares one, so ``unit`` stays null and
+    ``declared_type`` carries the native type code instead of an assumed kWh/kW.
+    A malformed cache is reported in ``issues`` and keeps whatever parsed.
+    """
+    issues = []
+    try:
+        blocks = objects(text)
+    except ValueError as exc:
+        blocks = []
+        issues.append("native result-cache objects unreadable: %s" % exc)
+    root = next((block for block in blocks if not block.path), None)
+    root_flags = root.fields["Flags"][0][1] if root and len(root.fields.get("Flags", [])) == 1 else None
+    if root_flags is None:
+        issues.append("root Flags missing or duplicated")
+
+    def field(block, name):
+        values = block.fields.get(name, [])
+        return values[0][1] if len(values) == 1 else None
+
+    headers = [block for block in blocks if block.object_type == "pvSimulFile"]
+    if len(headers) > 1:
+        issues.append("more than one pvSimulFile result-cache header")
+    pv_simul_file = {"present": bool(headers)}
+    if headers:
+        pv_simul_file.update({
+            "file_name_written": field(headers[0], "FileNameWr"),
+            "var_idents_written": [item for item in (field(headers[0], "VarIdentWr") or "").split(",")
+                                   if item.strip()],
+            "native_unit_codes": [item for item in (field(headers[0], "Units") or "").split(",")
+                                  if item.strip()],
+            "type_val_written": field(headers[0], "TypeValW"),
+            "columns": field(headers[0], "NCarCol")})
+
+    declared = None
+    raw_entries = []
+    current = None
+    for index, line in enumerate(lines):
+        stripped = line.rstrip("\r\n")
+        if current is None:
+            header = VAR_LIST_HEADER.match(stripped)
+            if header:
+                declared = int(header.group(1))
+                continue
+            opened = VAR_SIMUL_OPEN.match(stripped)
+            if opened:
+                current = {"key": "VarSimul_" + opened.group(1), "index": int(opened.group(1)),
+                           "ident": opened.group(2), "native_ident": None,
+                           "fields": [], "days": [], "line": index + 1}
+            continue
+        closed = VAR_SIMUL_CLOSE.match(stripped)
+        if closed:
+            current["native_ident"] = closed.group(1)
+            raw_entries.append(current)
+            current = None
+            continue
+        assignment = FIELD.fullmatch(stripped)
+        if assignment:
+            name, value = assignment.group(1), assignment.group(2)
+            (current["days"] if name.startswith("Day_") else current["fields"]).append((name, value))
+    if current is not None:
+        issues.append("unclosed %s at line %d" % (current["key"], current["line"]))
+        raw_entries.append(current)
+
+    entries = []
+    for entry in raw_entries:
+        def declared_field(name, entry=entry):
+            values = [value for key, value in entry["fields"] if key == name]
+            return values[0] if len(values) == 1 else None
+
+        month = declared_field("ValMonth")
+        values = _declared_numbers(month) if month is not None else None
+        if values is not None:
+            declaration = None
+        elif month is not None:
+            declaration = "ValMonth=" + month
+        else:
+            declaration = "\n".join("%s=%s" % row for row in entry["days"]) or None
+        factor = declared_field("WRFactor")
+        try:
+            factor = float(factor) if factor is not None else None
+        except ValueError:
+            factor = None
+        entries.append({
+            "key": entry["key"], "index": entry["index"],
+            "ident": entry["ident"], "native_ident": entry["native_ident"],
+            "declared_type": declared_field("VarType"),
+            "accumulator": declared_field("VarAcc"),
+            "store": declared_field("VarStore"),
+            "mode_ss": declared_field("VarModeSS"),
+            "associations": [value for key, value in entry["fields"] if key.startswith("VarAssoc")],
+            "date_beg": declared_field("DateBeg"),
+            "date_end": declared_field("DateEnd"),
+            "unit": None,
+            "unit_source": "not_declared_in_varlist",
+            "values": values,
+            "values_scope": "month" if values is not None else None,
+            "stored_weighted_factor": factor,
+            "day_rows": len(entry["days"]),
+            "value_declaration": declaration})
+
+    indices = sorted(entry["index"] for entry in entries)
+    span = range(1, declared + 1) if declared else (range(indices[0], indices[-1] + 1) if indices else [])
+    histogram_types = {}
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("Histogram="):
+            kind = stripped.split("=", 1)[1]
+            histogram_types[kind] = histogram_types.get(kind, 0) + 1
+    factor_tables = len([block for block in blocks if block.object_type == "pvShdFTable"])
+    if declared is not None and declared != len(entries):
+        issues.append("VarList declares %d TVarSimul but %d parsed" % (declared, len(entries)))
+    return {
+        "present": bool(entries or histogram_types or factor_tables),
+        "root_flags": root_flags,
+        "pv_simul_file": pv_simul_file,
+        "var_list": {
+            "declared_count": declared,
+            "parsed_count": len(entries),
+            "missing_indices": sorted(set(span) - set(indices)),
+            "entries": entries},
+        "histograms": {"count": sum(histogram_types.values()), "types": histogram_types},
+        "shading_factor_tables": {"count": factor_tables},
+        "issues": issues,
+        "note": ("Stored native declarations read verbatim from this variant only. The packed "
+                 "Day_* rows are not decoded and no value is summed, unit-converted or re-modelled; "
+                 "a null unit means the VarList declares none. Nothing here is evidence that the "
+                 "original software produced, accepts or can recover these results.")}
 
 
 class VariantStore:
@@ -349,11 +503,12 @@ class VariantStore:
         if len(flags) != 1 or FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2] not in EMPTY_SHADING_FLAGS:
             raise ValueError("Shading is active or unrecognized: active shading scene")
 
-    def inspect_parameters(self, project: str, variant: str) -> dict:
+    def inspect_parameters(self, project: str, variant: str,
+                           include_saved_results: bool = False) -> dict:
         with self.lock:
             self._check_project(project)
             data = self._read(self._path(project, variant))
-            _, lines = self._text(data)
+            text, lines = self._text(data)
             arrays, system = self._sections(lines)
             def fields(bounds, names):
                 return {name: values[0] for name in names
@@ -409,7 +564,7 @@ class VariantStore:
                 orientations.append({"id": int(number), "values": values})
             main_array = self._main_array(lines)
             names = self._display_name_fields(lines)
-            return {"project": project, "variant": variant.upper(),
+            result = {"project": project, "variant": variant.upper(),
                     "variant_name": FIELD.fullmatch(lines[names[0]].rstrip("\r\n"))[2] if len(names) == 1 else None,
                     "utf8_bom": data.startswith(b"\xef\xbb\xbf"),
                     "main_array": {"values": fields(main_array, ("UFactor", "Flags", "Flags2", "MVNbTransfos", "VOutTransfo")) if main_array is not None else {},
@@ -451,6 +606,9 @@ class VariantStore:
                         "string_mismatch": string_mismatch_state(lines, bounds),
                         "iam": iam_model_state(lines, bounds)}
                                   for identifier, bounds in sorted(arrays.items())]}
+            if include_saved_results:
+                result["saved_results"] = _saved_results(text, lines)
+            return result
 
     def update_parameters(self, project: str, variant: str, expected_sha256: str,
                           subarray_id: int, orientation_id: int,

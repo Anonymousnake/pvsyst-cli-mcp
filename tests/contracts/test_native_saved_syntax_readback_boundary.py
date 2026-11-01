@@ -167,6 +167,79 @@ def _indexed_shading_variant_text():
     return "\r\n".join(lines) + "\r\n"
 
 
+def _var_simul_block(close_last=True):
+    """A VarList TVarSimul body in the 8.1.7 saved shape.
+
+    Index 1 is absent and the header over-declares by one, exactly as the real
+    native save does: a reader must report declared vs parsed instead of
+    reconciling them. Entries are month-resolution (plain ``ValMonth`` numbers),
+    hour-resolution (untouched packed ``Day_*`` rows) and association-only.
+    """
+    lines = []
+
+    def add(line):
+        lines.append(line)
+
+    add("    VarSimul_2=ShdElec"); add("      Varident=ShdElec"); add("      VarAcc=Month")
+    add("      VarType=Energy"); add("      VarStore=Simul"); add("      VarModeSS=Accum")
+    add("      DateBeg=01/01/90 00:00"); add("      DateEnd=31/12/90 23:00")
+    add("      ValMonth=1.5,2.25,-3.75,4.0,5.5,6.25,7.0,8.5,9.75,10.0,11.25,12.5,")
+    add("    End of VarSimul=viShdElec")
+    add("    VarSimul_3=GlobInc"); add("      Varident=GlobInc"); add("      VarAcc=Hour")
+    add("      VarType=Irrad"); add("      VarStore=Simul")
+    add("      DateBeg=01/01/90 00:00"); add("      DateEnd=31/12/90 23:00")
+    add("      WRFactor=203223.9")
+    add("        Day_0101=+0+0+2Ly+81H"); add("        Day_0201=+0+0+2MM+82Q")
+    add("      End of Data")
+    add("    End of VarSimul=viGlobInc")
+    add("    VarSimul_4=PRTAux"); add("      Varident=PRTAux"); add("      VarAcc=Hour")
+    add("      VarType=Factor"); add("      VarStore=Simul")
+    add("      VarAssoc1=E_Grid"); add("      VarAssoc2=EArray")
+    add("      DateBeg=01/01/90 00:00"); add("      DateEnd=31/12/90 23:00")
+    if close_last:
+        add("    End of VarSimul=viPRTAux")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _saved_results_variant_text(declared=4, close_last=True):
+    """The same 8.1.7 saved variant with a real TVarSimul result cache written in.
+
+    Adds the two result-cache layers a batch save produces besides the VarList:
+    two ``THistogramme`` plot blocks and one ``pvShdFTable`` factor table.
+    """
+    empty = "  VarList, list of=0 TVarInit\r\n  End of the List VarList\r\n"
+    saved = ("  SimulPlots=Start\r\n"
+             "    PVObject_=pvSimulPlot\r\n"
+             "      Comment=Fixture plot one\r\n"
+             "      Histogram=THistogramme\r\n"
+             "        Flags=$00\r\n"
+             "      End of THistogramme\r\n"
+             "    End of PVObject pvSimulPlot\r\n"
+             "    PVObject_=pvSimulPlot\r\n"
+             "      Comment=Fixture plot two\r\n"
+             "      Histogram=THistogramme\r\n"
+             "        Flags=$00\r\n"
+             "      End of THistogramme\r\n"
+             "    End of PVObject pvSimulPlot\r\n"
+             "  EndTags\r\n"
+             "  PVObject_ShdTableLin=pvShdFTable\r\n"
+             "    Flags=$00\r\n"
+             "    FOCalcul=foLinear\r\n"
+             "  End of PVObject pvShdFTable\r\n"
+             "  VarList, list of=%d TVarSimul\r\n" % declared
+             + _var_simul_block(close_last)
+             + "  End of the List VarList\r\n")
+    text = _variant_text()
+    assert empty in text
+    text = text.replace(
+        "  PVObject_SimulFich=pvSimulFile\r\n    Flags=$00\r\n    FileNameWr=Sim.CSV\r\n",
+        "  PVObject_SimulFich=pvSimulFile\r\n    Flags=$00\r\n    FileNameWr=Sim.CSV\r\n"
+        "    VarIdentWr=viGlobInc,viE_Grid,\r\n"
+        "    Units=uikWh,uiW_m2,uim3_h,uimeterW,\r\n"
+        "    TypeValW=Hour\r\n    NCarCol=6\r\n")
+    return text.replace(empty, saved)
+
+
 class _Workspace:
     def __init__(self, text=None):
         self.tmp = Path(tempfile.mkdtemp(prefix="pvsyst-native-saved-"))
@@ -350,6 +423,156 @@ class NativeSavedSyntaxReadbackBoundary(unittest.TestCase):
             ok = True
         finally:
             ws.cleanup(ok)
+
+
+    def test_saved_results_readback_from_a_native_save(self):
+        asyncio.run(self._run_saved_results())
+
+    async def _run_saved_results(self):
+        ws = _Workspace(_saved_results_variant_text())
+        before = ws.variant_bytes()
+        ok = False
+        try:
+            async with stdio_client(ws.params()) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+
+                    async def call(tool, args):
+                        return _payload(await session.call_tool(tool, args))
+
+                    default = await call(READ_VARIANT_TOOL, {"project": "Demo.PRJ", "variant": "VC0"})
+                    # Default keeps the prior response shape: no saved_results block.
+                    self.assertNotIn("saved_results", default)
+                    self.assertEqual(default["variant_name"], "Fixture Scene")
+
+                    params = await call(READ_VARIANT_TOOL,
+                                        {"project": "Demo.PRJ", "variant": "VC0",
+                                         "include_saved_results": True})
+                    saved = params["saved_results"]
+                    # Opt-in only adds the block; every existing key is unchanged.
+                    self.assertEqual(params["variant_name"], "Fixture Scene")
+                    self.assertEqual(len(params["orientations"]), 3)
+                    self.assertEqual(len(params["subarrays"]), 3)
+                    self.assertEqual(
+                        {k: v for k, v in params.items() if k != "saved_results"}, default)
+
+                    self.assertTrue(saved["present"], saved)
+                    self.assertEqual(saved["root_flags"], "$00104001")
+                    self.assertEqual(saved["pv_simul_file"]["file_name_written"], "Sim.CSV")
+                    self.assertEqual(saved["pv_simul_file"]["var_idents_written"],
+                                     ["viGlobInc", "viE_Grid"])
+                    self.assertEqual(saved["pv_simul_file"]["native_unit_codes"],
+                                     ["uikWh", "uiW_m2", "uim3_h", "uimeterW"])
+                    self.assertEqual(saved["pv_simul_file"]["type_val_written"], "Hour")
+
+                    # Declared vs parsed is reported, never silently reconciled.
+                    self.assertEqual(saved["var_list"]["declared_count"], 4)
+                    self.assertEqual(saved["var_list"]["parsed_count"], 3)
+                    self.assertEqual(saved["var_list"]["missing_indices"], [1])
+                    self.assertEqual(saved["issues"],
+                                     ["VarList declares 4 TVarSimul but 3 parsed"])
+
+                    entries = {entry["ident"]: entry for entry in saved["var_list"]["entries"]}
+                    self.assertEqual(list(entries), ["ShdElec", "GlobInc", "PRTAux"],
+                                     "stored file order is preserved")
+
+                    # Month resolution: the stored numbers themselves are recoverable.
+                    month = entries["ShdElec"]
+                    self.assertEqual(month["native_ident"], "viShdElec")
+                    self.assertEqual((month["declared_type"], month["accumulator"], month["mode_ss"]),
+                                     ("Energy", "Month", "Accum"))
+                    self.assertEqual(month["date_beg"], "01/01/90 00:00")
+                    self.assertEqual(month["values_scope"], "month")
+                    self.assertEqual(round(sum(month["values"]), 2), 74.75)
+                    # No unit is declared, so none is assumed from the native type code.
+                    self.assertIsNone(month["unit"])
+                    self.assertEqual(month["unit_source"], "not_declared_in_varlist")
+
+                    # Hour resolution: the untouched packed declaration is recoverable.
+                    hour = entries["GlobInc"]
+                    self.assertIsNone(hour["values"])
+                    self.assertEqual(hour["day_rows"], 2)
+                    self.assertEqual(hour["stored_weighted_factor"], 203223.9)
+                    self.assertEqual(hour["value_declaration"],
+                                     "Day_0101=+0+0+2Ly+81H\nDay_0201=+0+0+2MM+82Q")
+
+                    # Association-only entry: nothing is invented for it.
+                    assoc = entries["PRTAux"]
+                    self.assertIsNone(assoc["values"])
+                    self.assertIsNone(assoc["value_declaration"])
+                    self.assertEqual(assoc["associations"], ["E_Grid", "EArray"])
+
+                    self.assertEqual(saved["histograms"],
+                                     {"count": 2, "types": {"THistogramme": 2}})
+                    self.assertEqual(saved["shading_factor_tables"], {"count": 1})
+
+                    # A pure read never rewrites the variant.
+                    self.assertEqual(ws.variant_bytes(), before)
+            ok = True
+        finally:
+            ws.cleanup(ok)
+
+    def test_saved_results_absent_malformed_and_duplicate_are_reported(self):
+        asyncio.run(self._run_saved_results_edges())
+
+    async def _run_saved_results_edges(self):
+        async def read(workspace):
+            async with stdio_client(workspace.params()) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    return _payload(await session.call_tool(
+                        READ_VARIANT_TOOL, {"project": "Demo.PRJ", "variant": "VC0",
+                                            "include_saved_results": True}))
+
+        # 1) Cold variant: a leftover pvSimulFile header is not a stored result.
+        cold = _Workspace()
+        ok = False
+        try:
+            saved = (await read(cold))["saved_results"]
+            self.assertFalse(saved["present"], saved)
+            self.assertTrue(saved["pv_simul_file"]["present"], saved)
+            self.assertEqual(saved["pv_simul_file"]["file_name_written"], "Sim.CSV")
+            self.assertEqual(saved["var_list"],
+                             {"declared_count": None, "parsed_count": 0,
+                              "missing_indices": [], "entries": []})
+            self.assertEqual(saved["histograms"], {"count": 0, "types": {}})
+            self.assertEqual(saved["shading_factor_tables"], {"count": 0})
+            self.assertEqual(saved["issues"], [])
+            ok = True
+        finally:
+            cold.cleanup(ok)
+
+        # 2) Truncated cache: the unclosed entry is reported, the rest still parses.
+        broken = _Workspace(_saved_results_variant_text(close_last=False))
+        ok = False
+        try:
+            saved = (await read(broken))["saved_results"]
+            self.assertEqual(saved["var_list"]["parsed_count"], 3)
+            self.assertTrue(any("unclosed VarSimul_4" in issue for issue in saved["issues"]),
+                            saved["issues"])
+            self.assertEqual([entry["ident"] for entry in saved["var_list"]["entries"]],
+                             ["ShdElec", "GlobInc", "PRTAux"])
+            self.assertIsNone(saved["var_list"]["entries"][2]["native_ident"])
+            self.assertEqual(saved["var_list"]["entries"][0]["values"][:2], [1.5, 2.25])
+            ok = True
+        finally:
+            broken.cleanup(ok)
+
+        # 3) Duplicate VarSimul index: both entries are kept in file order, none overwritten.
+        dup_text = _saved_results_variant_text().replace(
+            "VarSimul_3=GlobInc", "VarSimul_2=GlobInc")
+        dup = _Workspace(dup_text)
+        ok = False
+        try:
+            saved = (await read(dup))["saved_results"]
+            entries = saved["var_list"]["entries"]
+            self.assertEqual([entry["index"] for entry in entries], [2, 2, 4])
+            self.assertEqual([entry["ident"] for entry in entries],
+                             ["ShdElec", "GlobInc", "PRTAux"])
+            self.assertEqual(saved["var_list"]["parsed_count"], 3)
+            ok = True
+        finally:
+            dup.cleanup(ok)
 
 
 if __name__ == "__main__":
