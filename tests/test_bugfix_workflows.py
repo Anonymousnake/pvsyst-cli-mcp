@@ -37,13 +37,13 @@ class FakeCLI:
         self.workspace = workspace
         self.native = None
 
-    def _require(self, command, option):
+    def _require(self, command, option, allow_window_creation=None):
         return None
 
-    def license_info(self):
+    def license_info(self, allow_window_creation=None):
         return {"status": "LICENSED"}
 
-    def version(self):
+    def version(self, allow_window_creation=None):
         return "PVsystCLI 8.1.6"
 
     @staticmethod

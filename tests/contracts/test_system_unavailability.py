@@ -21,6 +21,10 @@ class SystemUnavailabilityContract(unittest.IsolatedAsyncioTestCase):
         if not configured:
             self.skipTest("Set PVSYST_CONTRACT_WORKSPACE to the native outage fixture workspace")
         source = Path(configured) / "Projects"
+        if not all((source / name).is_file() for name in (PROJECT, VARIANT)):
+            # One variable serves every fixture-backed contract; a workspace without this pair
+            # is a different fixture set, not a failed outage contract.
+            self.skipTest(f"PVSYST_CONTRACT_WORKSPACE has no {PROJECT}/{VARIANT} outage fixture")
         original = (source / VARIANT).read_bytes()
         with tempfile.TemporaryDirectory(prefix="pvsyst-outage-contract-") as directory:
             root = Path(directory)

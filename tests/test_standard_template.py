@@ -232,10 +232,10 @@ class FakeCLI:
         self.workspace = Path(workspace).resolve()
         self._version = version
 
-    def version(self):
+    def version(self, allow_window_creation=None):
         return self._version
 
-    def capabilities(self):
+    def capabilities(self, allow_window_creation=None):
         return {"run-simulation": ["start-date"], "create-site": []}
 
     def _redact(self, text):
