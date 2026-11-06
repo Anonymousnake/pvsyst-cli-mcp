@@ -190,7 +190,8 @@ class SimulationTests(unittest.TestCase):
         with patch.object(self.cli, "_run", side_effect=self.native_run) as native:
             result = simulate_template(self.cli, self.store, **self.request, dry_run=False)
             native.assert_called_once()
-        self.assertEqual(result["status"], "completed", result)
+        # The fixture run prints a native warning, which keeps a completed run under review.
+        self.assertEqual((result["status"], result["stage"]), ("needs_review", "completed"), result)
         self.assertTrue(result["template_preserved"])
         self.assertEqual(result["metrics"]["rows"], 8760)
         self.assertAlmostEqual(result["metrics"]["pr_ratio"], 0.8)
@@ -270,7 +271,8 @@ class SimulationTests(unittest.TestCase):
         self.nominal = plan["installed_dc_kw"]
         with patch.object(self.cli, "_run", side_effect=self.native_run):
             result = simulate_template(self.cli, self.store, **request, dry_run=False)
-        self.assertEqual(result["status"], "completed", result)
+        # The fixture run prints a native warning, which keeps a completed run under review.
+        self.assertEqual((result["status"], result["stage"]), ("needs_review", "completed"), result)
         self.assertAlmostEqual(result["metrics"]["nominal_dc_power_kw"], 28.16)
         self.assertEqual(len(result["capacity_plan"]["steps"]), 3)
         values = self.store.inspect_parameters("Work.PRJ", "VC0")["subarrays"][0]["values"]

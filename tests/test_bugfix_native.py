@@ -151,6 +151,19 @@ class CLITests(unittest.TestCase):
             self.client.list_projects()
 
 
+@unittest.skipUnless(os.name == "nt", "the private-desktop launcher is Windows-only")
+class WinLaunchTests(unittest.TestCase):
+    def test_a_failed_stdio_open_stops_before_any_process_starts(self):
+        from pvsyst_auto.native import _winlaunch
+        invalid = _winlaunch.ctypes.c_void_p(-1).value  # CreateFileW failure value, not NULL
+        create = mock.Mock(return_value=0)
+        with mock.patch.object(_winlaunch, "_CreateFileW", return_value=invalid), \
+                mock.patch.object(_winlaunch, "_CreateProcessW", create):
+            with self.assertRaisesRegex(OSError, r"CreateFileW\(stdout\) failed"):
+                _winlaunch.run([sys.executable, "-c", "pass"], Path.cwd(), 5)
+        create.assert_not_called()
+
+
 class PathTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()

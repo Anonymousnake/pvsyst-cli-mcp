@@ -89,18 +89,18 @@ class FakeCLI:
         self.failure = failure
         self.calls = []
 
-    def _require(self, command, option):
+    def _require(self, command, option, allow_window_creation=None):
         self.calls.append((command, option))
         if self.failure:
             raise PVsystError(self.failure)
 
-    def command_help(self, command=""):
+    def command_help(self, command="", allow_window_creation=None):
         return ""
 
-    def version(self):
+    def version(self, allow_window_creation=None):
         return "8.1.6"
 
-    def license_info(self):
+    def license_info(self, allow_window_creation=None):
         return {"status": "LICENSED", "remaining_days": 30}
 
     def _redact(self, text):
