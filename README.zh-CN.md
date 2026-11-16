@@ -105,7 +105,7 @@ from pvsyst_auto import PVsystCLI, PVsystError
 
 ## 开发与测试
 
-本地开发先执行 `pip install -e .`。公开接口契约测试放在 `tests/contracts/` 下；涉及真实 PVsyst 样本或调用 `PVsystCLI.exe` 的测试需要通过环境变量指定本机工作区和程序路径。
+公开接口契约测试放在 `tests/contracts/` 下。[测试与发布说明](docs/testing-and-release.md) 给出了可移植公共契约 CI、wheel 安装验证和版本标签草稿发布流程。该离线门禁无需 PVsyst 或私有样本，选中测试如被跳过则门禁失败。真实 PVsyst 验收和依赖外部样本的契约仍须显式启用；离线 CI 通过不代表原生验收通过。
 
 ## 许可证
 
