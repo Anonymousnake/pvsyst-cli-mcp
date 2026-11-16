@@ -7,10 +7,11 @@ The portable CI gate below checks public package/MCP behavior, not a PVsyst mode
 physical accuracy, shading parity, or a complete replacement of the application.
 It needs neither an installed PVsyst binary nor a private sample directory.
 
-The CI selects seven existing public contract classes explicitly. They cover installed
+The CI selects portable public contract classes explicitly. They cover installed
 console/module/legacy launch, tool-group discovery, strict arguments, scene metadata,
-report-page validation, result and batch reading, and invalid requests that must not
-launch the CLI or write outputs. The package class checks a wheel-installed console;
+report-page validation, result and batch reading, invalid requests that must not
+launch the CLI or write outputs, and the acceptance CLI's offline validation and
+zero-Native failed-precheck boundary. The package class checks a wheel-installed console;
 its optional installed case is enabled, not skipped. The gate fails on any skip, import
 error, failure, or empty selection. It clears inherited `PVSYST_*` and `PYTHONPATH`
 settings so local native opt-ins and private samples cannot activate other classes.
