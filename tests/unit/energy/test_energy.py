@@ -553,6 +553,96 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(bad_dc_upd["status"], "blocked")
         self.assertIn("Common AC Bus", bad_dc_upd["issues"][0])
 
+    def test_omitted_inverter_nelements_and_system_unavail_direct_fields(self):
+        from pvsyst_auto.components.generator import direct_fields
+        from pvsyst_auto.energy.ac import ac_cabling_state
+        from pvsyst_auto.energy.dc import create_dc_cabling_variant
+        from pvsyst_auto.energy.system import create_grid_storage_system
+        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+
+        # 8.1.0 style: omit NElements=1 on InverterNode and StringNode
+        vc_no_nel = (
+            "PVObject_=pvVCalcul\n  Comment=Fixture\n  Version=8.1.7\n  Flags=$00100000\n"
+            "  PVObject_PVMainArray=pvMainArray\n    Flags=$01900400\n    Flags2=$082A\n"
+            "    MVNbTransfos=0\n"
+            "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.7\n      Flags=$00\n"
+            "      InjectionPointNode Start;\n        Children=Start\n          InverterNode Start;\n"
+            "            SubArrayId=1\n            SubArrayName=PV Array\n"
+            "            Children=Start\n              MPPTNode Start;\n                NElements=2\n"
+            "                SubArrayId=1\n                SubArrayName=PV Array\n"
+            "                Children=Start\n                  StringNode Start;\n"
+            "                    SubArrayId=1\n                    SubArrayName=PV Array\n"
+            "                  StringNode End;\n                Children=End\n              MPPTNode End;\n"
+            "            Children=End\n          InverterNode End;\n        Children=End\n"
+            "      InjectionPointNode End;\n    End of PVObject pvCircuit\n"
+            "    PVObject_=pvSubArray\n      Comment=PV Array\n      Version=8.1.7\n      Flags=$019E1002\n"
+            "      Flags2=$20\n      SubArrayId=1\n      PVModule=Mod.PAN\n      GInverter=Inv.OND\n"
+            "      NModSerie=10\n      NStringCh=2\n      NInverter=1\n      NInvMPPT=1\n"
+            "      NoOrientation=1\n      NStrOrient1=2\n"
+            "      RSCablageCh=0.0\n      RSCablagePC=0.00\n      ACWireLength=0.0\n"
+            "    End of PVObject pvSubArray\n  End of PVObject pvMainArray\n"
+            "  Orientations, list of=1 TOrientGroup\n    PVObject_=pvOrient\n      Version=8.1.7\n"
+            "      Flags=$00\n      NoOrient=1\n      FieldType=FixedPlane\n      FieldTilt=20.0\n"
+            "      FieldAzim=0.0\n      BaseSlope=0.0\n      UsesTiltAver=False\n"
+            "      UsesAzimAver=False\n      UsesSlopeAver=False\n    End of TOrientGroup\n"
+            "  End of Orientations\n"
+            "  PVObject_System=pvSystem\n    Flags=$00\n    SystemType=Grid\n  End of PVObject pvSystem\n"
+            "End of PVObject pvVCalcul\n"
+        )
+        self.source(vc_no_nel)
+        ac_st = ac_cabling_state(vc_no_nel.splitlines(True))
+        self.assertEqual(ac_st["inverter_count"], 1, ac_st)
+
+        dc_res = create_dc_cabling_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC8",
+            dc={"mode": "resistance", "value": 150.0}, dry_run=False,
+        )
+        self.assertEqual(dc_res["status"], "created", dc_res)
+
+        vc8_lines = (self.root / "Projects/Fixture.VC8").read_text(encoding="utf-8").splitlines(True)
+        _, system_bounds = self.store._sections(vc8_lines)
+        replace_system_unavailability(vc8_lines, system_bounds, {
+            "mode": "periods",
+            "periods": [{"date_beg": "03/06/90 00:00", "duration_hours": 48}],
+        })
+        (self.root / "Projects/Fixture.VC8").write_text("".join(vc8_lines), encoding="utf-8")
+        _, sys_after = self.store._sections(vc8_lines)
+        fields = direct_fields(vc8_lines, sys_after)
+        self.assertEqual(fields["SystemType"][0][1], "Grid")
+
+        with self.assertRaises(ValueError):
+            direct_fields([
+                "PVObject_System=pvSystem\n",
+                "  SystemUnavail=TUnavailability\n",
+                "    PVObject_=pvUnavail\n",
+                "End of PVObject pvSystem\n",
+            ], (0, 3))
+
+        ps_res = create_grid_storage_system(
+            self.store, project="Fixture.PRJ", source_variant="VC8", new_variant="VC9",
+            battery={
+                "file_name": "Generic_LI_Module_180Ah.BTR",
+                "library": "builtin",
+                "series_count": 1,
+                "parallel_count": 2,
+                "monthly_temperature_c": [20] * 12,
+                "cycle_sow": 1,
+                "static_sow": 1,
+            },
+            storage={
+                **STORAGE,
+                "strategy": "power_shift",
+                "charging_strategy": "pv_prod_fraction",
+                "charging_pv_fraction": 0.4,
+                "charging_schedule_48": [0.0] * 18 + [0.4] * 16 + [0.0] * 14,
+                "discharging_strategy": "specified_hours",
+                "discharging_power_kw": 3.0,
+                "discharging_schedule_48": [3.0] * 12 + [0.0] * 24 + [3.0] * 12,
+            },
+            load_manifest_name=None, dry_run=False,
+        )
+        self.assertEqual(ps_res["status"], "created", ps_res)
+
 
 if __name__ == "__main__":
     unittest.main()

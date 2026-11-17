@@ -14,12 +14,18 @@ SUPPORTED_VERSIONS = NATIVE_TEXT_OR_SEED
 
 def direct_fields(lines, bounds):
     """Read only fields owned by a system/subarray, skipping nested objects."""
-    fields, stack = {}, []
+    fields, stack, in_unavail = {}, [], False
     for i in range(bounds[0] + 1, bounds[1]):
         line = lines[i].strip()
+        if in_unavail:
+            if line == "End of PVObject pvUnavail":
+                in_unavail = False
+            continue
         match = ASSIGNMENT.fullmatch(lines[i].rstrip("\r\n"))
-        if match and (match[2].startswith("PVObject_") and re.fullmatch(r"pv\w+", match[4])
-                      or match[2] != "Comment" and re.fullmatch(r"T[A-Z]\w*", match[4])):
+        if line == "SystemUnavail=TUnavailability":
+            in_unavail = True
+        elif match and (match[2].startswith("PVObject_") and re.fullmatch(r"pv\w+", match[4])
+                        or match[2] != "Comment" and re.fullmatch(r"T[A-Z]\w*", match[4])):
             stack.append(match[4])
         elif line.startswith("End of VarSimul="):
             if stack and stack[-1] == "TVarSimul":
@@ -35,7 +41,7 @@ def direct_fields(lines, bounds):
             stack.pop()
         elif match and not stack:
             fields.setdefault(match[2], []).append((i, match[4]))
-    if stack:
+    if stack or in_unavail:
         raise ValueError("Unclosed nested object in generator configuration scope")
     return fields
 

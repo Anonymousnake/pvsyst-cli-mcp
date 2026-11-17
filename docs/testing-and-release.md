@@ -7,6 +7,12 @@ Tests are split into fast, independent suites so local changes only need to run 
 - `tests/integration/`: Fast MCP tool, schema, variant I/O, scene/component, entrypoint, and CLI integration tests (no PVsyst binary or private fixtures required). Run `--suite mcp` for the in-memory MCP slice (<5s) or `--suite integration` for all integration tests.
 - `tests/unit/core/`, `tests/unit/energy/`, `tests/unit/weather/`, `tests/unit/workflows/`: Offline unit tests grouped by module area. Run any slice with `python scripts/run_tests.py --suite <core|energy|weather|workflows|unit>`.
 - `tests/e2e/`: Opt-in end-to-end tests that execute a real local Windows `PVsystCLI.exe` installation (`python scripts/run_tests.py --suite e2e`).
+  - `tests/e2e/test_native_cli_launch_e2e.py`: Windowless plain-CSV CLI smoke check (requires `PVSYST_E2E_REAL_NATIVE=1`, `PVSYST_E2E_CLI`, `PVSYST_E2E_WORKSPACE`, `PVSYST_E2E_RUN_JSON`).
+  - `tests/e2e/test_mcp_full_workflows_e2e.py`: Full stdio MCP server workflow tests dynamically seeded from `DataRO\PVsyst8.1_Data` in an isolated temp workspace (automatically snapshots & byte-restores `PVsyst.ini` and `PVsystCLI.ini`), covering `pvsyst_run_house_task` (`portrait`, positive spacing, `obstacles`, `module_layout`) and DC cabling + `SystemUnavail` + `PowerShift`/`PeakShaving` combo simulation. Run with:
+
+```sh
+PVSYST_E2E_REAL_NATIVE=1 PVSYST_E2E_CLI="C:\Program Files\PVsyst8.1.7\PVsystCLI.exe" python -m unittest tests/e2e/test_mcp_full_workflows_e2e.py -v
+```
 
 ## Local Verification
 

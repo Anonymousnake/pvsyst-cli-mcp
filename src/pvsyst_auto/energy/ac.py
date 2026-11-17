@@ -113,7 +113,7 @@ def _layout(lines):
         length, metal, section = None, None, None
     state = {"mode": "active" if active else "none", "length_m": float(length) if active else None,
              "metal": metal, "section": section, "inverter_groups": len(nodes),
-             "inverter_count": sum(positive_integer(node.one("NElements"), "inverter count") for node in nodes)}
+             "inverter_count": sum(positive_integer(node.one("NElements", "1"), "inverter count") for node in nodes)}
     return state, main, sub, nodes, cables, transformers, circuits[0]
 
 
