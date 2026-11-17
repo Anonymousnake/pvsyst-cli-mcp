@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from pvsyst_auto.components.editor import ASSIGNMENT, replace_value
 from pvsyst_auto.components.generator import direct_fields, finite, one
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 DEFAULT_BIT = 0x00020000          # bit17: set = native default, clear = manual value
 FIELD = "PMismString"
@@ -42,8 +43,8 @@ def _read(lines, bounds):
     if not isinstance(bounds, tuple) or len(bounds) != 2:
         raise ValueError("Require one owning subarray bounds")
     fields = direct_fields(lines, bounds)
-    if one(fields, "Version")[1] != "8.1.6":
-        raise ValueError("String mismatch editing requires subarray Version=8.1.6")
+    if one(fields, "Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"String mismatch editing requires subarray Version={TEXT_LABEL}")
     raw = one(fields, "Flags")[1]
     if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", raw):
         raise ValueError("Require one hexadecimal owning subarray Flags")

@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from pvsyst_auto.components.editor import ASSIGNMENT, replace_value
 from pvsyst_auto.components.generator import direct_fields, finite, one
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 SEASONAL = ("SummerTilt", "WinterTilt", "WinterMonths")
 BOOLS = ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver")
@@ -75,8 +76,8 @@ def _read(lines, bounds):
     fields = direct_fields(lines, bounds)
     if any(len(entries) > 1 for entries in fields.values()):
         raise ValueError("Duplicate fields are not supported in an orientation block")
-    if one(fields, "Version")[1] != "8.1.6":
-        raise ValueError("Seasonal editing requires a native 8.1.6 orientation")
+    if one(fields, "Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"Seasonal editing requires a native {TEXT_LABEL} orientation")
     flags = one(fields, "Flags")[1]
     if not re.fullmatch(r"\$[0-9A-Fa-f]+", flags) or int(flags[1:], 16) != 0:
         raise ValueError("Seasonal editing requires orientation Flags=$00")

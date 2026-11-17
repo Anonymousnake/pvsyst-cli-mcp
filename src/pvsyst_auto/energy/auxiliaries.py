@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from pvsyst_auto.components.editor import ASSIGNMENT, has_object, replace_value
 from pvsyst_auto.components.generator import direct_fields, finite, one
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 POWER_FIELDS = ("AuxPower_Const", "AuxPower_Night")
 # L/M-verified native fields; a written file's absence is the serializer's own default
@@ -44,8 +45,8 @@ def _read(lines, system):
     if system is None:
         raise ValueError("Require one owning native pvSystem")
     first = next((i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_")), len(lines) - 1)
-    if one(direct_fields(lines, (0, first)), "Version")[1] != "8.1.6":
-        raise ValueError("Auxiliary editing requires variant Version=8.1.6")
+    if one(direct_fields(lines, (0, first)), "Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"Auxiliary editing requires variant Version={TEXT_LABEL}")
     if has_object(lines, "pvLoad", "pvGridStorage"):
         raise ValueError("Auxiliary editing currently verifies PV-only variants")
     if any(line.strip().startswith("PVObject_") or line.strip() == "EndTags" for line in lines[system[0] + 1:system[1]]):

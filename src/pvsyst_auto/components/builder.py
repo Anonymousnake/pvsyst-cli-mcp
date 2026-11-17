@@ -9,6 +9,7 @@ from pvsyst_auto.components.store import electrical_inventory, inspect_curves
 from pvsyst_auto.components.pan import ALIASES as PAN_ALIASES
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.workflows.sourced_design import bind_source_values
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 # Only fields with verified units and an existing editor are admitted.
 SCALAR_UNITS = {
@@ -102,7 +103,7 @@ def build_sourced_component(store, *, component_type, template_name, new_name,
                 else:
                     scalar[key] = str(value)
             candidate = store._replace_fields(component_type, text, scalar) if scalar else text
-            modern_form = bool(commercial) and root.one("Version")[1] == "8.1.6"
+            modern_form = bool(commercial) and root.one("Version")[1] in NATIVE_TEXT
             if modern_form:
                 candidate = replace_commercial(component_type, candidate, {**form, **identity})
                 # A duplicated root identity is synchronized too, never left stale.
@@ -115,7 +116,7 @@ def build_sourced_component(store, *, component_type, template_name, new_name,
                 candidate = "".join(lines)
             else:
                 if form:
-                    raise ValueError("Dimension edits require the verified 8.1.6 commercial form; use an eligible template")
+                    raise ValueError(f"Dimension edits require the verified {TEXT_LABEL} commercial form; use an eligible template")
                 candidate = store._replace_fields(component_type, candidate, identity)
                 lines = candidate.splitlines(keepends=True)
                 if "Comment" in root.fields:

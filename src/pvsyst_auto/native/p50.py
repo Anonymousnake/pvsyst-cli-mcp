@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
 from pvsyst_auto.components.generator import finite
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 HEAD = "P50_P90=TP50_P90"
 END = "EndTags"
@@ -103,8 +104,8 @@ def _read(lines, require_template=False):
     if len(roots) != 1 or roots[0].object_type != ROOT_TYPE:
         raise ValueError(f"Require a single {ROOT_TYPE} root object above P50_P90")
     version = roots[0].one("Version")[1]
-    if version != "8.1.6":
-        raise ValueError("P50 requires root Version=8.1.6")
+    if version not in NATIVE_TEXT:
+        raise ValueError(f"P50 requires root Version={TEXT_LABEL}")
     raw_flags = roots[0].one("Flags")[1]
     if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags):
         raise ValueError("P50 root Flags must be a hexadecimal token")

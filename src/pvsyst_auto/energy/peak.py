@@ -9,6 +9,7 @@ from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, re
 from pvsyst_auto.components.generator import direct_fields
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.energy.storage import storage_state, validate_storage
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 BOM = b"\xef\xbb\xbf"
 EDITABLE = ("DischStrategy", "HourBegDisch", "HourEndDisch")
@@ -131,8 +132,8 @@ def peak_block(lines):
 def _require_scope(store, lines, arrays, system):
     """Verified native 8.1.6 PeakShaving profile: root bit19 without a load, storage system flags."""
     root = root_block(lines)
-    if root.one("Version")[1] != "8.1.6":
-        raise ValueError("Requires a native 8.1.6 variant")
+    if root.one("Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"Requires a native {TEXT_LABEL} variant")
     flags = root.one("Flags")[1]
     if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) or int(flags[1:], 16) != 0x00080000:
         raise ValueError("This PeakShaving profile requires root Flags=$00080000")
@@ -150,8 +151,8 @@ def _require_scope(store, lines, arrays, system):
     if main_root.one("Flags")[1] != "$01900400" or main_root.one("Flags2")[1] != "$082A":
         raise ValueError("Main array requires the verified Flags=$01900400 and Flags2=$082A")
     sub_root = root_block(lines, next(iter(arrays.values())))
-    if sub_root.one("Version")[1] != "8.1.6" or sub_root.one("Flags")[1] != "$019E1002":
-        raise ValueError("Subarray requires the verified 8.1.6 declaration and 019E1002 flags")
+    if sub_root.one("Version")[1] not in NATIVE_TEXT or sub_root.one("Flags")[1] != "$019E1002":
+        raise ValueError(f"Subarray requires the verified {TEXT_LABEL} declaration and 019E1002 flags")
     if sub_root.one("Flags2")[1] != "$20":
         raise ValueError("Subarray requires the verified Flags2=$20")
     strings = sub_root.one("NStringCh")[1]

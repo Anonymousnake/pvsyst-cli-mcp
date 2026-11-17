@@ -14,6 +14,7 @@ from pvsyst_auto.components.pan import validation_fields as pan_validation_field
 from pvsyst_auto.weather.preparation import load_weather_manifest, compare_native_weather, inspect_met_calendar
 from pvsyst_auto.results import annual_summary, fingerprint
 from pvsyst_auto.project.tracking import create_tracking_variant
+from pvsyst_auto.versions import CLI_TRACKING_BUILDS
 
 
 def simulate_template(cli, store, *, template_project="", variant="", new_project="",
@@ -285,8 +286,9 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                 raise ValueError("PVsystCLI reports no remaining trial executions")
             result["license"] = license_state
             result["cli_version"] = cli.version(allow_window_creation=allow_window_creation)
-            if tracking_mode and result["cli_version"] != "PVsystCLI 8.1.6 (rev. 49278)":
-                raise ValueError("Tracking flow requires the verified native8.1.6rev49278 executable")
+            if tracking_mode and result["cli_version"] not in CLI_TRACKING_BUILDS:
+                raise ValueError("Tracking flow requires a verified PVsystCLI build: "
+                                 + ", ".join(CLI_TRACKING_BUILDS))
         except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
             issue("simulation", cli._redact(str(exc)))
     result["inputs"] = assets

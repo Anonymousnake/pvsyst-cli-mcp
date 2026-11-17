@@ -38,6 +38,7 @@ from pvsyst_auto.project.sheds import WRITABLE as SHED_FIELDS, TYPES as SHED_TYP
 from pvsyst_auto.energy.storage import grid_storage_state
 from pvsyst_auto.energy.ac import ac_cabling_state
 from pvsyst_auto.native.dc import dc_cabling_state
+from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -572,9 +573,9 @@ class VariantStore:
         if (main_array is None or len(kinds) != 1
                 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
                 or not versions or any(len(indices) != 1
-                                       or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in ("8.1.0", "8.1.6")
+                                       or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT_OR_SEED
                                        for indices in versions)):
-            raise ValueError("UVFactor editing requires a verified 8.1.0/8.1.6 grid main array")
+            raise ValueError(f"UVFactor editing requires a verified {SEED_LABEL} grid main array")
         flags = VariantStore._field_indices(lines, main_array, "Flags")
         flags2 = VariantStore._field_indices(lines, main_array, "Flags2")
         if (len(flags) != 1 or FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2] not in ("$00100400", "$01900400")
@@ -882,8 +883,8 @@ class VariantStore:
                 kinds = self._field_indices(lines, system, "SystemType") if system is not None else []
                 versions = [self._field_indices(lines, bounds, "Version") for bounds in arrays.values()]
                 if (main_array is None or len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
-                        or any(len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in ("8.1.0", "8.1.6") for indices in versions)):
-                    raise ValueError("Thermal editing requires a verified 8.1.0/8.1.6 grid main array")
+                        or any(len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT_OR_SEED for indices in versions)):
+                    raise ValueError(f"Thermal editing requires a verified {SEED_LABEL} grid main array")
                 for key, expected in (("Flags", "$00100400"), ("Flags2", "$082A")):
                     indices = self._field_indices(lines, main_array, key)
                     if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] != expected:
@@ -897,7 +898,7 @@ class VariantStore:
             for loss in set(subarray_updates or {}) & {"LIDLoss", "PMismMPP", "ModuleQualityLoss"}:
                 versions = self._field_indices(lines, arrays[subarray_id], "Version")
                 kinds = self._field_indices(lines, system, "SystemType") if system is not None else []
-                supported = ("8.1.0", "8.1.6")
+                supported = NATIVE_TEXT_OR_SEED
                 if (len(versions) != 1 or FIELD.fullmatch(lines[versions[0]].rstrip("\r\n"))[2] not in supported
                         or len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"):
                     raise ValueError(f"{loss} editing requires a verified {'/'.join(supported)} grid subarray")
@@ -1036,12 +1037,12 @@ class VariantStore:
                 header_end = next(i for i in range(1, len(lines)) if lines[i].strip().startswith("PVObject_"))
                 root_versions = self._field_indices(lines, (0, header_end), "Version")
                 kinds = self._field_indices(lines, system, "SystemType") if system is not None else []
-                if (len(root_versions) != 1 or FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2] != "8.1.6"
+                if (len(root_versions) != 1 or FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT
                         or main is None or len(arrays) != 1 or len(kinds) != 1
                         or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
-                        or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] != "8.1.6" for v in versions)
+                        or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT for v in versions)
                         or has_object(lines, "pvGridStorage")):
-                    raise ValueError(f"{control} editing requires a native 8.1.6 PV-only single-subarray Grid variant")
+                    raise ValueError(f"{control} editing requires a native {TEXT_LABEL} PV-only single-subarray Grid variant")
                 for key, accepted in (("Flags", ("$00100400", "$01900400")),
                                       ("Flags2", ("$082A",))):
                     if key == "Flags2" and ageing_transaction:
@@ -1416,7 +1417,7 @@ class VariantStore:
     def _require_plane_branch_mode(root, branches):
         flags = root.one("Flags")[1] if "Flags" in root.fields else ""
         if re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) and int(flags[1:], 16) & 0x400:
-            if ("Version" not in root.fields or root.one("Version")[1] not in ("8.1.0", "8.1.6")
+            if ("Version" not in root.fields or root.one("Version")[1] not in NATIVE_TEXT_OR_SEED
                     or "PowerSharingInverterId" not in root.fields or root.one("PowerSharingInverterId")[1] != "-1"
                     or any(not members[0].children or any(child.kind != "MPPTNode" for child in members[0].children)
                            for _, _, members in branches)):
@@ -1541,7 +1542,7 @@ class VariantStore:
         if share_inverter:
             from pvsyst_auto.project.circuit import positive_integer
             flags = root.one("Flags")[1]
-            if (root.one("Version")[1] not in ("8.1.0", "8.1.6") or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags)
+            if (root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags)
                     or not int(flags[1:], 16) & 0x400 or root.one("NInverter")[1] != "1"
                     or root.one("NInvMPPT")[1] != "1" or root.one("PowerSharingInverterId")[1] != "-1"
                     or grid_inventory(lines, arrays)["counts_valid"] is not True or len(matches) != 1):

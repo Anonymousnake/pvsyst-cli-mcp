@@ -8,6 +8,7 @@ import re
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
 from pvsyst_auto.project.circuit import circuit_nodes, positive_integer
 from pvsyst_auto.project.tracking import _decimal, _require_scope
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 AC_FLAG = 0x200000
 AC_FIELDS = ("ACWireNoSect", "ACWireLength", "ACWireMetal")
@@ -130,8 +131,8 @@ def _profile(store, lines):
     layout = _layout(lines)
     if layout[5] or layout[1].one("MVNbTransfos")[1] != "0":
         raise ValueError("AC edits with MV/HV references are outside the verified profile")
-    if layout[6].one("Version")[1] != "8.1.6" or layout[6].one("Flags")[1] != "$00":
-        raise ValueError("Requires native 8.1.6 circuit Flags=$00")
+    if layout[6].one("Version")[1] not in NATIVE_TEXT or layout[6].one("Flags")[1] != "$00":
+        raise ValueError(f"Requires native {TEXT_LABEL} circuit Flags=$00")
     return layout
 
 

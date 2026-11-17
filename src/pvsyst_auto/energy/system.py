@@ -10,6 +10,7 @@ from pvsyst_auto.components.generator import direct_fields, finite, one
 from pvsyst_auto.energy.availability import native_availability
 from pvsyst_auto.energy.storage import NUMERIC_FIELDS, STRATEGIES, decimal_text, set_grid_export, storage_state, validate_storage
 from pvsyst_auto.energy.load import hourly_load_block, load_snapshot
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED
 
 
 def create_grid_storage_system(store, *, project, source_variant, new_variant, battery,
@@ -52,7 +53,7 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             _, system = store._sections(lines)
             first_child = next(i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_"))
             root_fields = direct_fields(lines, (0, first_child))
-            if one(root_fields, "Version")[1] not in ("8.1.0", "8.1.6") or system is None:
+            if one(root_fields, "Version")[1] not in NATIVE_TEXT_OR_SEED or system is None:
                 raise ValueError("A complete verified-version PV-only Grid template is required")
             system_fields = direct_fields(lines, system)
             if one(system_fields, "SystemType")[1] != "Grid":

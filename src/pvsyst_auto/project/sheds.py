@@ -14,6 +14,7 @@ from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.project.tracking import _decimal, _require_scope
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 BOM = b"\xef\xbb\xbf"
 TYPES = ("Sheds", "SunShields")
@@ -61,8 +62,8 @@ def orient_block(lines):
         raise ValueError(f"{fieldtype} record fields do not match the recorded native shape")
     for name in OWN:
         block.one(name)  # duplicates stop here
-    if block.one("Version")[1] != "8.1.6" or block.one("Flags")[1] != "$00":
-        raise ValueError("pvOrient requires Version=8.1.6 and Flags=$00")
+    if block.one("Version")[1] not in NATIVE_TEXT or block.one("Flags")[1] != "$00":
+        raise ValueError(f"pvOrient requires Version={TEXT_LABEL} and Flags=$00")
     if block.one("NoOrient")[1] != "1":
         raise ValueError("Only orientation 1 is supported")
     targets = set(WRITABLE.values())

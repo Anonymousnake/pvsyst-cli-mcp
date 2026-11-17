@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.project.circuit import inventory as grid_inventory
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 BOM = b"\xef\xbb\xbf"
 STEP = Decimal("0.1")
@@ -212,8 +213,8 @@ def orient_block(lines):
     block = records[0]
     if block.path != "PVObject_" or not block.end_line:
         raise ValueError("pvOrient must be the complete directly owned record")
-    if block.one("Version")[1] != "8.1.6" or block.one("Flags")[1] != "$00":
-        raise ValueError("pvOrient requires Version=8.1.6 and Flags=$00")
+    if block.one("Version")[1] not in NATIVE_TEXT or block.one("Flags")[1] != "$00":
+        raise ValueError(f"pvOrient requires Version={TEXT_LABEL} and Flags=$00")
     if block.one("NoOrient")[1] != "1":
         raise ValueError("Only orientation 1 is supported")
     fieldtype = block.one("FieldType")[1]
@@ -254,8 +255,8 @@ def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), s
                    sub_flags=("$019E1002",)):
     """Verified native 8.1.6 PV-only single-subarray Grid scope; callers own flag-family validation."""
     root = root_block(lines)
-    if root.one("Version")[1] != "8.1.6":
-        raise ValueError("Requires a native 8.1.6 variant")
+    if root.one("Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"Requires a native {TEXT_LABEL} variant")
     flags = root.one("Flags")[1]
     if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) or int(flags[1:], 16) != 0:
         raise ValueError("Root Flags must be 0")
@@ -273,8 +274,8 @@ def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), s
     if main_root.one("Flags")[1] not in main_flags or main_root.one("Flags2")[1] != "$082A":
         raise ValueError("Main array requires the caller's verified flag family and Flags2=$082A")
     sub_root = root_block(lines, next(iter(arrays.values())))
-    if sub_root.one("Version")[1] != "8.1.6" or sub_root.one("Flags")[1] not in sub_flags:
-        raise ValueError("Subarray requires native 8.1.6 and the caller's verified flag family")
+    if sub_root.one("Version")[1] not in NATIVE_TEXT or sub_root.one("Flags")[1] not in sub_flags:
+        raise ValueError(f"Subarray requires native {TEXT_LABEL} and the caller's verified flag family")
     if sub_root.one("Flags2")[1] != "$20":
         raise ValueError("Subarray requires the verified Flags2=$20")
     strings = sub_root.one("NStringCh")[1]

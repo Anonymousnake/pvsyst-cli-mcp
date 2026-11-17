@@ -5,6 +5,7 @@ import math
 from decimal import Decimal
 
 from pvsyst_auto.components.editor import ASSIGNMENT
+from pvsyst_auto.versions import TEXT_LABEL
 
 
 def _profile(lines, bounds):
@@ -13,7 +14,7 @@ def _profile(lines, bounds):
     header = range(start + 1, end)
     assignments = {i: ASSIGNMENT.fullmatch(lines[i].rstrip("\r\n")) for i in header}
     if any(m is not None and m[2] in ("SoilingLoss", "SoilingLossM") for m in assignments.values()):
-        raise ValueError("Legacy soiling representation; resave with the native 8.1.6 GUI first")
+        raise ValueError(f"Legacy soiling representation; resave with the native {TEXT_LABEL} GUI first")
     begins = [i for i, m in assignments.items() if m is not None and m[2] == "Soiling"]
     total = sum(m is not None and m[2] == "Soiling" for line in lines
                 for m in [ASSIGNMENT.fullmatch(line.rstrip("\r\n"))])

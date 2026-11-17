@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 START = "SystemUnavail=TUnavailability"
 SETTINGS_KEYS = ("TimeFraction", "NbPeriods", "MinDuration", "MaxDuration", "RandomInit")
@@ -94,13 +95,13 @@ def replace_system_unavailability(lines, system, updates):
         expected = {"Version", "Flags", "DefMode", "RandomUnavSettings", "UnavailPeriods",
                     "DateBeg", "Duration", *SETTINGS_KEYS}
         if (child.path != "PVObject_" or child.object_type != "pvUnavail" or set(child.fields) != expected
-                or child.one("Version")[1] != "8.1.6" or child.one("Flags")[1] != "$00"
+                or child.one("Version")[1] not in NATIVE_TEXT or child.one("Flags")[1] != "$00"
                 or child.one("DefMode")[1] != "Periods"
                 or child.one("RandomUnavSettings")[1] != "TRandomUnavSettings"
                 or child.one("UnavailPeriods")[1] != "Start"
                 or not 1 <= len(child.fields["DateBeg"]) <= MAX_PERIODS
                 or len(child.fields["DateBeg"]) != len(child.fields["Duration"])):
-            raise ValueError("Require a complete native 8.1.6 Periods outage template")
+            raise ValueError(f"Require a complete native {TEXT_LABEL} Periods outage template")
         for key in SETTINGS_KEYS:
             child.one(key)
         first = root.one("SystemUnavail")[0]

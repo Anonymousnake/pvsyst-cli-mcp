@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 
 # A native object's serialized key may carry an `#N` index (e.g.
@@ -274,8 +275,8 @@ def _curve_control(objects: list[ObjectBlock]) -> tuple[dict, tuple[int, str] | 
                        three_voltage=bool(flags & THREE_VOLTAGE_MASK))
         version = root.one("Version")[1]
         control["version"] = version[:256]
-        if version != "8.1.6":
-            raise ValueError("Curve editing is verified only for OND Version=8.1.6")
+        if version not in NATIVE_TEXT:
+            raise ValueError(f"Curve editing is verified only for OND Version={TEXT_LABEL}")
         if control["three_voltage"]:
             raise ValueError("Three-voltage OND curve editing is not supported")
         converters = [b for b in objects if b.path == "Converter"]

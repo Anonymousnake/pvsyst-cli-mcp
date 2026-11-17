@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 from pvsyst_auto.components.editor import ObjectBlock, Profile, checked_points, objects, replace_key, write_points, point_count_errors, MAX_POINTS
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 
 CAPACITY_TAG = "CapaCourant"
@@ -30,8 +31,8 @@ def _control(blocks: list[ObjectBlock]) -> dict:
             raise ValueError("Expected exactly one root CapaCourant or Capa_DischRate curve, never both")
         result.update(path=capacity[0].path,
                       source="file" if capacity[0].path == CAPACITY_TAG else "unrecognized-tag")
-        if version != "8.1.6":
-            raise ValueError("Battery curve editing is verified only for BTR Version=8.1.6")
+        if version not in NATIVE_TEXT:
+            raise ValueError(f"Battery curve editing is verified only for BTR Version={TEXT_LABEL}")
         normalized = technology.casefold()
         if normalized.startswith("bt"):
             normalized = normalized[2:]

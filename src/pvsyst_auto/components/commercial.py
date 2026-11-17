@@ -7,6 +7,7 @@ import re
 
 from pvsyst_auto.components.curves import NUMBER
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 
 FORM = {
@@ -33,8 +34,8 @@ def _blocks(text):
     if len(roots) != 1 or len(commercial) != 1 or commercial[0].object_type != "pvCommercial":
         raise ValueError("Expected one root object and one PVObject_Commercial=pvCommercial")
     # New form insertions/array serialization have been exercised on this export version.
-    if roots[0].one("Version")[1] != "8.1.6":
-        raise ValueError("Commercial form editing supports text Version=8.1.6")
+    if roots[0].one("Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"Commercial form editing supports text Version={TEXT_LABEL}")
     if any(b.path.startswith(PATH + "/") for b in blocks):
         raise ValueError("Nested commercial objects require a separate schema")
     return roots[0], commercial[0]

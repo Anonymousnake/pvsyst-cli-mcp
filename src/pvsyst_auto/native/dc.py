@@ -9,6 +9,7 @@ from pathlib import Path
 from pvsyst_auto.components.editor import root_block
 from pvsyst_auto.energy.ac import _layout
 from pvsyst_auto.project.tracking import _require_scope
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 
 def _number(value):
@@ -67,8 +68,8 @@ def _profile(store, lines):
     state, layout = _state(lines)
     if layout[0]["mode"] != "none" or layout[5] or layout[1].one("MVNbTransfos")[1] != "0":
         raise ValueError("Native DC GUI edits require inactive AC and no MV/HV")
-    if layout[6].one("Version")[1] != "8.1.6" or layout[6].one("Flags")[1] != "$00":
-        raise ValueError("Requires native 8.1.6 circuit Flags00")
+    if layout[6].one("Version")[1] not in NATIVE_TEXT or layout[6].one("Flags")[1] != "$00":
+        raise ValueError(f"Requires native {TEXT_LABEL} circuit Flags00")
     return state
 
 

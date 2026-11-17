@@ -6,21 +6,22 @@ import re
 
 from pvsyst_auto.components.editor import objects, replace_value, require_flat, root_block
 from pvsyst_auto.project.circuit import inventory as grid_inventory
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 BOM = b"\xef\xbb\xbf"
 ALLOCATION_MAX = 39
-SUB_PROFILE = {"Version": "8.1.6", "Flags": "$019E1002", "Flags2": "$20", "SubArrayId": "1",
+SUB_PROFILE = {"Version": NATIVE_TEXT, "Flags": "$019E1002", "Flags2": "$20", "SubArrayId": "1",
                "NoOrientation": "1", "NoOrientation2": "2", "NStringCh": "40", "NModSerie": "25",
                "NInverter": "6", "NInvMPPT": "1",
                "PVModule": "Generic_Mono_440W_Bifacial.PAN", "GInverter": "Generic_60kW.OND"}
 DOME_KEYS = ("Comment", "Version", "Flags", "NoOrient", "FieldType", "FieldTilt", "FieldAzim",
              "BaseSlope", "UsesTiltAver", "UsesAzimAver", "UsesSlopeAver", "BTNoTrackers",
              "NoPairOrient", "IsMainOrient")
-DOME_MAIN = {"Version": "8.1.6", "Flags": "$00", "NoOrient": "1", "FieldType": "Dome",
+DOME_MAIN = {"Version": NATIVE_TEXT, "Flags": "$00", "NoOrient": "1", "FieldType": "Dome",
              "FieldTilt": "10.0", "FieldAzim": "90.0", "BaseSlope": "0.0",
              "UsesTiltAver": "False", "UsesAzimAver": "False", "UsesSlopeAver": "False",
              "BTNoTrackers": "-1,-1,", "NoPairOrient": "2", "IsMainOrient": "True"}
-DOME_BACK = {"Version": "8.1.6", "Flags": "$00", "NoOrient": "2", "FieldType": "DomeBackfaces",
+DOME_BACK = {"Version": NATIVE_TEXT, "Flags": "$00", "NoOrient": "2", "FieldType": "DomeBackfaces",
              "FieldTilt": "10.0", "FieldAzim": "-90.0", "BaseSlope": "0.0",
              "UsesTiltAver": "False", "UsesAzimAver": "False", "UsesSlopeAver": "False",
              "BTNoTrackers": "-1,-1,", "NoPairOrient": "1", "IsMainOrient": "False"}
@@ -79,9 +80,14 @@ def dome_records(lines):
     main, back = mapped["1"], mapped["2"]
     for block, expected in ((main, DOME_MAIN), (back, DOME_BACK)):
         for name, value in expected.items():
-            if block.one(name)[1] != value:
+            if not _profile_value(block.one(name)[1], value):
                 raise ValueError(f"{name} must stay at its verified native value")
     return main, back
+
+
+def _profile_value(actual, expected):
+    """A profile entry is one exact token, or a tuple allow-list (the declared Version)."""
+    return actual in expected if isinstance(expected, tuple) else actual == expected
 
 
 def _require_scope(store, lines, arrays, system):
@@ -90,8 +96,8 @@ def _require_scope(store, lines, arrays, system):
     root = next((block for block in blocks if not block.path), None)
     if root is None:
         raise ValueError("Project file has no root PVObject block")
-    if root.one("Version")[1] != "8.1.6":
-        raise ValueError("Requires a native 8.1.6 variant")
+    if root.one("Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"Requires a native {TEXT_LABEL} variant")
     flags = root.one("Flags")[1]
     if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) or int(flags[1:], 16) != 0:
         raise ValueError("Root Flags must be 0")
@@ -124,7 +130,7 @@ def _require_scope(store, lines, arrays, system):
         if "NStrOrient1" in other.fields:
             raise ValueError("NStrOrient1 must exist only in the owning pvSubArray record")
     for name, value in SUB_PROFILE.items():
-        if sub_root.one(name)[1] != value:
+        if not _profile_value(sub_root.one(name)[1], value):
             raise ValueError(f"{name} must stay at its verified native value")
     if any(key.startswith("NStrOrient") and key != "NStrOrient1" for key in sub_root.fields):
         raise ValueError("This profile declares only NStrOrient1; other allocation fields are outside it")
