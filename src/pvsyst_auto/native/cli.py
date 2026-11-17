@@ -96,6 +96,16 @@ def validate_report_pages(pages):
         raise ValueError("Unknown or empty PDF report page list")
 
 
+def _cli_text(value: str) -> bool:
+    """True for a value that can travel as one PVsystCLI argument: one line, no double quote.
+
+    PVsystCLI is a Delphi program whose command-line parser does not honour the ``\\"``
+    escape that ``subprocess.list2cmdline`` emits, so a quote inside a value could end it
+    early and smuggle in another option (for example a second ``-osf:`` output path).
+    """
+    return not any(char in value for char in '\r\n"')
+
+
 def _is_plain_csv_run(args) -> bool:
     """True only for a bare hourly-CSV numeric simulation.
 
@@ -197,6 +207,10 @@ class PVsystCLI:
                 allow_window_creation: bool | None) -> subprocess.CompletedProcess[str]:
         # Argument arrays preserve spaces in paths; serialize CLI operations on one workspace.
         argv = [str(self.cli), *args]
+        if any('"' in str(arg) for arg in args):
+            # Last line of defence for every command (see _cli_text); never echo the value,
+            # which may be a license key. Windows paths cannot contain a double quote.
+            raise ValueError("PVsystCLI arguments cannot contain double quotes")
         with self._lock:
             if os.name == "nt":
                 # Every real CLI call runs on its own private, non-input desktop
@@ -340,13 +354,13 @@ class PVsystCLI:
                 "license": self.license_info()}
 
     def license_activate(self, key: str, *, confirm: bool = False) -> dict:
-        if not key.strip() or "\n" in key or "\r" in key:
-            raise ValueError("A single-line license key is required")
+        if not key.strip() or not _cli_text(key):
+            raise ValueError("A single-line license key without double quotes is required")
         return self._license_change("lic-activate", f"-k:{key}", confirm=confirm)
 
     def license_deactivate(self, customer_id: str, *, confirm: bool = False) -> dict:
-        if not customer_id.strip() or "\n" in customer_id or "\r" in customer_id:
-            raise ValueError("A single-line customer ID is required")
+        if not customer_id.strip() or not _cli_text(customer_id):
+            raise ValueError("A single-line customer ID without double quotes is required")
         return self._license_change("lic-deactivate", f"-c:{customer_id}", confirm=confirm)
 
     def license_sync(self, *, confirm: bool = False) -> dict:
@@ -668,8 +682,8 @@ class PVsystCLI:
                             log_level: int | None = None,
                             allow_window_creation: bool | None = None) -> dict:
         self._require("create-site", "site-name", allow_window_creation=allow_window_creation)
-        if not name.strip() or "\n" in name or "\r" in name:
-            raise ValueError("Site name must be one nonempty line")
+        if not name.strip() or not _cli_text(name):
+            raise ValueError("Site name must be one nonempty line without double quotes")
         for value, low, high, label in ((latitude, -90, 90, "Latitude"),
                                         (longitude, -180, 180, "Longitude"),
                                         (timezone, -12, 12, "Timezone"),
@@ -682,8 +696,8 @@ class PVsystCLI:
             raise ValueError("Country code must have two letters")
         if region and region not in REGIONS:
             raise ValueError("Unknown region")
-        if "\r" in source or "\n" in source:
-            raise ValueError("Source must be one line")
+        if not _cli_text(source):
+            raise ValueError("Source must be one line without double quotes")
         input_path = self._input(weather_csv, ".csv")
         target = self._target(out_sit, ".sit")
         args = ["create-site", f"-sn:{name}", f"-lat:{latitude}", f"-lon:{longitude}",

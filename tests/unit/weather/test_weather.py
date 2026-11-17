@@ -121,7 +121,8 @@ class WeatherTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        # Resolve like the workspace code does: %TEMP% can be an 8.3 short path.
+        self.root = Path(temporary.name).resolve()
         (self.root / "Meteo").mkdir()
         self.path = self.root / "Meteo" / "weather.csv"
 
@@ -515,7 +516,7 @@ class WeatherTests(unittest.TestCase):
         def new_workspace():
             tmp = tempfile.TemporaryDirectory()
             self.addCleanup(tmp.cleanup)
-            root = Path(tmp.name)
+            root = Path(tmp.name).resolve()
             (root / "Meteo").mkdir()
             (root / "Meteo" / "weather.csv").write_text(csv_2020, encoding="utf-8-sig")
             return root, _configure_cli(root)

@@ -157,7 +157,8 @@ class AcquisitionTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.workspace = Path(temporary.name)
+        # Resolve like the workspace code does: %TEMP% can be an 8.3 short path.
+        self.workspace = Path(temporary.name).resolve()
         (self.workspace / "Meteo").mkdir()
         (self.workspace / "Results").mkdir()
 

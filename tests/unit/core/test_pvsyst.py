@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -37,7 +38,8 @@ class PVsystTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.workspace = Path(self.tmp.name) / "workspace"
+        # Resolve like PVsystCLI does: %TEMP% can be an 8.3 short path (e.g. a user name with a space).
+        self.workspace = Path(self.tmp.name).resolve() / "workspace"
         for folder in ("Projects", "Models", "Results", "Meteo", "Sites"):
             (self.workspace / folder).mkdir(parents=True)
         (self.workspace / "Projects" / "Example.PRJ").write_text("example", encoding="utf-8")
@@ -554,6 +556,45 @@ class PVsystTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, r"CreateFileW\(stdout\) failed"):
                     _winlaunch.run([sys.executable, "-c", "pass"], Path.cwd(), 5)
             create.assert_not_called()
+
+    def test_double_quotes_never_reach_cli_and_os_errors_preserve_message(self):
+        injected = 'a" -osf:C:\\Temp\\evil.sit "'
+        weather = self.workspace / "Meteo" / "weather.csv"
+        weather.write_text("Year;Month;Day;Hour;GHI;Tamb\n", encoding="utf-8")
+        site = self.workspace / "Sites" / "new.sit"
+        self.client._help_cache["create-site"] = "--site-name|-sn:"
+        calls = {
+            "site name": lambda: self.client.create_site(injected, 0, 0, weather, site),
+            "site source": lambda: self.client.create_site("Site", 0, 0, weather, site, source=injected),
+            "license key": lambda: self.client.license_activate(injected, confirm=True),
+            "customer id": lambda: self.client.license_deactivate(injected, confirm=True),
+            "any command": lambda: self.client._run("create-site", f"-sn:{injected}"),
+        }
+        with contextlib.ExitStack() as stack:
+            launchers = [stack.enter_context(patch("subprocess.run"))]
+            if os.name == "nt":
+                from pvsyst_auto.native import _winlaunch
+                launchers.append(stack.enter_context(patch.object(_winlaunch, "run")))
+            for name, call in calls.items():
+                with self.subTest(name), self.assertRaisesRegex(ValueError, "double quotes") as caught:
+                    call()
+                self.assertNotIn("evil", str(caught.exception))
+        for launcher in launchers:
+            launcher.assert_not_called()
+
+        from mcp.server.mcpserver.exceptions import ToolError
+        (self.workspace / "Results" / "locked.csv").write_text("date;E_Grid\n;kW\n01/01/90 00:00;10\n", encoding="utf-8")
+        cases = (
+            (PermissionError(13, "Permission denied", "locked.csv"), "PermissionError: [Errno 13] Permission denied: 'locked.csv'"),
+            (FileNotFoundError("gone.csv"), "pvsyst_read_rows: gone.csv"),
+        )
+        with patch.object(server, "_cli", self.client):
+            for error, message in cases:
+                with self.subTest(error=type(error).__name__), \
+                        patch.object(api_results, "read_result_page", side_effect=error), \
+                        self.assertRaises(ToolError) as raised:
+                    asyncio.run(server.mcp.call_tool("pvsyst_read_rows", {"csv_name": "locked.csv"}))
+                self.assertIn(message, str(raised.exception))
 
 
 if __name__ == "__main__":
