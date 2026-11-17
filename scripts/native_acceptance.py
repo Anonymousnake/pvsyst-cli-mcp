@@ -340,9 +340,9 @@ def execute(case, args, attempt, report):
         if licence.get("status") == "TRIAL" and licence.get("remaining_executions") == 0:
             raise ValueError("Native trial reports zero remaining executions")
         native = cli.run_simulation(request["project"], request["variant"], **options)
+        report["native_completed"] = True
         save(attempt / "native-return.json", native)
-        report.update(observed_native_version=observed, native_completed=True,
-                      comparison=compare(case, target))
+        report["comparison"] = compare(case, target)
         report["native_consumption_verified"] = report["comparison"]["passed"]
         report["status"] = ("passed_native" if report["comparison"]["passed"] else "failed")
         if native["warnings"] and report["status"] == "passed_native":
