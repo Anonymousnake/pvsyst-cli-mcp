@@ -46,7 +46,7 @@ def set_grid_export(lines, system, allow_grid_export):
 
 
 def storage_state(lines, system):
-    """Read owning declared fields only; do not infer an active or certified physical device."""
+    """Read owning declared storage fields."""
     root_end = next((i for i,line in enumerate(lines[1:],1) if line.strip().startswith("PVObject_")), len(lines)-1)
     if one(direct_fields(lines,(0,root_end)), "Version")[1] not in ("8.1.0", "8.1.6"):
         raise ValueError("Grid storage requires a verified 8.1.0/8.1.6 text variant")

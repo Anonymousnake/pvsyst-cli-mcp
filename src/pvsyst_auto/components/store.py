@@ -637,8 +637,7 @@ class ComponentStore:
                       "diff": diff[:32000],
                       "diff_truncated": len(diff) > 32000 or len(diff.splitlines()) > 500,
                       "validation": {key: validation[key] for key in (
-                          "structural_errors", "warnings", "known_value_errors")},
-                      "validation_scope": "Static structure and limited values only; simulate a referencing project"}
+                          "structural_errors", "warnings", "known_value_errors")}}
             if curve_updates is not None:
                 before_curves, after_curves = inspect_curves(kind, text), inspect_curves(kind, edited)
                 result["curve_control_before"] = before_curves["control"]

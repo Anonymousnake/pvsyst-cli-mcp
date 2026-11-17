@@ -13,7 +13,6 @@ START = "PVObject_UserNeeds=pvLoad"
 END = "End of PVObject pvLoad"
 ANCHOR = "SimulPlots=Start"
 BOM = b"\xef\xbb\xbf"
-# Adapter bound only; not a native or engineering limit.
 LIMIT = 1e6
 STEP = Decimal("0.001")
 COMMENTS = {"constant": "MCP native constant load", "monthly": "MCP native monthly load",

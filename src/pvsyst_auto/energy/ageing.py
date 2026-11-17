@@ -57,7 +57,6 @@ def _percent(value):
 
 
 def _native_percent(value, label):
-    """Adapter domain only: 0..100 with 0.01 increments; not a GUI boundary."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(label + " must be a strict number")
     number = finite(value, label, minimum=0, maximum=100)

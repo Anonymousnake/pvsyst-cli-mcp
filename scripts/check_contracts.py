@@ -10,16 +10,14 @@ import sysconfig
 import unittest
 
 
-# Explicit selection excludes opt-in native classes, even if the parent opted in.
 CONTRACTS = (
-    "test_package_entrypoint_boundary.PackageEntrypointBoundary",
-    "test_tool_groups_boundary.ToolGroupsBoundary",
-    "test_native_parameters.NativeParametersContract",
-    "test_report_pages.ReportPagesContract",
-    "test_result_reading_boundary.ResultReadingBoundary",
-    "test_batch_summary_reader_boundary.BatchSummaryReaderBoundary",
-    "test_run_simulation_preflight_no_launch_boundary.RunSimulationPreflightNoLaunchBoundary",
-    "test_native_acceptance_cli_boundary.NativeAcceptanceCLIContract",
+    "tests.contracts.test_mcp_entrypoint_and_groups.PackageEntrypointBoundary",
+    "tests.contracts.test_mcp_entrypoint_and_groups.ToolGroupsBoundary",
+    "tests.contracts.test_mcp_entrypoint_and_groups.RunSimulationPreflightNoLaunchBoundary",
+    "tests.contracts.test_mcp_core_boundaries.McpCoreBoundaries",
+    "tests.contracts.test_variant_contracts.VariantContracts",
+    "tests.contracts.test_scene_and_component_contracts.SceneAndComponentContracts",
+    "tests.contracts.test_native_acceptance_cli.NativeAcceptanceCLIContract",
 )
 
 
@@ -38,7 +36,7 @@ def main():
         parser.error("Install the built wheel in this Python environment before running contracts")
     os.environ["PVSYST_PACKAGE_INSTALLED_PYTHON"] = sys.executable
     os.environ["PVSYST_PACKAGE_INSTALLED_CONSOLE"] = str(console)
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests" / "contracts"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     suite = unittest.defaultTestLoader.loadTestsFromNames(CONTRACTS)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     passed = result.wasSuccessful() and result.testsRun > 0 and not result.skipped

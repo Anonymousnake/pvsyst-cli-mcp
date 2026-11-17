@@ -394,8 +394,7 @@ def verify_house_geometry(blocks, lines, house, source, *, anchor_turn=None):
         mappings.append({"source_mesh": part["name"], "native_path": block.path,
                          "native_polygons": len(faces), "max_coordinate_residual_m": residual})
     return {"house_geometry_verified": True, "house_mapping": mappings,
-            "house_coordinate_tolerance_m": COORD_TOL, "house_max_coordinate_residual_m": max_residual,
-            "house_geometry_scope": "source mesh positions and oriented planar boundaries; anchor frame rotation"}
+            "house_coordinate_tolerance_m": COORD_TOL, "house_max_coordinate_residual_m": max_residual}
 
 
 def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
@@ -520,14 +519,11 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
     return {"pv_geometry_verified": True, "pv_mapping": mappings,
             "pv_coordinate_tolerance_m": COORD_TOL, "pv_angle_tolerance_deg": ANGLE_TOL,
             "pv_max_coordinate_residual_m": max_origin, "pv_max_dimension_residual_m": max_dimension,
-            "pv_max_angle_residual_deg": max_angle,
-            "pv_geometry_scope": "source origins, planes, dimensions, module layout and NoOrient links; anchor frame rotation"}
+            "pv_max_angle_residual_deg": max_angle}
 
 
 def _verify_narrow_module_layout(blocks, lines):
-    """Check a saved native module layout: the two-array / one-string-per-table profile, or
-    the narrow single-orientation / one-subarray two-table / two-global-string profile.
-    Shading physics and native consumption are excluded."""
+    """Check a saved native module layout."""
     owners = [block for block in blocks if block.object_type == "pvModuleLayout"]
     arrays = _indexed(blocks, "pvSubArray", "SubArrayId")
     tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]

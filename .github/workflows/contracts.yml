@@ -37,16 +37,9 @@ jobs:
         run: python -c "import importlib.metadata, os; assert os.environ['GITHUB_REF_NAME'] == 'v' + importlib.metadata.version('pvsyst-cli-mcp'), 'Tag and package version differ'"
       - name: Portable public contracts (zero skips)
         run: python scripts/check_contracts.py --report dist/contracts.json
-      - name: Existing regression family for the stale CLI test adapters
-        env:
-          PYTHONPATH: tests
+      - name: Split unit suites (workflows & core regression slices)
         run: >-
-          python -m unittest
-          test_design_flow.DesignFlowTests
-          test_standard_template.StandardTemplateTests
-          test_bugfix_workflows.SimulationTerminalStateTests
-          test_bugfix_workflows.RevisionTerminalStateTests
-          test_bugfix_project.ExplicitCountLineTests -v
+          python scripts/run_tests.py --suite workflows -v
       - uses: actions/upload-artifact@v4
         if: always()
         with:

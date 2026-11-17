@@ -247,7 +247,6 @@ def _economic_block(lines: list[str]) -> dict:
         "raw": "".join(block),
         "scalars": scalars,
         "lists": lists,
-        "fields_scope": "stored_declaration",
         "native_consumption_verified": False,
     }
 

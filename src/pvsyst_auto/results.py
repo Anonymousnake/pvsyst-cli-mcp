@@ -79,17 +79,14 @@ def annual_summary(path, year, nominal_dc_power_kw):
         raise ValueError("Annual output changed during validation")
     diagnostics = []
     if totals["IL_Pmax"] > 3 * reference_energy:
-        diagnostics.append("IL_Pmax exceeds three times STC reference energy; review PV model and sizing. "
-                           "This is a conservative plausibility screen, not a native physical limit.")
+        diagnostics.append("IL_Pmax exceeds three times STC reference energy; review PV model and sizing.")
     return {"year": year, "rows": count, "first": str(first), "last": str(end - timedelta(hours=1)),
             "diagnostic_flags": diagnostics,
             "step_minutes": 60, "complete_year": True, "sha256": before,
             "grid_energy_kwh": totals["E_Grid"], "array_energy_kwh": totals["EArray"],
             "clipping_loss_kwh": totals["IL_Pmax"], "incident_irradiation_kwh_m2": irradiation,
             "nominal_dc_power_kw": nominal_dc_power_kw, "pr_ratio": ratio, "pr_percent": ratio * 100,
-            "native_pr_irradiance_weighted_ratio": native_ratio,
-            "pr_method": "E_Grid_kWh / (GlobInc_kWh_m2 * nameplate_DC_kWp); not mean(hourly PR)",
-            "clipping_scope": "IL_Pmax inverter overpower loss, not all curtailment or inverter losses"}
+            "native_pr_irradiance_weighted_ratio": native_ratio}
 
 
 def compare_results(baseline, target, columns, *, include_key_periods=False):
