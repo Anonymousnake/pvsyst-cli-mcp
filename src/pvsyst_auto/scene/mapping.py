@@ -8,7 +8,7 @@ from itertools import product
 
 from pvsyst_auto.project.circuit import circuit_nodes, inventory
 from pvsyst_auto.scene.author import MAX_VERTICES, _dot, _num, _rotate_z, _sub
-from pvsyst_auto.versions import NATIVE_TEXT, PV_TABLE_SOURCES
+from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, PV_TABLE_SOURCES
 
 # Native 8.1.6 writes six decimals; the retained case coordinates differ by up
 # to 8e-6 m. This adapter comparison tolerance is not a placement offset.
@@ -165,7 +165,8 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
                                  "mppt_inputs": _integer(after.one("NInvMPPT")[1])})
 
     def circuit(node):
-        return (node.kind, node.one("SubArrayId"), _integer(node.one("NElements", "1")),
+        return (node.kind, node.one("SubArrayId", ""), node.one("SubArrayName", ""),
+                _integer(node.one("NElements", "1")),
                 tuple(sorted(circuit(child) for child in node.children)))
 
     if tuple(sorted(circuit(node) for node in circuit_nodes(source_lines))) != tuple(
@@ -647,15 +648,17 @@ def _verify_narrow_module_layout(blocks, lines):
                 or _integer(table.one("NModInHeight")[1]) != rows
                 or _integer(table.one("NModInWidth")[1]) != columns
                 or layout.one("ModLayoutState")[1] != "mlDefStrings"
-                or layout.one("ModOrient")[1] != "moLandScape"
-                or table.one("ModuleOrient")[1] != "moLandScape"):
+                or layout.one("ModOrient")[1] not in ("moLandScape", "moPortrait")
+                or layout.one("ModOrient")[1] != table.one("ModuleOrient")[1]):
             raise ValueError("Module Layout table/array/3D references or mechanical layout disagree")
         for table_key, plane_key in (("DInclin", "FieldTilt"), ("DAzimut", "FieldAzim"), ("BaseSlope", "BaseSlope")):
             if abs(_number(table.one(table_key)[1]) - _number(plane.one(plane_key)[1])) > ANGLE_TOL:
                 raise ValueError("Module Layout PV table angles disagree with their owning source plane")
         for key in ("ModSpacingX", "ModSpacingY"):
-            if _number(layout.one(key)[1]) != 0 or _number(table.one(key)[1]) != 0:
-                raise ValueError("Module Layout review is bounded to zero-spacing native tables")
+            ml_sp = _number(layout.one(key)[1])
+            tb_sp = _number(table.one(key)[1])
+            if ml_sp < 0 or tb_sp < 0 or abs(ml_sp - tb_sp) > COORD_TOL:
+                raise ValueError("Module Layout spacing must be non-negative and match the 3D table")
         if _number(layout.one("RowPadding")[1]) != 0:
             raise ValueError("Module Layout review requires zero native row padding")
         body = lines[layout.line:layout.end_line - 1]
@@ -756,6 +759,9 @@ def _matches_dual_narrow(arrays, tables, layouts):
     try:
         if set(arrays) != {1, 2} or len(tables) != 2 or len(layouts) != 2:
             return False
+        if any("PowerSharingInverterId" in array.fields and array.one("PowerSharingInverterId")[1] != "-1"
+               for array in arrays.values()):
+            return False
         return all(_integer(array.one("NStringCh")[1]) == 1 for array in arrays.values())
     except (ValueError, KeyError, OverflowError):
         return False
@@ -809,8 +815,21 @@ def _assess_general_module_layout(blocks, lines):
                 or abs(_number(plane.one("BaseSlope")[1])) > ANGLE_TOL):
             raise ValueError("General module layout requires ordinary non-averaged fixed source planes")
         if "PowerSharingInverterId" in array.fields and array.one("PowerSharingInverterId")[1] != "-1":
-            raise ValueError("General module layout excludes shared inverter inputs")
+            ps_id = array.one("PowerSharingInverterId")[1]
+            sub_flags = array.one("Flags")[1] if "Flags" in array.fields else ""
+            if (not ps_id.isdigit()
+                    or ("Version" not in array.fields or array.one("Version")[1] not in NATIVE_TEXT_OR_SEED)
+                    or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", sub_flags)
+                    or (int(sub_flags[1:], 16) & 0x0500) != 0x0500):
+                raise ValueError("General module layout shared inverter subarray requires non-negative ID and $0500 flags")
         plane_of[subarray_id] = (orientation, plane)
+    bounds = {key: (array.line - 1, array.end_line - 1) for key, array in arrays.items()}
+    checked_inv = inventory(lines, bounds)
+    if checked_inv["counts_valid"] is not True:
+        raise ValueError("General module layout requires complete consistent source circuit counts")
+    for row in checked_inv["subarrays"]:
+        if row["declared"].get("PowerSharingInverterId", "-1") != "-1" and not row["shared_inverter_lines"]:
+            raise ValueError("Shared PowerSharingInverterId subarray lacks a verified shared circuit InverterNode")
     ranges = source_string_ranges(blocks)
     expected_total = sum((last - first + 1) * capacity
                          for first, last, capacity in ranges.values())
@@ -859,14 +878,16 @@ def _assess_general_module_layout(blocks, lines):
             issues.append("Module-layout table/array/3D reference or mechanical layout disagrees: " + layout.path)
             continue
         if (layout.one("ModLayoutState")[1] not in MODULE_LAYOUT_TABLE_STATES
-                or layout.one("ModOrient")[1] != "moLandScape"
-                or table.one("ModuleOrient")[1] != "moLandScape"):
-            raise ValueError("General module layout supports only landscape tables with a defined-string "
-                             "or computed-inverter state")
-        if (_number(layout.one("ModSpacingX")[1]) != 0 or _number(layout.one("ModSpacingY")[1]) != 0
-                or _number(layout.one("RowPadding")[1]) != 0
-                or _number(table.one("ModSpacingX")[1]) != 0 or _number(table.one("ModSpacingY")[1]) != 0):
-            raise ValueError("General module layout excludes non-zero native spacing or row padding")
+                or layout.one("ModOrient")[1] not in ("moLandScape", "moPortrait")
+                or layout.one("ModOrient")[1] != table.one("ModuleOrient")[1]):
+            raise ValueError("General module layout supports portrait/landscape tables with consistent ModOrient and state")
+        for key in ("ModSpacingX", "ModSpacingY"):
+            ml_sp = _number(layout.one(key)[1])
+            tb_sp = _number(table.one(key)[1])
+            if ml_sp < 0 or tb_sp < 0 or abs(ml_sp - tb_sp) > COORD_TOL:
+                raise ValueError("General module layout spacing must be non-negative and match the 3D table")
+        if _number(layout.one("RowPadding")[1]) != 0:
+            raise ValueError("General module layout excludes non-zero row padding")
         for table_key, plane_key in (("DInclin", "FieldTilt"), ("DAzimut", "FieldAzim"), ("BaseSlope", "BaseSlope")):
             if abs(_number(table.one(table_key)[1]) - _number(plane.one(plane_key)[1])) > ANGLE_TOL:
                 issues.append("PV table angles disagree with the source plane for " + layout.path)

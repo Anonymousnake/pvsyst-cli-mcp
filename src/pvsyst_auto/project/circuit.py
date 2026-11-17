@@ -269,12 +269,14 @@ def inventory(lines, arrays):
             flags = [value.get("Flags", "") for value in configs]
             group_ids = {value.get("PowerSharingInverterId") for value in configs}
             models = {value.get("GInverter", "").casefold() for value in configs}
+            raw_gid = next(iter(group_ids)) if len(group_ids) == 1 else None
+            valid_gid = raw_gid is not None and (raw_gid == "-1" or raw_gid.isdigit())
             shared = (len(set(member_ids)) > 1 and len({value.get("Version") for value in configs}) == 1
                       and all(value.get("Version") in NATIVE_TEXT_OR_SEED for value in configs)
                       and all(re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flag) and int(flag[1:], 16) & 0x400 for flag in flags)
-                      and len(models) == 1 and "" not in models and group_ids in ({"-1"}, {"0"}))
+                      and len(models) == 1 and "" not in models and valid_gid)
             if shared:
-                group_id = int(next(iter(group_ids)))
+                group_id = int(raw_gid)
                 if group_id >= 0 and group_id in sharing_parents:
                     raise UnsupportedCircuit("Multiple circuit parents for a power-sharing group are not checked")
                 sharing_parents.add(group_id)

@@ -269,3 +269,246 @@ class ObstaclePipelineTests(unittest.TestCase):
         self.assertEqual(out["status"], "ready", out)
         self.assertEqual(out["request_summary"]["shading_mode"], "module_layout")
         self.assertFalse((ws / "Projects/HouseOut.PRJ").exists())
+
+    def test_portrait_spacing_three_roofs_powersharing_and_no_shading_source(self):
+        from pvsyst_auto.scene.author import _rotate_z
+        ws, comps, store = self._setup_ws()
+        # 3-orientation source WITHOUT pre-existing pvShading: SA1 unshared (-1), SA2+SA3 shared PowerSharingInverterId=1
+        three_roof_vc0 = """PVObject_=pvVCalcul
+  Comment=3-Roof Source
+  Version=8.1.7
+  Flags=$00100000
+  PVObject_SiteSimul=pvSite
+    NomF=Demo.SIT
+    Latitude=45.0
+    Longitude=5.0
+    Altitude=10.0
+  End of PVObject pvSite
+  PVObject_MeteoSimul=pvMeteo
+    NomF=Demo.MET
+  End of PVObject pvMeteo
+  Orientations, list of=3 TOrientGroup
+    PVObject_=pvOrient
+      Version=8.1.7
+      Flags=$00
+      NoOrient=1
+      FieldType=FixedPlane
+      FieldTilt=25.0
+      FieldAzim=0.0
+      BaseSlope=0.0
+      UsesTiltAver=False
+      UsesAzimAver=False
+      UsesSlopeAver=False
+    End of TOrientGroup
+    PVObject_=pvOrient
+      Version=8.1.7
+      Flags=$00
+      NoOrient=2
+      FieldType=FixedPlane
+      FieldTilt=20.0
+      FieldAzim=-90.0
+      BaseSlope=0.0
+      UsesTiltAver=False
+      UsesAzimAver=False
+      UsesSlopeAver=False
+    End of TOrientGroup
+    PVObject_=pvOrient
+      Version=8.1.7
+      Flags=$00
+      NoOrient=3
+      FieldType=FixedPlane
+      FieldTilt=20.0
+      FieldAzim=90.0
+      BaseSlope=0.0
+      UsesTiltAver=False
+      UsesAzimAver=False
+      UsesSlopeAver=False
+    End of TOrientGroup
+  End of Orientations
+  PVObject_PVMainArray=pvMainArray
+    Flags=$01900400
+    Flags2=$082A
+    PVObject_SystemCircuit=pvCircuit
+      Version=8.1.7
+      Flags=$00
+      InjectionPointNode Start;
+        Children=Start
+          InverterNode Start;
+            NElements=1
+            SubArrayId=1
+            SubArrayName=South
+            Children=Start
+              MPPTNode Start;
+                NElements=1
+                SubArrayId=1
+                SubArrayName=South
+                Children=Start
+                  StringNode Start;
+                    NElements=1
+                    SubArrayId=1
+                    SubArrayName=South
+                  StringNode End;
+                Children=End
+              MPPTNode End;
+            Children=End
+          InverterNode End;
+          InverterNode Start;
+            NElements=1
+            SubArrayName=East; West
+            Children=Start
+              MPPTNode Start;
+                NElements=1
+                SubArrayId=2
+                SubArrayName=East
+                Children=Start
+                  StringNode Start;
+                    NElements=1
+                    SubArrayId=2
+                    SubArrayName=East
+                  StringNode End;
+                Children=End
+              MPPTNode End;
+              MPPTNode Start;
+                NElements=1
+                SubArrayId=3
+                SubArrayName=West
+                Children=Start
+                  StringNode Start;
+                    NElements=1
+                    SubArrayId=3
+                    SubArrayName=West
+                  StringNode End;
+                Children=End
+              MPPTNode End;
+            Children=End
+          InverterNode End;
+        Children=End
+      InjectionPointNode End;
+    End of PVObject pvCircuit
+    SubArrays=Start
+      PVObject_=pvSubArray
+        Comment=South
+        Version=8.1.7
+        Flags=$019E0402
+        Flags2=$20
+        SubArrayId=1
+        PVModule=Mod600.PAN
+        GInverter=Inv50.OND
+        NoOrientation=1
+        NModSerie=10
+        NStringCh=1
+        NStrOrient1=1
+        NInverter=1
+        NInvMPPT=1
+        PowerSharingInverterId=-1
+      End of PVObject pvSubArray
+      PVObject_=pvSubArray
+        Comment=East
+        Version=8.1.7
+        Flags=$019E0502
+        Flags2=$20
+        SubArrayId=2
+        PVModule=Mod600.PAN
+        GInverter=Inv50.OND
+        NoOrientation=2
+        NModSerie=10
+        NStringCh=1
+        NStrOrient1=1
+        NInverter=1
+        NInvMPPT=1
+        PowerSharingInverterId=1
+      End of PVObject pvSubArray
+      PVObject_=pvSubArray
+        Comment=West
+        Version=8.1.7
+        Flags=$019E0502
+        Flags2=$20
+        SubArrayId=3
+        PVModule=Mod600.PAN
+        GInverter=Inv50.OND
+        NoOrientation=3
+        NModSerie=10
+        NStringCh=1
+        NStrOrient1=1
+        NInverter=1
+        NInvMPPT=1
+        PowerSharingInverterId=1
+      End of PVObject pvSubArray
+    EndTags
+  End of PVObject pvMainArray
+  PVObject_System=pvSystem
+    Flags=$00
+    SystemType=Grid
+  End of PVObject pvSystem
+End of PVObject pvVCalcul
+"""
+        (ws / "Projects/Demo.VC1").write_bytes(three_roof_vc0.replace("\n", "\r\n").encode("utf-8"))
+
+        def sloped(name, origin, wx, sy, tilt, azim):
+            t = math.radians(tilt)
+            pts = [(0.0, 0.0, 0.0), (wx, 0.0, 0.0), (wx, sy * math.cos(t), sy * math.sin(t)), (0.0, sy * math.cos(t), sy * math.sin(t))]
+            verts = [[round(origin[k] + _rotate_z(p, -azim)[k], 6) for k in range(3)] for p in pts]
+            return {"name": name, "vertices": verts, "triangles": [[0, 1, 2], [0, 2, 3]]}
+
+        house = {"kind": "mesh", "meshes": [
+            sloped("SouthRoof", [0.0, 0.0, 4.0], 14.0, 8.0, 25.0, 0.0),
+            sloped("EastRoof", [25.0, 0.0, 4.0], 14.0, 8.0, 20.0, -90.0),
+            sloped("WestRoof", [-25.0, 0.0, 4.0], 14.0, 8.0, 20.0, 90.0),
+        ]}
+        layout = {"tables": [
+            {"name": "SouthTbl", "orientation_id": 1, "roof_mesh": "SouthRoof",
+             "module_rows": 2, "module_columns": 5, "orientation": "portrait",
+             "row_spacing_m": 0.03, "column_spacing_m": 0.04,
+             "origin_m": [1.0, 0.5, 4.0 + 0.5 * math.tan(math.radians(25.0)) + 0.2]},
+            {"name": "EastTbl", "orientation_id": 2, "roof_mesh": "EastRoof",
+             "module_rows": 2, "module_columns": 5, "orientation": "portrait",
+             "row_spacing_m": 0.03, "column_spacing_m": 0.04,
+             "origin_m": [25.0 - 0.5 * math.cos(math.radians(20.0)), 1.0, 4.0 + 0.5 * math.sin(math.radians(20.0)) + 0.2]},
+            {"name": "WestTbl", "orientation_id": 3, "roof_mesh": "WestRoof",
+             "module_rows": 2, "module_columns": 5, "orientation": "portrait",
+             "row_spacing_m": 0.03, "column_spacing_m": 0.04,
+             "origin_m": [-25.0 + 0.5 * math.cos(math.radians(20.0)), -1.0, 4.0 + 0.5 * math.sin(math.radians(20.0)) + 0.2]},
+        ]}
+        sc = create_house_pv_scene(
+            store, comps, project="Demo.PRJ", variant="VC1", output_name="ThreeRoofPortrait.pvc2",
+            house=house, layout=layout, module_geometry=MG, dry_run=False,
+        )
+        self.assertEqual(sc["status"], "created", sc)
+
+        # Verify BOTH implicit 3-roof module_layout AND linear succeed on unshaded PowerSharing source
+        for mode in ("linear", "module_layout"):
+            imp = import_house_pv_scene_native(
+                store, comps, "ThreeRoofPortrait.pvc2", f"3R {mode}",
+                dry_run=False, confirm=True, shading_mode=mode,
+            )
+            self.assertEqual(imp["status"], "native_variant_created", imp)
+            self.assertTrue(imp["stored_geometry_verified"])
+            vc_text = Path(imp["file"]).read_text(encoding="utf-8-sig")
+            self.assertIn("ModuleOrient=moPortrait", vc_text)
+            self.assertIn("ModSpacingX=0.040", vc_text)
+            self.assertIn("ModSpacingY=0.030", vc_text)
+            sh = shading_state(vc_text.splitlines(True))
+            self.assertEqual(sh["mode"], "active")
+            self.assertEqual(len(sh["pv_bindings"]["tables"]), 3)
+            if mode == "module_layout":
+                self.assertTrue(imp["stored_module_layout_verified"])
+                self.assertEqual(sh["module_layout"]["status"], "stored_consistent")
+                self.assertIn("ModOrient=moPortrait", vc_text)
+
+        # Explicit string_layout also works with portrait + positive spacing + PowerSharing
+        sl = {"tables": [
+            {"name": "SouthTbl", "subarray_id": 1, "cells": [{"row": r, "col": c, "global_string": 1} for r in (1, 2) for c in range(1, 6)]},
+            {"name": "EastTbl", "subarray_id": 2, "cells": [{"row": r, "col": c, "global_string": 2} for r in (1, 2) for c in range(1, 6)]},
+            {"name": "WestTbl", "subarray_id": 3, "cells": [{"row": r, "col": c, "global_string": 3} for r in (1, 2) for c in range(1, 6)]},
+        ]}
+        sc_exp = create_house_pv_scene(
+            store, comps, project="Demo.PRJ", variant="VC1", output_name="ThreeRoofExplicit.pvc2",
+            house=house, layout=layout, string_layout=sl, module_geometry=MG, dry_run=False,
+        )
+        self.assertEqual(sc_exp["status"], "created", sc_exp)
+        imp_exp = import_house_pv_scene_native(
+            store, comps, "ThreeRoofExplicit.pvc2", "3R explicit",
+            dry_run=False, confirm=True, shading_mode="module_layout",
+        )
+        self.assertEqual(imp_exp["status"], "native_variant_created", imp_exp)
+        self.assertTrue(imp_exp["stored_module_layout_verified"])

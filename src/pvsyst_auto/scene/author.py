@@ -847,8 +847,14 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
     # `_orientation_list` already refuses an orientation with no assigned subarray, so no orphan is
     # silently accepted.
     store._require_no_geometry(lines)
-    if grid_inventory(lines, arrays)["counts_valid"] is not True:
+    inv_check = grid_inventory(lines, arrays)
+    if inv_check["counts_valid"] is not True:
         raise ValueError("Requires complete consistent native grid counts")
+    has_shared = any(
+        "PowerSharingInverterId" in root_block(lines, b).fields
+        and root_block(lines, b).one("PowerSharingInverterId")[1] != "-1"
+        for b in arrays.values()
+    )
     profiles = []
     for identifier, bounds in sorted(arrays.items()):
         sub_root = root_block(lines, bounds)
@@ -868,8 +874,39 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
         azimuth = _finite(float(plane_root.one("FieldAzim")[1]), "FieldAzim", minimum=-180.0, maximum=180.0)
         pan_name = sub_root.one("PVModule")[1]
         if len(arrays) > 1:
-            branches, owned = store._subarray_branches(lines, arrays, identifier)
-            store._require_plane_branch_mode(owned, branches)
+            ps_id = sub_root.one("PowerSharingInverterId")[1] if "PowerSharingInverterId" in sub_root.fields else "-1"
+            if ps_id == "-1" and not has_shared:
+                branches, owned = store._subarray_branches(lines, arrays, identifier)
+                store._require_plane_branch_mode(owned, branches)
+            elif ps_id == "-1":
+                from pvsyst_auto.project.circuit import circuit_nodes
+                inv_row = next(row for row in inv_check["subarrays"] if row["id"] == identifier)
+                if inv_row["shared_inverter_lines"]:
+                    raise ValueError("Subarray without PowerSharingInverterId cannot occupy a shared InverterNode")
+                def _walk(node):
+                    yield node
+                    for child in node.children:
+                        yield from _walk(child)
+                branches = []
+                for node in (item for tree in circuit_nodes(lines) for item in _walk(tree)):
+                    if node.kind == "InverterNode" and str(identifier) in [m.one("SubArrayId") for m in _walk(node)]:
+                        branches.append((node.line - 1, node.end_line - 1, list(_walk(node))))
+                if not branches:
+                    raise ValueError("Subarray has no owning InverterNode branch")
+                store._require_plane_branch_mode(sub_root, branches)
+                owned = sub_root
+            else:
+                if not ps_id.isdigit():
+                    raise ValueError("PowerSharingInverterId must be -1 or a non-negative integer")
+                sub_flags = sub_root.one("Flags")[1] if "Flags" in sub_root.fields else ""
+                if (sub_root.one("Version")[1] not in NATIVE_TEXT_OR_SEED
+                        or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", sub_flags)
+                        or (int(sub_flags[1:], 16) & 0x0500) != 0x0500):
+                    raise ValueError("Power-sharing subarray requires verified Version and $0500 flags")
+                inv_row = next(row for row in inv_check["subarrays"] if row["id"] == identifier)
+                if not inv_row["shared_inverter_lines"]:
+                    raise ValueError("Subarray declares PowerSharingInverterId without a shared circuit parent")
+                owned = sub_root
             if (owned.one("Version")[1] not in NATIVE_TEXT_OR_SEED
                     or owned.one("NStrOrient1")[1] != owned.one("NStringCh")[1]
                     or any(key.startswith("NStrOrient") and key != "NStrOrient1" and owned.one(key)[1] != "0"

@@ -52,10 +52,9 @@
 
 `pvsyst_import_house_pv_scene` 默认使用 **`method="native"`**（完全解耦自 `native/scene.py`，不引用 `user32` 窗口脚本）。它从同一份受支持配方在当前工作区构造一个新的原生输入变体：不查阅、不激活、不启动 GUI，不读写 `PVsyst.ini`，不用剪贴板，不启动 `PVsyst.exe`，不消耗许可证，也不运行仿真。该“写入输入文件”步骤不启动任何 GUI 或 CLI 进程，不涉及窗体。
 
-受支持的源配方要求 PVsyst 8.1.6 / 8.1.7、北半球项目，具体支持模式包括：
-- 双朝向两张横装零间距组件表：源子阵 `1`/`2` 各一条独立组串/逆变器/MPPT，同一 `PAN`/`OND`，各表组件总数匹配源变体。
-- 单朝向单子阵 `1..3` 张横装零间距组件表：每张表归同一电气朝向（`NoOrient=1`），各表组件总数匹配源子阵 `NModSerie × NStringCh`。
-- 单朝向、单子阵、恰两张横装零间距组件表且子阵含两条源组串和两台独立逆变器（`NStringCh=2`、`NInverter=2`、`NInvMPPT=2`）时，`method="native"` + `shading_mode="module_layout"` 会按声明序绑定源全局组串 `1`/`2`。
+受支持的源配方要求 PVsyst 8.1.6 / 8.1.7、北半球项目，支持横装 `landscape` 与竖装 `portrait`（`moPortrait`）、零或正的模块间距（`ModSpacingX`/`ModSpacingY`）、2 个或 3 个及以上独立固定朝向、以及经电路核验的 `PowerSharingInverterId >= 0` 共享多 MPPT 逆变器（无 `pvShading` 节的源变体亦可直接注入）：
+- 多朝向分组源（2 个、3 个及以上固定朝向）：线性模式支持 `1..64` 张按源属主分配的组件表；无 `string_layout` 时的 `module_layout` 支持每子阵 `1` 串（`1..100` 块组件）配一张表；多串或跨表拆分传 `string_layout`。
+- 单朝向单子阵：`1..3` 张表（线性）或恰两表两逆变器/两串（`module_layout`）；多串/更多表配合 `string_layout`（最多 `1..64` 张表）。
 
 来源不匹配、元数据未知或声明冲突会在写入前拦截。负方位角按源 `FieldAzim` 有符号约定写入（`-45` 保留为 `-45`）。精细模式（`shading_mode="module_layout"`）写入 `pvShading.Flags=$20100900`，线性模式写入 `$20000100`。
 

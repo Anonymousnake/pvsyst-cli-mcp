@@ -388,11 +388,12 @@ class GridTests(unittest.TestCase):
                       + port.replace("SubArrayId=1", "SubArrayId=2").replace("Array A", "Array B") + "Children=End\nInverterNode End;\n")
             first = ARRAY.replace("NInvMPPT=1", "NInvMPPT=2\nVersion=" + version + "\nFlags=$001E0402\nGInverter=Shared.OND\nPowerSharingInverterId=0")
             second = first.replace("SubArrayId=1", "SubArrayId=2").replace("Array A", "Array B")
-            for group_id in ("0", "-1"):
+            for group_id in ("0", "-1", "1"):
                 r = self.inspect(grid_text(shared, (first + second).replace("PowerSharingInverterId=0", "PowerSharingInverterId=" + group_id)))
                 self.assertTrue(r["valid"])
                 self.assertEqual(r["grid_circuit"]["totals"], {"inverters": 2, "strings": 12, "explicit_mppt_inputs": 4})
                 self.assertEqual(r["grid_circuit"]["inverter_groups"][0]["subarray_ids"], [1, 2])
+                self.assertEqual(r["grid_circuit"]["inverter_groups"][0]["power_sharing_id"], int(group_id))
                 self.assertTrue(all(row["explicit_mppt_inputs_match_declared"] is True and row["shared_inverter_lines"]
                                     and row["circuit"]["inverters"] == 2 for row in r["grid_circuit"]["subarrays"]))
             for group_id in ("0", "-1"):

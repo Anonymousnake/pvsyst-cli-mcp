@@ -26,7 +26,7 @@ from pvsyst_auto.scene.mapping import (
     verify_module_layout, verify_pv_geometry, verify_tree_obstacles)
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.scene.state import shading_state
-from pvsyst_auto.versions import HEADLESS_RECORD_VERSION
+from pvsyst_auto.versions import HEADLESS_RECORD_VERSION, NATIVE_TEXT_OR_SEED
 
 # pvShading.Flags is mode-specific on native 8.1.6 saved records: linear=$20000100;
 # detailed module-layout=$20100900 (0x100000 selects fine shading, 0x800 enables the
@@ -164,8 +164,8 @@ def _shd_table(idx, noc, profile, group, modules, turn):
             "      NoOrient=%d" % profile["orientation_id"],
             "      PanneauPVName=%s;%s;%s" % (panel["name"], _num(panel["width_m"]),
                                             _num(panel["length_m"])),
-            "      ModSpacingX=%s" % FORMAT["modspacing"],
-            "      ModSpacingY=%s" % FORMAT["modspacing"],
+            "      ModSpacingX=%s" % _n3(profile["column_spacing_m"]),
+            "      ModSpacingY=%s" % _n3(profile["row_spacing_m"]),
             "      NModInHeight=%d" % profile["module_rows"],
             "      NModInWidth=%d" % profile["module_columns"],
             "      ModuleOrient=%s" % orient,
@@ -294,6 +294,8 @@ def _parse_electrical_blocks(blocks):
             subs[int(block.one("SubArrayId")[1])] = {
                 "orientation": int(block.one("NoOrientation")[1]),
                 "comment": block.one("Comment")[1],
+                "version": (block.one("Version")[1] if "Version" in block.fields else ""),
+                "flags": (block.one("Flags")[1] if "Flags" in block.fields else ""),
                 "nmod_serie": int(block.one("NModSerie")[1]),
                 "nstring_ch": int(block.one("NStringCh")[1]),
                 "nstr_orient1": int(block.one("NStrOrient1")[1]),
@@ -304,7 +306,31 @@ def _parse_electrical_blocks(blocks):
     return planes, subs
 
 
-def _ml_table(ordinal, sub, rows, columns, slot, created, globalStr=None, cell_strings=None):
+def _validate_power_sharing(subs, source_text):
+    """Allow unshared (-1) or verified consistent PowerSharingInverterId >= 0 groups."""
+    shared_ids = {sid for sid, sub in subs.items() if sub["power_sharing"] != "-1"}
+    if not shared_ids:
+        return
+    for sid in shared_ids:
+        sub = subs[sid]
+        if not sub["power_sharing"].isdigit():
+            raise ValueError("Subarray %d PowerSharingInverterId must be -1 or a non-negative integer" % sid)
+        if sub["version"] not in NATIVE_TEXT_OR_SEED or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", sub["flags"]):
+            raise ValueError("Shared subarray %d requires verified Version and Flags" % sid)
+        if (int(sub["flags"][1:], 16) & 0x0500) != 0x0500:
+            raise ValueError("Shared subarray %d requires independent-MPPT and power-sharing Flags ($0500)" % sid)
+    arrays = {int(block.one("SubArrayId")[1]): (block.line - 1, block.end_line - 1)
+              for block in objects(source_text) if block.object_type == "pvSubArray"}
+    inv = inventory(source_text.splitlines(True), arrays)
+    if inv["counts_valid"] is not True:
+        raise ValueError("Shared inverter subarrays require complete consistent circuit counts")
+    for row in inv["subarrays"]:
+        if row["id"] in shared_ids and not row["shared_inverter_lines"]:
+            raise ValueError("Shared subarray %d lacks a verified shared circuit InverterNode" % row["id"])
+
+
+def _ml_table(ordinal, sub, rows, columns, slot, created, globalStr=None, cell_strings=None,
+              orientation="landscape", row_spacing_m=0.0, column_spacing_m=0.0):
     # NoSubArrayPar is the physical source subarray; the module record's last field is the
     # source GLOBAL string. They coincide on the dual two-array profile (string==array id)
     # but diverge on the single-orientation profile (two strings on one subarray).
@@ -330,14 +356,14 @@ def _ml_table(ordinal, sub, rows, columns, slot, created, globalStr=None, cell_s
              "        NoShed3D=1",
              "        NoField3DCreated=%d" % created,
              "        ModLayoutState=%s" % FORMAT["ml_table_state"],
-             "        ModOrient=moLandScape",
+             "        ModOrient=%s" % FORMAT["moduleorient"][orientation],
              "        ShowModules=True",
              "        ShowSubMod=True",
              "        ShowNoString=True",
              "        XFillPos=1",
              "        YFillPos=1",
-             "        ModSpacingX=0.000",
-             "        ModSpacingY=0.000",
+             "        ModSpacingX=%s" % _n3(column_spacing_m),
+             "        ModSpacingY=%s" % _n3(row_spacing_m),
              "        RowPadding=0.000",
              "        Modules, list of=%d tModule" % len(records)]
     for sequence, row, column, string_id in records:
@@ -459,36 +485,58 @@ def build_module_layout(source_text, tables, slot_map, string_layout=None):
             rows, columns = profile["module_rows"], profile["module_columns"]
             key = profile["name"] if "name" in profile else profile["orientation_id"]
             slot, created = slot_map[key]
-            blocks.append(_ml_table(ordinal, sub_id, rows, columns, slot, created,
-                                    cell_strings=cell_map))
+            blocks.append(_ml_table(
+                ordinal, sub_id, rows, columns, slot, created,
+                cell_strings=cell_map,
+                orientation=profile["orientation"],
+                row_spacing_m=profile["row_spacing_m"],
+                column_spacing_m=profile["column_spacing_m"],
+            ))
             out.append({"subarray_id": sub_id, "table_name": profile["name"],
                         "no_field_3d_slot": slot, "native_created_id": created,
                         "rows": rows, "columns": columns, "module_count": rows * columns,
                         "global_strings": sorted(set(cell_map.values()))})
-    elif len(subs) == 2:
-        if set(planes) != {1, 2} or set(subs) != {1, 2}:
-            raise ValueError("Module Layout requires source orientations/arrays 1/2")
-        by_orientation = {row["orientation_id"]: row for row in tables}
-        if {row["orientation_id"] for row in tables} != {1, 2} or {s["orientation"] for s in subs.values()} != {1, 2}:
-            raise ValueError("Module Layout requires two source tables, one per orientation")
-        for ordinal, sub_id in enumerate(sorted(subs), 1):
+    elif len(subs) >= 2:
+        ranges = source_string_ranges(source_blocks)
+        if any("source_subarray_id" in row for row in tables):
+            by_owner = {row["source_subarray_id"]: row for row in tables}
+            expected_orient_by_owner = {sid: subs[sid]["orientation"] for sid in subs}
+            if set(by_owner) != set(subs) or any(
+                    by_owner[sid]["orientation_id"] != expected_orient_by_owner[sid] for sid in subs):
+                raise ValueError("Module Layout requires one table per source subarray on its orientation")
+        else:
+            orient_to_sub = {s["orientation"]: sid for sid, s in subs.items()}
+            if len(orient_to_sub) != len(subs):
+                raise ValueError("Shared orientations without source_subarray_id cannot disambiguate tables")
+            by_orient = {row["orientation_id"]: row for row in tables}
+            if set(by_orient) != set(orient_to_sub) or len(tables) != len(subs):
+                raise ValueError("Module Layout requires one table per source orientation")
+            by_owner = {sid: by_orient[subs[sid]["orientation"]] for sid in subs}
+        _validate_power_sharing(subs, source_text)
+        for ordinal, sub_id in enumerate(subs, 1):
             sub = subs[sub_id]
             plane = planes[sub["orientation"]]
-            profile = by_orientation[sub["orientation"]]
+            profile = by_owner[sub_id]
             rows, columns = profile["module_rows"], profile["module_columns"]
-            if (sub["nstring_ch"] != 1 or sub["ninverter"] != 1 or sub["ninvmppt"] != 1
-                    or sub["power_sharing"] != "-1" or sub["nstr_orient1"] != sub["nstring_ch"]
-                    or sub["nmod_serie"] != rows * columns
+            first, last, capacity = ranges[sub_id]
+            if (sub["nstring_ch"] != 1 or first != last or sub["ninverter"] != 1 or sub["ninvmppt"] != 1
+                    or sub["nstr_orient1"] != sub["nstring_ch"]
+                    or capacity != rows * columns
                     or not 1 <= rows * columns <= 100
-                    or profile["orientation"] != "landscape"
-                    or profile["row_spacing_m"] != 0 or profile["column_spacing_m"] != 0):
-                raise ValueError("Module Layout requires one independent string of 1..100 modules and one "
-                                 "inverter/MPPT per array on a landscape zero-spacing table")
+                    or profile["orientation"] not in ("landscape", "portrait")
+                    or profile["row_spacing_m"] < 0 or profile["column_spacing_m"] < 0):
+                raise ValueError("Module Layout requires one string of 1..100 modules matching table dimensions")
             if (abs(profile["tilt_deg"] - plane["tilt_deg"]) > ANGLE_TOL
                     or abs(plane["base_slope_deg"]) > ANGLE_TOL):
                 raise ValueError("PV table plane differs from its source orientation on subarray %d" % sub_id)
-            slot, created = slot_map[by_orientation[sub["orientation"]]["name"]]
-            blocks.append(_ml_table(ordinal, sub_id, rows, columns, slot, created))
+            slot, created = slot_map[profile["name"]]
+            blocks.append(_ml_table(
+                ordinal, sub_id, rows, columns, slot, created,
+                globalStr=first,
+                orientation=profile["orientation"],
+                row_spacing_m=profile["row_spacing_m"],
+                column_spacing_m=profile["column_spacing_m"],
+            ))
             out.append({"subarray_id": sub_id, "orientation_id": sub["orientation"],
                         "no_field_3d_slot": slot, "native_created_id": created,
                         "rows": rows, "columns": columns, "module_count": rows * columns})
@@ -504,15 +552,21 @@ def build_module_layout(source_text, tables, slot_map, string_layout=None):
             raise ValueError("Single-orientation module layout requires two inverters, two strings and two total MPPT inputs")
         for k, profile in enumerate(tables, 1):
             rows, columns = profile["module_rows"], profile["module_columns"]
-            if (profile["orientation"] != "landscape" or profile["row_spacing_m"] != 0
-                    or profile["column_spacing_m"] != 0 or rows * columns != sub["nmod_serie"]
+            if (profile["orientation"] not in ("landscape", "portrait") or profile["row_spacing_m"] < 0
+                    or profile["column_spacing_m"] < 0 or rows * columns != sub["nmod_serie"]
                     or not 1 <= rows * columns <= 100):
-                raise ValueError("Single-orientation layout tables must be landscape zero-spacing NModSerie blocks")
+                raise ValueError("Single-orientation layout tables must match NModSerie with non-negative spacing")
             if (abs(profile["tilt_deg"] - plane["tilt_deg"]) > ANGLE_TOL
                     or abs(plane["base_slope_deg"]) > ANGLE_TOL):
                 raise ValueError("PV table plane differs from its source orientation")
             slot, created = slot_map[profile["name"]]
-            blocks.append(_ml_table(k, sub_id, rows, columns, slot, created, globalStr=k))
+            blocks.append(_ml_table(
+                k, sub_id, rows, columns, slot, created,
+                globalStr=k,
+                orientation=profile["orientation"],
+                row_spacing_m=profile["row_spacing_m"],
+                column_spacing_m=profile["column_spacing_m"],
+            ))
             out.append({"subarray_id": sub_id, "orientation_id": sub["orientation"],
                         "string_id": k, "no_field_3d_slot": slot, "native_created_id": created,
                         "rows": rows, "columns": columns, "module_count": rows * columns})
@@ -594,20 +648,27 @@ def strip_result_cache(lines):
 def assemble_variant(base_text, pvshading, module_layout=None):
     """Splice the constructed scene into the clean electrical source; strip derived caches."""
     eol = "\r\n" if "\r\n" in base_text else "\n"
-    lines = base_text.split(eol)
+    lines = base_text.replace("\r\n", "\n").split("\n")
     block = pvshading.split("\n")
     if block and block[-1] == "":
         block = block[:-1]
-    s, e = _block(lines, lambda x: x == "PVObject_Ombrage=pvShading",
-                  lambda x: x == "End of PVObject pvShading")
-    lines = lines[:s] + block + lines[e + 1:]
+    try:
+        s, e = _block(lines, lambda x: x == "PVObject_Ombrage=pvShading",
+                      lambda x: x == "End of PVObject pvShading")
+        lines = lines[:s] + block + lines[e + 1:]
+    except ValueError as exc:
+        if "block start not found" not in str(exc):
+            raise
+        closing = "End of PVObject pvVCalcul"
+        index = max(i for i, line in enumerate(lines) if line.strip() == closing)
+        lines = lines[:index] + block + lines[index:]
     # Derived-cache removal is idempotent on a valid cold source: a source that was never
     # simulated carries no VarList block at all, so its absence is a legal noop. A block that
     # IS present must be properly closed -- an unclosed cache is malformed and raises.
     lines, _ = strip_result_cache(lines)
     if module_layout is not None:
         closing = "End of PVObject pvVCalcul"
-        index = max(i for i, line in enumerate(lines) if line == closing)
+        index = max(i for i, line in enumerate(lines) if line.strip() == closing)
         lines = lines[:index] + module_layout.split("\n") + [""] + lines[index:]
     text = eol.join(lines)
     banned = ("pvShdFTable", "ShdTableLin", "VarSimul", "Histogram=THistogramme")
@@ -756,10 +817,9 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
         plane = planes[sub["orientation"]]
         if plane["field_type"] != "FixedPlane" or abs(plane["base_slope_deg"]) > ANGLE_TOL:
             raise ValueError("Explicit module layout is bounded to ordinary fixed planes (no slope/averaging)")
-        if sub["power_sharing"] != "-1":
-            raise ValueError("Explicit module layout excludes shared inverter inputs; sharing is not verified")
         if sub["nstr_orient1"] != sub["nstring_ch"]:
             raise ValueError("Explicit module layout requires every source string on the single orientation")
+    _validate_power_sharing(subs, source_text)
     if source.get("orientations"):
         if any("orientation_id" not in row for row in tables):
             raise ValueError("A grouped source requires every explicit table to carry its source orientation_id")
@@ -798,44 +858,61 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
         if any("orientation_id" in row for row in tables):
             raise ValueError("The explicit module layout bridges tables without source orientation ids")
     for table in tables:
-        if (table["orientation"] != "landscape" or table["row_spacing_m"] != 0
-                or table["column_spacing_m"] != 0):
-            raise ValueError("Explicit module layout requires landscape zero-spacing tables; "
-                             "portrait or non-zero spacing is not verified")
+        if (table["orientation"] not in ("landscape", "portrait") or table["row_spacing_m"] < 0
+                or table["column_spacing_m"] < 0):
+            raise ValueError("Explicit module layout requires portrait/landscape tables with non-negative spacing")
     _explicit_cells(string_layout, tables, subs, ranges)
     if not _circuit_counts_valid(source_text, subs):
         raise ValueError("Explicit module layout requires complete, consistent source circuit counts")
 
 
 def _support_gate(source, tables, source_text, mode="linear", string_layout=None):
-    """Reject anything outside the proven native recipes.
-
-    Without an explicit binding the implicit path stays exactly two source orientations / two
-    tables (or one orientation / one subarray with 1..3 linear tables, or the two-table fine
-    layout). Three or more orientations are refused clearly here and must supply an explicit
-    string_layout, which routes to the general per-group invariants instead of these count caps.
-    """
+    """Validate supported native recipes across portrait/landscape, spacing, multi-roof, and PowerSharing."""
     if string_layout is not None:
         _explicit_gate(source, tables, source_text, mode, string_layout)
         return
     orientations = source.get("orientations") or []
     planes, subs = _parse_electrical(source_text)
     if orientations:
-        if len(orientations) != 2 or {item["id"] for item in orientations} != {1, 2}:
-            raise ValueError("The implicit native method supports exactly two source orientations 1/2; "
-                             "three or more require an explicit string_layout")
-        if len(tables) != 2 or {row["orientation_id"] for row in tables} != {1, 2}:
-            raise ValueError("The native method requires one PV table per source orientation")
-        if set(subs) != {1, 2} or {row["orientation"] for row in subs.values()} != {1, 2}:
-            raise ValueError("The native method requires source arrays 1/2 on distinct orientations")
+        orientation_ids = {item["id"] for item in orientations}
+        if not orientation_ids.issubset(set(planes)):
+            raise ValueError("Declared source orientations do not match the parsed source planes")
+        owners = {item.get("subarray_id", item["id"]): item for item in orientations}
+        if set(owners) != set(subs):
+            raise ValueError("Declared source owners do not match the parsed source subarrays")
+        for sub_id, sub in subs.items():
+            if owners[sub_id]["id"] != sub["orientation"]:
+                raise ValueError("Source subarray %d orientation differs from owner profile" % sub_id)
+            if sub["nstr_orient1"] != sub["nstring_ch"]:
+                raise ValueError("Grouped native method requires every source string on the subarray's orientation")
+        _validate_power_sharing(subs, source_text)
+        if not _circuit_counts_valid(source_text, subs):
+            raise ValueError("Grouped native method requires complete consistent source circuit counts")
+        if not 1 <= len(tables) <= MAX_TABLES:
+            raise ValueError("Grouped native method bridges 1..%d PV tables" % MAX_TABLES)
         for table in tables:
-            if (table["orientation"] != "landscape" or table["row_spacing_m"] != 0
-                    or table["column_spacing_m"] != 0):
-                raise ValueError("The native method requires landscape zero-spacing tables")
-        for sub in subs.values():
-            if (sub["nstring_ch"] != 1 or sub["ninverter"] != 1 or sub["ninvmppt"] != 1
-                    or sub["power_sharing"] != "-1" or sub["nstr_orient1"] != sub["nstring_ch"]):
-                raise ValueError("The native method requires one independent string/inverter/MPPT per array")
+            if (table["orientation"] not in ("landscape", "portrait") or table["row_spacing_m"] < 0
+                    or table["column_spacing_m"] < 0):
+                raise ValueError("Native tables require portrait/landscape orientation and non-negative spacing")
+        per_owner = defaultdict(int)
+        for table in tables:
+            owner = table.get("source_subarray_id", table["orientation_id"])
+            if owner not in owners:
+                raise ValueError("Table %r names unknown source owner %r" % (table.get("name"), owner))
+            per_owner[owner] += table["module_rows"] * table["module_columns"]
+        for owner, item in owners.items():
+            if per_owner.get(owner, 0) != item["module_total"]:
+                raise ValueError("Source owner %d tables hold %d modules, not the source total %d"
+                                 % (owner, per_owner.get(owner, 0), item["module_total"]))
+        if mode == "linear":
+            return
+        if mode != "module_layout":
+            raise ValueError("Grouped native path supports linear or module_layout shading")
+        if len(tables) != len(subs):
+            raise ValueError("Implicit grouped module_layout requires one table per source subarray; split tables require string_layout")
+        for sub_id, sub in subs.items():
+            if sub["nstring_ch"] != 1 or sub["ninverter"] != 1 or sub["ninvmppt"] != 1:
+                raise ValueError("Implicit grouped module_layout requires one string/inverter/MPPT per subarray; multi-string arrays require string_layout")
         return
     if len(planes) != 1 or set(subs) != {1}:
         raise ValueError("The single-orientation native path requires one source plane and one subarray")
@@ -844,9 +921,9 @@ def _support_gate(source, tables, source_text, mode="linear", string_layout=None
     if not all("name" in row for row in tables):
         raise ValueError("The single-orientation native path requires named PV tables")
     for table in tables:
-        if (table["orientation"] != "landscape" or table["row_spacing_m"] != 0
-                or table["column_spacing_m"] != 0):
-            raise ValueError("The single-orientation native path requires landscape zero-spacing tables")
+        if (table["orientation"] not in ("landscape", "portrait") or table["row_spacing_m"] < 0
+                or table["column_spacing_m"] < 0):
+            raise ValueError("The single-orientation native path requires portrait/landscape tables with non-negative spacing")
     sub = subs[1]
     if sub["orientation"] not in planes:
         raise ValueError("The source subarray must reference the sole source plane")
@@ -887,7 +964,7 @@ def _preflight(store, components, scene_name, shading_mode, string_layout=None):
 
     pvshading, slot_map = build_pvshading(
         house, tables, snap["modules"], source, shading_mode,
-        max_tables=(MAX_TABLES if string_layout is not None else MAX_TABLES_SINGLE),
+        max_tables=(MAX_TABLES if (string_layout is not None or bool(source.get("orientations"))) else MAX_TABLES_SINGLE),
         obstacles=obstacles)
     layout_text, layout_tables = (None, None)
     if shading_mode == "module_layout":

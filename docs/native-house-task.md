@@ -33,9 +33,7 @@
 
 ## Module Layout 电气阴影
 
-对已满足双屋面条件的输入，在 `spec` 中加入 `"shading_mode": "module_layout"`。默认双朝向模板走原厂自动分配（原生水平、左下起、连续填充）；单朝向显式接线则由 `string_layout` 提供并交给免 GUI 的原生 emitter。不在 MCP 内计算或近似电气阴影。
-
-默认（无 `string_layout`）入口限定两个固定朝向、子阵列 `1`/`2` 各一横装零间距矩形表、每阵一条 `1..100` 块组件独立组串/一个逆变器/一个 MPPT（源数据含多串时需显式传入 `string_layout`）。使用 `string_layout` 时可逐 cell 指定全局组串（支持串跨表和一表多串，全局串容量等于所属源子阵的 `NModSerie`），`global_string=0` 的草稿仅用于保存与回读，导入前需补全分配；当前显式逐格接线仅在 `scene_import_method="native"` + `shading_mode="module_layout"` 下启用。
+在 `spec` 中加入 `"shading_mode": "module_layout"` 即可启用精细电气阴影。默认（无 `string_layout`）支持单朝向双表双串、以及 **2 个或更多（3+ 坡屋面）**独立固定朝向子阵列（每阵一条 `1..100` 块组件组串，每阵一张横装 `landscape` 或竖装 `portrait` 组件表，支持正 `row_spacing_m`/`column_spacing_m` 间距与一致的 `PowerSharingInverterId >= 0` 共享逆变器绑定）。多串或多表分摊时提供 `string_layout` 逐 cell 指定全局组串（支持串跨表和一表多串，全局串容量等于所属源子阵的 `NModSerie`），`global_string=0` 的草稿仅用于保存与回读，导入前需补全分配；显式逐格接线仅在 `scene_import_method="native"` + `shading_mode="module_layout"` 下启用。不在 MCP 内计算或近似电气阴影。
 
 已准备好 `.pvc2` 且对应工程在 GUI 中打开时，也可直接调用导入工具：
 
@@ -68,7 +66,7 @@
 - 省略或 `"native"`（**默认**）：免去 GUI 操作，根据声明的房屋网格、`obstacles` 与 PV 区域在内存中直接构建并校验场景记录，写出新变体文件；**导入阶段**不启动 `PVsyst.exe`，不改写 `INI` 配置、剪贴板或许可文件，也不执行仿真。当 `pvsyst_run_house_task(dry_run=false, confirm=true)` 时会在同一流程内自动继续调用 CLI 跑完全年仿真（见下）。
 - `"gui"`（旧版遗留路径，已冻结不再维护）：冷启动独立的 PVsyst GUI 进程完成导入、朝向关联、有效性检查与另存。
 
-`"native"` 的支持范围：高层 `pvsyst_run_house_task` 与底层导入共用同一套原生构建校验。未提供 `string_layout` 时支持已验证的窄模板：双朝向两张横装零间距矩形表（源子阵 `1`/`2` 各**恰一条**独立组串、一个逆变器、一个 MPPT；每子阵多串时须改用 `string_layout`），或单朝向单子阵 `1..3` 张横装零间距矩形表（线性）／两表两串模式（精细）。提供 `string_layout` 时改走显式逐格接线校验：一个或两个源子阵（每子阵对应一个固定平面）逐 cell 指定全局组串编号，每串容量等于所属子阵 `NModSerie`（支持组串跨表或单表多串，全局编号区间按源子阵顺序排列）；单朝向场景建模支持 `1..64` 张表，双朝向结构上为每朝向一表（共 2 表）。编号 `0` 表示未分配草稿，仅允许保存和回读，导入前须全部填写完整，超出容量、重复占格、未知编号或子阵不匹配均在写入前拦截报错（注：场景导出能力上限为 64 张表，实际仿真请依模板和 PVsyst 版本核对）。所有模板都要求同一 `PAN`/`OND` 组件且总块数与源变体严格相等；自动排布、共享/异构逆变器、竖装（portrait）与非零间距等场景暂不支持，不满足条件时直接报错中止而不做隐式修改。更多细节见[住宅与光伏建模](house-pv-modeling.md)。
+`"native"` 的支持范围：高层 `pvsyst_run_house_task` 与底层导入共用同一套原生构建校验，支持横装 `landscape` 与竖装 `portrait`（`ModOrient=moPortrait`）、零或正的模块间距（`row_spacing_m` / `column_spacing_m >= 0`，写入 `ModSpacingX`/`ModSpacingY`）、任意多个（2 个、3 个及以上）固定朝向屋面与 `PowerSharingInverterId >= 0` 共享多 MPPT 逆变器。未提供 `string_layout` 时：`linear` 支持分组多朝向 `1..64` 张表及单朝向 `1..3` 张表；`module_layout` 支持单朝向双表双串或分组多朝向每子阵 1 串 1 表。提供 `string_layout` 时可对 `1..64` 张表跨表/单表多串逐 cell 绑定任意固定平面与共享逆变器组合。不满足拓扑/总数/平面约束时直接报错中止而不做隐式修改。更多细节见[住宅与光伏建模](house-pv-modeling.md)。
 
 状态说明：高层 `pvsyst_run_house_task` 的 **native 导入阶段**只写入场景记录文件（`stored_geometry_verified` 和 `stored_module_layout_verified` 仅反映文件已正确保存），此时 `imported`、`native_geometry_verified` 和 `native_consumption_verified` 仍为 `false`——表示 PVsyst 尚未实际加载并计算该变体。只有当调用 `dry_run=false, confirm=true` 继续跑完 CLI 全年仿真且结果上下文校验通过后，`native_consumption_verified` 才会置为 `true`。如果直接调用底层 [`pvsyst_import_house_pv_scene`](tool-reference.md)`(method="native")` 单独生成变体，随后需再调用 [`pvsyst_run_simulation`](tool-reference.md) 运行仿真。
 
