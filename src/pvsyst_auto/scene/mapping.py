@@ -359,7 +359,7 @@ def _same_mesh(expected, triangles, actual, polygons):
     return residual if source_loops == saved_loops else None
 
 
-def verify_house_geometry(blocks, lines, house, source, *, anchor_turn=None):
+def verify_house_geometry(blocks, lines, house, source, *, anchor_turn=None, extra_meshes=None):
     """Match every source mesh by world position and oriented polygon boundaries.
 
     anchor_turn applies the proven native anchor frame rotation (360 - orientation-1
@@ -372,11 +372,15 @@ def verify_house_geometry(blocks, lines, house, source, *, anchor_turn=None):
         if source["field_azimuth_deg"] != 0:
             raise ValueError("House coordinate verification is recorded only for mesh scenes with source anchor azimuth zero")
         anchor_turn = 180.0
+    obstacle_meshes = list(extra_meshes or ())
     native = [(block, *_native_mesh(block, lines)) for block in blocks if block.object_type == "pvShdGenObject"]
-    if len(native) != len(house["meshes"]):
-        raise ValueError("Native and source house mesh counts differ")
-    mappings, max_residual = [], 0.0
-    for part in house["meshes"]:
+    if len(native) != len(house["meshes"]) + len(obstacle_meshes):
+        raise ValueError("Native and source house/obstacle mesh counts differ")
+    mappings, obstacle_mappings, max_residual = [], [], 0.0
+    for target_list, part in (
+            *[(mappings, item) for item in house["meshes"]],
+            *[(obstacle_mappings, item) for item in obstacle_meshes],
+    ):
         expected = [_rotate_z(tuple(point), anchor_turn) for point in part["vertices"]]
         bounds = _bounds(expected)
         matches = []
@@ -387,14 +391,60 @@ def verify_house_geometry(blocks, lines, house, source, *, anchor_turn=None):
             if residual is not None:
                 matches.append((index, residual))
         if len(matches) != 1:
-            raise ValueError("Source house mesh has no unique native surface match: " + part["name"])
+            raise ValueError("Source mesh has no unique native surface match: " + part["name"])
         index, residual = matches[0]
         block, points, faces = native.pop(index)
         max_residual = max(max_residual, residual)
-        mappings.append({"source_mesh": part["name"], "native_path": block.path,
-                         "native_polygons": len(faces), "max_coordinate_residual_m": residual})
-    return {"house_geometry_verified": True, "house_mapping": mappings,
-            "house_coordinate_tolerance_m": COORD_TOL, "house_max_coordinate_residual_m": max_residual}
+        target_list.append({"source_mesh": part["name"], "native_path": block.path,
+                            "native_polygons": len(faces), "max_coordinate_residual_m": residual})
+    result = {"house_geometry_verified": True, "house_mapping": mappings,
+              "house_coordinate_tolerance_m": COORD_TOL, "house_max_coordinate_residual_m": max_residual}
+    if obstacle_meshes:
+        result["obstacle_mesh_mapping"] = obstacle_mappings
+    return result
+
+
+def verify_tree_obstacles(blocks, tree_obstacles, source, *, anchor_turn):
+    """Verify native pvShdElemObject (ObjetElemType=oeTree) records against declared trees."""
+    trees = list(tree_obstacles or ())
+    native = [block for block in blocks if block.object_type == "pvShdElemObject"]
+    if len(native) != len(trees):
+        raise ValueError("Native and declared oeTree obstacle counts differ")
+    if not trees:
+        return {"tree_obstacles_verified": True, "tree_count": 0}
+    anchor_azim = source["field_azimuth_deg"]
+    orientations = source.get("orientations") or []
+    if orientations:
+        anchor_azim = next(item for item in orientations if item["id"] == 1)["field_azimuth_deg"]
+    matched = []
+    for tree in trees:
+        expected_origin = _rotate_z(tuple(tree["origin_m"]), anchor_turn)
+        expected_azim = anchor_azim + tree["rotation_deg"]
+        expected_params = (
+            tree["top_height_m"], tree["middle_height_m"], tree["bottom_height_m"],
+            tree["trunk_height_m"], tree["crown_diameter_m"], tree["trunk_diameter_m"],
+        )
+        hits = []
+        for idx, block in enumerate(native):
+            if (block.one("ObjetElemType")[1] != "oeTree"
+                    or block.one("Source")[1] != "osPVsyst"
+                    or block.one("Flags")[1] != "$02200004"):
+                continue
+            origin = [_number(v) for v in block.one("DOrigine")[1].split(",")]
+            params = [_number(v) for v in block.one("Params")[1].rstrip(",").split(",") if v]
+            if len(origin) != 3 or len(params) != 6:
+                continue
+            if (max(abs(a - b) for a, b in zip(origin, expected_origin)) <= COORD_TOL
+                    and abs(_number(block.one("DInclin")[1])) <= ANGLE_TOL
+                    and abs(_number(block.one("BaseSlope")[1])) <= ANGLE_TOL
+                    and abs(_number(block.one("DAzimut")[1]) - expected_azim) <= ANGLE_TOL
+                    and all(abs(a - b) <= 0.002 for a, b in zip(params, expected_params))):
+                hits.append(idx)
+        if len(hits) != 1:
+            raise ValueError("Declared tree obstacle has no unique native oeTree match: " + tree["name"])
+        block = native.pop(hits[0])
+        matched.append({"name": tree["name"], "native_path": block.path})
+    return {"tree_obstacles_verified": True, "tree_count": len(matched), "tree_mapping": matched}
 
 
 def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):

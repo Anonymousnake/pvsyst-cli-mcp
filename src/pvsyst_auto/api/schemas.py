@@ -159,7 +159,8 @@ class ACCablingUpdates(BaseModel):
     section: Literal["ISO60228_10", "ISO60228_16", "ISO60228_25", "ISO60228_35", "ISO60228_50",
                      "ISO60228_70", "ISO60228_95", "ISO60228_120"] | None = None
 
-class NativeDCUpdates(BaseModel):
+class DCCablingUpdates(BaseModel):
+    """DC wiring target: resistance (mOhm) or STC loss percentage."""
     model_config = ConfigDict(extra="forbid")
     mode: Literal["resistance", "percent"]
     value: StrictNum
@@ -224,6 +225,55 @@ class MeshHouseSpec(BaseModel):
     kind: Literal["mesh"]
     meshes: list[HouseMesh]
 
+class BuildingObstacle(BaseModel):
+    """Surrounding flat- or gable-roofed building obstacle in the house local frame."""
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["building"]
+    name: StrictStr
+    origin_m: Annotated[list[StrictNum], Field(min_length=3, max_length=3)]
+    length_m: StrictNum
+    width_m: StrictNum
+    height_m: StrictNum
+    rotation_deg: StrictNum = 0.0
+    roof: FlatRoof | GableRoof | None = None
+
+class WallObstacle(BaseModel):
+    """Vertical barrier/parapet wall extruded along an XY line segment."""
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["wall"]
+    name: StrictStr
+    start_m: Annotated[list[StrictNum], Field(min_length=3, max_length=3)]
+    end_m: Annotated[list[StrictNum], Field(min_length=3, max_length=3)]
+    height_m: StrictNum
+    thickness_m: StrictNum = 0.2
+
+class MeshObstacle(BaseModel):
+    """Arbitrary custom 3D obstacle mesh (vertices + triangles) in the house local frame."""
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["mesh"]
+    name: StrictStr
+    vertices: list[Annotated[list[StrictNum], Field(min_length=3, max_length=3)]]
+    triangles: list[Annotated[list[StrictInt], Field(min_length=3, max_length=3)]]
+
+class TreeObstacle(BaseModel):
+    """Native PVsyst parametric tree obstacle (ObjetElemType=oeTree)."""
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["tree"]
+    name: StrictStr
+    origin_m: Annotated[list[StrictNum], Field(min_length=3, max_length=3)]
+    top_height_m: StrictNum
+    middle_height_m: StrictNum
+    bottom_height_m: StrictNum
+    trunk_height_m: StrictNum
+    crown_diameter_m: StrictNum
+    trunk_diameter_m: StrictNum
+    rotation_deg: StrictNum = 0.0
+
+ObstacleSpec = Annotated[
+    BuildingObstacle | WallObstacle | MeshObstacle | TreeObstacle,
+    Field(discriminator="kind"),
+]
+
 class ModuleGeometry(BaseModel):
     """Explicit geometric metadata, checked against a readable loose PAN when present."""
     model_config = ConfigDict(extra="forbid")
@@ -286,6 +336,7 @@ class HouseTaskRequest(BaseModel):
     year: StrictInt
     house: MeshHouseSpec
     layout: NamedPVTablesLayout | PlacedPVTableLayout
+    obstacles: Annotated[list[ObstacleSpec], Field(min_length=1, max_length=64)] | None = None
     string_layout: StringLayoutBinding | None = None
     module_geometry: ModuleGeometry | None = None
     report_pages: list[StrictStr] | None = None
@@ -580,6 +631,7 @@ class SourcedHouseTaskRequest(BaseModel):
     variant_name: StrictStr
     house: MeshHouseSpec
     layout: NamedPVTablesLayout | PlacedPVTableLayout
+    obstacles: Annotated[list[ObstacleSpec], Field(min_length=1, max_length=64)] | None = None
     string_layout: StringLayoutBinding | None = None
     sources: dict[str, SourceTextRequest] = Field(default_factory=dict)
     declarations: list[SourceDeclarationRequest] = Field(default_factory=list)

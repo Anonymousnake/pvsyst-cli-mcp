@@ -157,6 +157,93 @@ class SceneComponentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(blocked["status"], "blocked")
                 self.assertIn("ambiguous", " ".join(blocked["issues"]).lower())
 
+    async def test_obstacles_default_native_import_and_headless_dc_cabling_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for sub in ("Projects", "Sites", "Meteo", "UserData", "ComposPV/PVmodules", "ComposPV/Inverters"):
+                (root / sub).mkdir(parents=True)
+            (root / "Projects" / "Demo.PRJ").write_text(
+                "PVObject_=pvProject\n  SiteFile=Demo.SIT\n  MeteoFileName=Demo.MET\nEnd of PVObject pvProject\n",
+                encoding="utf-8")
+            (root / "Sites" / "Demo.SIT").write_text("PVObject_=pvSite\n  Latitude=45\nEnd of PVObject pvSite\n", encoding="utf-8")
+            (root / "Meteo" / "Demo.MET").write_text("PVObject_=pvMeteo\nEnd of PVObject pvMeteo\n", encoding="utf-8")
+            vc = _source_vc([_orient(1, 25.0, 20.0)], [_subarray(1, 1, "Mono600.PAN", 15, 2)])
+            vc = vc.replace(
+                "    Flags=$00\n    PVModule=Mono600.PAN",
+                "    Flags=$001E0402\n    Flags2=$20\n    PVModule=Mono600.PAN",
+            ).replace(
+                "    PowerSharingInverterId=-1\n  End of PVObject pvSubArray",
+                "    PowerSharingInverterId=-1\n    RSCablageCh=378.105\n    RSCablagePC=1.50\n    ACWireLength=0.0\n  End of PVObject pvSubArray",
+            ).replace(
+                "  PVObject_PVMainArray=pvMainArray\n    Flags=$00",
+                "  PVObject_PVMainArray=pvMainArray\n    Flags=$00100400\n    Flags2=$082A\n    MVNbTransfos=0",
+            ).replace(
+                "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.6\n",
+                "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.6\n      Flags=$00\n",
+            ).replace(
+                "  PVObject_System=pvSystem\n    SystemType=Grid",
+                "  PVObject_System=pvSystem\n    Flags=$00\n    SystemType=Grid",
+            )
+            (root / "Projects" / "Demo.VC0").write_text(vc, encoding="utf-8")
+            pan = (
+                "PVObject_=pvModule\n  Version=7.2\n  Flags=$00900043\n"
+                "  PVObject_Commercial=pvCommercial\n    Flags=$0041\n"
+                "    Manufacturer=Demo\n    Model=Mono600\n    Width=1.134\n    Height=2.465\n    Depth=0.030\n"
+                "  End of PVObject pvCommercial\n"
+                "  Technol=mtSiMono\n  NCelS=78\n  NCelP=2\n  NDiode=3\n  SubModuleLayout=slTwinHalfCells\n"
+                "  GRef=1000\n  TRef=25.0\n  PNom=600\n  Isc=13.87\n  Voc=55.03\n  Imp=13.26\n  Vmp=45.25\n"
+                "  RShunt=1100\n  RSerie=0.255\n  PVObject_IAM=pvIAM\n    Flags=$00\n  End of PVObject pvIAM\n"
+                "End of PVObject pvModule\n"
+            )
+            (root / "ComposPV" / "PVmodules" / "Mono600.PAN").write_text(pan, encoding="utf-8")
+            cli = root / "PVsystCLI.exe"
+            cli.write_bytes(b"fake")
+            house = {"kind": "mesh", "meshes": [_roof_mesh("roof_1", 0, 0, 25.0, 0.0)]}
+            layout = {"tables": [
+                {"name": "T1", "module_rows": 3, "module_columns": 10, "orientation": "landscape",
+                 "row_spacing_m": 0, "column_spacing_m": 0, "origin_m": [0, 0, 0], "roof_mesh": "roof_1"}
+            ]}
+            obstacles = [
+                {"kind": "tree", "name": "Oak1", "origin_m": [5.0, -8.0, 0.0],
+                 "top_height_m": 9.0, "middle_height_m": 6.5, "bottom_height_m": 3.0,
+                 "trunk_height_m": 2.0, "crown_diameter_m": 4.5, "trunk_diameter_m": 0.4},
+                {"kind": "wall", "name": "Wall1", "start_m": [0.0, -4.0, 0.0],
+                 "end_m": [10.0, -4.0, 0.0], "height_m": 1.5},
+            ]
+            async with mcp_session(root, cli) as session:
+                tool_names = {t.name for t in (await session.list_tools()).tools}
+                self.assertIn("pvsyst_create_dc_cabling_variant", tool_names)
+                self.assertNotIn("pvsyst_create_native_dc_cabling_variant", tool_names)
+
+                err, sc = decode_reply(await session.call_tool("pvsyst_create_house_pv_scene", {
+                    "project": "Demo.PRJ", "variant": "VC0", "output_name": "ObsScene.pvc2",
+                    "house": house, "layout": layout, "obstacles": obstacles,
+                    "module_geometry": {"model_name": "Mono600", "nom_power_wp": 600.0,
+                                        "width_m": 1.134, "length_m": 2.465, "geometry_depth_m": 0.03},
+                    "dry_run": False}))
+                self.assertFalse(err, sc)
+                self.assertEqual(sc["status"], "created", sc)
+
+                # Omit `method` to prove default is headless "native"
+                err, imp = decode_reply(await session.call_tool("pvsyst_import_house_pv_scene", {
+                    "scene_name": "ObsScene.pvc2", "variant_name": "WithObs",
+                    "dry_run": False, "confirm": True}))
+                self.assertFalse(err, imp)
+                self.assertEqual((imp["status"], imp["method"]), ("native_variant_created", "native"), imp)
+                self.assertEqual((imp["obstacle_count"], imp["tree_count"], imp["obstacle_mesh_count"]), (2, 1, 1))
+
+                err, params = decode_reply(await session.call_tool("pvsyst_get_variant_parameters", {
+                    "project": "Demo.PRJ", "variant": imp["variant"]}))
+                self.assertFalse(err, params)
+                self.assertIn("pvShdElemObject", params["shading_scene"]["object_types"])
+
+                # Headless DC cabling: percent mode with readable local PAN
+                err, dc = decode_reply(await session.call_tool("pvsyst_create_dc_cabling_variant", {
+                    "project": "Demo.PRJ", "source_variant": "VC0", "new_variant": "VC2",
+                    "dc": {"mode": "percent", "value": 1.5}, "dry_run": False, "variant_name": "DC 1.5pct"}))
+                self.assertFalse(err, dc)
+                self.assertEqual((dc["status"], dc["dc"]["mode"], dc["dc"]["loss_percent"]), ("created", "percent", "1.50"))
+
 
 if __name__ == "__main__":
     unittest.main()

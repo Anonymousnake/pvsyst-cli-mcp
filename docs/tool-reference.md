@@ -6,11 +6,11 @@ By default the MCP server exposes **82 tools across 8 groups**. You can restrict
 
 ## PVsystCLI version differences
 
-`PVsystCLI.exe` runs simulations on existing projects and variants, converts weather files, and manages licenses. Because editing project parameters, component databases, or 3D shading scenes is not part of the official CLI, this package handles those edits by parsing and writing PVsyst's text files directly (or via targeted Win32 GUI automation on PVsyst 8.1.6 rev49278 Chinese at 96 DPI for 3D scene imports and DC cable calculations).
+`PVsystCLI.exe` runs simulations on existing projects and variants, converts weather files, and manages licenses. Because editing project parameters, component databases, DC cabling, or 3D shading scenes is not part of the official CLI, this package parses and writes PVsyst's text files directly and headlessly (PVsyst 8.1.6 rev49278 / 8.1.7 rev49382). Legacy GUI automation (`native/scene.py`) is retained unmaintained only as an explicit fallback, while `pvsyst_open_native_project` remains available for interactive desktop inspection.
 
 Before running a CLI command, the adapter inspects `PVsystCLI.exe help` on the host machine so unsupported flags fail immediately without burning a simulation run:
 
-| CLI capability | 8.0.6 | 8.1.6 |
+| CLI capability | 8.0.6 | 8.1.6 / 8.1.7 |
 |---|---|---|
 | Simulate existing project/variant, export CSV/PDF, date range, language, report pages | Yes | Yes |
 | Convert weather CSV to `.MET`, license commands, export diagnostic logs | Yes | Yes |
@@ -55,17 +55,17 @@ Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comp
 | `pvsyst_get_variant_components`, `pvsyst_update_variant_components` | Read or swap `.PAN`, `.OND`, `.BTR`, and `.GEN` references inside a variant |
 | `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Read stored variant state and apply guarded parameter updates (angles, series count, MPPT/string counts, losses, horizon, seasonal tilt, temperature, PF, grid limits, P50/P90) |
 | `pvsyst_create_tracking_variant` | Create a new variant with updated axis/backtracking/limit parameters from an existing tracking template |
-| `pvsyst_create_native_dc_cabling_variant` | Set DC wiring resistance (`mOhm`) or STC loss (`%`) via the open PVsyst 8.1.6 GUI, trigger native recalculation, and save as a new variant |
+| `pvsyst_create_dc_cabling_variant` | Headlessly set DC wiring resistance (`mOhm`) or STC loss (`%`, using 1-diode `.PAN` STC MPP solver) across subarray and `StringNode` entries and save as a new `.VCx` variant (built-in unreadable modules allow `resistance` mode) |
 | `pvsyst_create_ac_cabling_variant` | Configure uniform per-inverter AC cable length (`0.1 m` precision) and section in a new variant |
 | `pvsyst_create_mv_night_disconnect_variant` | Toggle the `NightDisconnect` switch and main-array bit 29 on a single-MV transformer template |
 | `pvsyst_create_shed_geometry_variant` | Create a new variant with updated pitch, tilt, count, width, or electrical shading flag on an existing `Sheds` or `SunShields` template |
 | `pvsyst_create_dome_allocation_variant` | Rebalance string counts between the two faces of an existing paired `Dome` template |
 | `pvsyst_review_project_inputs` | Compare a prepared design manifest against the actual values saved in a `.PRJ`/`.VCx` |
 | `pvsyst_prepare_design_project` | Run component discovery, weather preparation, and project configuration without launching an annual simulation |
-| `pvsyst_open_native_project` | Cold-launch PVsyst 8.1.6 GUI and load the target project when no conflicting session is active |
-| `pvsyst_create_house_pv_scene` | Serialize named house meshes and rooftop PV regions into a standard PVCollada 2.0 (`.pvc2`) file |
-| `pvsyst_read_house_pv_scene` | Parse a v1/v2 `.pvc2` XML file back into structured house and PV layout arguments |
-| `pvsyst_import_house_pv_scene` | Import a `.pvc2` scene into an already open PVsyst 8.1.6 project via GUI, bind orientations, check validity/shading tables, and save as a new variant |
+| `pvsyst_open_native_project` | Cold-launch PVsyst 8.1.6/8.1.7 GUI and load the target project interactively when no conflicting session is active |
+| `pvsyst_create_house_pv_scene` | Serialize named house meshes, rooftop PV regions, and optional environment `obstacles` (`building`, `tree` via `oeTree`, `wall`, `mesh`) into a PVCollada 2.0 (`.pvc2`) file |
+| `pvsyst_read_house_pv_scene` | Parse a v1/v2 `.pvc2` XML file losslessly back into structured `house`, `layout`, `string_layout`, and `obstacles` arguments |
+| `pvsyst_import_house_pv_scene` | Import a `.pvc2` scene into a new `.VCx` variant; defaults to `method="native"` (headless `.VCx` emission of `pvShdArrayTable`, `pvShdGenObject`, native `oeTree` `pvShdElemObject`, and optional `module_layout`), with legacy unmaintained `method="gui"` optional |
 | `pvsyst_validate_variant_structure`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray` | Check subarray/circuit/MPPT consistency, or clone and remove subarrays and fixed planes |
 | `pvsyst_restore_variant` | Roll back a variant file to a previously recorded backup snapshot |
 | `pvsyst_archive_project`, `pvsyst_archive_variant`, `pvsyst_restore_project_archive` | Archive projects/variants out of the active workspace or restore them |
@@ -121,7 +121,7 @@ Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parame
 | `pvsyst_run_simulation` | Run a single or batch simulation via `PVsystCLI.exe` with optional date range, `.SFI`, `.RVT`, report page selection (`-rp`), and shading recomputation (`-rs`) |
 | `pvsyst_simulate_template` | Copy a fixed-plane or `UnlimTracking` template, apply component/weather/angle/capacity edits, run a full year, and write a rollback manifest |
 | `pvsyst_run_sourced_house_task` | Bind cited datasheet tokens into a design draft, prepare the source project, and hand off to the 3D house simulation pipeline |
-| `pvsyst_run_house_task` | End-to-end 3D house workflow: generate `.pvc2`, open PVsyst GUI, import scene, bind orientations, save new variant, close GUI, and run a full-year CLI simulation with checkpoint resume |
+| `pvsyst_run_house_task` | End-to-end 3D house + obstacles workflow: generate `.pvc2`, build native `.VCx` (`scene_import_method="native"` default, `linear` or `module_layout`), and run a full-year CLI simulation with checkpoint resume |
 | `pvsyst_simulate_design` | Unified single-design workflow combining component lookup, template matching, integer capacity sizing (or declared electrical envelope), weather acquisition/preparation, and annual simulation |
 | `pvsyst_prepare_sourced_design` | Extract an `electrical_design` envelope from cited datasheet snippets and check whether all required voltage/current/temperature inputs are present |
 
@@ -146,7 +146,7 @@ See [result comparison](result-comparison-verification.md) for side-by-side diff
 - Energy management: [inverter temperature](inverter-temperature.md), [power factor & PNom](power-factor.md), [grid injection limit](grid-power-limit.md), [combined PF + power controls](native-power-controls.md), [system flags & units](native-energy-management.md), [P50/P90 parameters](p50-native-parameters.md)
 
 Dedicated variant-creation tools handle structural or multi-object changes:
-- Cabling & transformers: [AC cabling](native-ac-cabling.md), [DC cabling GUI bridge](native-dc-cabling.md), [MV night disconnect](native-mv-night.md)
+- Cabling & transformers: [AC cabling](native-ac-cabling.md), [headless DC cabling](native-dc-cabling.md), [MV night disconnect](native-mv-night.md)
 - Complex orientations & 3D scenes: [tracking controls](native-tracking-controls.md), [sheds & sun-shields](native-shed-controls.md), [paired dome allocation](native-dome-allocation.md), [two-roof house delivery](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance), [grouped house scenes](grouped-house-scenes.md), [multi-roof mapping](multiroof-native-map.md), [scene identity notes](native-scene-identity-map.md), [project GUI session](native-project-session.md)
 
 ## Workspace directories and conventions

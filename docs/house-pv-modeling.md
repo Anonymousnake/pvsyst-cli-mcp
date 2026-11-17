@@ -1,11 +1,11 @@
 # 住宅与屋顶光伏 3D 场景建模（PVCollada 2.0 / `.pvc2`）
 
-在 PVsyst 8.1.6 中，3D 近阴影场景支持导入基于 COLLADA 1.5 扩展的 PVCollada 2.0（`.pvc2`）XML 格式。本模块提供三个递进的工具来管理住宅 3D 场景：
-1. `pvsyst_create_house_pv_scene`：将结构化的房屋三维网格（`house`）与屋顶光伏排布（`layout`）序列化为工作区 `UserData` 下的 `.pvc2` 文件。
-2. `pvsyst_read_house_pv_scene`：从已有的 `.pvc2` XML 中无损解析并还原出当初的 `house` 和 `layout` 参数，方便在此基础上微调尺寸后另存新场景。
-3. `pvsyst_import_house_pv_scene`：默认以 `method="gui"` 驱动已打开的 PVsyst 8.1.6 GUI 导入 `.pvc2` 文件、绑定屋顶朝向、校验几何有效性并计算阴影表，最后另存为新 `.VCx` 变体；或以 `method="native"` 在不启动 GUI、不运行仿真的情况下构造新的原生输入变体（见第 5 节）。
+在 PVsyst 8.1.6 / 8.1.7 中，3D 近阴影场景支持基于 COLLADA 1.5 扩展的 PVCollada 2.0（`.pvc2`）XML 格式。本模块提供三个递进的工具来管理住宅及周边环境遮挡 3D 场景：
+1. `pvsyst_create_house_pv_scene`：将结构化的房屋三维网格（`house`）、屋顶光伏排布（`layout`）、可选逐格接线（`string_layout`）以及周边遮挡物（`obstacles`：`building`、`tree`、`wall`、`mesh`）序列化为工作区 `UserData` 下的 `.pvc2` 文件。
+2. `pvsyst_read_house_pv_scene`：从已有的 `.pvc2` XML 中无损解析并还原出当初的 `house`、`layout`、`string_layout` 与 `obstacles` 参数，方便在此基础上微调尺寸后另存新场景。
+3. `pvsyst_import_house_pv_scene`：默认以 `method="native"`（免 GUI 原生构建，见第 5 节）在不启动 PVsyst 桌面窗口、不运行仿真的情况下构造新的原生输入 `.VCx` 变体（含 `pvShdArrayTable`、`pvShdGenObject` 与原生 `oeTree` 树木对象 `pvShdElemObject`）；仅当用户显式指定旧版未维护的 `method="gui"` 时才走桌面 GUI 导入路径（第 4 节）。
 
-如果要从头到尾一键跑完“生成场景 → 启动 GUI 导入另存 → 退出 GUI → 调 CLI 跑全年仿真”，请直接使用高层任务入口 [`pvsyst_run_house_task`](native-house-task.md)（双坡屋顶场景另见[双朝向住宅场景](grouped-house-scenes.md)）。
+如果要从头到尾一键跑完“生成场景 → 无 GUI 原生写入 `.VCx` → 调 CLI 跑全年阴影仿真”，请直接使用高层任务入口 [`pvsyst_run_house_task`](native-house-task.md)（双坡屋顶场景另见[双朝向住宅场景](grouped-house-scenes.md)）。
 
 ## 1. 构建房屋网格（`house`）
 
@@ -28,26 +28,31 @@
 ### 组件几何尺寸（`module_geometry`）
 传入 `model_name`、`nom_power_wp`、`width_m`、`length_m` 和 `geometry_depth_m`（组件边框厚度，米）。若工作区有明文 `.PAN`，工具会自动核对长宽尺寸是否与 `.PAN` 一致；因为 `.PAN` 核心参数里不一定带边框厚度，所以创建场景时仍需显式给出 `geometry_depth_m`。
 
-## 3. 无损回读与修订（`pvsyst_read_house_pv_scene`）
+## 3. 周边环境遮挡物（`obstacles`）
 
-调用 `pvsyst_read_house_pv_scene(scene_name)`（`scene_name` 须以 `.pvc2` 结尾，如 `my_house_scene.pvc2`）会解析 `UserData/<scene_name>` 中的真实 XML 网格与 PV 支架节点，并用解析出的参数在内存里重新生成一份 XML 与原文件做归一化比对，确保没有漏掉任何未知节点或手改变换。
+`pvsyst_create_house_pv_scene`、`pvsyst_run_house_task` 与 `pvsyst_run_sourced_house_task` 均接受可选的 `obstacles` 列表（`1..64` 个，构件名在全场景忽略大小写唯一且不与 `house.meshes` 重名），支持 4 种遮挡体类型：
+- **`building`**：邻近建筑体量（`origin_m`、`length_m`、`width_m`、`height_m`、可选 `rotation_deg` 与 `roof` 平顶/`gable` 双坡顶），在 `.pvc2` 与 `.VCx` 中生成带三角网的遮挡体（`pvShdGenObject`）。
+- **`wall`**：围墙/女儿墙实体（`start_m`、`end_m`、`height_m`、可选 `thickness_m` 默认 `0.2`），生成长方体遮挡网格（`pvShdGenObject`）。
+- **`mesh`**：自定义任意闭合/非退化三角网格遮挡物（`name`、`vertices`、`triangles`，`pvShdGenObject`）。
+- **`tree`**：参数化树木（`origin_m`、`top_height_m`、`middle_height_m`、`bottom_height_m`、`trunk_height_m`、`crown_diameter_m`、`trunk_diameter_m`、可选 `rotation_deg`）。在 `.pvc2` COLLADA 中生成可视化树冠树干代理网格并持久化准确参数；在 `method="native"` 原生导入写入 `.VCx` 时，直接发射 PVsyst 原生 `pvShdElemObject`（`ObjetElemType=oeTree`、`Flags=$02200004`、`ColorSurf=$8000`、`ColorBord=$275E`、`Source=osPVsyst`、`Params=top,mid,bot,trunk_h,crown_d,trunk_d,`）。
 
-返回的 `create_arguments` 字典可以直接拿来修改（比如把烟囱高度从 `6.4 m` 改成 `7.2 m`），然后换一个新的 `output_name` 调 `pvsyst_create_house_pv_scene` 生成修订版场景。
+## 4. 无损回读与修订（`pvsyst_read_house_pv_scene`）
 
-## 4. GUI 自动导入与关联（`pvsyst_import_house_pv_scene`）
+调用 `pvsyst_read_house_pv_scene(scene_name)`（`scene_name` 须以 `.pvc2` 结尾，如 `my_house_scene.pvc2`）会解析 `UserData/<scene_name>` 中的真实 XML 网格、遮挡节点与 PV 支架节点，并用解析出的参数在内存里重新生成一份 XML 与原文件做归一化比对，确保没有漏掉任何未知节点或手改变换。
 
-当 PVsyst 8.1.6 rev49278（中文界面，96 DPI）已经在桌面上打开了匹配的源工程且无未保存弹窗时，调用 `pvsyst_import_house_pv_scene(scene_name, variant_name, dry_run=False, confirm=True)` 会自动执行以下步骤：
-1. 打开 3D 近阴影编辑器（要求标准窗口尺寸 `1475×899`），导入 `.pvc2` 场景（支持 1 或 2 个 PV 分区）。
-2. 打开朝向管理窗口（`Shift+Ctrl+O`，尺寸 `1126×826`），将场景中的 PV 场区关联到系统朝向，并清理导入产生的多余空朝向组。
-3. 执行原生几何有效性检查与阴影因子表计算，最后通过 `SaveAs` 另存为新 `.VCx` 变体并回读校验。
+返回的 `create_arguments` 字典包含 `house`、`layout`、可选 `string_layout` 与 `obstacles`，可以直接拿来修改（比如把烟囱高度从 `6.4 m` 改成 `7.2 m` 或调整树木冠径），然后换一个新的 `output_name` 调 `pvsyst_create_house_pv_scene` 生成修订版场景。
 
-关于 PVsyst 官方对 PVCollada 格式和朝向管理窗口的说明，可参考 [PV Collada file format](https://www.pvsyst.com/help/project-design/shadings/near-shadings-import/pv-collada-file-format.html) 与 [Orientation management window](https://www.pvsyst.com/help/project-design/shadings/near-shadings-orientations/orientation-management-window.html)。
+## 5. 旧版 GUI 自动导入（`method="gui"`，未维护）
 
-## 5. 无 GUI 原生导入（`method="native"`）
+当明确需要走桌面 UI 且 PVsyst 8.1.6 rev49278（中文界面，96 DPI）已经在桌面上打开了匹配的源工程时，可显式传入 `method="gui"`（该路径已冻结为旧版遗留外壳，不再新增特性或测试；`obstacles` 请使用默认的 `method="native"`）。
 
-`pvsyst_import_house_pv_scene` 默认仍为 `method="gui"`（第 4 节，行为与字段含义保持不变）；`method="native"` 需显式选择。它从同一份受支持配方在当前工作区构造一个新的原生输入变体：不查阅、不激活、不启动 GUI，不读写 `PVsyst.ini`，不用剪贴板，不启动 `PVsyst.exe`，不消耗许可证，也不运行仿真。该“写入输入文件”步骤不启动任何 GUI 或 CLI 进程，不涉及窗体。
+关于 PVsyst 官方对 PVCollada 格式和朝向管理窗口的说明，可参考 [PV Collada file format](https://www.pvsyst.com/help/project-design/shadings/near-shadings/near-shadings-import/pv-collada-file-format.html) 与 [Orientation management window](https://www.pvsyst.com/help/project-design/shadings/near-shadings-orientations/orientation-management-window.html)。
 
-受支持的源配方要求 PVsyst 8.1.6、北半球项目，具体支持模式包括：
+## 6. 默认无 GUI 原生导入（`method="native"`）
+
+`pvsyst_import_house_pv_scene` 默认使用 **`method="native"`**（完全解耦自 `native/scene.py`，不引用 `user32` 窗口脚本）。它从同一份受支持配方在当前工作区构造一个新的原生输入变体：不查阅、不激活、不启动 GUI，不读写 `PVsyst.ini`，不用剪贴板，不启动 `PVsyst.exe`，不消耗许可证，也不运行仿真。该“写入输入文件”步骤不启动任何 GUI 或 CLI 进程，不涉及窗体。
+
+受支持的源配方要求 PVsyst 8.1.6 / 8.1.7、北半球项目，具体支持模式包括：
 - 双朝向两张横装零间距组件表：源子阵 `1`/`2` 各一条独立组串/逆变器/MPPT，同一 `PAN`/`OND`，各表组件总数匹配源变体。
 - 单朝向单子阵 `1..3` 张横装零间距组件表：每张表归同一电气朝向（`NoOrient=1`），各表组件总数匹配源子阵 `NModSerie × NStringCh`。
 - 单朝向、单子阵、恰两张横装零间距组件表且子阵含两条源组串和两台独立逆变器（`NStringCh=2`、`NInverter=2`、`NInvMPPT=2`）时，`method="native"` + `shading_mode="module_layout"` 会按声明序绑定源全局组串 `1`/`2`。

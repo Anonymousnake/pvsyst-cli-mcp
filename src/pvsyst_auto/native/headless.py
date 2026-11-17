@@ -17,12 +17,13 @@ from collections import defaultdict
 from pathlib import Path
 
 from pvsyst_auto.components.editor import objects
+from pvsyst_auto.native._prep import _prepare_source
 from pvsyst_auto.project.circuit import inventory
 from pvsyst_auto.project.fileio import publish_new
 from pvsyst_auto.scene.author import MAX_TABLES, _num, _rotate_z, house_profile
 from pvsyst_auto.scene.mapping import (
     ANGLE_TOL, COORD_TOL, source_string_ranges, verify_grouped_hardware, verify_house_geometry,
-    verify_module_layout, verify_pv_geometry)
+    verify_module_layout, verify_pv_geometry, verify_tree_obstacles)
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.scene.state import shading_state
 from pvsyst_auto.versions import HEADLESS_RECORD_VERSION
@@ -73,6 +74,12 @@ def _n6(value):
     """Native 8.1.6 stores six decimals; keep that exact storage precision (avoid -0)."""
     value = 0.0 if value == 0 else float(value)
     return f"{value:.6f}"
+
+
+def _n3(value):
+    """Native 8.1.6/8.1.7 stores three decimals for oeTree dimensions."""
+    value = 0.0 if value == 0 else float(value)
+    return f"{value:.3f}"
 
 
 def _faces(obj):
@@ -169,11 +176,36 @@ def _shd_table(idx, noc, profile, group, modules, turn):
             "      End of PVObject pvShdArrayTable"]
 
 
-def build_pvshading(house, tables, modules, source, shading_mode="linear", *, max_tables=MAX_TABLES_SINGLE):
-    """Return (pvShading text, {table_name: (slot, created)}, object/table counts).
+def _shd_tree(idx, noc, obstacle, anchor_azim, turn):
+    """One native parametric tree pvShdElemObject (ObjetElemType=oeTree)."""
+    world_origin = _rotate_z(tuple(obstacle["origin_m"]), turn)
+    params = ",".join(_n3(obstacle[k]) for k in (
+        "top_height_m", "middle_height_m", "bottom_height_m",
+        "trunk_height_m", "crown_diameter_m", "trunk_diameter_m",
+    )) + ","
+    return ["      PVObject_%d=pvShdElemObject" % idx,
+            "        Comment=%s" % obstacle["name"],
+            "        Version=%s" % FORMAT["version"],
+            "        Flags=$02200004",
+            "        NoObjCreated=%d" % noc,
+            "        ColorSurf=$8000",
+            "        ColorBord=$275E",
+            "        DOrigine=" + ",".join(_n6(v) for v in world_origin),
+            "        DInclin=%s" % FORMAT["base_slope"],
+            "        BaseSlope=%s" % FORMAT["base_slope"],
+            "        DAzimut=%s" % _n6(anchor_azim + obstacle["rotation_deg"]),
+            "        Source=osPVsyst",
+            "        ObjetElemType=oeTree",
+            "        Params=%s" % params,
+            "      End of PVObject pvShdElemObject"]
 
-    Derives geometry and PV fields from the input declaration; ``shading_mode`` selects the
-    ``pvShading.Flags`` template and ``max_tables`` caps single-orientation table count.
+
+def build_pvshading(house, tables, modules, source, shading_mode="linear", *, max_tables=MAX_TABLES_SINGLE,
+                    obstacles=None):
+    """Return (pvShading text, {table_name: (slot, created)}).
+
+    Derives geometry, PV fields, and optional environment obstacles from input declarations;
+    ``shading_mode`` selects ``pvShading.Flags`` and ``max_tables`` caps single-orientation tables.
     """
     pocket = house_profile(house)
     turn = _anchor_turn(source)
@@ -182,11 +214,16 @@ def build_pvshading(house, tables, modules, source, shading_mode="linear", *, ma
         # Key by the owning source subarray when the profile carries one (several owners may share
         # one NoOrientation), else by the orientation id (legacy unique-owner keying).
         groups = {item.get("subarray_id", item["id"]): item for item in orientations}
+        anchor_azim = next(item for item in orientations if item["id"] == 1)["field_azimuth_deg"]
     else:
         groups = {1: source}
+        anchor_azim = source["field_azimuth_deg"]
     ordered = _ordinal_tables(tables, max_tables)
     gen_parts = list(reversed(pocket["meshes"]))
-    total = len(ordered) + len(gen_parts)
+    obs_list = list(obstacles or ())
+    mesh_obstacles = [obs for obs in obs_list if obs["kind"] != "tree"]
+    tree_obstacles = [obs for obs in obs_list if obs["kind"] == "tree"]
+    total = len(ordered) + len(gen_parts) + len(mesh_obstacles) + len(tree_obstacles)
 
     lines = ["  PVObject_Ombrage=pvShading",
              "    Comment=declaration",
@@ -211,9 +248,14 @@ def build_pvshading(house, tables, modules, source, shading_mode="linear", *, ma
         slot_map[key] = (idx, noc)
         noc += 1
         idx += 1
-    for part in gen_parts:
+    for part in gen_parts + mesh_obstacles:
         world = [_rotate_z(tuple(v), turn) for v in part["vertices"]]
         lines += _shd_object(idx, noc, world, _faces(part))
+        lines.append("")
+        noc += 1
+        idx += 1
+    for tree in tree_obstacles:
+        lines += _shd_tree(idx, noc, tree, anchor_azim, turn)
         lines.append("")
         noc += 1
         idx += 1
@@ -611,7 +653,7 @@ def _verify_source_table_geometry(blocks, tables, modules, source):
     return {"table_count": len(tables), "coordinate_tolerance_m": COORD_TOL, "angle_tolerance_deg": ANGLE_TOL}
 
 
-def verify_generated(text, source_text, house, tables, modules, source, shading_mode):
+def verify_generated(text, source_text, house, tables, modules, source, shading_mode, obstacles=None):
     blocks = objects(text)
     lines = [line.rstrip("\r\n") + "\n" for line in text.splitlines()]
     state = shading_state(lines)
@@ -636,8 +678,13 @@ def verify_generated(text, source_text, house, tables, modules, source, shading_
         module_block = {"configured": False, "status": "absent"}
     hardware = verify_grouped_hardware(
         objects(source_text), blocks, source_text.splitlines(True), lines, source)
-    geometry = {**verify_house_geometry(blocks, lines, house, source, anchor_turn=_anchor_turn(source)),
-                **verify_pv_geometry(blocks, tables, modules, source, anchor_turn=_anchor_turn(source)),
+    obs_list = list(obstacles or ())
+    mesh_obstacles = [obs for obs in obs_list if obs["kind"] != "tree"]
+    tree_obstacles = [obs for obs in obs_list if obs["kind"] == "tree"]
+    turn = _anchor_turn(source)
+    geometry = {**verify_house_geometry(blocks, lines, house, source, anchor_turn=turn, extra_meshes=mesh_obstacles),
+                **verify_tree_obstacles(blocks, tree_obstacles, source, anchor_turn=turn),
+                **verify_pv_geometry(blocks, tables, modules, source, anchor_turn=turn),
                 **_verify_source_table_geometry(blocks, tables, modules, source)}
     return {"object_count": state["object_count"], "pv_bindings": state["pv_bindings"]["status"],
             "module_layout": {key: module_block.get(key) for key in ("configured", "status", "module_count")},
@@ -822,8 +869,6 @@ def _support_gate(source, tables, source_text, mode="linear", string_layout=None
 
 
 def _preflight(store, components, scene_name, shading_mode, string_layout=None):
-    from pvsyst_auto.native.scene import _prepare_source
-
     scene = read_house_pv_scene(components, scene_name)
     if scene.get("status") != "ready":
         return {"status": "needs_context", "issues": [scene.get("issues") or "README scene is not ready"]}
@@ -834,6 +879,7 @@ def _preflight(store, components, scene_name, shading_mode, string_layout=None):
     prepared = _prepare_source(store, components, scene, allow_groups=True)
     snap = prepared["snapshot"]
     house = prepared["house"]
+    obstacles = prepared["obstacles"]
     tables = prepared["table_profiles"]
     source = snap["source"]
     source_text = snap["bytes"].decode("utf-8-sig")
@@ -841,16 +887,17 @@ def _preflight(store, components, scene_name, shading_mode, string_layout=None):
 
     pvshading, slot_map = build_pvshading(
         house, tables, snap["modules"], source, shading_mode,
-        max_tables=(MAX_TABLES if string_layout is not None else MAX_TABLES_SINGLE))
+        max_tables=(MAX_TABLES if string_layout is not None else MAX_TABLES_SINGLE),
+        obstacles=obstacles)
     layout_text, layout_tables = (None, None)
     if shading_mode == "module_layout":
         layout_text, layout_tables = build_module_layout(source_text, tables, slot_map, string_layout)
     candidate_text = assemble_variant(source_text, pvshading, layout_text)
     verification = verify_generated(candidate_text, source_text, house, tables, snap["modules"],
-                                    source, shading_mode)
-    return {"status": "ready", "scene": scene, "snapshot": snap, "house": house, "tables": tables,
-            "source": source, "candidate_text": candidate_text, "layout_tables": layout_tables,
-            "verification": verification}
+                                    source, shading_mode, obstacles=obstacles)
+    return {"status": "ready", "scene": scene, "snapshot": snap, "house": house, "obstacles": obstacles,
+            "tables": tables, "source": source, "candidate_text": candidate_text,
+            "layout_tables": layout_tables, "verification": verification}
 
 
 def import_house_pv_scene_native(store, components, scene_name, variant_name,
@@ -918,7 +965,8 @@ def import_house_pv_scene_native(store, components, scene_name, variant_name,
             candidate = bom + edited.encode("utf-8")
             # Re-verify the exact bytes about to be published; a display-name edit cannot change structure.
             written = verify_generated(candidate.decode("utf-8-sig"), snap["bytes"].decode("utf-8-sig"),
-                                       pre["house"], pre["tables"], snap["modules"], pre["source"], shading_mode)
+                                       pre["house"], pre["tables"], snap["modules"], pre["source"],
+                                       shading_mode, obstacles=pre["obstacles"])
             # Last source/PAN check immediately before the atomic no-overwrite publish.
             if snap["path"].read_bytes() != snap["bytes"]:
                 raise ValueError("Source variant changed before writing the native variant")
@@ -926,13 +974,20 @@ def import_house_pv_scene_native(store, components, scene_name, variant_name,
             # publish_new stages the bytes and renames them into place, so a failed or interrupted
             # write cannot leave a partial variant, and a concurrently created name is refused.
             publish_new(target, candidate)
+            obs_list = pre["obstacles"]
             result.update(status="native_variant_created", stage="created", variant=target.suffix[1:].upper(),
                           file=str(target), artifacts={"variant": str(target)},
                           native_variant_created=True,
-                          stored_geometry_verified=bool(written["geometry"].get("house_geometry_verified")
-                                                        and written["geometry"].get("pv_geometry_verified")),
+                          stored_geometry_verified=bool(
+                              written["geometry"].get("house_geometry_verified")
+                              and written["geometry"].get("tree_obstacles_verified")
+                              and written["geometry"].get("pv_geometry_verified")),
                           stored_module_layout_verified=shading_mode == "module_layout" and bool(
                               written["module_layout"].get("status") == "stored_consistent"))
+            if obs_list:
+                result["obstacle_count"] = len(obs_list)
+                result["tree_count"] = sum(1 for o in obs_list if o["kind"] == "tree")
+                result["obstacle_mesh_count"] = sum(1 for o in obs_list if o["kind"] != "tree")
         except (ValueError, OSError, UnicodeError, KeyError, TypeError, StopIteration,
                 FileExistsError, RuntimeError) as exc:
             result["issues"].append(str(exc))

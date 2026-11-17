@@ -13,10 +13,10 @@ from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi, iter_result_csv, resul
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.project.paths import safe_filename, variant_id, workspace_file, write_json as _save
 from pvsyst_auto.results import annual_summary, fingerprint
-from pvsyst_auto.scene.author import create_house_pv_scene, house_profile, table_profiles, check_tables
+from pvsyst_auto.scene.author import create_house_pv_scene, house_profile, obstacle_profiles, table_profiles, check_tables
 from pvsyst_auto.scene.reader import read_house_pv_scene
-import pvsyst_auto.native.scene as native
-from pvsyst_auto.native.project import _open, _processes, open_native_project
+from pvsyst_auto.native._prep import _source_snapshot, _verify_new, find_running_pvsyst
+from pvsyst_auto.native.project import _open, open_native_project
 
 PHASES = ("initialized", "project_created", "scene_created", "prepared", "native_saved", "gui_closed", "simulated", "completed")
 
@@ -25,12 +25,13 @@ def _public(record):
     public = {key: value for key, value in record.items() if key not in ("request", "guards")}
     request = record.get("request", {})
     public["request_summary"] = {key: value for key, value in request.items()
-                                 if key not in ("house", "layout", "module_geometry")}
+                                 if key not in ("house", "layout", "module_geometry", "obstacles")}
     return public
 
 
 def _close_owned(proc, cli):
     """Only an actual Popen held by this call is ownership; a checkpoint PID is not."""
+    import pvsyst_auto.native.scene as native
     if proc.poll() is not None:
         return {"exited": True, "pid": proc.pid}
     expected = (Path(cli.cli).parent / "PVsyst.exe").resolve()
@@ -134,8 +135,8 @@ def _prepare(store, components, request):
     grouped = (bool(orientation_ids) and all(identifier >= 1 for identifier in orientation_ids)
                and (len(set(orientation_ids)) >= 2
                     or any(item.get("source_subarray_id") is not None for item in entries)))
-    snap = native._source_snapshot(store, components, project, variant, request.get("module_geometry"),
-                                   **({"allow_groups": True} if grouped else {}), layout=request.get("layout"))
+    snap = _source_snapshot(store, components, project, variant, request.get("module_geometry"),
+                            **({"allow_groups": True} if grouped else {}), layout=request.get("layout"))
     # A heterogeneous per-source PAN set is carried by the typed per-table geometry forwarded
     # through ``layout`` into resolve_source_geometry; the high-level NATIVE path consumes it
     # per owner instead of collapsing to the first PAN. ``pan_snapshots`` is per-GROUP, so a
@@ -144,7 +145,7 @@ def _prepare(store, components, request):
     # import method keeps its old single-module-library bridge limit and states it explicitly.
     source_groups = snap["source"].get("orientations") or []
     distinct_pans = {group["pan_name"].casefold() for group in source_groups}
-    if len(distinct_pans) > 1 and (request.get("scene_import_method") or "gui") != "native":
+    if len(distinct_pans) > 1 and (request.get("scene_import_method") or "native") != "native":
         raise ValueError("The GUI import method bridges one source PAN; request "
                          "scene_import_method='native' for a heterogeneous per-source PAN set")
     source_site = store._embedded_reference(lines, "PVObject_SiteSimul=pvSite", "End of PVObject pvSite")
@@ -189,12 +190,13 @@ def _prepare(store, components, request):
     pocket = house_profile(request["house"])
     if pocket["kind"] != "mesh":
         raise ValueError("The house task requires a complete AI/caller-authored mesh house")
+    obstacles = obstacle_profiles(request.get("obstacles"), existing_names=[m["name"] for m in pocket["meshes"]])
     tables = table_profiles(request["layout"], pocket, snap["modules"], snap["source"])
     check_tables(pocket, tables)
     mode = request.get("shading_mode", "linear")
     if mode not in ("linear", "module_layout"):
         raise ValueError("shading_mode must be linear or module_layout")
-    method = request.get("scene_import_method") or "gui"
+    method = request.get("scene_import_method") or "native"
     binding = request.get("string_layout")
     # An explicit per-cell string_layout is consumed only by the headless native emitter in
     # module_layout mode. The GUI importer auto-allocates strings and the linear path has no
@@ -208,6 +210,7 @@ def _prepare(store, components, request):
         if mode != "module_layout":
             raise ValueError("An explicit string_layout requires shading_mode='module_layout'")
     if mode == "module_layout" and method != "native":
+        import pvsyst_auto.native.scene as native
         # GUI automatic wiring keeps its proven dual profile; the headless path is gated below.
         native._module_layout_preflight(snap, tables)
     if method == "native":
@@ -219,8 +222,10 @@ def _prepare(store, components, request):
         from pvsyst_auto.native.headless import _support_gate
         _support_gate(snap["source"], tables, source_bytes.decode("utf-8-sig"), mode,
                       string_layout=binding)
-    elif not 1 <= len(tables) <= native.MAX_TABLES_BRIDGED:
-        raise ValueError("The house task supports only one or two PV regions")
+    else:
+        import pvsyst_auto.native.scene as native
+        if not 1 <= len(tables) <= native.MAX_TABLES_BRIDGED:
+            raise ValueError("The house task supports only one or two PV regions")
     site_blocks = objects(store._read(paths["site"]).decode("utf-8-sig"))
     if len(site_blocks) != 1 or site_blocks[0].object_type != "pvSite" or any(
             float(site_blocks[0].one(field)[1]) != snap["source"]["site"][field.lower()]
@@ -250,6 +255,8 @@ def _prepare(store, components, request):
     plan = {"site": source_site, "met": source_met, "scene_name": scene_name,
             "nominal_dc_kw": nominal, "shading_mode": mode,
             "house_parts": len(pocket["meshes"]), "pv_tables": len(tables),
+            "obstacles": obstacles,
+            "obstacle_count": len(obstacles),
             "source": snap["source"], "modules": snap["modules"],
             "tables": tables, "component_libraries": component_libraries,
             "component_references": {"PAN": pan_reference, "OND": ond_reference},
@@ -285,12 +292,12 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
         try:
             if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation)):
                 raise ValueError("Use strict booleans")
-            method = request.get("scene_import_method") or "gui"
+            method = request.get("scene_import_method") or "native"
             if method not in ("gui", "native"):
                 raise ValueError("scene_import_method must be gui or native")
             # A strict no-window request cannot be delivered by the GUI import method, which
             # inherently opens the native window. Reject in preflight before any project/scene
-            # write or GUI side effect; never silently switch the default method to native.
+            # write or GUI side effect; never silently switch an explicit gui selection to native.
             if request.get("allow_window_creation") is False and method != "native":
                 raise ValueError(
                     "allow_window_creation=false requires scene_import_method='native'; the GUI "
@@ -333,8 +340,10 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     string_layout=request.get("string_layout"))
                 if preview["status"] != "ready":
                     return {**result, "scene_preflight": preview, "issues": preview["issues"]}
-                if method == "gui" and not 1 <= preview["geometry"]["pv_table_count"] <= native.MAX_TABLES_BRIDGED:
-                    raise ValueError("The house task supports only one or two PV regions")
+                if method == "gui":
+                    import pvsyst_auto.native.scene as native
+                    if not 1 <= preview["geometry"]["pv_table_count"] <= native.MAX_TABLES_BRIDGED:
+                        raise ValueError("The house task supports only one or two PV regions")
                 if paths["sfi"].exists():
                     raise FileExistsError("House SFI already exists; choose a new working project")
                 run_stem = Path(request["new_project"]).stem + "_house_run01"
@@ -423,7 +432,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 if (recovered.get("status") != "ready" or arguments.get("project") != request["new_project"]
                         or arguments.get("variant") != "VC0" or arguments.get("house") != house_profile(request["house"])
                         or arguments.get("layout") != request["layout"]
-                        or arguments.get("string_layout") != request.get("string_layout")):
+                        or arguments.get("string_layout") != request.get("string_layout")
+                        or obstacle_profiles(arguments.get("obstacles")) != plan["obstacles"]):
                     raise ValueError("Stored scene does not recover the declared house/layout/source")
             if position() >= PHASES.index("native_saved"):
                 if method == "gui":
@@ -433,12 +443,15 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     if (plan["shading_mode"] == "module_layout"
                             and record.get("native_import", {}).get("native_shading_mode_reload_verified") is not True):
                         raise ValueError("Detailed house checkpoint lacks verified native calculation-mode reload evidence")
-                native._verify_new(paths["native_variant"], store._read(paths["working_variant"]),
+                _verify_new(paths["native_variant"], store._read(paths["working_variant"]),
                     plan["house_parts"], plan["pv_tables"], plan["source"]["module_total"],
-                    **({"scene_context": {"house": house_profile(request["house"]), "tables": plan["tables"],
+                    **({"scene_context": {"house": house_profile(request["house"]),
+                        "obstacles": plan["obstacles"], "tables": plan["tables"],
                         "modules": plan["modules"], "source": plan["source"]}}
                        if plan["source"].get("orientations") else {}),
-                    shading_mode=plan["shading_mode"])
+                    shading_mode=plan["shading_mode"],
+                    obstacle_gen_count=sum(1 for obs in plan["obstacles"] if obs["kind"] != "tree"),
+                    obstacle_tree_count=sum(1 for obs in plan["obstacles"] if obs["kind"] == "tree"))
             if record["phase"] == "prepared":
                 # This task creates only VC0; another VC may be an unrecorded native SaveAs.
                 candidates = [variant_id(member) for member in cli.list_variants(request["new_project"])
@@ -470,7 +483,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 created = create_house_pv_scene(store, components, project=request["new_project"], variant="VC0",
                     output_name=plan["scene_name"], house=request["house"], layout=request["layout"],
                     module_geometry=request.get("module_geometry"), dry_run=False,
-                    string_layout=request.get("string_layout"))
+                    string_layout=request.get("string_layout"),
+                    obstacles=request.get("obstacles"))
                 record["scene_creation"] = created
                 if created["status"] != "created":
                     raise ValueError("House scene creation stopped: " + str(created["issues"]))
@@ -506,6 +520,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     record["artifacts"]["native_variant"] = str(paths["native_variant"])
                     stage("native_saved", ("native_variant",))
                 else:
+                    import pvsyst_auto.native.scene as native
                     opening = {"status": "blocked", "stage": "preflight", "native_actions": []}
                     record["native_open"] = opening
                     proc = _open(store, cli, request["new_project"], False, True, opening)
@@ -534,7 +549,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     if not record["native_cleanup"]["exited"]:
                         raise ValueError("Owned GUI remains for inspection; simulation was not started")
                 else:
-                    if _processes(native, (Path(cli.cli).parent / "PVsyst.exe").resolve()):
+                    if find_running_pvsyst((Path(cli.cli).parent / "PVsyst.exe").resolve()):
                         raise ValueError("A native GUI remains; this resume will not close a checkpoint PID")
                     record["native_cleanup_recovery"] = {"native_processes_absent": True,
                         "checkpoint_pid_not_used_for_close": True, "close_performed_by_resume": False}

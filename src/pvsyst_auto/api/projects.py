@@ -8,7 +8,7 @@ from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.project.domes import create_dome_allocation_variant
 from pvsyst_auto.scene.author import create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, NativeDCUpdates, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
+from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, DCCablingUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, ObstacleSpec, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
 from pvsyst_auto.api.context import categorized_tool, cli, components, variant_call, variant_store
 
 
@@ -221,14 +221,17 @@ def pvsyst_create_ac_cabling_variant(project: StrictStr, source_variant: StrictS
         variant_name=variant_name, add_utf8_bom=add_utf8_bom)
 
 @categorized_tool()
-def pvsyst_create_native_dc_cabling_variant(project: StrictStr, source_variant: StrictStr,
-                                            dc: NativeDCUpdates, variant_name: StrictStr,
-                                            dry_run: StrictBool = True, confirm: StrictBool = False) -> dict:
-    """Set DC wiring resistance (mOhm) or STC loss (%) via the open PVsyst 8.1.6 Chinese GUI
-    (96 DPI) and save as a new variant (requires dry_run=false and confirm=true)."""
-    from pvsyst_auto.native.dc import create_native_dc_cabling_variant
-    return create_native_dc_cabling_variant(variant_store(), cli(), project=project, source_variant=source_variant,
-        dc=dc.model_dump(), variant_name=variant_name, dry_run=dry_run, confirm=confirm)
+def pvsyst_create_dc_cabling_variant(project: StrictStr, source_variant: StrictStr,
+                                     new_variant: StrictStr, dc: DCCablingUpdates,
+                                     dry_run: StrictBool = True,
+                                     variant_name: StrictStr | None = None,
+                                     add_utf8_bom: StrictBool = False) -> dict:
+    """Create a new variant configuring DC cabling resistance (mOhm) or STC loss (%) headlessly;
+    built-in encrypted .PAN modules support mode='resistance' and reject mode='percent'."""
+    from pvsyst_auto.energy.dc import create_dc_cabling_variant
+    return create_dc_cabling_variant(variant_store(), project=project, source_variant=source_variant,
+        new_variant=new_variant, dc=dc.model_dump(), dry_run=dry_run,
+        variant_name=variant_name, add_utf8_bom=add_utf8_bom)
 
 @categorized_tool()
 def pvsyst_create_mv_night_disconnect_variant(project: StrictStr, source_variant: StrictStr,
@@ -275,9 +278,11 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
                                  layout: NamedPVTablesLayout | PlacedPVTableLayout | PVTableLayout,
                                  dry_run: StrictBool = True,
                                  module_geometry: ModuleGeometry | None = None,
-                                 string_layout: StringLayoutBinding | None = None) -> dict:
-    """Serialize named architectural meshes and rooftop PV tables (plus optional per-cell
-    string_layout) into a PVCollada 2.0 (.pvc2) scene in workspace/UserData."""
+                                 string_layout: StringLayoutBinding | None = None,
+                                 obstacles: list[ObstacleSpec] | None = None) -> dict:
+    """Serialize named architectural meshes, rooftop PV tables, optional per-cell string_layout,
+    and optional environment obstacles (building, tree, wall, mesh) into a PVCollada 2.0 (.pvc2)
+    scene in workspace/UserData."""
     store = variant_store()
     return create_house_pv_scene(store, store.components, project=project, variant=variant,
                                  output_name=output_name, house=house.model_dump(),
@@ -285,7 +290,9 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
                                  module_geometry=(module_geometry.model_dump()
                                                   if module_geometry is not None else None),
                                  string_layout=(string_layout.model_dump(exclude_none=True)
-                                                if string_layout is not None else None))
+                                                if string_layout is not None else None),
+                                 obstacles=([obs.model_dump(exclude_none=True) for obs in obstacles]
+                                            if obstacles is not None else None))
 
 @categorized_tool()
 def pvsyst_read_house_pv_scene(scene_name: StrictStr) -> dict:
@@ -303,9 +310,9 @@ def pvsyst_open_native_project(project: StrictStr, dry_run: StrictBool = True,
 def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
                                    dry_run: StrictBool = True, confirm: StrictBool = False,
                                    shading_mode: Literal["linear", "module_layout"] = "linear",
-                                   method: Literal["gui", "native"] = "gui") -> dict:
-    """Import a .pvc2 house/PV scene into a new variant via the open PVsyst GUI (method='gui')
-    or the headless builder (method='native'), supporting linear and module_layout shading."""
+                                   method: Literal["gui", "native"] = "native") -> dict:
+    """Import a .pvc2 house/PV scene into a new variant via the headless builder (default, method='native')
+    or the legacy PVsyst GUI path (method='gui'), supporting linear and module_layout shading."""
     if not (method == "native" and shading_mode == "module_layout"):
         # A scene whose recipe carries an explicit binding must not be fed to the GUI/linear
         # importer, which would silently ignore per-cell wiring. Detect it on the recipe and

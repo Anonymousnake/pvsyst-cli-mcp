@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-Windows 下配合本地 PVsyst 8 使用的 MCP 服务端与 Python 封装库。它一方面封装了官方 `PVsystCLI.exe` 的仿真、气象转换和许可查询命令；另一方面直接解析和修改 PVsyst 的明文工程与组件文件（`.PRJ`、`.VCx`、`.PAN`、`.OND`、`.BTR`、`.GEN`、`.SIT`），并对少数 CLI 没开放的功能（如 3D 住宅场景导入、DC 线缆阻值重算）提供受控的 Win32 GUI 自动化桥接。
+Windows 下配合本地 PVsyst 8 使用的 MCP 服务端与 Python 封装库。它一方面封装了官方 `PVsystCLI.exe` 的仿真、气象转换和许可查询命令；另一方面直接以无 GUI 的原生文本构建器解析和修改 PVsyst 工程与组件文件（`.PRJ`、`.VCx`、`.PAN`、`.OND`、`.BTR`、`.GEN`、`.SIT`），涵盖 3D 住宅与环境遮挡物（`.pvc2` -> `.VCx`）、`module_layout` 精细接线以及 DC 线缆阻值/损耗计算。
 
 运行本项目需要本机已安装 PVsyst 并配置好有效许可证。
 
@@ -13,7 +13,7 @@ Windows 下配合本地 PVsyst 8 使用的 MCP 服务端与 Python 封装库。�
 | 核对可研简报里的设备数量、串并联关系与缺项 | `pvsyst_review_engineering_brief` | [工程简报预审](docs/engineering-brief.md) |
 | 读取现有工程参数，隔离改参并跑全年仿真 | `pvsyst_project_handoff`、`pvsyst_run_engineering_task` | [工程修订与交付](docs/engineering-delivery.md) |
 | 按固定子阵分块模板批量拼装新工程 | `pvsyst_prepare_block_project` | [分块工程准备](docs/block-project-preparation.md) |
-| 生成双坡屋顶住宅 3D 场景、导入绑定并跑全年阴影仿真 | `pvsyst_run_house_task` | [住宅建模任务](docs/native-house-task.md) |
+| 生成屋顶光伏与周边遮挡 3D 场景、原生导入并跑全年阴影仿真 | `pvsyst_run_house_task` | [住宅建模任务](docs/native-house-task.md) |
 | 绑定全年逐时负荷，评估集中式 AC 耦合光储方案 | `pvsyst_run_engineering_task` | [AC 光储评估](docs/engineering-storage.md) |
 | 对比两到三个方案的仿真结果并打包交付 ZIP | `pvsyst_compare_engineering_scenarios`、`pvsyst_export_engineering_delivery` | [多方案对比](docs/engineering-scenarios.md) |
 
@@ -23,15 +23,15 @@ Windows 下配合本地 PVsyst 8 使用的 MCP 服务端与 Python 封装库。�
 
 环境要求：
 - Windows 系统，Python 3.10+
-- 已安装 `PVsystCLI.exe`（已在 8.0.6 与 8.1.6 验证）
-- 涉及桌面窗口自动化的功能（3D 住宅场景导入、DC 线缆设置）要求中文界面 PVsyst 8.1.6 rev49278，显示器缩放 96 DPI（100%）
+- 已安装 `PVsystCLI.exe`（已在 8.0.6、8.1.6 rev49278 与 8.1.7 rev49382 验证）
+- 仅在需要手动打开 PVsyst 桌面窗口查看工程时（`pvsyst_open_native_project`）需要桌面 GUI（中文版 8.1.6/8.1.7，96 DPI）；3D 住宅场景、周边遮挡物、`module_layout` 与 DC 线缆均已默认免 GUI 原生写入
 
 在仓库根目录执行：
 
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
-$env:PVSYST_CLI = 'C:\Program Files\PVsyst8.1.6\PVsystCLI.exe'
+$env:PVSYST_CLI = 'C:\Program Files\PVsyst8.1.7\PVsystCLI.exe'
 $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 .\.venv\Scripts\python.exe -m pvsyst_auto
 ```
@@ -49,7 +49,7 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
       "command": "C:/path/to/pvsyst-cli-mcp/.venv/Scripts/python.exe",
       "args": ["-m", "pvsyst_auto"],
       "env": {
-        "PVSYST_CLI": "C:/Program Files/PVsyst8.1.6/PVsystCLI.exe",
+        "PVSYST_CLI": "C:/Program Files/PVsyst8.1.7/PVsystCLI.exe",
         "PVSYST_WORKSPACE": "C:/path/to/PVsyst8.1_Data"
       }
     }

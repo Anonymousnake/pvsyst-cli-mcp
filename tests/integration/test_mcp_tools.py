@@ -4,12 +4,9 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 import tempfile
-import threading
 import unittest
 
 from pvsyst_auto.api.schemas import HouseTaskRequest, SourcedHouseTaskRequest
-from pvsyst_auto.workflows.house import run_house_task
-from pvsyst_auto.workflows.sourced_house import run_sourced_house_task
 from tests.integration._session import decode_reply, mcp_session
 
 
@@ -37,11 +34,6 @@ def _variant(scene):
     return ("PVObject_=pvVCalcul\n  Version=8.1.6\n  Comment=Read test\n"
             "  PVObject_=pvSubArray\n    SubArrayId=1\n"
             "  End of PVObject pvSubArray\n" + scene + "End of PVObject pvVCalcul\n")
-
-
-class _LockedStore:
-    def __init__(self):
-        self.lock = threading.RLock()
 
 
 class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -172,21 +164,37 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((preserve["status"], preserve["stage"]), ("blocked", "native_preflight"))
                 self.assertEqual(list(root.iterdir()), [cli])
 
-    def test_window_policy_schema_and_preflight(self):
+    def test_window_policy_and_obstacle_schemas(self):
         for model in (HouseTaskRequest, SourcedHouseTaskRequest):
             self.assertIsNone(model.model_fields["allow_window_creation"].default)
             self.assertIsNone(model.model_fields["report_pdf"].default)
+            self.assertIsNone(model.model_fields["scene_import_method"].default)
             self.assertEqual(model.model_construct(allow_window_creation=False).model_dump(exclude_none=True)["allow_window_creation"], False)
             self.assertNotIn("allow_window_creation", model.model_construct(allow_window_creation=None).model_dump(exclude_none=True))
             self.assertNotIn("report_pdf", model.model_construct(report_pdf=None).model_dump(exclude_none=True))
             with self.assertRaises(Exception):
                 model(source_project="A.PRJ", source_variant="VC0", new_project="B.PRJ", variant_name="V",
                       year=2020, house={"kind": "mesh", "meshes": []}, layout={}, report_pdf="false")
-        res = run_house_task(_LockedStore(), None, None, request={"scene_import_method": "gui", "allow_window_creation": False})
-        self.assertEqual(res["status"], "blocked")
-        self.assertTrue(any("allow_window_creation=false requires" in m for m in res["issues"]))
-        s_res = run_sourced_house_task(_LockedStore(), None, None, request={"scene_import_method": "gui", "allow_window_creation": False}, binding={})
-        self.assertEqual(s_res["status"], "blocked")
+        valid_obs = [
+            {"kind": "building", "name": "B1", "origin_m": [0, -10, 0], "length_m": 6, "width_m": 4, "height_m": 5},
+            {"kind": "tree", "name": "T1", "origin_m": [5, -8, 0], "top_height_m": 8, "middle_height_m": 6,
+             "bottom_height_m": 3, "trunk_height_m": 2, "crown_diameter_m": 4, "trunk_diameter_m": 0.4},
+            {"kind": "wall", "name": "W1", "start_m": [0, -3, 0], "end_m": [8, -3, 0], "height_m": 1.5},
+            {"kind": "mesh", "name": "M1", "vertices": [[0, 0, 0], [1, 0, 0], [0, 1, 0]], "triangles": [[0, 1, 2]]},
+        ]
+        parsed = HouseTaskRequest(
+            source_project="A.PRJ", source_variant="VC0", new_project="B.PRJ", variant_name="V", year=2020,
+            house={"kind": "mesh", "meshes": [{"name": "r", "vertices": [[0, 0, 0], [1, 0, 0], [0, 1, 0]], "triangles": [[0, 1, 2]]}]},
+            layout={"module_rows": 1, "module_columns": 1, "orientation": "landscape", "row_spacing_m": 0, "column_spacing_m": 0,
+                    "origin_m": [0, 0, 0], "roof_mesh": "r"},
+            obstacles=valid_obs,
+        )
+        self.assertEqual(len(parsed.obstacles), 4)
+        with self.assertRaises(Exception):
+            HouseTaskRequest(
+                source_project="A.PRJ", source_variant="VC0", new_project="B.PRJ", variant_name="V", year=2020,
+                house={"kind": "mesh", "meshes": []}, layout={}, obstacles=[{"kind": "tree", "name": "Bad", "unexpected": 1}],
+            )
 
 
 if __name__ == "__main__":

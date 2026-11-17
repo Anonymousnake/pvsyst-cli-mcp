@@ -1,6 +1,6 @@
 # PVsyst 功能入口与支持矩阵
 
-本文档按 PVsyst 并网工程的主要功能模块，整理底层文件字段、CLI/GUI 调用入口以及当前 MCP 工具的支持范围。默认测试环境为 PVsyst CLI/GUI 8.1.6（涉及桌面窗口自动化的入口要求中文版 8.1.6 rev49278、96 DPI）。
+本文档按 PVsyst 并网工程的主要功能模块，整理底层文件字段、CLI/原生文本写入入口以及当前 MCP 工具的支持范围。当前目标版本为 PVsyst CLI/原生文本 `8.1.6`（`rev. 49278`）/ `8.1.7`（`rev. 49382`）。3D 场景与 DC 线缆已收敛为无 GUI 原生写入。
 
 ## 状态说明
 
@@ -36,7 +36,7 @@
 |---|---|---|
 | 常数热损系数 $U_c$ | MCP 可读写 | `main_array_updates.UFactor`（范围 `15..100` W/m²·K），要求主阵列标准 `Flags`/`Flags2`；见[损失 GUI 往返](loss-gui-roundtrip.md) |
 | 风速热损项 $U_v$ | MCP 可读写（present-only） | `main_array_updates.UVFactor`（原生 `Uv` 字面值，仅已有字段可编辑、不建默认/别名）；适配域为任意有限数值（无原生量程/权威单位：字面 `Uw fact; [W/m2K]` 与量纲 `W/m2K per (m/s)` 存 SourceGap，原生数值校验延后）；接受真实跟踪夹具 `$01900400`/`$082A` 的 8.1.0/8.1.6 Grid 主阵（不要求无几何，保留 80 物体场景与跟踪/遮挡字节），编辑后失效自身派生结果缓存并只清 root 仿真位、保留其余控制位；见[损失 GUI 往返](loss-gui-roundtrip.md) |
-| DC 线缆阻值 / 损失率 | MCP 已封装（通过 GUI 桥接） | `pvsyst_create_native_dc_cabling_variant`；驱动已打开的 8.1.6 GUI 填入阻值或百分比，由 PVsyst 自动重算关联字段并另存新变体，见[DC 线缆桥接](native-dc-cabling.md) |
+| DC 线缆阻值 / 损失率 | MCP 已封装（免 GUI 原生写入） | `pvsyst_create_dc_cabling_variant`；读取本地 `.PAN` 单二极管模型求解 STC `(Vmp, Imp)` 完成 `mOhm <-> %` 互算，写入 `RSCablageCh`/`RSCablagePC`、`pvMainArray`/`pvSubArray.Flags` 与 `StringNode` `CableDefinition`；内置加密/不可读组件允许 `resistance` 模式，拒绝 `percent` 模式；见[DC 线缆](native-dc-cabling.md) |
 | AC 线缆 | MCP 已封装 | `pvsyst_create_ac_cabling_variant`；同步更新主阵列使能位、子阵列长度（`0.1 m` 精度）与直接 `InverterNode` 的 `CableDefinition`，见[AC 线缆配置](native-ac-cabling.md) |
 | MV 变压器夜间断开 | MCP 已封装 | `pvsyst_create_mv_night_disconnect_variant`；切换单台默认 MV 变压器的 `NightDisconnect` 与主阵列 bit 29，见[MV 夜间断开](native-mv-night.md) |
 | 组件质量损失 | MCP 可读写 | `subarray_updates.ModuleQualityLoss`（`[-5, 20]%`），同步写入子阵列 `PQualityModU` 与 `PQualityModI`，并清除默认标志位 `0x00100000` |
@@ -70,10 +70,10 @@
 | 单轴 / 双轴跟踪器参数 | MCP 已封装 | `pvsyst_create_tracking_variant` 支持 9 种原生跟踪类型的所属几何、角度限值、回溯（Backtracking）与间距修改，见[跟踪控制](native-tracking-controls.md) |
 | 无限水平轴跟踪模板仿真 | MCP 已封装 | `pvsyst_simulate_template` 支持直接跑基于 `UnlimTracking` 模板的全年仿真流程，见[跟踪模板流程](tracking-template-flow.md) |
 | 远方地平线（Far Horizon） | MCP 可读写 | `horizon_updates` 写入 4..100 个方位角/仰角点对或清空地平线，见[地平线轮廓](horizon-profile.md) |
-| 房屋与光伏 `.pvc2` 建模与回读 | MCP 已封装 | `pvsyst_create_house_pv_scene` 与 `pvsyst_read_house_pv_scene`，支持单朝向多分区与双坡屋顶场景生成及 XML 逆向还原，见[住宅与光伏建模](house-pv-modeling.md) |
-| 3D 场景 GUI 导入与全年任务 | MCP 已封装 | `pvsyst_import_house_pv_scene`、`pvsyst_run_house_task`、`pvsyst_run_sourced_house_task`，见[住宅单任务](native-house-task.md)与[双屋面交付说明](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance) |
-| 已保存场景的 PV 表格关联检查 | 只读状态 | `pvsyst_get_variant_parameters` 返回 `shading_scene.pv_bindings`，以及有限模板的 `module_layout` 保存完整性，见[PV 区域关联读取](native-scene-bindings.md) |
-| Module Layout 精细电气阴影 | MCP 已封装（有限双朝向模板） | 导入工具及住宅任务的 `shading_mode="module_layout"` 使用原生组件放置、组串自动分配、精细模式选择与保存重载；限每组一张零间距横装表和独立单组串，见[原生住宅任务](native-house-task.md#module-layout-电气阴影)。任意接线、跨表分串和多于两个朝向仍待扩展 |
+| 房屋、周边遮挡与光伏 `.pvc2` 建模与回读 | MCP 已封装 | `pvsyst_create_house_pv_scene` 与 `pvsyst_read_house_pv_scene`，支持单朝向多分区、多朝向屋顶及 4 类 `obstacles`（`building`、`tree`、`wall`、`mesh`）生成与 XML 无损还原，见[住宅与光伏建模](house-pv-modeling.md) |
+| 3D 场景免 GUI 原生导入与全年任务 | MCP 已封装（默认 `native`） | `pvsyst_import_house_pv_scene`、`pvsyst_run_house_task`、`pvsyst_run_sourced_house_task`（默认 `"native"`，写 `pvShdArrayTable`、`pvShdGenObject` 与原生 `oeTree` `pvShdElemObject`；`"gui"` 保留为旧版未维护路径），见[住宅单任务](native-house-task.md)与[双屋面交付说明](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance) |
+| 已保存场景的 PV 表格关联检查 | 只读状态 | `pvsyst_get_variant_parameters` 返回 `shading_scene.pv_bindings`，以及 `module_layout` 保存完整性，见[PV 区域关联读取](native-scene-bindings.md) |
+| Module Layout 精细电气阴影 | MCP 已封装（原生写入 + 显式 `string_layout`） | 导入工具及住宅任务的 `shading_mode="module_layout"` 写入原生组件布局、支持双朝向自动填串与显式逐格 `string_layout` 接线（兼容含 `obstacles`/`oeTree` 场景）；已通过 PVsyst 8.1.7 CLI `ShdElec` 仿真验证，见[原生住宅任务](native-house-task.md#module-layout-电气阴影) |
 | 既有 3D 场景阴影重算 | MCP 已封装 | `pvsyst_run_simulation(recompute_shading=True)` 调 CLI `-rs` 参数重新计算阴影表 |
 
 ## 负荷与储能（Loads & Storage）

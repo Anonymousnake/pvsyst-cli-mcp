@@ -27,6 +27,7 @@ PLACED_LAYOUT_KEYS = ("module_rows", "module_columns", "orientation", "row_spaci
                       "column_spacing_m", "origin_m", "roof_mesh")
 # Adapter payload ceilings, not PVsyst limits or architectural constraints.
 MAX_PARTS, MAX_VERTICES, MAX_TRIANGLES = 128, 50000, 100000
+MAX_OBSTACLES = 64
 MAX_TABLES = 64
 AUTHORING_TOOL = "pvsyst-cli-mcp/house-scene/1"
 
@@ -414,6 +415,155 @@ def house_profile(house):
         raise ValueError("Derived ridge height is not finite")
     return {"kind": "gable", "length_m": length, "width_m": width, "eave_height_m": eave,
             "roof_rise_m": ridge, "pitch_deg": pitch}
+
+
+def _box_faces():
+    return [[0, 2, 1], [0, 3, 2], [0, 1, 5], [0, 5, 4], [3, 6, 2], [3, 7, 6],
+            [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5], [4, 5, 6], [4, 6, 7]]
+
+
+def _wall_mesh(start, end, height_m, thickness_m):
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length = math.hypot(dx, dy)
+    if length <= 1e-4:
+        raise ValueError("Wall start_m and end_m must be separated by > 0.1 mm in XY")
+    nx = -dy / length * (thickness_m / 2.0)
+    ny = dx / length * (thickness_m / 2.0)
+    z0, z1 = start[2], end[2]
+    pts = [
+        (start[0] - nx, start[1] - ny, z0),
+        (end[0] - nx, end[1] - ny, z1),
+        (end[0] + nx, end[1] + ny, z1),
+        (start[0] + nx, start[1] + ny, z0),
+        (start[0] - nx, start[1] - ny, z0 + height_m),
+        (end[0] - nx, end[1] - ny, z1 + height_m),
+        (end[0] + nx, end[1] + ny, z1 + height_m),
+        (start[0] + nx, start[1] + ny, z0 + height_m),
+    ]
+    return [[float(_num(c)) for c in p] for p in pts], _box_faces()
+
+
+def _tree_proxy_mesh(origin, top_h, trunk_h, crown_d, trunk_d, rotation_deg):
+    """Low-poly closed prism proxy (trunk + crown) for COLLADA viewing; PVsyst receives native oeTree."""
+    ox, oy, oz = origin
+    tr = trunk_d / 2.0
+    cr = crown_d / 2.0
+    crown_h = max(top_h - trunk_h, 0.05)
+
+    def box_at(half_w, z_lo, z_hi):
+        local = [(-half_w, -half_w, z_lo), (half_w, -half_w, z_lo), (half_w, half_w, z_lo), (-half_w, half_w, z_lo),
+                 (-half_w, -half_w, z_hi), (half_w, -half_w, z_hi), (half_w, half_w, z_hi), (-half_w, half_w, z_hi)]
+        return [[float(_num(c)) for c in (lambda r: (ox + r[0], oy + r[1], oz + r[2]))(_rotate_z(p, rotation_deg))]
+                for p in local]
+
+    trunk_pts = box_at(tr, 0.0, trunk_h)
+    crown_pts = box_at(cr, trunk_h, trunk_h + crown_h)
+    faces = _box_faces() + [[idx + 8 for idx in face] for face in _box_faces()]
+    return trunk_pts + crown_pts, faces
+
+
+def obstacle_profiles(obstacles, existing_names=()):
+    """Validate and normalize optional scene obstacles (building, tree, wall, mesh)."""
+    if obstacles is None:
+        return []
+    if not isinstance(obstacles, list) or not 1 <= len(obstacles) <= MAX_OBSTACLES:
+        raise SceneValidationError([_diagnostic("obstacle_list", "obstacles",
+                                    f"obstacles must be a non-empty list of at most {MAX_OBSTACLES} entries")])
+    names = {name.casefold() for name in existing_names}
+    records, vertex_count, triangle_count, errors = [], 0, 0, []
+    for index, raw in enumerate(obstacles):
+        path = f"obstacles[{index}]"
+        if not isinstance(raw, dict) or "kind" not in raw:
+            errors.append(_diagnostic("obstacle_fields", path, "Each obstacle must be an object declaring kind"))
+            continue
+        kind = raw.get("kind")
+        if kind not in ("building", "tree", "wall", "mesh"):
+            errors.append(_diagnostic("obstacle_kind", path + ".kind",
+                                      "Obstacle kind must be building, tree, wall, or mesh"))
+            continue
+        try:
+            name = _name(raw.get("name"))
+            if name.casefold() in names:
+                raise ValueError("Obstacle names must be unique and distinct from house mesh names")
+            names.add(name.casefold())
+            if kind == "building":
+                allowed = {"kind", "name", "origin_m", "length_m", "width_m", "height_m", "rotation_deg", "roof"}
+                required = {"kind", "name", "origin_m", "length_m", "width_m", "height_m"}
+                if not required <= set(raw) <= allowed:
+                    raise ValueError("building obstacle declares unexpected or missing keys")
+                origin = [float(_num(v)) for v in _vector(raw["origin_m"], "building.origin_m")]
+                length = _finite(raw["length_m"], "building.length_m", positive=True)
+                width = _finite(raw["width_m"], "building.width_m", positive=True)
+                height = _finite(raw["height_m"], "building.height_m", positive=True)
+                rot = _finite(raw.get("rotation_deg", 0.0), "building.rotation_deg", minimum=-360.0, maximum=360.0)
+                if not -360.0 < rot < 360.0:
+                    raise ValueError("building.rotation_deg must be strictly between -360 and 360")
+                roof = raw.get("roof")
+                box_profile = house_profile({"length_m": length, "width_m": width, "eave_height_m": height,
+                                             "roof": roof if roof is not None else {"kind": "flat"}})
+                pts, tris = house_mesh(box_profile)
+                verts = []
+                for p in pts:
+                    rp = _rotate_z(p, rot)
+                    verts.append([float(_num(origin[i] + rp[i])) for i in range(3)])
+                faces = [list(f) for f in tris]
+                spec = {"kind": "building", "name": name, "origin_m": origin, "length_m": length,
+                        "width_m": width, "height_m": height, "rotation_deg": rot}
+                if roof is not None:
+                    spec["roof"] = roof
+                rec = {"kind": "building", "name": name, "vertices": verts, "triangles": faces, "spec": spec}
+            elif kind == "wall":
+                allowed = {"kind", "name", "start_m", "end_m", "height_m", "thickness_m"}
+                required = {"kind", "name", "start_m", "end_m", "height_m"}
+                if not required <= set(raw) <= allowed:
+                    raise ValueError("wall obstacle declares unexpected or missing keys")
+                start = [float(_num(v)) for v in _vector(raw["start_m"], "wall.start_m")]
+                end = [float(_num(v)) for v in _vector(raw["end_m"], "wall.end_m")]
+                height = _finite(raw["height_m"], "wall.height_m", positive=True)
+                thick = _finite(raw.get("thickness_m", 0.2), "wall.thickness_m", positive=True)
+                verts, faces = _wall_mesh(start, end, height, thick)
+                spec = {"kind": "wall", "name": name, "start_m": start, "end_m": end,
+                        "height_m": height, "thickness_m": thick}
+                rec = {"kind": "wall", "name": name, "vertices": verts, "triangles": faces, "spec": spec}
+            elif kind == "mesh":
+                if set(raw) != {"kind", "name", "vertices", "triangles"}:
+                    raise ValueError("mesh obstacle requires exactly kind, name, vertices, and triangles")
+                sub = mesh_house_profile({"kind": "mesh", "meshes": [{"name": name,
+                                          "vertices": raw["vertices"], "triangles": raw["triangles"]}]})["meshes"][0]
+                spec = {"kind": "mesh", "name": name, "vertices": sub["vertices"], "triangles": sub["triangles"]}
+                rec = {"kind": "mesh", "name": name, "vertices": sub["vertices"], "triangles": sub["triangles"],
+                       "spec": spec}
+            else:  # tree (native oeTree)
+                allowed = {"kind", "name", "origin_m", "top_height_m", "middle_height_m", "bottom_height_m",
+                           "trunk_height_m", "crown_diameter_m", "trunk_diameter_m", "rotation_deg"}
+                required = allowed - {"rotation_deg"}
+                if not required <= set(raw) <= allowed:
+                    raise ValueError("tree obstacle declares unexpected or missing keys")
+                origin = [float(_num(v)) for v in _vector(raw["origin_m"], "tree.origin_m")]
+                top_h = _finite(raw["top_height_m"], "tree.top_height_m", positive=True)
+                mid_h = _finite(raw["middle_height_m"], "tree.middle_height_m", positive=True)
+                bot_h = _finite(raw["bottom_height_m"], "tree.bottom_height_m", positive=True)
+                trunk_h = _finite(raw["trunk_height_m"], "tree.trunk_height_m", positive=True)
+                crown_d = _finite(raw["crown_diameter_m"], "tree.crown_diameter_m", positive=True)
+                trunk_d = _finite(raw["trunk_diameter_m"], "tree.trunk_diameter_m", positive=True)
+                rot = _finite(raw.get("rotation_deg", 0.0), "tree.rotation_deg", minimum=-360.0, maximum=360.0)
+                if not -360.0 < rot < 360.0:
+                    raise ValueError("tree.rotation_deg must be strictly between -360 and 360")
+                verts, faces = _tree_proxy_mesh(origin, top_h, trunk_h, crown_d, trunk_d, rot)
+                spec = {"kind": "tree", "name": name, "origin_m": origin, "top_height_m": top_h,
+                        "middle_height_m": mid_h, "bottom_height_m": bot_h, "trunk_height_m": trunk_h,
+                        "crown_diameter_m": crown_d, "trunk_diameter_m": trunk_d, "rotation_deg": rot}
+                rec = {**spec, "vertices": verts, "triangles": faces, "spec": spec}
+            vertex_count += len(rec["vertices"])
+            triangle_count += len(rec["triangles"])
+            if vertex_count > MAX_VERTICES or triangle_count > MAX_TRIANGLES:
+                raise ValueError("Obstacles exceed the adapter vertex/triangle ceiling")
+            records.append(rec)
+        except (ValueError, SceneValidationError) as exc:
+            errors.append(_diagnostic("obstacle_invalid", path, str(exc)))
+    if errors:
+        raise SceneValidationError(errors)
+    return records
 
 
 def layout_profile(layout, modules, total, source_tilt, *, placed=False):
@@ -903,8 +1053,8 @@ def check_fit(house, layout, origin, points):
             raise ValueError("Table corner sinks below the front roof plane")
 
 
-def build_scene(house, tables, modules, source, created, recipe=None):
-    """Minimal COLLADA document: shared rotation node, house child, PV child with translation."""
+def build_scene(house, tables, modules, source, created, recipe=None, obstacles=None):
+    """Minimal COLLADA document: shared rotation node, house child, optional obstacles, PV child."""
     ET.register_namespace("", NS)
     ET.register_namespace("pv", PV)
     root = ET.Element(_tag(NS, "COLLADA"), {"version": "1.5.0"})
@@ -940,6 +1090,10 @@ def build_scene(house, tables, modules, source, created, recipe=None):
     for index, part in enumerate(parts, 1):
         geometry = _append_mesh(geometries, f"HousePart{index}", part["vertices"], part["triangles"])
         geometry.set("name", part["name"])
+    obs_list = list(obstacles or ())
+    for index, obs in enumerate(obs_list, 1):
+        geometry = _append_mesh(geometries, f"ObstaclePart{index}", obs["vertices"], obs["triangles"])
+        geometry.set("name", obs["name"])
     nodes = ET.SubElement(root, _tag(NS, "library_nodes"))
     for index, layout in enumerate(tables, 1):
         rack_points, rack_faces = rack_mesh(layout)
@@ -966,6 +1120,9 @@ def build_scene(house, tables, modules, source, created, recipe=None):
     for index, part in enumerate(parts, 1):
         node = ET.SubElement(shared, _tag(NS, "node"), {"id": f"HouseNode{index}", "name": part["name"]})
         ET.SubElement(node, _tag(NS, "instance_geometry"), {"url": f"#HousePart{index}"})
+    for index, obs in enumerate(obs_list, 1):
+        node = ET.SubElement(shared, _tag(NS, "node"), {"id": f"ObstacleNode{index}", "name": obs["name"]})
+        ET.SubElement(node, _tag(NS, "instance_geometry"), {"url": f"#ObstaclePart{index}"})
     summaries = []
     for index, layout in enumerate(tables, 1):
         origin = _rack_origin(house, layout)
@@ -988,18 +1145,24 @@ def build_scene(house, tables, modules, source, created, recipe=None):
                                         for point in points]})
     ET.SubElement(ET.SubElement(root, _tag(NS, "scene")), _tag(NS, "instance_visual_scene"),
                   {"url": "#VisualSceneNode"})
-    return root, {"house_vertices": sum(len(part["vertices"]) for part in parts),
-                  "house_faces": sum(len(part["triangles"]) for part in parts),
-                  "house_parts": len(parts), "part_names": [part["name"] for part in parts],
-                  "rack_vertices": 4 * len(tables), "rack_faces": 2 * len(tables),
-                  "pv_table_count": len(tables), "tables": summaries,
-                  "rotate_deg": turn,
-                  **({"origin_m": summaries[0]["origin_m"], "corners_m": summaries[0]["corners_m"]}
-                     if len(tables) == 1 else {})}
+    counts = {"house_vertices": sum(len(part["vertices"]) for part in parts),
+              "house_faces": sum(len(part["triangles"]) for part in parts),
+              "house_parts": len(parts), "part_names": [part["name"] for part in parts],
+              "rack_vertices": 4 * len(tables), "rack_faces": 2 * len(tables),
+              "pv_table_count": len(tables), "tables": summaries,
+              "rotate_deg": turn,
+              **({"origin_m": summaries[0]["origin_m"], "corners_m": summaries[0]["corners_m"]}
+                 if len(tables) == 1 else {})}
+    if obs_list:
+        counts["obstacle_count"] = len(obs_list)
+        counts["obstacle_names"] = [obs["name"] for obs in obs_list]
+        counts["tree_count"] = sum(1 for obs in obs_list if obs["kind"] == "tree")
+        counts["obstacle_mesh_count"] = sum(1 for obs in obs_list if obs["kind"] != "tree")
+    return root, counts
 
 
 def create_house_pv_scene(store, components, *, project, variant, output_name, house, layout,
-                          dry_run=True, module_geometry=None, string_layout=None):
+                          dry_run=True, module_geometry=None, string_layout=None, obstacles=None):
     """Preview or write one new .pvc2; the project, variant and PAN are never written."""
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
               "diagnostics": [], "warnings": [], "artifacts": {},
@@ -1017,6 +1180,8 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             source = source_profile(store, lines, arrays, system, allow_groups=True)
             modules, pan_snapshots = resolve_source_geometry(components, source, module_geometry, layout)
             pocket = house_profile(house)
+            existing_names = ([m["name"] for m in pocket["meshes"]] if pocket["kind"] == "mesh" else ["House"])
+            obstacle_records = obstacle_profiles(obstacles, existing_names=existing_names)
             tables = table_profiles(layout, pocket, modules, source)
             check_tables(pocket, tables)
             binding, binding_state = _string_layout_profile(string_layout, tables)
@@ -1042,10 +1207,13 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             recipe = {"version": version, "source": declared,
                       "house": {"kind": "mesh"} if pocket["kind"] == "mesh" else house,
                       "layout": layout}
+            if obstacle_records:
+                recipe["obstacles"] = [obs["spec"] for obs in obstacle_records]
             if binding is not None:
                 recipe["string_layout"] = binding
             created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            root, counts = build_scene(pocket, tables, modules, source, created, recipe)
+            root, counts = build_scene(pocket, tables, modules, source, created, recipe,
+                                       obstacles=obstacle_records or None)
             payload = ET.tostring(root, encoding="utf-8", xml_declaration=True)
             try:
                 ET.fromstring(payload)
@@ -1069,6 +1237,7 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                           house=({"kind": "mesh", "part_count": len(pocket["meshes"])}
                                  if pocket["kind"] == "mesh" else pocket),
                           layout={"tables": tables} if "tables" in layout else tables[0], geometry=counts,
+                          **({"obstacles": [obs["spec"] for obs in obstacle_records]} if obstacle_records else {}),
                           bytes=len(payload))
             if binding_state is not None:
                 result["string_layout_state"] = binding_state

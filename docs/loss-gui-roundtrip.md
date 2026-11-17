@@ -14,4 +14,4 @@
   - 基础标量（`UFactor`、`LIDLoss`、`ModuleQualityLoss`、`PMismMPP`）：`pvsyst_update_variant_parameters`（见[并网拓扑与参数编辑](grid-capacity-verification.md)）
   - 组串间电压失配（`PMismString`）与带阈值的辅助耗电：`pvsyst_update_variant_parameters`（见[详细损失参数](native-detailed-losses.md)）
   - 积灰损失：`soiling_updates`（见[积灰配置](soiling-verification.md)）
-  - 交直流线缆与中压夜间开关：分别使用 [`pvsyst_create_ac_cabling_variant`](native-ac-cabling.md)、[`pvsyst_create_native_dc_cabling_variant`](native-dc-cabling.md) 和 [`pvsyst_create_mv_night_disconnect_variant`](native-mv-night.md)
+  - 交直流线缆与中压夜间开关：分别使用 [`pvsyst_create_ac_cabling_variant`](native-ac-cabling.md)、[`pvsyst_create_dc_cabling_variant`](native-dc-cabling.md) 和 [`pvsyst_create_mv_night_disconnect_variant`](native-mv-night.md)

@@ -20,7 +20,7 @@ from pvsyst_auto.energy.power_factor import power_factor_state
 from pvsyst_auto.energy.soiling import soiling_state
 from pvsyst_auto.energy.storage import grid_storage_state
 from pvsyst_auto.energy.unavailability import system_unavail_state
-from pvsyst_auto.native.dc import dc_cabling_state
+from pvsyst_auto.energy.dc import dc_cabling_state
 from pvsyst_auto.native.grid_limit import grid_limit_state
 from pvsyst_auto.native.horizon import horizon_state
 from pvsyst_auto.native.p50 import p50_state

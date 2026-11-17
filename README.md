@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Local MCP server and Python adapter for driving an installed copy of PVsyst 8 on Windows. It wraps `PVsystCLI.exe` for simulations, weather conversion, and license checks, and provides direct parsers and editors for PVsyst text files (`.PRJ`, `.VCx`, `.PAN`, `.OND`, `.BTR`, `.GEN`, `.SIT`) along with targeted GUI automation for features that the official CLI does not expose.
+Local MCP server and Python adapter for driving an installed copy of PVsyst 8 on Windows. It wraps `PVsystCLI.exe` for simulations, weather conversion, and license checks, and provides headless parsers and builders for PVsyst text files (`.PRJ`, `.VCx`, `.PAN`, `.OND`, `.BTR`, `.GEN`, `.SIT`) including 3D house scenes with obstacles (`.pvc2` -> `.VCx`) and DC wiring calculations.
 
 You need your own PVsyst installation and license on the host machine.
 
@@ -13,7 +13,7 @@ You need your own PVsyst installation and license on the host machine.
 | Check equipment counts and missing inputs from a feasibility brief | `pvsyst_review_engineering_brief` | [Brief review](docs/engineering-brief.md) |
 | Inspect an existing project, apply an isolated change, and run a full year | `pvsyst_project_handoff`, `pvsyst_run_engineering_task` | [Engineering delivery](docs/engineering-delivery.md) |
 | Assemble a new project by repeating fixed subarray blocks from a template | `pvsyst_prepare_block_project` | [Block preparation](docs/block-project-preparation.md) |
-| Build a 3D house scene, bind roof orientations, and run annual shading | `pvsyst_run_house_task` | [House task](docs/native-house-task.md) |
+| Build a 3D house + obstacles scene, bind roof orientations, and run annual shading | `pvsyst_run_house_task` | [House task](docs/native-house-task.md) |
 | Evaluate centralized AC-coupled storage against an hourly load profile | `pvsyst_run_engineering_task` | [Storage engineering](docs/engineering-storage.md) |
 | Diff two or three simulation runs and bundle the project + reports into a ZIP | `pvsyst_compare_engineering_scenarios`, `pvsyst_export_engineering_delivery` | [Scenario comparison](docs/engineering-scenarios.md) |
 
@@ -23,15 +23,15 @@ By default the server registers **82 tools across 8 groups**. If you need low-le
 
 Requirements:
 - Windows with Python 3.10+
-- Installed `PVsystCLI.exe` (tested against 8.0.6 and 8.1.6)
-- For features that drive the desktop UI (3D house scene import and DC cable resistance calculation): PVsyst 8.1.6 rev49278 in Chinese locale at 96 DPI (100% display scaling)
+- Installed `PVsystCLI.exe` (tested against 8.0.6, 8.1.6 rev49278, and 8.1.7 rev49382)
+- Optional interactive inspection only (`pvsyst_open_native_project`): PVsyst 8.1.6/8.1.7 GUI in Chinese locale at 96 DPI (100% display scaling); 3D house scenes, obstacles, `module_layout`, and DC cabling now run headlessly without driving the desktop GUI by default
 
 From the repository root:
 
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
-$env:PVSYST_CLI = 'C:\Program Files\PVsyst8.1.6\PVsystCLI.exe'
+$env:PVSYST_CLI = 'C:\Program Files\PVsyst8.1.7\PVsystCLI.exe'
 $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 .\.venv\Scripts\python.exe -m pvsyst_auto
 ```
@@ -49,7 +49,7 @@ Point your MCP client at the virtualenv Python executable. Launching via `-m pvs
       "command": "C:/path/to/pvsyst-cli-mcp/.venv/Scripts/python.exe",
       "args": ["-m", "pvsyst_auto"],
       "env": {
-        "PVSYST_CLI": "C:/Program Files/PVsyst8.1.6/PVsystCLI.exe",
+        "PVSYST_CLI": "C:/Program Files/PVsyst8.1.7/PVsystCLI.exe",
         "PVSYST_WORKSPACE": "C:/path/to/PVsyst8.1_Data"
       }
     }

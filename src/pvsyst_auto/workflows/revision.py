@@ -140,7 +140,10 @@ def _check_house_run(store, record, path, project, variant):
             or handoff["input_snapshot"].get("variant_sha256") != guards["native_variant"]):
         raise ValueError("House runtime handoff does not match its guarded native saved variant")
     imported = record["native_import"]
-    native_method = request.get("scene_import_method") == "native"
+    if "scene_import_method" in request:
+        native_method = request["scene_import_method"] == "native"
+    else:
+        native_method = not (isinstance(imported, dict) and imported.get("status") == "imported")
     import_status = "native_variant_created" if native_method else "imported"
     geometry_key = "stored_geometry_verified" if native_method else "native_geometry_verified"
     if (not isinstance(imported, dict) or imported.get("status") != import_status

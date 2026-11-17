@@ -106,8 +106,8 @@ def _pv_bindings(lines, types):
                 for key, values in block.fields.items()}
 
     try:
-        if any(kind not in ("pvShdArrayTable", "pvShdGenObject") for kind in types):
-            raise ValueError("Stored binding review supports PV tables and generic objects only")
+        if any(kind not in ("pvShdArrayTable", "pvShdGenObject", "pvShdElemObject") for kind in types):
+            raise ValueError("Stored binding review supports PV tables, generic objects, and native elementary objects only")
         blocks = objects("\n".join(line.rstrip("\r\n") for line in lines))
         tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
         if len(tables) != types.count("pvShdArrayTable"):

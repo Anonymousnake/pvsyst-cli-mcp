@@ -20,12 +20,11 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from pvsyst_auto.components.editor import objects
+from pvsyst_auto.native._prep import _prepare_source, _source_snapshot, _verify_new as _prep_verify_new
 from pvsyst_auto.native.cli import PVsystError
 from pvsyst_auto.native.project import _project_matches
-from pvsyst_auto.scene.mapping import verify_grouped_hardware, verify_house_geometry, verify_pv_geometry, verify_module_layout
 from pvsyst_auto.project.paths import safe_filename, workspace_file
-from pvsyst_auto.scene.author import _num, check_tables, house_profile, resolve_source_geometry, source_profile, table_profiles
+from pvsyst_auto.scene.author import _num
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.versions import GUI_BUILDS
 
@@ -514,59 +513,6 @@ def _check_cli(cli):
     return text.strip()
 
 
-def _source_snapshot(store, components, project, variant, module_geometry, *, allow_groups=False, layout=None):
-    """Validate the source variant read-only, reusing the production helpers."""
-    with store.lock:
-        store._check_project(project)
-        path = store._path(project, variant)
-        original = store._read(path)
-        _, lines = store._text(original)
-        arrays, system = store._sections(lines)
-        source = source_profile(store, lines, arrays, system, allow_groups=allow_groups)
-        modules, pan_snapshots = resolve_source_geometry(components, source, module_geometry, layout)
-    return {"path": path, "bytes": original, "source": source, "modules": modules,
-            "pan_snapshot": (pan_snapshots[0] if len(pan_snapshots) == 1 else None),
-            "pan_snapshots": pan_snapshots}
-
-
-def _prepare_source(store, components, scene, *, allow_groups=False):
-    """Bind lossless scene geometry to the current source, without driving the GUI."""
-    args = scene["create_arguments"]
-    snap = _source_snapshot(store, components, args["project"], args["variant"],
-                            args["module_geometry"], allow_groups=allow_groups, layout=args["layout"])
-    recorded, current = scene["source"], snap["source"]
-    if recorded["pan"].casefold() != current["pan_name"].casefold():
-        _fail("The scene PAN reference differs from the current source variant")
-    if recorded["module_total"] != current["module_total"]:
-        _fail("The scene module total differs from the current source variant")
-    if (_num(recorded["tilt_deg"]) != _num(current["tilt_deg"])
-            or _num(recorded["collada_azimuth_deg"]) != _num(current["azimuth_deg"])
-            or any(_num(recorded["site"][key]) != _num(current["site"][key])
-                   for key in ("latitude", "longitude", "altitude"))):
-        _fail("The scene PV plane or site differs from the current source variant")
-    declared_groups = recorded.get("orientations", [])
-    current_groups = current.get("orientations", [])
-    if bool(declared_groups) != bool(current_groups):
-        _fail("The scene orientation structure differs from the current source variant")
-    if declared_groups:
-        actual_groups = recorded.get("orientation_geometry", [])
-        if ([item["id"] for item in declared_groups] != [item["id"] for item in current_groups]
-                or [item["id"] for item in actual_groups] != [item["id"] for item in current_groups]):
-            _fail("The scene must retain each current source orientation identity")
-        for declared, actual, plane in zip(declared_groups, actual_groups, current_groups):
-            if (declared["module_total"] != plane["module_total"]
-                    or actual["module_total"] != plane["module_total"]
-                    or _num(actual["tilt_deg"]) != _num(plane["tilt_deg"])
-                    or _num(actual["collada_azimuth_deg"]) != _num(plane["azimuth_deg"])):
-                _fail("Scene orientation %d differs from the current source plane" % plane["id"])
-    pocket = house_profile(args["house"])
-    tables = table_profiles(args["layout"], pocket, snap["modules"], current)
-    check_tables(pocket, tables)
-    if len(tables) != int(scene["geometry"]["pv_table_count"]):
-        _fail("Recipe table count disagrees with the scene readback")
-    return {"snapshot": snap, "house": pocket, "table_profiles": tables}
-
-
 def _module_layout_preflight(snapshot, tables):
     """Keep automatic wiring within the native template that has been verified."""
     arrays = [block for block in objects(snapshot["bytes"].decode("utf-8-sig"))
@@ -608,7 +554,7 @@ def _preflight(components, cli, scene_name, module_geometry, *, store=None, allo
     result = {"status": "preflight_stage2", "scene": scene, "args": args,
               "tables": tables, "parts": parts, "grouped": grouped}
     if store is not None:
-        result.update(_prepare_source(store, components, scene, allow_groups=allow_groups))
+        result.update(_prepare_source(store, components, scene, allow_groups=allow_groups, error_cls=NativeBridgeError))
         if grouped:
             source = result["snapshot"]["source"]
             planes = source["orientations"]
@@ -1213,46 +1159,5 @@ def _save_new(project, variant_name):
 
 def _verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules, *, scene_context=None,
                  shading_mode="linear"):
-    def parsed(raw):
-        return objects(raw.decode("utf-8-sig"))
-    target_bytes = Path(path).read_bytes()
-    blocks = parsed(target_bytes)
-    layout = {}
-    if shading_mode == "module_layout":
-        try:
-            layout["module_layout"] = verify_module_layout(blocks, target_bytes.decode("utf-8-sig").splitlines(True))
-        except (ValueError, KeyError) as exc:
-            _fail(str(exc))
-    tables = [block for block in blocks if block.object_type == "pvShdArrayTable"]
-    generic = [block for block in blocks if block.object_type == "pvShdGenObject"]
-    modules = sum(int(block.one("NModInHeight")[1]) * int(block.one("NModInWidth")[1]) for block in tables)
-    if len(generic) != expect_parts or len(tables) != expect_tables:
-        _fail("New variant holds %d house objects and %d PV tables, expected %d and %d"
-              % (len(generic), len(tables), expect_parts, expect_tables))
-    if modules != expect_modules:
-        _fail("New variant module total is %d, expected %d" % (modules, expect_modules))
-    if scene_context is not None and scene_context["source"].get("orientations"):
-        source_text, target_text = (raw.decode("utf-8-sig") for raw in (source_bytes, target_bytes))
-        try:
-            hardware = verify_grouped_hardware(parsed(source_bytes), blocks, source_text.splitlines(True),
-                                               target_text.splitlines(True), scene_context["source"])
-            house_geometry = verify_house_geometry(blocks, target_text.splitlines(True), scene_context["house"],
-                                                    scene_context["source"])
-            pv_geometry = verify_pv_geometry(blocks, scene_context["tables"], scene_context["modules"],
-                                             scene_context["source"])
-        except ValueError as exc:
-            _fail(str(exc))
-        return {"objects": len(generic) + len(tables), "house": len(generic), "tables": len(tables),
-                "modules": modules, **hardware, **house_geometry, **pv_geometry, **layout}
-    if len([block for block in blocks if block.object_type == "pvOrient"]) != 1 or any(
-            block.one("NoOrient")[1] != "1" for block in tables):
-        _fail("New variant does not reference a single orientation")
-    if any(block.one("Source")[1] != "osPVCollada" for block in generic + tables):
-        _fail("New variant does not preserve the native PVCollada provenance")
-    original = next(block for block in parsed(source_bytes) if block.object_type == "pvSubArray")
-    target = next(block for block in blocks if block.object_type == "pvSubArray")
-    for field in ("PVModule", "GInverter", "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT"):
-        if original.one(field)[1] != target.one(field)[1]:
-            _fail("Saved variant hardware differs from the source: " + field)
-    return {"objects": len(generic) + len(tables), "house": len(generic), "tables": len(tables),
-            "modules": modules, "source_hardware_preserved": True}
+    return _prep_verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules,
+                            scene_context=scene_context, shading_mode=shading_mode, error_cls=NativeBridgeError)

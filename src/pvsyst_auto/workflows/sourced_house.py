@@ -9,13 +9,12 @@ from pathlib import Path
 import subprocess
 
 from pvsyst_auto.native.cli import PVsystError
+from pvsyst_auto.native._prep import find_running_pvsyst
 from pvsyst_auto.workflows.design import _native_preflight, _prune_empty, prepare_design_project
 from pvsyst_auto.workflows.house import run_house_task
-from pvsyst_auto.native.project import _processes
 from pvsyst_auto.project.paths import project_name, variant_id, workspace_file
 from pvsyst_auto.results import fingerprint
 from pvsyst_auto.weather.preparation import load_weather_manifest
-import pvsyst_auto.native.scene as native
 
 
 PRESERVE_SOURCE_HARDWARE = "preserve_source_hardware"
@@ -38,7 +37,7 @@ def _preserve_child_request(request):
                  source_variant=request["source_variant"], year=design["year"])
     if design.get("report_pages") is not None:
         child["report_pages"] = design["report_pages"]
-    for key in ("module_geometry", "string_layout", "report_pdf", "shading_mode",
+    for key in ("module_geometry", "obstacles", "string_layout", "report_pdf", "shading_mode",
                 "scene_import_method", "allow_window_creation"):
         if request.get(key) is not None:
             child[key] = request[key]
@@ -218,7 +217,7 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
             # Reject an unusable explicit binding before any source-project write, rather than
             # preparing the source and only failing at the child house stage.
             if request.get("string_layout") is not None and not (
-                    (request.get("scene_import_method") or "gui") == "native"
+                    (request.get("scene_import_method") or "native") == "native"
                     and (request.get("shading_mode") or "linear") == "module_layout"):
                 result.update(status="blocked", stage="house_inputs",
                               issues=["An explicit string_layout requires scene_import_method='native' "
@@ -227,7 +226,7 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
             # A strict no-window request cannot be delivered by the GUI import method; reject
             # before any source preparation so a windowless request never prepares a project.
             if request.get("allow_window_creation") is False and (
-                    (request.get("scene_import_method") or "gui") != "native"):
+                    (request.get("scene_import_method") or "native") != "native"):
                 result.update(status="blocked", stage="house_inputs",
                               issues=["allow_window_creation=false requires scene_import_method='native'; "
                                       "the GUI import method opens the native window, so nothing was prepared."])
@@ -290,7 +289,7 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
                 if not confirm:
                     result["status"] = "confirmation_required"
                     return result
-                if _processes(native, (Path(cli.cli).parent / "PVsyst.exe").resolve()):
+                if find_running_pvsyst((Path(cli.cli).parent / "PVsyst.exe").resolve()):
                     raise ValueError("Existing PVsyst GUI remains untouched; no source preparation was started")
                 made = prepare_design_project(cli, store, spec=design, dry_run=False,
                     source_context=binding, allow_window_creation=request.get("allow_window_creation"))
@@ -317,7 +316,7 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
             # Carry the native routing/selector, explicit per-cell binding and the per-request
             # window policy into the child house request; these stay absent for the historical
             # GUI/linear shape (is-not-None, so an explicit False is forwarded, never dropped).
-            for key in ("shading_mode", "scene_import_method", "string_layout", "allow_window_creation"):
+            for key in ("obstacles", "shading_mode", "scene_import_method", "string_layout", "allow_window_creation"):
                 if request.get(key) is not None:
                     child[key] = request[key]
             child_resume = house_manifest.exists()

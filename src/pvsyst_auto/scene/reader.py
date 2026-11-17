@@ -6,7 +6,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
-from pvsyst_auto.scene.author import AUTHORING_TOOL, MAX_PARTS, MAX_TABLES, MAX_TRIANGLES, MAX_VERTICES, NS, PV, SceneValidationError, _diagnostic, _finite, _string_layout_profile, build_scene, caller_geometry, check_tables, house_profile, layout_profile, table_profiles
+from pvsyst_auto.scene.author import AUTHORING_TOOL, MAX_OBSTACLES, MAX_PARTS, MAX_TABLES, MAX_TRIANGLES, MAX_VERTICES, NS, PV, SceneValidationError, _diagnostic, _finite, _string_layout_profile, build_scene, caller_geometry, check_tables, house_profile, layout_profile, obstacle_profiles, table_profiles
 
 XML_NS = {"n": NS, "pv": PV}
 MAX_BYTES = 64 * 1024 * 1024
@@ -34,15 +34,17 @@ def _number(parent, path, **bounds):
 
 def _parts(root):
     geometries = list(_one(root, "n:library_geometries"))
-    if len(geometries) > MAX_PARTS + MAX_TABLES:
+    if len(geometries) > MAX_PARTS + MAX_TABLES + MAX_OBSTACLES:
         _fail("library_geometries", "Scene exceeds the adapter geometry ceiling")
-    parts, racks, vertex_count, triangle_count = [], [], 0, 0
+    parts, obs_parts, racks, vertex_count, triangle_count = [], [], [], 0, 0
     for geometry in geometries:
         identifier = geometry.get("id", "")
         if re.fullmatch(r"Rack(?:[1-9][0-9]*)?", identifier):
             racks.append(geometry)
             continue
-        if not re.fullmatch(r"HousePart[1-9][0-9]*", identifier):
+        is_house = bool(re.fullmatch(r"HousePart[1-9][0-9]*", identifier))
+        is_obs = bool(re.fullmatch(r"ObstaclePart[1-9][0-9]*", identifier))
+        if not (is_house or is_obs):
             _fail("library_geometries/" + identifier, "Unrecognized geometry identifier")
         positions = _text(geometry, "n:mesh/n:source/n:float_array").split()
         indices = _text(geometry, "n:mesh/n:triangles/n:p").split()
@@ -54,12 +56,13 @@ def _parts(root):
             _fail(identifier, "Scene exceeds the adapter mesh ceiling")
         vertices = [float(value) for value in positions]
         triangles = [int(value) for value in indices]
-        parts.append({"name": geometry.get("name", identifier),
-                      "vertices": [vertices[i:i + 3] for i in range(0, len(vertices), 3)],
-                      "triangles": [triangles[i:i + 3] for i in range(0, len(triangles), 3)]})
+        item = {"name": geometry.get("name", identifier),
+                "vertices": [vertices[i:i + 3] for i in range(0, len(vertices), 3)],
+                "triangles": [triangles[i:i + 3] for i in range(0, len(triangles), 3)]}
+        (parts if is_house else obs_parts).append(item)
     if not parts or not 1 <= len(racks) <= MAX_TABLES:
         _fail("library_geometries", "House meshes and bounded PV rack geometry are required")
-    return parts, racks
+    return parts, obs_parts, racks
 
 
 def _module(asset):
@@ -129,14 +132,16 @@ def read_house_pv_scene(components, scene_name):
             created = _text(asset, "n:created")
             if _text(asset, "n:modified") != created:
                 _fail("asset/modified", "This dialect emits matching creation and modification timestamps")
-            parts, racks = _parts(root)
+            parts, obs_parts, racks = _parts(root)
             geometry = _module(asset)
             modules = caller_geometry(geometry)
             source = _source(asset, _one(racks[0], "n:extra/n:technique/pv:rack"))
             subject = asset.findall("n:subject", XML_NS)
             legacy = not subject
-            binding, binding_state = None, None
+            binding, binding_state, obstacle_records = None, None, None
             if legacy:
+                if obs_parts:
+                    _fail("library_geometries", "Legacy scene cannot declare obstacle parts without recipe")
                 if len(racks) != 1 or racks[0].get("id") != "Rack":
                     _fail("asset/subject", "Missing readback recipe for this scene")
                 house = {"kind": "mesh", "meshes": parts}
@@ -150,7 +155,8 @@ def read_house_pv_scene(components, scene_name):
                     _fail("asset/subject", "Unrecognized scene authoring metadata")
                 recipe = json.loads(subject[0].text or "")
                 recipe_keys = {"version", "source", "house", "layout"}
-                if (not isinstance(recipe, dict) or not recipe_keys <= set(recipe) <= recipe_keys | {"string_layout"}
+                if (not isinstance(recipe, dict)
+                        or not recipe_keys <= set(recipe) <= recipe_keys | {"string_layout", "obstacles"}
                         or type(recipe["version"]) is not int or recipe["version"] not in (1, 2, 3)):
                     _fail("asset/subject", "Only complete version 1, 2 or 3 recipes are supported")
                 version = recipe["version"]
@@ -243,7 +249,19 @@ def read_house_pv_scene(components, scene_name):
                 binding = recipe.get("string_layout")
                 if binding is not None:
                     _, binding_state = _string_layout_profile(binding, tables)
-            expected, counts = build_scene(pocket, tables, modules, source, created, recipe)
+                raw_obstacles = recipe.get("obstacles")
+                if raw_obstacles is not None:
+                    existing = ([m["name"] for m in pocket["meshes"]] if pocket["kind"] == "mesh" else ["House"])
+                    obstacle_records = obstacle_profiles(raw_obstacles, existing_names=existing)
+                    if len(obs_parts) != len(obstacle_records) or any(
+                            parsed["name"] != rec["name"] or parsed["vertices"] != rec["vertices"]
+                            or parsed["triangles"] != rec["triangles"]
+                            for parsed, rec in zip(obs_parts, obstacle_records)):
+                        _fail("library_geometries", "Obstacle mesh geometry differs from scene recipe")
+                elif obs_parts:
+                    _fail("library_geometries", "Scene contains undeclared obstacle geometry")
+            expected, counts = build_scene(pocket, tables, modules, source, created, recipe,
+                                           obstacles=obstacle_records)
             if legacy:
                 expected = _legacy_tree(expected)
             rebuilt = ET.tostring(expected, encoding="unicode")
@@ -262,6 +280,8 @@ def read_house_pv_scene(components, scene_name):
                 arguments.update(project=declared["project"], variant=declared["variant"])
                 if binding is not None:
                     arguments["string_layout"] = binding
+                if obstacle_records is not None:
+                    arguments["obstacles"] = [rec["spec"] for rec in obstacle_records]
             recorded_source = dict(declared, provenance="not-recorded" if legacy else "file-declared",
                                    site=source["site"], tilt_deg=source["tilt_deg"],
                                    collada_azimuth_deg=source["azimuth_deg"])

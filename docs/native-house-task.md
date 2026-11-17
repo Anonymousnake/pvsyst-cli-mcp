@@ -1,16 +1,17 @@
 # 住宅 3D 场景端到端任务（`pvsyst_run_house_task`）
 
-`pvsyst_run_house_task(spec, dry_run=True, confirm=False, resume=False, retry_simulation=False)` 把住宅光伏建模的各个环节——克隆工作工程、生成 `.pvc2` 三维场景、冷启动 PVsyst 8.1.6 GUI 导入场景并绑定朝向、校验阴影表并另存新变体、正常关闭 GUI、再启动 `PVsystCLI.exe` 重新加载该变体跑完全年逐时仿真——整合成一条带断点续跑检查点（Checkpoint）的完整流水线。
+`pvsyst_run_house_task(spec, dry_run=True, confirm=False, resume=False, retry_simulation=False)` 把住宅光伏建模的各个环节——克隆工作工程、生成 `.pvc2` 三维场景（含屋顶与可选周边遮挡物 `obstacles`）、免 GUI 原生写入含 3D 阴影/组件布局的 `.VCx` 变体、再启动 `PVsystCLI.exe` 重新加载该变体跑完全年逐时仿真——整合成一条带断点续跑检查点（Checkpoint）的完整流水线。
 
+- 默认 `scene_import_method="native"` 已彻底免去桌面 GUI 启动与窗口自动化（仅当显式传入旧版遗留 `scene_import_method="gui"` 时才冷启动桌面 PVsyst）。
 - 如果还没准备源工程，可以先调 [`pvsyst_prepare_design_project`](design-project-preparation.md) 生成源工程，或者直接用把规格书绑定也包进去的 [`pvsyst_run_sourced_house_task`](sourced-house-task.md)。
-- 如果不需要 3D 房屋阴影、只跑常规无阴影固定平面，直接用 [`pvsyst_simulate_design`](single-design-inputs.md) 即可，无需启动 GUI。
+- 如果不需要 3D 房屋阴影、只跑常规无阴影固定平面，直接用 [`pvsyst_simulate_design`](single-design-inputs.md) 即可。
 
 ## 环境前提与输入参数
 
 运行环境要求：
-- Windows 系统，中文版 PVsyst 8.1.6 rev49278，显示器缩放 96 DPI（100%）。
-- `PVsyst.ini` 中的 `DataPath` 已指向当前 MCP 工作区，且执行前桌面上**没有已打开的 PVsyst GUI 进程**（为防止冲掉用户未保存的工作，只要检测到已有 PVsyst 窗口，工具就会拒绝接管并停止）。
-- 源工程支持北半球单子阵列/单固定朝向的纯并网工程，以及符合 `anchor0` 约束的单栋双屋面工程（双屋面条件见[工程交付双屋面章节](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。源 `.PRJ` 与 `.VCx` 必须引用同一对工作区 `.SIT`/`.MET`。
+- Windows 系统 + 已安装的 `PVsystCLI.exe`（8.1.6 rev49278 / 8.1.7 rev49382）；默认 `"native"` 路径不再需要打开桌面 GUI 或 96 DPI 窗口环境。
+- `PVsyst.ini` 中的 `DataPath` 已指向当前 MCP 工作区；执行前同样会通过纯 `kernel32` 进程检测确认没有从同一安装目录启动的冲突 PVsyst 进程。
+- 源工程支持北半球单子阵列/单固定朝向的纯并网工程，以及符合 `anchor0` 约束的单栋多朝向工程（双屋面条件见[工程交付双屋面章节](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。源 `.PRJ` 与 `.VCx` 必须引用同一对工作区 `.SIT`/`.MET`。
 
 `spec` 字典字段：
 
@@ -21,13 +22,14 @@
 | `variant_name` | 新变体的显示标题（`1..80` UTF-8 字节单行文本；实际保存的 `.VCx` 编号由 PVsyst `SaveAs` 自动分配） |
 | `year` | 仿真年份（整数 `1969..2068`），需与继承的 `.MET` 文件年份一致 |
 | `house` | `kind="mesh"` 的完整具名房屋构件三角网格（墙体、屋面、挑檐、门窗、烟囱、门廊等；详见[住宅与光伏建模](house-pv-modeling.md)） |
-| `layout` | 单区域排布或 `tables` 中的双区域排布，组件总颗数必须与源变体子阵列严格一致 |
-| `string_layout` | 可选；显式 per-module-cell 组串接线声明 `{tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`，作为 `layout` 同级兄弟块，不替换 `layout`。`row`/`col` 1 基、`global_string>=0`（`0`=未分配 draft）、`subarray_id` 为真实源子阵 id。省略即旧行为：旧 recipe v1/v2 形状与字节不变、不升版本、不造 v3。draft 可保存/回读但原生 import 前须补全；显式接线仅在 `scene_import_method="native"` 且 `shading_mode="module_layout"` 时被消费，`gui`/`linear` 会在写入前拒绝而不是悄悄丢弃 |
+| `obstacles` | 可选；周边环境遮挡物列表（`1..64` 个），支持 `building`、`tree`（原生 `oeTree`）、`wall`、`mesh` 四类构件，见[住宅与光伏建模](house-pv-modeling.md) |
+| `layout` | 单区域排布或 `tables` 中的多区域排布，组件总颗数必须与源变体子阵列严格一致 |
+| `string_layout` | 可选；显式 per-module-cell 组串接线声明 `{tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`，作为 `layout` 同级兄弟块，不替换 `layout`。`row`/`col` 1 基、`global_string>=0`（`0`=未分配 draft）、`subarray_id` 为真实源子阵 id。省略即旧行为：旧 recipe v1/v2 形状与字节不变、不升版本、不造 v3。draft 可保存/回读但原生 import 前须补全；显式接线仅在 `scene_import_method="native"`（默认）且 `shading_mode="module_layout"` 时被消费，`gui`/`linear` 会在写入前拒绝而不是悄悄丢弃 |
 | `module_geometry` | 组件几何尺寸（`model_name`、`nom_power_wp`、`width_m`、`length_m`、`geometry_depth_m`） |
 | `report_pages` | 可选的原生 PDF 报告页名称列表；省略时输出默认完整报告 |
-| `report_pdf` | 可选 `StrictBool`，默认 `null`。省略/`None`/`True` 保留原有 CSV+PDF 完整报告（**原 PDF 默认仍为 `True`，不改**）；`False` 选择 **CSV-only**：复用原 `out_csv` 单出口（不加 `-rpf:`），落入 `_is_plain_csv_run` 拒窗路径，只产出逐时 CSV、不生成 PDF 文件、结果里不列 `pdf` 产物/守卫。`False` 会持久化并经 sourced→子 house 透传；不接受字符串/数字强制转换。省略时请求/检查点旧序列化形状不变（沿用既有 `exclude_none`，不新增 key）。该开关只选输出模式，**不改变默认 GUI 导入路线**，也不代表「完全无 GUI 软件完成」 |
+| `report_pdf` | 可选 `StrictBool`，默认 `null`。省略/`None`/`True` 保留原有 CSV+PDF 完整报告；`False` 选择 **CSV-only**：复用原 `out_csv` 单出口（不加 `-rpf:`），落入 `_is_plain_csv_run` 拒窗路径，只产出逐时 CSV、不生成 PDF 文件、结果里不列 `pdf` 产物/守卫。`False` 会持久化并经 sourced→子 house 透传；不接受字符串/数字强制转换。省略时请求/检查点旧序列化形状不变（沿用既有 `exclude_none`，不新增 key） |
 | `shading_mode` | 可选；省略时保留原有线性阴影流程，`module_layout` 使用原生组件布局与精细电气阴影计算 |
-| `scene_import_method` | 可选；省略或 `"gui"` 保持现有 GUI 导入（原行为与检查点形状不变），`"native"` 改用免 GUI 的原生导入阶段（仅限下文支持边界）。native 的**导入阶段**只写 STORED 变体；本工具 `pvsyst_run_house_task` 在 `dry_run=false` 且 `confirm=true` 时，会沿同一流程自动继续全年 CLI 仿真，成功后上下文匹配新变体才把 `native_consumption_verified` 置 true。仅当单独调用底层 [`pvsyst_import_house_pv_scene`](tool-reference.md)`(method="native")` 时，才需对返回变体另调 `pvsyst_run_simulation` |
+| `scene_import_method` | 可选；省略或 `"native"` 使用默认免 GUI 原生导入阶段（直接写 `.VCx` 几何、原生 `oeTree` 与布局记录）。传入 `"gui"` 仅保留为旧版未维护兼容路径，不支持 `obstacles` 等新特性。native 的**导入阶段**只写 STORED 变体；本工具 `pvsyst_run_house_task` 在 `dry_run=false` 且 `confirm=true` 时，会沿同一流程自动继续全年 CLI 仿真，成功后上下文匹配新变体才把 `native_consumption_verified` 置 true |
 
 ## Module Layout 电气阴影
 
@@ -56,15 +58,15 @@
 
 - 复用现有纯 CSV 仿真路径（仅 `-ocf:` 指定输出 CSV，不传 `-rpf:`），走 Windows 拒建窗的隔离桌面分支，不启动 `PVsyst.exe`。
 - 结果 JSON 的产物列表、校验逻辑与步骤状态均与 CSV-only 模式保持一致：只记录 `csv` 而不会将缺失的 PDF 记为成功；`resume=true` 续跑时在验证 CSV 覆盖完整年份与逐时数据无误后直接视为完成，CSV 损坏则会中断并报错。
-- 该开关**只控制是否输出 PDF**：默认场景导入仍为 GUI（`scene_import_method` 省略时取 `gui`），`report_pdf` 默认为 `True`；`report_pdf=False` 也可与 `scene_import_method="native"` 组合使用，需注意两者都不代表整个流程在无任何窗口创建依赖的环境下运行。
+- 该开关**只控制是否输出 PDF**：`report_pdf` 默认为 `True`；`report_pdf=False` 与默认 `scene_import_method="native"` 组合时，全流程仅在纯 CLI 阶段创建导出进程，无需 PVsyst 桌面 GUI，但不代表 CLI 内部完全不涉及任何系统窗口句柄（丢失报告页 PDF 在无窗口创建权限时仍受限于 CLI 自身渲染器）。
 - 参数行为：`report_pdf` 必须为严格布尔类型（可选）；当计算结果附带告警（例如未静态校验的内置模型或 CLI 告警）时，任务状态保持 `needs_review` 以供复核。
 
 ## 场景导入方式（`scene_import_method`）
 
 在 `spec` 中加入 `"scene_import_method"` 选择场景导入路线：
 
-- 省略或 `"gui"`：冷启动独立的 PVsyst GUI 进程完成导入、朝向关联、有效性检查与另存，入参、检查点与阶段结构均保持原样。
-- `"native"`：免去 GUI 操作，根据声明的房屋网格与 PV 区域在内存中直接构建并校验场景记录，写出新变体文件；**导入阶段**不启动 `PVsyst.exe`，不改写 `INI` 配置、剪贴板或许可文件，也不执行仿真。当 `pvsyst_run_house_task(dry_run=false, confirm=true)` 时会在同一流程内自动继续调用 CLI 跑完全年仿真（见下）。
+- 省略或 `"native"`（**默认**）：免去 GUI 操作，根据声明的房屋网格、`obstacles` 与 PV 区域在内存中直接构建并校验场景记录，写出新变体文件；**导入阶段**不启动 `PVsyst.exe`，不改写 `INI` 配置、剪贴板或许可文件，也不执行仿真。当 `pvsyst_run_house_task(dry_run=false, confirm=true)` 时会在同一流程内自动继续调用 CLI 跑完全年仿真（见下）。
+- `"gui"`（旧版遗留路径，已冻结不再维护）：冷启动独立的 PVsyst GUI 进程完成导入、朝向关联、有效性检查与另存。
 
 `"native"` 的支持范围：高层 `pvsyst_run_house_task` 与底层导入共用同一套原生构建校验。未提供 `string_layout` 时支持已验证的窄模板：双朝向两张横装零间距矩形表（源子阵 `1`/`2` 各**恰一条**独立组串、一个逆变器、一个 MPPT；每子阵多串时须改用 `string_layout`），或单朝向单子阵 `1..3` 张横装零间距矩形表（线性）／两表两串模式（精细）。提供 `string_layout` 时改走显式逐格接线校验：一个或两个源子阵（每子阵对应一个固定平面）逐 cell 指定全局组串编号，每串容量等于所属子阵 `NModSerie`（支持组串跨表或单表多串，全局编号区间按源子阵顺序排列）；单朝向场景建模支持 `1..64` 张表，双朝向结构上为每朝向一表（共 2 表）。编号 `0` 表示未分配草稿，仅允许保存和回读，导入前须全部填写完整，超出容量、重复占格、未知编号或子阵不匹配均在写入前拦截报错（注：场景导出能力上限为 64 张表，实际仿真请依模板和 PVsyst 版本核对）。所有模板都要求同一 `PAN`/`OND` 组件且总块数与源变体严格相等；自动排布、共享/异构逆变器、竖装（portrait）与非零间距等场景暂不支持，不满足条件时直接报错中止而不做隐式修改。更多细节见[住宅与光伏建模](house-pv-modeling.md)。
 

@@ -14,9 +14,9 @@
 | `project` | `.PRJ` / `.VCx` 文本解析、逆变器/组串拓扑、模板筛选与朝向控制 | `variants.py`、`variant_readback.py`、`variant_updates.py`、`variant_topology.py`、`variant_writer.py`、`circuit.py`、`tracking.py`、`paths.py`、`fileio.py` |
 | `components` | `.PAN` / `.OND` / `.BTR` / `.GEN` 组件库管理、曲线编辑、商业字段与引用创建 | `store.py`、`editor.py`、`pan.py`、`battery.py`、`curves.py`、`identity.py` |
 | `scene` | `.pvc2` 房屋与光伏阵列 3D 网格构建、XML 回读及空间坐标比对 | `author.py`、`reader.py`、`mapping.py`、`state.py` |
-| `energy` | 负荷曲线、储能系统、电气参数与详细损失字段读写 | `profiles.py`、`storage.py`、`system.py`、`power.py`、`ac.py` |
+| `energy` | 负荷曲线、储能系统、电气参数、AC/DC 线缆与详细损失字段读写 | `profiles.py`、`storage.py`、`system.py`、`power.py`、`ac.py`、`dc.py` |
 | `weather` | 地理编码、Open-Meteo ERA5 下载、时基转换、`.SIT`/`.MET` 准备与核对 | `acquisition.py`、`preparation.py`、`review.py`、`csv.py` |
-| `native` | `PVsystCLI.exe` 命令行封装与受控的 Windows GUI 自动化操作 | `cli.py`、`project.py`、`scene.py`、`horizon.py`、`dc.py` |
+| `native` | `PVsystCLI.exe` 命令行封装、免 GUI 场景构建（`headless.py` / `_prep.py`）与旧版 Win32 GUI 辅助外壳 | `cli.py`、`headless.py`、`_prep.py`、`project.py`、`scene.py`、`horizon.py`、`dc.py` |
 | `results.py` | 仿真导出的 CSV 与 PDF 解析、年度能量平衡校核与双结果逐时对比 | `results.py` |
 
 阅读代码时的经验法则：
