@@ -409,7 +409,6 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 version = record.get("native_import", {}).get("cli_version")
                 if isinstance(version, str) and version:
                     record["cli_version"] = version
-                unchanged()
                 _save(paths["manifest"], record)
             def stage(phase, keys=()):
                 for key in keys:
@@ -540,8 +539,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     record["native_cleanup_recovery"] = {"native_processes_absent": True,
                         "checkpoint_pid_not_used_for_close": True, "close_performed_by_resume": False}
                 stage("gui_closed")
+            ran_simulation = False
             if record["phase"] == "gui_closed":
-                unchanged()
                 bind_engineering_inputs()
                 if record["runs"] and not retry_simulation:
                     raise ValueError("Previous simulation attempt is retained; explicit retry_simulation=true creates new outputs")
@@ -568,24 +567,23 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 record["output_guards"] = {"csv": fingerprint(csv_path)}
                 if require_pdf:
                     record["output_guards"]["pdf"] = fingerprint(pdf_path)
+                ran_simulation = True
                 stage("simulated")
             if position() >= PHASES.index("simulated"):
-                unchanged()
                 attempt = record["runs"][-1]
                 number = len(record["runs"])
                 stem = Path(request["new_project"]).stem + f"_house_run{number:02d}"
                 csv_path = workspace_file(store.workspace, "Results", stem + ".csv", ".csv")
                 pdf_path = workspace_file(store.workspace, "Results", stem + ".pdf", ".pdf")
-                current_guards = {"csv": fingerprint(csv_path)}
-                if require_pdf:
-                    current_guards["pdf"] = fingerprint(pdf_path)
-                if (current_guards != record["output_guards"]
-                        or attempt["csv"] != csv_path.name or (require_pdf and attempt.get("pdf") != pdf_path.name) or attempt["status"] != "returned"):
-                    raise ValueError("Recorded native outputs changed or do not match this task attempt")
+                if not ran_simulation:
+                    unchanged()
+                    current_guards = {"csv": fingerprint(csv_path)}
+                    if require_pdf:
+                        current_guards["pdf"] = fingerprint(pdf_path)
+                    if (current_guards != record["output_guards"]
+                            or attempt["csv"] != csv_path.name or (require_pdf and attempt.get("pdf") != pdf_path.name) or attempt["status"] != "returned"):
+                        raise ValueError("Recorded native outputs changed or do not match this task attempt")
                 verified = _annual(csv_path, pdf_path, request, plan, record["variant"], require_pdf=require_pdf)
-                unchanged()
-                if current_guards != record["output_guards"]:
-                    raise ValueError("Native outputs changed during validation")
                 record.update(verified, native_consumption_verified=True,
                                status="needs_review" if (attempt["native"]["warnings"] or verified["metrics"]["diagnostic_flags"]
                                    or record.get("input_handoff", {}).get("status") == "needs_review") else "completed",

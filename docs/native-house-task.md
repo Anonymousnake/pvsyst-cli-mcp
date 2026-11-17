@@ -33,7 +33,7 @@
 
 对已满足双屋面条件的输入，在 `spec` 中加入 `"shading_mode": "module_layout"`。默认双朝向模板走原厂自动分配（原生水平、左下起、连续填充）；单朝向显式接线则由 `string_layout` 提供并交给免 GUI 的原生 emitter。不在 MCP 内计算或近似电气阴影。
 
-默认（无 `string_layout`）入口仍限定两个固定朝向、子阵列 `1`/`2` 各一横装零间距矩形表、**每阵恰一条** `1..100` 块组件独立组串/一个逆变器/一个 MPPT（窄默认；源数据某子阵含多串时必须改用下面的 `string_layout` 显式逐格接线，不能套此窄模板）。要显式逐格接线时，在一个或两个源子阵上给出 `string_layout`（每子阵一个固定平面）：它是原厂逐 cell 全局组串记录的薄投影，**允许串跨表、一表多串**，每全局串容量 = 所属源子阵的 `NModSerie`（容量挂串不挂表，全局串区间按源子阵声明序），仅 `scene_import_method="native"` + `shading_mode="module_layout"` 消费，`global_string=0` 的 draft 只可存/读、import 前须补全。原厂 auto allocation 与逐格显式接线严格分离；共享/异构逆变器、portrait/非零间距、超过两个固定朝向的逐格接线仍待证。单子阵三表各 12 cell（36 module、`g1=18`/`g2=18`、2 逆变器/2 总 MPPT）的单朝向单子阵跨串已由本机 PVsyst 8.1.7 CLI 从全新源冷启动跑 48h 完成真实原生消费（CSV `E_Grid`=190.0354、`Shd`=0、逐时 maxdiff=0 同参考）。多子阵 2×2（两源子阵各 2 串、2 表各 36 块、共 72 块）也已由本机 8.1.7 CLI 冷跑 48h 真实原生消费（CSV `E_Grid`=380.067、`Shd`=0、逐时 14 列 maxdiff=0）；该示值两源平面 NoOrient 1/2 的 Tilt/Azim 相同（28.000°/0.000°），不证明不同倾角/方位角的多朝向；不同方位角（如 0°/90°）的 48h 低层用例是另一条独立证据，不能据此认为高层全年多角度交付已验。上述 72 块（多子阵 2×2）的 Native 消费由独立低层链 **create → `pvsyst_import_house_pv_scene(method="native")` → `pvsyst_run_simulation`** 完成，**并非**经本高层 `pvsyst_run_house_task` 的自动全年流程复演；高层对该多子阵形状只共用同一原生门、本轮未跑完整 all-house 任务。创建阶段仍只是 `stored_consistent`（native flag=false），消费为后续独立仿真。其它表数（如 4 表各 9 cell、单表 36 cell）只在存储层 `stored_consistent`（0 CLI），**未**做原生消费，不表示任意 N 表已被物理支持。通用显式接线整体仍标 **partial**，不宣 full native 完成。
+默认（无 `string_layout`）入口限定两个固定朝向、子阵列 `1`/`2` 各一横装零间距矩形表、每阵一条 `1..100` 块组件独立组串/一个逆变器/一个 MPPT（源数据含多串时需显式传入 `string_layout`）。使用 `string_layout` 时可逐 cell 指定全局组串（支持串跨表和一表多串，全局串容量等于所属源子阵的 `NModSerie`），`global_string=0` 的草稿仅用于保存与回读，导入前需补全分配；当前显式逐格接线仅在 `scene_import_method="native"` + `shading_mode="module_layout"` 下启用。
 
 已准备好 `.pvc2` 且对应工程在 GUI 中打开时，也可直接调用导入工具：
 
@@ -54,23 +54,23 @@
 
 在 `spec` 中加 `"report_pdf": false` 可让最终 CLI 仿真只产出逐时 CSV、不产出 PDF：
 
-- 复用现有纯 CSV 仿真路径（仅 `-ocf:` 的 `out_csv`，无 `-rpf:`），因此落到 `_is_plain_csv_run` 的拒窗/无输入桌面分支；不触发 `Pvsyst.exe`，也不往 Native 脚本外围导图替代 PDF。
-- 结果 JSON 的产物集合、输出守卫与 step state 按 CSV-only 模式匹配：只列 `csv`，不把缺失的 PDF 当作成功、不伪称存在 missing report、不列 `pdf`。`resume` 时「已有有效 CSV、无 PDF」按已完成处理，但仍校验真实年份/逐时覆盖与完整性，CSV 损坏不得伪成功。
-- 该开关**只选择输出模式**：默认导入路线仍是 GUI（`scene_import_method` 省略即 `gui`）、原 PDF 默认 `True` 不变。`report_pdf=False` 也可与 `scene_import_method="native"` 组合（native 导入 + CSV-only 输出），但两者都**不是**「完全无 GUI 软件完成」的交付声明。
-- 验证与边界：该 CSV-only 外部行为已由公开契约覆盖（wire 发布 + 严格布尔拒绝、省略/`None` 旧形状与 dry-plan 序列化、真实 native 全年 compute + completed resume）。但一次成功的 CSV-only 运行不等于自动通过：若 native 导入带有授权/几何 provenance 警告，最终 `status` 仍可为 `needs_review` 并需人工复核；全部住宅业务验收与所有 `resume` 故障恢复路径不在本项声明范围内。
+- 复用现有纯 CSV 仿真路径（仅 `-ocf:` 指定输出 CSV，不传 `-rpf:`），走 Windows 拒建窗的隔离桌面分支，不启动 `PVsyst.exe`。
+- 结果 JSON 的产物列表、校验逻辑与步骤状态均与 CSV-only 模式保持一致：只记录 `csv` 而不会将缺失的 PDF 记为成功；`resume=true` 续跑时在验证 CSV 覆盖完整年份与逐时数据无误后直接视为完成，CSV 损坏则会中断并报错。
+- 该开关**只控制是否输出 PDF**：默认场景导入仍为 GUI（`scene_import_method` 省略时取 `gui`），`report_pdf` 默认为 `True`；`report_pdf=False` 也可与 `scene_import_method="native"` 组合使用，需注意两者都不代表整个流程在无任何窗口创建依赖的环境下运行。
+- 参数行为：`report_pdf` 必须为严格布尔类型（可选）；当计算结果附带告警（例如未静态校验的内置模型或 CLI 告警）时，任务状态保持 `needs_review` 以供复核。
 
 ## 场景导入方式（`scene_import_method`）
 
 在 `spec` 中加入 `"scene_import_method"` 选择场景导入路线：
 
-- 省略或 `"gui"`：保持现有流程——冷启动自有 PVsyst GUI 进程完成导入、朝向关联、校验与另存，入参、检查点与阶段形状均不变。
-- `"native"`：免 GUI，用已声明的房屋网格与 PV 区域在内存中构建并校验原生场景记录，直接写出一份新变体；**导入阶段**不启动 `PVsyst.exe`、不操作 `INI`/剪贴板/license、不运行仿真。全年仿真由高层 `pvsyst_run_house_task(dry_run=false, confirm=true)` 在同一流程内自动继续执行（见下）。
+- 省略或 `"gui"`：冷启动独立的 PVsyst GUI 进程完成导入、朝向关联、有效性检查与另存，入参、检查点与阶段结构均保持原样。
+- `"native"`：免去 GUI 操作，根据声明的房屋网格与 PV 区域在内存中直接构建并校验场景记录，写出新变体文件；**导入阶段**不启动 `PVsyst.exe`，不改写 `INI` 配置、剪贴板或许可文件，也不执行仿真。当 `pvsyst_run_house_task(dry_run=false, confirm=true)` 时会在同一流程内自动继续调用 CLI 跑完全年仿真（见下）。
 
-`"native"` 的支持边界：高层 `pvsyst_run_house_task` 与低层导入共用同一原生门（不再有单独的“仅双朝向”前置拒绝）。无 `string_layout` 时按已证窄模板：双朝向两张横装零间距矩形表（源子阵 `1`/`2` 各**恰一条**独立组串/一个逆变器/一个 MPPT；源每子阵多串时须改用 `string_layout`），或单朝向单子阵 `1..3` 张横装零间距矩形表（线性）／恰两表两源串 fine（精细）；单朝向线性 3 表 profile 已完成公开 product 导入 + CLI 的真实原生消费验收（有限 3 表 profile，不作逐表独立归因）。给出 `string_layout` 时改走通用显式门：一个或两个源子阵（每子阵一个固定平面）逐 cell 全局组串、每全局串容量 = 所属子阵 `NModSerie`（可串跨表、一表多串，全局串区间按源子阵声明序）；单朝向合法表数为作者上限 `1..64`，grouped 两朝向结构上每朝向一表（2 表）。`0`=未分配 draft 只可存/读、import 前须补全，超容量/重复格/未知串/错误子阵等 invalid 在写入前拒绝。`1..64` 是作者能力，不等于 Native 已支持 1..64。所有模板都要求同一 `PAN`/`OND`，各分区组件数累加须严格等于源变体组件总数。原厂 auto allocation、共享/异构逆变器、portrait/非零间距、超过两个固定朝向的逐格接线仍待证，不满足条件的请求在写入前停止并给出原因，不做暗中修正；两个普通固定朝向的多子阵 2×2 逐格接线已存储自洽，并由独立低层 create→native import→run_simulation 链 48h 真实原生消费（非本高层 `pvsyst_run_house_task` 自动复演）；条件细节见[住宅与光伏建模](house-pv-modeling.md)。
+`"native"` 的支持范围：高层 `pvsyst_run_house_task` 与底层导入共用同一套原生构建校验。未提供 `string_layout` 时支持已验证的窄模板：双朝向两张横装零间距矩形表（源子阵 `1`/`2` 各**恰一条**独立组串、一个逆变器、一个 MPPT；每子阵多串时须改用 `string_layout`），或单朝向单子阵 `1..3` 张横装零间距矩形表（线性）／两表两串模式（精细）。提供 `string_layout` 时改走显式逐格接线校验：一个或两个源子阵（每子阵对应一个固定平面）逐 cell 指定全局组串编号，每串容量等于所属子阵 `NModSerie`（支持组串跨表或单表多串，全局编号区间按源子阵顺序排列）；单朝向场景建模支持 `1..64` 张表，双朝向结构上为每朝向一表（共 2 表）。编号 `0` 表示未分配草稿，仅允许保存和回读，导入前须全部填写完整，超出容量、重复占格、未知编号或子阵不匹配均在写入前拦截报错（注：场景导出能力上限为 64 张表，实际仿真请依模板和 PVsyst 版本核对）。所有模板都要求同一 `PAN`/`OND` 组件且总块数与源变体严格相等；自动排布、共享/异构逆变器、竖装（portrait）与非零间距等场景暂不支持，不满足条件时直接报错中止而不做隐式修改。更多细节见[住宅与光伏建模](house-pv-modeling.md)。
 
-状态语义：高层 `pvsyst_run_house_task` 的 **native 导入阶段**只产出 STORED 记录（`stored_geometry_verified` / `stored_module_layout_verified` 反映已保存记录），此时 `imported` / `native_geometry_verified` / `native_consumption_verified` 仍为 false——表示 PVsyst 尚未加载或消费该变体，stored 不等于已 load；`native_geometry_verified` 与重载标志不能由 stored 记录伪置。若同时传入 `dry_run=false` 与 `confirm=true`，该次调用会沿原流程自动继续全年 CLI 仿真并产出 CSV/PDF，成功后上下文匹配新变体才把 `native_consumption_verified` 置 true。只有单独调用底层 [`pvsyst_import_house_pv_scene`](tool-reference.md)`(method="native")` 这个导入阶段独立入口时，才需再对返回的变体调用 [`pvsyst_run_simulation`](tool-reference.md) 跑仿真。
+状态说明：高层 `pvsyst_run_house_task` 的 **native 导入阶段**只写入场景记录文件（`stored_geometry_verified` 和 `stored_module_layout_verified` 仅反映文件已正确保存），此时 `imported`、`native_geometry_verified` 和 `native_consumption_verified` 仍为 `false`——表示 PVsyst 尚未实际加载并计算该变体。只有当调用 `dry_run=false, confirm=true` 继续跑完 CLI 全年仿真且结果上下文校验通过后，`native_consumption_verified` 才会置为 `true`。如果直接调用底层 [`pvsyst_import_house_pv_scene`](tool-reference.md)`(method="native")` 单独生成变体，随后需再调用 [`pvsyst_run_simulation`](tool-reference.md) 运行仿真。
 
-窗体事实：`"native"` 的建文件步骤不启动 GUI/CLI、不涉及窗体；但随后用 CLI 运行仿真（`pvsyst_run_simulation`）时，仿真流程自身仍可能用到隐藏的 `TForm`/消息窗体。因此 `"native"` 不等于「零窗体」或「无桌面依赖」，该说明属于 CLI 仿真流程本身，详见[住宅与光伏建模](house-pv-modeling.md)。损失图 PDF 的生成需窗口创建权限：拒窗时同页 fatal、默认/生产路径下该步失败（不产出损失图 PDF），仅在授予窗口创建权限时产出 1 页损失图 PDF——这仅加强权限情境关联、不证明损失算法物理必需窗口，也不代表全部 PDF 无 GUI 可生成。`export-logs` 等诊断导出的成功只说明日志打包可用，并不修复或绕过损失图 renderer 的窗口依赖；拒窗时损失图 PDF 仍为负。
+窗口依赖说明：`"native"` 导入文件本身不启动 GUI 或 CLI；但在后续调用 `PVsystCLI.exe` 运行仿真时，CLI 内部仍可能用到隐藏窗体或消息窗体。特别是损失图 PDF 的生成需要创建窗口权限：在禁用窗口创建的桌面环境中，CLI 渲染损失图页面会失败（不输出损失图 PDF），仅在允许创建窗口的环境中才能正常生成损失图页面。`export-logs` 等日志导出命令的可用性不影响渲染器对窗口权限的这一依赖。
 
 ## 执行阶段（`phase`）与产物命名
 

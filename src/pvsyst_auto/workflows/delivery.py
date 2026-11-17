@@ -158,8 +158,8 @@ def _inputs(handoff, task):
                 task["input_assets"][kind]["name"]) for kind in ("scene", "sfi")]
                 + [("原始任务清单", "Results", Path(task["artifacts"]["manifest"]).name)]),
             "", "这些文件是该次运行绑定的原文件。清单中的本机绝对路径作为历史记录保留；在接收方建立工作区时需按包内目录映射，"
-            "不据此读取包外路径。商业组件、站点及气象原件不随包分发；缺少这些依赖时不能声称已复演。"])
-    lines.extend(["", "本交接整理保存状态与运行清单，不观察未保存GUI状态，不认证资料真实性、设备拟合或全工况工程设计。", ""])
+            "不据此读取包外路径。商业组件、站点及气象原件不随包分发；缺少这些依赖时无法在本地重新执行仿真。"])
+    lines.extend(["", "本交接包汇总已保存的工程文件和运行清单，不包含未保存的 GUI 状态或外部商业组件原件。", ""])
     return "\n".join(lines)
 
 
@@ -250,9 +250,6 @@ def _comparison_report(store, comparison_name, load_run):
             raise ValueError("Comparison scenario inputs differ from its recorded native run")
         bindings.append({"run_manifest_name": manifest, "project": project, "variant": variant,
                          "csv_name": csv_name, "label": scenario.get("label", project + "/" + variant), "task": task})
-    if (path.read_bytes() != data
-            or any(fingerprint(files[key]) != report["report_files"][key] for key in ("csv", "markdown"))):
-        raise ValueError("Comparison report changed while its native-run bindings were checked")
     return report, files, data, bindings
 
 
@@ -375,13 +372,6 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
             if (any(_stamp(path) != before[name] for name, path in sources.items())
                     or any(path.read_bytes() != payloads[name] for name, path in sources.items() if name in payloads)):
                 raise ValueError("Delivery inputs changed while packaging; retained ZIP is not accepted for delivery")
-            if comparison and any(fingerprint(comparison_files[key]) != comparison["report_files"][key] for key in ("csv", "markdown")):
-                raise ValueError("Comparison report changed while packaging; retained ZIP is not accepted for delivery")
-            for binding in bindings:
-                checked = load_engineering_run(store, binding["run_manifest_name"], project=binding["project"],
-                                               variant=binding["variant"], csv_name=binding["csv_name"])
-                if checked != binding["task"]:
-                    raise ValueError("Native-run metadata changed while packaging; retained ZIP is not accepted for delivery")
             result["status"] = "exported"
             return result
         except (ValueError, OSError, KeyError, TypeError, RuntimeError, zipfile.BadZipFile) as exc:

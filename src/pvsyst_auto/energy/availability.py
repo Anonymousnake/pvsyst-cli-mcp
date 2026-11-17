@@ -50,10 +50,8 @@ def native_availability(workspace, declaration, newline):
              "        WRFactor=1000.0"]
     lines.extend("          Day_" + day + "=" + "".join(tokens) for day, tokens in days.items())
     lines.extend(["        End of Data", "      End of VarSimul=viGrdUnav", "    End of PVObject pvUnavail"])
-    if _read(source) != original:
-        raise ValueError("Availability source changed while preparing its native snapshot")
     metadata = {"year": year, "rows": rows, "unavailable_hours": unavailable,
                 "utc_offset_hours": declaration["utc_offset_hours"], "time_basis": TIME_BASIS,
                 "source": str(source), "binding": "native pvUnavail/HourlyVal GrdUnav Factor/Aver snapshot",
                 "WRFactor": 1000, "encoded_value_error": 0}
-    return newline.join(lines) + newline, metadata, source, original
+    return newline.join(lines) + newline, metadata

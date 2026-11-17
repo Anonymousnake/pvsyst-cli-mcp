@@ -233,7 +233,7 @@ def _read_stream(path: str) -> str:
     except OSError:
         return ""
     # Mirror text=True's universal-newline translation, then the CLI's own
-    # encoding and 'replace' errors contract.
+    # encoding and 'replace' error handling.
     data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     return data.decode(locale.getpreferredencoding(False), errors="replace")
 
@@ -315,9 +315,9 @@ def run(argv: list[str], cwd, timeout, *,
     timeout_ms = _INFINITE if timeout is None else max(0, int(timeout * 1000))
     # uuid4 is per-call random and independent of the Windows clock, so two
     # threads in one process can never collide on a desktop name; pid kept for
-    # readable provenance only (the contract never binds the name format).
+    # readable provenance only (nothing relies on the exact name format).
     desktop_name = "pvcli_priv_%d_%s" % (os.getpid(), uuid.uuid4().hex)
-    # ponytail: temp files (not pipes) so large stdout/stderr cannot deadlock;
+    # Use temp files (not pipes) so large stdout/stderr cannot deadlock;
     # read back after the process exits, then removed.
     tmpdir = tempfile.mkdtemp(prefix="pvcli_")
     out_path = os.path.join(tmpdir, "stdout")

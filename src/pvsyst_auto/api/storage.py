@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import StrictBool, StrictInt, StrictStr
-from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.energy.profiles import prepare_load_profile
 from pvsyst_auto.energy.load import create_load_variant
 from pvsyst_auto.energy.storage import create_grid_storage_variant
@@ -11,7 +10,7 @@ from pvsyst_auto.energy.system import create_grid_storage_system
 from pvsyst_auto.native.load import create_native_load_variant
 from pvsyst_auto.energy.peak import create_peak_shaving_variant
 from pvsyst_auto.api.schemas import BatteryPackDesign, GridAvailabilityProfile, GridStorageDesign, GridStorageUpdates, NativeLoadRequest, PeakDischarge
-from pvsyst_auto.api.context import categorized_tool, cli, components
+from pvsyst_auto.api.context import categorized_tool, cli, variant_store
 
 
 @categorized_tool()
@@ -33,9 +32,7 @@ def pvsyst_create_load_variant(project: StrictStr, source_variant: StrictStr, ne
                                 load_manifest_name: StrictStr, dry_run: StrictBool = True) -> dict:
     """Create a new variant binding a prepared hourly load manifest into pvLoad using
     signed-base62 Energy/MJ hourly encoding."""
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_load_variant(store, project=project, source_variant=source_variant,
+    return create_load_variant(variant_store(), project=project, source_variant=source_variant,
                                new_variant=new_variant, load_manifest_name=load_manifest_name,
                                dry_run=dry_run)
 
@@ -47,9 +44,7 @@ def pvsyst_create_peak_shaving_variant(project: StrictStr, source_variant: Stric
                                        add_utf8_bom: StrictBool = False) -> dict:
     """Create a new variant updating the PeakShaving discharge timing (after_sunset or
     hour_window with 0..23 start/end hours) on an existing PeakShaving/PVToGridMin template."""
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_peak_shaving_variant(store, project=project, source_variant=source_variant,
+    return create_peak_shaving_variant(variant_store(), project=project, source_variant=source_variant,
                                        new_variant=new_variant, discharge=discharge.model_dump(),
                                        dry_run=dry_run, variant_name=variant_name,
                                        add_utf8_bom=add_utf8_bom)
@@ -62,9 +57,7 @@ def pvsyst_create_native_load_variant(project: StrictStr, source_variant: Strict
                                       add_utf8_bom: StrictBool = False) -> dict:
     """Create a new PV-only self-consumption variant with a native constant (kW),
     monthly (12 x kWh), or daily (24 x kW) load profile."""
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_native_load_variant(store, project=project, source_variant=source_variant,
+    return create_native_load_variant(variant_store(), project=project, source_variant=source_variant,
                                       new_variant=new_variant, load=load.model_dump(),
                                       dry_run=dry_run, variant_name=variant_name,
                                       add_utf8_bom=add_utf8_bom)
@@ -77,9 +70,7 @@ def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: Stric
                                        allow_grid_export: StrictBool | None = None) -> dict:
     """Create a new variant updating SOC thresholds, AC charge/discharge power limits,
     converter efficiencies, strategy, or allow_grid_export on an existing AC storage variant."""
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_grid_storage_variant(store, project=project, source_variant=source_variant,
+    return create_grid_storage_variant(variant_store(), project=project, source_variant=source_variant,
                                        new_variant=new_variant,
                                        updates=updates.model_dump(exclude_none=True), dry_run=dry_run,
                                        availability=availability.model_dump() if availability else None,
@@ -94,9 +85,7 @@ def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: Strict
                                      allow_grid_export: StrictBool | None = None) -> dict:
     """Create a new centralized AC-coupled storage variant (SelfConsumption or WeakGrid)
     with battery pack hardware, SOC/power/efficiency parameters, and a bound hourly load."""
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_grid_storage_system(store, project=project, source_variant=source_variant,
+    return create_grid_storage_system(variant_store(), project=project, source_variant=source_variant,
                                       new_variant=new_variant, battery=battery.model_dump(),
                                       storage=storage.model_dump(), load_manifest_name=load_manifest_name,
                                       dry_run=dry_run,

@@ -590,8 +590,6 @@ class ComponentStore:
         if updates is not None and not isinstance(updates, dict):
             raise ValueError("updates must be a dictionary")
         if commercial_updates is not None or remarks is not None:
-            if expected_sha256 is None:
-                raise ValueError("Commercial editing requires expected_sha256 from inspection")
             if commercial_updates is not None and not isinstance(commercial_updates, dict):
                 raise ValueError("commercial_updates must be a dictionary")
             if set(updates or {}) & set(commercial_updates or {}):
@@ -601,8 +599,6 @@ class ComponentStore:
         if curve_updates is not None:
             if not isinstance(curve_updates, dict) or not curve_updates:
                 raise ValueError("curve_updates must be a nonempty dictionary")
-            if expected_sha256 is None:
-                raise ValueError("Curve editing requires expected_sha256 from inspection")
         elif use_file_curve:
             raise ValueError("use_file_curve requires explicit curve_updates")
         if not updates and curve_updates is None and not commercial_updates and remarks is None:

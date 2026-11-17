@@ -9,13 +9,12 @@ gate. Standard library only.
 """
 from __future__ import annotations
 
-import difflib
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.project.tracking import _decimal, _require_scope
+from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 
-BOM = b"\xef\xbb\xbf"
 TYPES = ("Sheds", "SunShields")
 # Recorded owning field sequence; shape errors stop rather than being patched around.
 OWN = ("Comment", "Version", "Flags", "NoOrient", "FieldType", "FieldTilt", "FieldAzim",
@@ -170,86 +169,48 @@ def shed_values(geometry):
 def create_shed_variant(store, *, project, source_variant, new_variant, geometry,
                         dry_run=True, variant_name=None, add_utf8_bom=False):
     """Preview or create a NEW VC editing the shed or sun-shield geometry."""
-    result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
-              "warnings": [], "artifacts": {}, "variant_created": False,
-              "native_consumption_verified": False}
-    with store.lock:
-        try:
-            if type(dry_run) is not bool or type(add_utf8_bom) is not bool:
-                raise ValueError("Use strict booleans")
-            store._check_project(project)
-            source, target = store._path(project, source_variant), store._path(project, new_variant)
-            if any(path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
-                raise FileExistsError("Choose a new variant: " + target.name)
-            original = store._read(source)
-            text, lines = store._text(original)
-            arrays, system = store._sections(lines)
-            _require_scope(store, lines, arrays, system)
-            block = orient_block(lines)
-            fieldtype = block.one("FieldType")[1]
-            values = shed_values(geometry)
-            candidate_lines = list(lines)
-            for name, rendered in values.items():
-                index, _ = block.one(name)
-                candidate_lines[index] = replace_value(candidate_lines[index], rendered)
-            bom_prefix = BOM if original.startswith(BOM) or add_utf8_bom else b""
-            name_change = None
-            if variant_name is not None:
-                store._validate_display_name(variant_name, "variant_name")
-                index, = store._display_name_fields(candidate_lines, complete=True)
-                before = candidate_lines[index].partition("=")[2].strip()
-                candidate_lines[index] = replace_value(candidate_lines[index], variant_name)
-                name_change = {"before": before, "after": variant_name}
-            candidate_text = "".join(candidate_lines)
-            # A BOM-less VC is read as Windows-1252, so a non-ASCII body forces the BOM too.
-            if variant_name is not None:
-                bom_prefix = store._display_name_prefix(original, variant_name,
-                                                        add_utf8_bom, "variant_name",
-                                                        content=candidate_text)
-            elif not candidate_text.isascii():
-                bom_prefix = BOM
-            candidate = bom_prefix + candidate_text.encode("utf-8")
-            _, checked = store._text(candidate)
+    def build(*, lines, **_):
+        arrays, system = store._sections(lines)
+        _require_scope(store, lines, arrays, system)
+        block = orient_block(lines)
+        fieldtype = block.one("FieldType")[1]
+        values = shed_values(geometry)
+        candidate_lines = list(lines)
+        for name, rendered in values.items():
+            index, _ = block.one(name)
+            candidate_lines[index] = replace_value(candidate_lines[index], rendered)
+
+        def verify(checked, _, res):
             checked_arrays, checked_system = store._sections(checked)
             _require_scope(store, checked, checked_arrays, checked_system)
             verified = orient_block(checked)
             if verified.one("FieldType")[1] != fieldtype or any(
                     verified.one(name)[1] != rendered for name, rendered in values.items()):
                 raise ValueError("Candidate did not keep the requested shed geometry")
-            result.update(status="ready", project=project, source_variant=source_variant,
-                          variant=target.suffix[1:].upper(), field_type=fieldtype,
-                          geometry=values, artifacts={"variant": str(target)},
-                          bom_added=bool(bom_prefix) and not original.startswith(BOM))
-            if name_change is not None:
-                result["name_change"] = name_change
-            result["warnings"].append(
+            res.update(field_type=fieldtype, geometry=values)
+            res["warnings"].extend([
                 "Only one new VC is written: the declared geometry fields on the existing %s record "
                 "and an optional root Comment change. The field type is never converted, and "
                 "orientation list, module model, inverter, strings, weather and topology stay "
-                "inherited. Saving is not native consumption." % fieldtype)
-            result["warnings"].append(
+                "inherited. Saving is not native consumption." % fieldtype,
                 "Values are stored text with the recorded precision: angles keep one decimal, "
                 "lengths and the shading factor keep three, counts stay positive integers. Ranges "
                 "are adapter sanity limits, not vendor or measured GUI bounds. What NSheds and "
                 "NModInWidth mean physically is not established, so they are written as declared "
                 "values rather than interpreted. No self-shading, electrical grouping or 2D "
-                "shading is computed here; verify native hourly results for the matching year.")
-            diff = "".join(difflib.unified_diff(text.splitlines(keepends=True),
-                                                candidate_text.splitlines(keepends=True)))
-            result.update(diff=diff[:32000], diff_truncated=len(diff) > 32000)
-            if store._read(source) != original:
-                raise ValueError("Template changed while preparing the shed variant")
-            if dry_run:
-                return result
-            result["stage"] = "write"
-            with target.open("xb") as stream:
-                stream.write(candidate)
-            result.update(status="created", stage="created", variant_created=True)
-        except (ValueError, OSError, UnicodeError, KeyError, TypeError, StopIteration) as exc:
-            result["issues"].append(str(exc))
-            result["status"] = "failed" if result["stage"] == "write" else "blocked"
-            if result["status"] == "failed":
-                result["warnings"].append(
-                    "The new variant may contain a partial artifact; inspect the disclosed path "
-                    "before retrying. Original template is retained.")
-    return result
+                "shading is computed here; verify native hourly results for the matching year.",
+            ])
+
+        return {"candidate_lines": candidate_lines, "verify": verify}
+
+    return run_new_variant_transaction(
+        store,
+        project=project,
+        source_variant=source_variant,
+        new_variant=new_variant,
+        dry_run=dry_run,
+        add_utf8_bom=add_utf8_bom,
+        variant_name=variant_name,
+        build=build,
+        source_changed_error="Template changed while preparing the shed variant",
+    )

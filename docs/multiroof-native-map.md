@@ -2,7 +2,7 @@
 
 在 PVsyst 中把一栋多坡屋顶住宅跑通，需要把四层东西对齐：**电气子阵列与固定朝向列表**、**`.pvc2` 3D 场景中的房屋与组件表网格**、**导入 PVsyst 后的原生 PV 表格身份与位置**，以及**最终的 CLI 全年仿真**。
 
-当前全自动打通的双屋面闭环（`anchor0` 单栋双坡屋顶）详见[工程交付中的双屋面说明](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)。本文档梳理这几层之间的衔接细节。
+当前双屋面全自动流程（`anchor0` 单栋双坡屋顶）详见[工程交付中的双屋面说明](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)。本文档梳理这几层之间的衔接细节。
 
 ## 1. 电气层：固定朝向与子阵列拆分
 

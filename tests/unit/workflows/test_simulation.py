@@ -259,7 +259,7 @@ class SimulationTests(unittest.TestCase):
             module_max_short_circuit_current_a=14, mppt_max_operating_current_a=50,
             mppt_max_short_circuit_current_a=60, design_min_temperature_c=-10,
             design_min_operating_temperature_c=20, design_max_operating_temperature_c=60,
-            design_basis="Synthetic declared envelope for contract regression; not manufacturer certification")
+            design_basis="Synthetic declared envelope for regression test; not manufacturer certification")
         request = {**self.request, "capacity": constraints}
         preview = simulate_template(self.cli, self.store, **request)
         self.assertEqual(preview["status"], "ready", preview)

@@ -652,7 +652,7 @@ def _verify_narrow_module_layout(blocks, lines):
 
 
 # ---------------------------------------------------------------------------
-# General per-cell string-layout verification (round03)
+# General per-cell string-layout verification
 #
 # The native pvMLTable record is a per-cell projection: every module cell carries a
 # global string ordinal, so a string may span several tables and one table may hold

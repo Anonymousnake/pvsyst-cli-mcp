@@ -225,7 +225,7 @@ class WeatherTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "reader limit"):
                 inspect_weather_csv(self.path)
 
-    def test_prepare_weather_contract_provenance_review_and_failure(self):
+    def test_prepare_weather_provenance_review_and_failure(self):
         self.path.write_text(weather_text(year=2020).replace('#Country;Test', '#Country;China'), encoding='utf-8-sig')
         raw = self.path.read_bytes()
         for name, text in (('gap.csv', weather_text(year=2020, skip=0)),
@@ -380,8 +380,8 @@ class WeatherTests(unittest.TestCase):
         # 收尾失败仍保留已生成文件与原始 failed 清单
         self.assertEqual(json.loads(Path(failed['artifacts']['manifest']).read_text()), failed)
 
-    def test_native_weather_details_and_diagnostics_contracts(self):
-        """Public native boundary the workflow relies on: details dicts and redacted diagnostics."""
+    def test_native_weather_details_and_diagnostics(self):
+        """Public native interface the workflow relies on: details dicts and redacted diagnostics."""
         cli = PVsystCLI(sys.executable, self.root)
         cli._help_cache['create-site'] = '\n'.join(
             '--' + name + ':' for name in ('site-name', 'altitude', 'timezone', 'country-code'))

@@ -1,4 +1,4 @@
-"""Public subprocess MCP launch, tool-group filtering, and zero-CLI preflight contracts."""
+"""Subprocess MCP launch, tool-group filtering, and zero-CLI preflight integration tests."""
 from __future__ import annotations
 
 import asyncio
@@ -40,13 +40,13 @@ PREFLIGHT_CASES = (
 )
 
 
-class PackageEntrypointBoundary(unittest.TestCase):
+class PackageEntrypointTests(unittest.TestCase):
     async def _capture(self, command, source_checkout=False):
-        with tempfile.TemporaryDirectory(prefix="pvsyst-entry-contract-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="pvsyst-entry-") as temporary:
             root = Path(temporary) / "PVsyst8.1_Data"
             root.mkdir()
             binary = Path(temporary) / "PVsystCLI.exe"
-            binary.write_bytes(b"Public entry contract must never execute native software")
+            binary.write_bytes(b"Public entrypoint must never execute native software")
             env = dict(os.environ, PVSYST_WORKSPACE=str(root), PVSYST_CLI=str(binary), PYTHONDONTWRITEBYTECODE="1")
             env.pop("PYTHONPATH", None)
             if source_checkout:
@@ -61,7 +61,7 @@ class PackageEntrypointBoundary(unittest.TestCase):
                                      "pvsyst_review_engineering_brief", "pvsyst_run_house_task",
                                      "pvsyst_prepare_block_project"}.issubset(names))
                     reply = await session.call_tool("pvsyst_review_engineering_brief", {
-                        "brief": {"sources": [{"id": "source", "title": "Declared fixture", "locator": "Public entry contract"}],
+                        "brief": {"sources": [{"id": "source", "title": "Declared fixture", "locator": "Public entrypoint"}],
                                   "claims": [{"id": "count", "field": "module_count", "scope": "project",
                                               "value": 1, "unit": "count", "source_id": "source",
                                               "pdf_page": 1, "excerpt": "One declared module"}]}})
@@ -100,12 +100,12 @@ class PackageEntrypointBoundary(unittest.TestCase):
         asyncio.run(check())
 
 
-class ToolGroupsBoundary(unittest.TestCase):
+class ToolGroupsTests(unittest.TestCase):
     def test_explicit_groups_preserve_default_and_strict_calls(self):
         asyncio.run(self._check())
 
     async def _check(self):
-        directory = Path(tempfile.mkdtemp(prefix="pvsyst-groups-contract-"))
+        directory = Path(tempfile.mkdtemp(prefix="pvsyst-groups-"))
         try:
             workspace = directory / "PVsyst8.1_Data"
             workspace.mkdir()
@@ -156,7 +156,7 @@ class ToolGroupsBoundary(unittest.TestCase):
             shutil.rmtree(directory, ignore_errors=True)
 
 
-class RunSimulationPreflightNoLaunchBoundary(unittest.TestCase):
+class SimulationPreflightNoLaunchTests(unittest.TestCase):
     def test_invalid_requests_spawn_zero_cli_and_write_nothing(self):
         asyncio.run(self._check())
 

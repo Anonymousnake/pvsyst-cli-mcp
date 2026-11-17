@@ -1,18 +1,18 @@
-"""Fast MCP contracts for variant readback, edits, syntax recovery, topology, and BOM encoding."""
+"""MCP integration tests for variant readback, edits, syntax recovery, topology, and BOM encoding."""
 from __future__ import annotations
 
 from pathlib import Path
 import tempfile
 import unittest
 
-from tests.contracts._session import decode_reply, mcp_session
+from tests.integration._session import decode_reply, mcp_session
 
 BOM = b"\xef\xbb\xbf"
 DEG = "\u00b0"
 MOJIBAKE = "\u00c2\u00b0"
 
 
-class VariantContracts(unittest.IsolatedAsyncioTestCase):
+class VariantIOTests(unittest.IsolatedAsyncioTestCase):
     async def test_817_syntax_aliases_and_saved_results_readback(self):
         vc = (
             "PVObject_=pvVCalcul\r\n  Version=8.1.7\r\n  Flags=$00104001\r\n  Comment=Fixture\r\n"
@@ -60,7 +60,7 @@ class VariantContracts(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(raw.startswith(BOM))
                 self.assertNotIn(MOJIBAKE, raw.decode("utf-8-sig"))
 
-    async def test_economics_dcgrid_and_topology_readback_contracts(self):
+    async def test_economics_dcgrid_and_topology_readback(self):
         econ_vc = (
             "PVObject_=pvVCalcul\n  Version=8.1.0\n  Flags=$00100000\n"
             "  EconomicEval=TEcoEvaluation\n    ProjectLife=20\n    Currency=USD\n"
@@ -116,7 +116,7 @@ class VariantContracts(unittest.IsolatedAsyncioTestCase):
                     "subarray_updates": {"LIDLoss": 1.0}}))
                 self.assertTrue(refuse if isinstance(refuse, bool) else err)
 
-    async def test_uv_factor_and_pnomac_inmppt_edit_contracts(self):
+    async def test_uv_factor_and_pnomac_inmppt_edits(self):
         vc = (
             "PVObject_=pvVCalcul\n  Comment=Edit\n  Version=8.1.0\n  Flags=$050A0001\n"
             "  PVObject_PVMainArray=pvMainArray\n    Flags=$01900400\n    Flags2=$082A\n"
@@ -133,7 +133,7 @@ class VariantContracts(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "Projects").mkdir()
-            (root / "Projects" / "U.PRJ").write_text("PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
+            (root / "Projects" / "U.PRJ").write_text("PVObject_=pvProject\n  Comment=Original\nEnd of PVObject pvProject\n", encoding="utf-8")
             (root / "Projects" / "U.VC0").write_text(vc, encoding="utf-8")
             cli = root / "PVsystCLI.exe"
             cli.write_bytes(b"fake")
@@ -155,7 +155,7 @@ class VariantContracts(unittest.IsolatedAsyncioTestCase):
 
                 # UVFactor edit invalidates VarList and clears root bit 0 while keeping scene markers
                 err, res = decode_reply(await session.call_tool("pvsyst_update_variant_parameters", {
-                    "project": "U.PRJ", "variant": "VC0", "expected_sha256": info["sha256"],
+                    "project": "U.PRJ", "variant": "VC0",
                     "main_array_updates": {"UVFactor": 2.0}}))
                 self.assertFalse(err, res)
                 self.assertTrue(res["derived_cache"]["var_list_removed"])
@@ -163,6 +163,11 @@ class VariantContracts(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("UVFactor=2.000", text)
                 self.assertIn("Flags=$050A0000", text)
                 self.assertNotIn("VarList, list of=", text)
+
+                err, renamed = decode_reply(await session.call_tool("pvsyst_update_project_parameters", {
+                    "project": "U.PRJ", "project_name": "Updated Title"}))
+                self.assertFalse(err, renamed)
+                self.assertEqual(renamed["name_change"]["after"], "Updated Title")
 
 
 if __name__ == "__main__":

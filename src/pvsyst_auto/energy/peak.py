@@ -1,7 +1,6 @@
 """Create a NEW VC that switches the verified native PeakShaving discharge strategy."""
 from __future__ import annotations
 
-import difflib
 import re
 from decimal import Decimal, InvalidOperation
 
@@ -9,8 +8,8 @@ from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, re
 from pvsyst_auto.components.generator import direct_fields
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.energy.storage import storage_state, validate_storage
+from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 
-BOM = b"\xef\xbb\xbf"
 EDITABLE = ("DischStrategy", "HourBegDisch", "HourEndDisch")
 HOUR_LIMIT = 23
 SYSTEM_TEXT = {"Flags": "$17000040", "SystemType": "Grid",
@@ -173,53 +172,26 @@ def _require_scope(store, lines, arrays, system):
 def create_peak_shaving_variant(store, *, project, source_variant, new_variant, discharge,
                                 dry_run=True, variant_name=None, add_utf8_bom=False):
     """Preview or create a NEW VC only; every other field and the source stay untouched."""
-    result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
-              "warnings": [], "artifacts": {}, "variant_created": False,
-              "native_consumption_verified": False}
-    with store.lock:
-        try:
-            if type(dry_run) is not bool or type(add_utf8_bom) is not bool:
-                raise ValueError("Use strict booleans")
-            store._check_project(project)
-            source, target = store._path(project, source_variant), store._path(project, new_variant)
-            if any(path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
-                raise FileExistsError("Choose a new variant: " + target.name)
-            original = store._read(source)
-            text, lines = store._text(original)
-            arrays, system = store._sections(lines)
-            _require_scope(store, lines, arrays, system)
-            strategy, window = discharge_values(discharge)
-            block = peak_block(lines)
-            index, _ = block.one("DischStrategy")
-            ending = "\r\n" if lines[index].endswith("\r\n") else "\n"
-            candidate_lines = list(lines)
-            saved = [block.one(name)[0] for name in EDITABLE[1:] if name in block.fields]
-            index -= sum(position < index for position in saved)
-            for position in sorted(saved, reverse=True):
-                del candidate_lines[position]
-            candidate_lines[index] = replace_value(candidate_lines[index], strategy)
-            if window is not None:
-                indent = candidate_lines[index][:len(candidate_lines[index]) - len(candidate_lines[index].lstrip())]
-                start, end = window
-                candidate_lines[index + 1:index + 1] = [f"{indent}HourBegDisch={start}{ending}",
-                                                        f"{indent}HourEndDisch={end}{ending}"]
-            bom_prefix = BOM if original.startswith(BOM) or add_utf8_bom else b""
-            name_change = None
-            if variant_name is not None:
-                store._validate_display_name(variant_name, "variant_name")
-                name_line, = store._display_name_fields(candidate_lines, complete=True)
-                before = candidate_lines[name_line].partition("=")[2].strip()
-                candidate_lines[name_line] = replace_value(candidate_lines[name_line], variant_name)
-                name_change = {"before": before, "after": variant_name}
-            candidate_text = "".join(candidate_lines)
-            # A BOM-less VC is read as Windows-1252, so a non-ASCII body forces the BOM too.
-            if variant_name is not None:
-                bom_prefix = store._display_name_prefix(original, variant_name, add_utf8_bom,
-                                                        "variant_name", content=candidate_text)
-            elif not candidate_text.isascii():
-                bom_prefix = BOM
-            candidate = bom_prefix + candidate_text.encode("utf-8")
-            _, checked = store._text(candidate)
+    def build(*, lines, **_):
+        arrays, system = store._sections(lines)
+        _require_scope(store, lines, arrays, system)
+        strategy, window = discharge_values(discharge)
+        block = peak_block(lines)
+        index, _ = block.one("DischStrategy")
+        ending = "\r\n" if lines[index].endswith("\r\n") else "\n"
+        candidate_lines = list(lines)
+        saved = [block.one(name)[0] for name in EDITABLE[1:] if name in block.fields]
+        index -= sum(position < index for position in saved)
+        for position in sorted(saved, reverse=True):
+            del candidate_lines[position]
+        candidate_lines[index] = replace_value(candidate_lines[index], strategy)
+        if window is not None:
+            indent = candidate_lines[index][:len(candidate_lines[index]) - len(candidate_lines[index].lstrip())]
+            start, end = window
+            candidate_lines[index + 1:index + 1] = [f"{indent}HourBegDisch={start}{ending}",
+                                                    f"{indent}HourEndDisch={end}{ending}"]
+
+        def verify(checked, _, res):
             checked_arrays, _ = store._sections(checked)
             verified = peak_block(checked)
             if len(checked_arrays) != 1 or verified.one("DischStrategy")[1] != strategy:
@@ -228,34 +200,23 @@ def create_peak_shaving_variant(store, *, project, source_variant, new_variant, 
                 raise ValueError("after_sunset must not keep hour fields")
             if window is not None and (_hours(verified, "HourBegDisch"), _hours(verified, "HourEndDisch")) != window:
                 raise ValueError("Candidate did not keep the requested hour window")
-            result.update(status="ready", project=project, source_variant=source_variant,
-                          variant=target.suffix[1:].upper(),
-                          discharge={"mode": discharge["mode"], "strategy": strategy,
-                                     "start_hour": window[0] if window else None,
-                                     "end_hour": window[1] if window else None},
-                          artifacts={"variant": str(target)},
-                          bom_added=bool(bom_prefix) and not original.startswith(BOM))
-            if name_change is not None:
-                result["name_change"] = name_change
-            diff = "".join(difflib.unified_diff(text.splitlines(keepends=True),
-                                               candidate_text.splitlines(keepends=True)))
-            result.update(diff=diff[:32000], diff_truncated=len(diff) > 32000)
-            if store._read(source) != original:
-                raise ValueError("Template changed while preparing the peak-shaving variant")
-            if dry_run:
-                return result
-            result["stage"] = "write"
-            with target.open("xb") as stream:
-                stream.write(candidate)
-            result.update(status="created", stage="created", variant_created=True)
-        except (ValueError, OSError, UnicodeError, KeyError, TypeError) as exc:
-            result["issues"].append(str(exc))
-            result["status"] = "failed" if result["stage"] == "write" else "blocked"
-            if result["status"] == "failed":
-                result["warnings"].append(
-                    "The new variant may contain a partial artifact; inspect the disclosed path before retrying. "
-                    "Original template is retained.")
-    return result
+            res["discharge"] = {"mode": discharge["mode"], "strategy": strategy,
+                                "start_hour": window[0] if window else None,
+                                "end_hour": window[1] if window else None}
+
+        return {"candidate_lines": candidate_lines, "verify": verify}
+
+    return run_new_variant_transaction(
+        store,
+        project=project,
+        source_variant=source_variant,
+        new_variant=new_variant,
+        dry_run=dry_run,
+        add_utf8_bom=add_utf8_bom,
+        variant_name=variant_name,
+        build=build,
+        source_changed_error="Template changed while preparing the peak-shaving variant",
+    )
 
 
 STORAGE_OWN = ("Flags", "Strategy", "ChargingStrategy", "DischStrategy", "HourBegDisch", "HourEndDisch",

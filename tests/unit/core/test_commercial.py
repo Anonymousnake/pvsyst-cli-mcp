@@ -91,7 +91,7 @@ class CommercialTests(unittest.TestCase):
 
     def test_guard_invalid_values_and_conflicting_arguments_leave_no_backup(self):
         bad = [
-            {"expected_sha256": None, "commercial_updates": {"Weight": "5"}},
+            {"expected_sha256": "0" * 64, "commercial_updates": {"Weight": "5"}},
             {"commercial_updates": {"Flags": "$00"}},
             {"commercial_updates": {"Weight": "nan"}},
             {"commercial_updates": {"Weight": "inf"}},

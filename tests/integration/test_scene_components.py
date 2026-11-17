@@ -1,4 +1,4 @@
-"""Fast MCP contracts for REV components, heterogeneous PAN geometry, and shared orientation owners."""
+"""MCP integration tests for REV components, heterogeneous PAN geometry, and shared orientation owners."""
 from __future__ import annotations
 
 import copy
@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tests.contracts._session import decode_reply, mcp_session
+from tests.integration._session import decode_reply, mcp_session
 
 REV_FIXTURE = (
     "PVObject_=pvAddress\r\n  Comment=Contract Test Seller\r\n  Version=6.78\r\n"
@@ -66,7 +66,7 @@ def _roof_mesh(name, ox, oy, tilt_deg, rot_deg):
     return {"name": name, "vertices": [pt(-2, -2), pt(25, -2), pt(25, 25), pt(-2, 25)], "triangles": [[0, 1, 2], [0, 2, 3]]}
 
 
-class SceneAndComponentContracts(unittest.IsolatedAsyncioTestCase):
+class SceneComponentTests(unittest.IsolatedAsyncioTestCase):
     async def test_rev_sellers_component_crud_and_rejections(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

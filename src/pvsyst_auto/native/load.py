@@ -1,18 +1,17 @@
 """Create a NEW VC with one verified native flat load block; no load model or cache."""
 from __future__ import annotations
 
-import difflib
 import re
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.components.generator import finite
 from pvsyst_auto.project.circuit import inventory as grid_inventory
+from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 
 START = "PVObject_UserNeeds=pvLoad"
 END = "End of PVObject pvLoad"
 ANCHOR = "SimulPlots=Start"
-BOM = b"\xef\xbb\xbf"
 LIMIT = 1e6
 STEP = Decimal("0.001")
 COMMENTS = {"constant": "MCP native constant load", "monthly": "MCP native monthly load",
@@ -250,68 +249,31 @@ def _apply_block(lines, load, newline):
 def create_native_load_variant(store, *, project, source_variant, new_variant, load,
                                dry_run=True, variant_name=None, add_utf8_bom=False):
     """Preview or create a NEW VC only; the source and every other field stay untouched."""
-    result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
-              "warnings": [], "artifacts": {}, "variant_created": False,
-              "native_consumption_verified": False}
-    with store.lock:
-        try:
-            if type(dry_run) is not bool or type(add_utf8_bom) is not bool:
-                raise ValueError("Use strict booleans")
-            store._check_project(project)
-            source, target = store._path(project, source_variant), store._path(project, new_variant)
-            if any(path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
-                raise FileExistsError("Choose a new variant: " + target.name)
-            original = store._read(source)
-            text, lines = store._text(original)
-            arrays, system = store._sections(lines)
-            root_flags = _require_scope(store, lines, arrays, system)
-            if bool(root_flags & 0x00080000) != bool(flat_load(lines)):
-                raise ValueError("Root bit19 and the existing load block disagree; refusing to guess")
-            newline = "\r\n" if "\r\n" in text else "\n"
-            candidate_lines = _apply_block(list(lines), load, newline)
-            bom_prefix = BOM if original.startswith(BOM) or add_utf8_bom else b""
-            name_change = None
-            if variant_name is not None:
-                store._validate_display_name(variant_name, "variant_name")
-                index, = store._display_name_fields(candidate_lines, complete=True)
-                before = candidate_lines[index].partition("=")[2].strip()
-                candidate_lines[index] = replace_value(candidate_lines[index], variant_name)
-                name_change = {"before": before, "after": variant_name}
-            candidate_text = "".join(candidate_lines)
-            # A BOM-less VC is read as Windows-1252, so a non-ASCII body forces the BOM too.
-            if variant_name is not None:
-                bom_prefix = store._display_name_prefix(original, variant_name, add_utf8_bom,
-                                                        "variant_name", content=candidate_text)
-            elif not candidate_text.isascii():
-                bom_prefix = BOM
-            candidate = bom_prefix + candidate_text.encode("utf-8")
-            _, checked = store._text(candidate)
+    def build(*, text, lines, **_):
+        arrays, system = store._sections(lines)
+        root_flags = _require_scope(store, lines, arrays, system)
+        if bool(root_flags & 0x00080000) != bool(flat_load(lines)):
+            raise ValueError("Root bit19 and the existing load block disagree; refusing to guess")
+        newline = "\r\n" if "\r\n" in text else "\n"
+        candidate_lines = _apply_block(list(lines), load, newline)
+
+        def verify(checked, _, res):
             checked_arrays, _ = store._sections(checked)
             verified = flat_load(checked)
             if verified is None or len(checked_arrays) != 1:
                 raise ValueError("Candidate lost its load block or subarray")
-            result.update(status="ready", project=project, source_variant=source_variant,
-                          variant=target.suffix[1:].upper(), load_mode=verified[2],
-                          artifacts={"variant": str(target)},
-                          bom_added=bool(bom_prefix) and not original.startswith(BOM))
-            if name_change is not None:
-                result["name_change"] = name_change
-            diff = "".join(difflib.unified_diff(text.splitlines(keepends=True),
-                                               candidate_text.splitlines(keepends=True)))
-            result.update(diff=diff[:32000], diff_truncated=len(diff) > 32000)
-            if store._read(source) != original:
-                raise ValueError("Template changed while preparing the load variant")
-            if dry_run:
-                return result
-            result["stage"] = "write"
-            with target.open("xb") as stream:
-                stream.write(candidate)
-            result.update(status="created", stage="created", variant_created=True)
-        except (ValueError, OSError, UnicodeError, KeyError, TypeError) as exc:
-            result["issues"].append(str(exc))
-            result["status"] = "failed" if result["stage"] == "write" else "blocked"
-            if result["status"] == "failed":
-                result["warnings"].append(
-                    "The new variant may contain a partial artifact; inspect the disclosed path before retrying. "
-                    "Original template is retained.")
-    return result
+            res["load_mode"] = verified[2]
+
+        return {"candidate_lines": candidate_lines, "verify": verify}
+
+    return run_new_variant_transaction(
+        store,
+        project=project,
+        source_variant=source_variant,
+        new_variant=new_variant,
+        dry_run=dry_run,
+        add_utf8_bom=add_utf8_bom,
+        variant_name=variant_name,
+        build=build,
+        source_changed_error="Template changed while preparing the load variant",
+    )

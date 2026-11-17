@@ -144,7 +144,7 @@ def prepare_load_profile(cli, *, csv_name, year, output_name, utc_offset_hours,
             if not report["valid"]:
                 result["issues"].extend(report["issues"])
                 return result
-            # ponytail: reuse the same two-column format, with only explicit power-unit conversion.
+            # Reuse the same two-column format with explicit power-unit conversion.
             reader = csv.reader(io.StringIO(original.decode("utf-8-sig")), delimiter=report["delimiter"], strict=True)
             for header in reader:
                 header = [cell.strip() for cell in header]

@@ -463,7 +463,7 @@ class PVsystCLI:
         before any license query or help launch: project/variant existence, output
         requirement, batch conflicts, input existence+suffix, time step, dates, report
         pages, output collisions (no mkdir) and batch output names. The real license
-        gate, option/help verification and the run stay in run_simulation, which calls
+        check, option/help verification and the run stay in run_simulation, which calls
         this first and re-checks outputs right before executing (TOCTOU guard)."""
         project = self._project_name(project)
         variant = variant_id(variant)
@@ -907,7 +907,7 @@ def summarize_results(path: str | os.PathLike, columns: tuple[str, ...]) -> dict
 
 
 def summarize(path: str | os.PathLike, column: str = "E_Grid") -> dict:
-    """Summarize one column with the same missing-data contract as MCP."""
+    """Summarize one column using the same missing-data handling as MCP."""
     result = summarize_results(path, (column,))
     return {"column": column, "rows": result["rows"], "step_minutes": result["step_minutes"],
             **result["summary"][column]}

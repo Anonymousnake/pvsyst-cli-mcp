@@ -11,7 +11,7 @@
 | `api` | MCP 协议层、入参校验、工具分组注册与进程内共享上下文 | `app.py`、`context.py`、`schemas.py` 及 8 个分组模块 |
 | `workflows` | 串联文件准备、GUI/CLI 调用与结果校验的端到端工作流 | `revision.py`、`house.py`、`simulation.py`、`blocks.py`、`delivery.py` |
 | `engineering` | 可研简报核对、工程参数交接单、输入复核与多方案结果对比 | `brief.py`、`handoff.py`、`review.py`、`comparison.py` |
-| `project` | `.PRJ` / `.VCx` 文本解析、逆变器/组串拓扑、模板筛选与朝向控制 | `variants.py`、`circuit.py`、`tracking.py`、`paths.py`、`fileio.py` |
+| `project` | `.PRJ` / `.VCx` 文本解析、逆变器/组串拓扑、模板筛选与朝向控制 | `variants.py`、`variant_readback.py`、`variant_updates.py`、`variant_topology.py`、`variant_writer.py`、`circuit.py`、`tracking.py`、`paths.py`、`fileio.py` |
 | `components` | `.PAN` / `.OND` / `.BTR` / `.GEN` 组件库管理、曲线编辑、商业字段与引用创建 | `store.py`、`editor.py`、`pan.py`、`battery.py`、`curves.py`、`identity.py` |
 | `scene` | `.pvc2` 房屋与光伏阵列 3D 网格构建、XML 回读及空间坐标比对 | `author.py`、`reader.py`、`mapping.py`、`state.py` |
 | `energy` | 负荷曲线、储能系统、电气参数与详细损失字段读写 | `profiles.py`、`storage.py`、`system.py`、`power.py`、`ac.py` |

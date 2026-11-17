@@ -1,13 +1,12 @@
 """Create a NEW VC that rebalances an existing verified two-face Dome string allocation."""
 from __future__ import annotations
 
-import difflib
 import re
 
 from pvsyst_auto.components.editor import objects, replace_value, require_flat, root_block
 from pvsyst_auto.project.circuit import inventory as grid_inventory
+from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 
-BOM = b"\xef\xbb\xbf"
 ALLOCATION_MAX = 39
 SUB_PROFILE = {"Version": "8.1.6", "Flags": "$019E1002", "Flags2": "$20", "SubArrayId": "1",
                "NoOrientation": "1", "NoOrientation2": "2", "NStringCh": "40", "NModSerie": "25",
@@ -143,76 +142,47 @@ def create_dome_allocation_variant(store, *, project, source_variant, new_varian
                                    first_orientation_strings, dry_run=True,
                                    variant_name=None, add_utf8_bom=False):
     """Preview or create a NEW VC only; every other field and the source stay untouched."""
-    result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
-              "warnings": [], "artifacts": {}, "variant_created": False,
-              "native_consumption_verified": False}
-    with store.lock:
-        try:
-            if type(dry_run) is not bool or type(add_utf8_bom) is not bool:
-                raise ValueError("Use strict booleans")
-            if type(first_orientation_strings) is not int:
-                raise ValueError("first_orientation_strings must be a strict integer")
-            target_allocation = allocation(first_orientation_strings, "first_orientation_strings")
-            store._check_project(project)
-            source, target = store._path(project, source_variant), store._path(project, new_variant)
-            if any(path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
-                raise FileExistsError("Choose a new variant: " + target.name)
-            original = store._read(source)
-            text, lines = store._text(original)
-            arrays, system = store._sections(lines)
-            sub_root, current = _require_scope(store, lines, arrays, system)
-            dome_records(lines)
-            index, _ = sub_root.one("NStrOrient1")
-            candidate_lines = list(lines)
-            candidate_lines[index] = replace_value(candidate_lines[index], str(target_allocation))
-            bom_prefix = BOM if original.startswith(BOM) or add_utf8_bom else b""
-            name_change = None
-            if variant_name is not None:
-                store._validate_display_name(variant_name, "variant_name")
-                name_line, = store._display_name_fields(candidate_lines, complete=True)
-                before = candidate_lines[name_line].partition("=")[2].strip()
-                candidate_lines[name_line] = replace_value(candidate_lines[name_line], variant_name)
-                name_change = {"before": before, "after": variant_name}
-            candidate_text = "".join(candidate_lines)
-            # A BOM-less VC is read as Windows-1252, so a non-ASCII body forces the BOM too.
-            if variant_name is not None:
-                bom_prefix = store._display_name_prefix(original, variant_name, add_utf8_bom,
-                                                        "variant_name", content=candidate_text)
-            elif not candidate_text.isascii():
-                bom_prefix = BOM
-            candidate = bom_prefix + candidate_text.encode("utf-8")
-            _, checked = store._text(candidate)
+    parsed = {}
+
+    def preflight():
+        if type(first_orientation_strings) is not int:
+            raise ValueError("first_orientation_strings must be a strict integer")
+        parsed["target_allocation"] = allocation(first_orientation_strings, "first_orientation_strings")
+
+    def build(*, lines, original, **_):
+        target_allocation = parsed["target_allocation"]
+        arrays, system = store._sections(lines)
+        sub_root, current = _require_scope(store, lines, arrays, system)
+        dome_records(lines)
+        index, _ = sub_root.one("NStrOrient1")
+        candidate_lines = list(lines)
+        candidate_lines[index] = replace_value(candidate_lines[index], str(target_allocation))
+
+        def verify(checked, candidate, res):
             checked_arrays, checked_system = store._sections(checked)
             _, saved = _require_scope(store, checked, checked_arrays, checked_system)
             if saved != target_allocation:
                 raise ValueError("Candidate did not keep the requested string allocation")
             dome_records(checked)
-            result.update(status="ready", project=project, source_variant=source_variant,
-                          variant=target.suffix[1:].upper(),
-                          allocation={"before": current, "after": target_allocation,
-                                      "total_strings": int(SUB_PROFILE["NStringCh"])},
-                          changed=candidate != original, artifacts={"variant": str(target)},
-                          bom_added=bool(bom_prefix) and not original.startswith(BOM))
-            if name_change is not None:
-                result["name_change"] = name_change
-            result["warnings"].append(
+            res.update(
+                allocation={"before": current, "after": target_allocation,
+                            "total_strings": int(SUB_PROFILE["NStringCh"])},
+                changed=candidate != original,
+            )
+            res["warnings"].append(
                 "East and west string allocations must remain within 1..39 strings per face.")
-            diff = "".join(difflib.unified_diff(text.splitlines(keepends=True),
-                                               candidate_text.splitlines(keepends=True)))
-            result.update(diff=diff[:32000], diff_truncated=len(diff) > 32000)
-            if store._read(source) != original:
-                raise ValueError("Template changed while preparing the dome allocation")
-            if dry_run:
-                return result
-            result["stage"] = "write"
-            with target.open("xb") as stream:
-                stream.write(candidate)
-            result.update(status="created", stage="created", variant_created=True)
-        except (ValueError, OSError, UnicodeError, KeyError, TypeError) as exc:
-            result["issues"].append(str(exc))
-            result["status"] = "failed" if result["stage"] == "write" else "blocked"
-            if result["status"] == "failed":
-                result["warnings"].append(
-                    "The new variant may contain a partial artifact; inspect the disclosed path before retrying. "
-                    "Original template is retained.")
-    return result
+
+        return {"candidate_lines": candidate_lines, "verify": verify}
+
+    return run_new_variant_transaction(
+        store,
+        project=project,
+        source_variant=source_variant,
+        new_variant=new_variant,
+        dry_run=dry_run,
+        add_utf8_bom=add_utf8_bom,
+        variant_name=variant_name,
+        preflight=preflight,
+        build=build,
+        source_changed_error="Template changed while preparing the dome allocation",
+    )

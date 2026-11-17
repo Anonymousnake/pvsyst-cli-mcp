@@ -1,254 +1,28 @@
-"""Guarded project copies, lifecycle operations and bounded PVsyst variant edits."""
+"""Guarded project copies, lifecycle operations, and PVsyst variant storage."""
 from __future__ import annotations
 
-import hashlib
 import difflib
+import hashlib
 import itertools
 import json
-import math
 import os
 import re
 import threading
 import uuid
 from pathlib import Path
 
+from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.components.store import ComponentStore, FIELD, MAX_PROJECT_BYTES
+from pvsyst_auto.project import fileio, variant_readback, variant_topology, variant_updates
 from pvsyst_auto.project.paths import project_path, project_root
-from pvsyst_auto.project import fileio
-from pvsyst_auto.components.generator import state as generator_state, replace_generator
-from pvsyst_auto.project.circuit import inventory as grid_inventory, resize_capacity, circuit_nodes, require_ordinary_mppt, set_power_sharing, set_independent_mppt, transformer_state, topology_state
-from pvsyst_auto.components.editor import has_object, objects, replace_value, root_block
-from pvsyst_auto.energy.soiling import soiling_state, replace_soiling
-from pvsyst_auto.native.grid_limit import grid_limit_state, replace_grid_limit
-from pvsyst_auto.energy.auxiliaries import auxiliary_state, replace_auxiliaries
-from pvsyst_auto.project.seasonal import replace_seasonal
-from pvsyst_auto.native.horizon import horizon_state, replace_horizon
-from pvsyst_auto.energy.inverter_temperature import inverter_temperature_state, replace_inverter_temperature
-from pvsyst_auto.energy.power_factor import power_factor_state, replace_power_factor
-from pvsyst_auto.energy.mismatch import replace_string_mismatch, string_mismatch_state
-from pvsyst_auto.energy.ageing import ageing_model_state, replace_ageing_model, replace_ageing_enabled
-from pvsyst_auto.energy.iam import iam_model_state, replace_iam_model
-from pvsyst_auto.native.p50 import p50_state, replace_p50
-from pvsyst_auto.energy.power import power_controls_state, replace_power_controls
-from pvsyst_auto.energy.peak import peak_shaving_state
-from pvsyst_auto.scene.state import shading_state
-from pvsyst_auto.energy.unavailability import system_unavail_state, replace_system_unavailability
-from pvsyst_auto.project.tracking import WRITABLE as TRACKING_FIELDS
-from pvsyst_auto.project.sheds import WRITABLE as SHED_FIELDS, TYPES as SHED_TYPES
-from pvsyst_auto.energy.storage import grid_storage_state
-from pvsyst_auto.energy.ac import ac_cabling_state
-from pvsyst_auto.native.dc import dc_cabling_state
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
 MAX_ARCHIVE_MEMBERS = 128
 EMPTY_SHADING_FLAGS = ("$00", "$00020000", "$00080000")
-VAR_LIST_HEADER = re.compile(r"^\s*VarList,\s*list of=([0-9]+)\s+TVarSimul\s*$")
-VAR_SIMUL_OPEN = re.compile(r"^\s*VarSimul_([0-9]+)=(.*?)\s*$")
-VAR_SIMUL_CLOSE = re.compile(r"^\s*End of VarSimul=(.*?)\s*$")
 
-
-def _declared_numbers(text: str) -> list[float] | None:
-    """The plain comma-separated numbers a field declares, or None if one is not one."""
-    values = []
-    for item in text.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        try:
-            values.append(float(item))
-        except ValueError:
-            return None
-    return values or None
-
-
-def _saved_results(text: str, lines: list[str]) -> dict:
-    """Read the result cache stored inside the variant."""
-    issues = []
-    try:
-        blocks = objects(text)
-    except ValueError as exc:
-        blocks = []
-        issues.append("native result-cache objects unreadable: %s" % exc)
-    root = next((block for block in blocks if not block.path), None)
-    root_flags = root.fields["Flags"][0][1] if root and len(root.fields.get("Flags", [])) == 1 else None
-    if root_flags is None:
-        issues.append("root Flags missing or duplicated")
-
-    def field(block, name):
-        values = block.fields.get(name, [])
-        return values[0][1] if len(values) == 1 else None
-
-    headers = [block for block in blocks if block.object_type == "pvSimulFile"]
-    if len(headers) > 1:
-        issues.append("more than one pvSimulFile result-cache header")
-    pv_simul_file = {"present": bool(headers)}
-    if headers:
-        pv_simul_file.update({
-            "file_name_written": field(headers[0], "FileNameWr"),
-            "var_idents_written": [item for item in (field(headers[0], "VarIdentWr") or "").split(",")
-                                   if item.strip()],
-            "native_unit_codes": [item for item in (field(headers[0], "Units") or "").split(",")
-                                  if item.strip()],
-            "type_val_written": field(headers[0], "TypeValW"),
-            "columns": field(headers[0], "NCarCol")})
-
-    declared = None
-    raw_entries = []
-    current = None
-    for index, line in enumerate(lines):
-        stripped = line.rstrip("\r\n")
-        if current is None:
-            header = VAR_LIST_HEADER.match(stripped)
-            if header:
-                declared = int(header.group(1))
-                continue
-            opened = VAR_SIMUL_OPEN.match(stripped)
-            if opened:
-                current = {"key": "VarSimul_" + opened.group(1), "index": int(opened.group(1)),
-                           "ident": opened.group(2), "native_ident": None,
-                           "fields": [], "days": [], "line": index + 1}
-            continue
-        closed = VAR_SIMUL_CLOSE.match(stripped)
-        if closed:
-            current["native_ident"] = closed.group(1)
-            raw_entries.append(current)
-            current = None
-            continue
-        assignment = FIELD.fullmatch(stripped)
-        if assignment:
-            name, value = assignment.group(1), assignment.group(2)
-            (current["days"] if name.startswith("Day_") else current["fields"]).append((name, value))
-    if current is not None:
-        issues.append("unclosed %s at line %d" % (current["key"], current["line"]))
-        raw_entries.append(current)
-
-    entries = []
-    for entry in raw_entries:
-        def declared_field(name, entry=entry):
-            values = [value for key, value in entry["fields"] if key == name]
-            return values[0] if len(values) == 1 else None
-
-        month = declared_field("ValMonth")
-        values = _declared_numbers(month) if month is not None else None
-        if values is not None:
-            declaration = None
-        elif month is not None:
-            declaration = "ValMonth=" + month
-        else:
-            declaration = "\n".join("%s=%s" % row for row in entry["days"]) or None
-        factor = declared_field("WRFactor")
-        try:
-            factor = float(factor) if factor is not None else None
-        except ValueError:
-            factor = None
-        entries.append({
-            "key": entry["key"], "index": entry["index"],
-            "ident": entry["ident"], "native_ident": entry["native_ident"],
-            "declared_type": declared_field("VarType"),
-            "accumulator": declared_field("VarAcc"),
-            "store": declared_field("VarStore"),
-            "mode_ss": declared_field("VarModeSS"),
-            "associations": [value for key, value in entry["fields"] if key.startswith("VarAssoc")],
-            "date_beg": declared_field("DateBeg"),
-            "date_end": declared_field("DateEnd"),
-            "unit": None,
-            "unit_source": "not_declared_in_varlist",
-            "values": values,
-            "values_scope": "month" if values is not None else None,
-            "stored_weighted_factor": factor,
-            "day_rows": len(entry["days"]),
-            "value_declaration": declaration})
-
-    indices = sorted(entry["index"] for entry in entries)
-    span = range(1, declared + 1) if declared else (range(indices[0], indices[-1] + 1) if indices else [])
-    histogram_types = {}
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("Histogram="):
-            kind = stripped.split("=", 1)[1]
-            histogram_types[kind] = histogram_types.get(kind, 0) + 1
-    factor_tables = len([block for block in blocks if block.object_type == "pvShdFTable"])
-    if declared is not None and declared != len(entries):
-        issues.append("VarList declares %d TVarSimul but %d parsed" % (declared, len(entries)))
-    return {
-        "present": bool(entries or histogram_types or factor_tables),
-        "root_flags": root_flags,
-        "pv_simul_file": pv_simul_file,
-        "var_list": {
-            "declared_count": declared,
-            "parsed_count": len(entries),
-            "missing_indices": sorted(set(span) - set(indices)),
-            "entries": entries},
-        "histograms": {"count": sum(histogram_types.values()), "types": histogram_types},
-        "shading_factor_tables": {"count": factor_tables},
-        "issues": issues}
-
-
-ECON_OPEN = "EconomicEval=TEcoEvaluation"
-ECON_LIST = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*), list of=([0-9]+) ([A-Za-z_][A-Za-z0-9_]*)$")
-
-
-def _economic_block(lines: list[str]) -> dict:
-    """Read the variant's stored ``EconomicEval=TEcoEvaluation`` block."""
-    found = [i for i, line in enumerate(lines) if line.strip() == ECON_OPEN]
-    if not found:
-        return {"present": False}
-    if len(found) > 1:
-        raise ValueError("EconomicEval block is declared more than once")
-    start = found[0]
-    owner_indent = len(lines[start]) - len(lines[start].lstrip(" "))
-    end = terminator = None
-    for i in range(start + 1, len(lines)):
-        stripped = lines[i].strip()
-        if not stripped:
-            continue
-        indent = len(lines[i]) - len(lines[i].lstrip(" "))
-        if indent <= owner_indent:
-            if stripped == "End of TEcoEvaluation":
-                end, terminator = i, "End of TEcoEvaluation"
-            else:
-                end, terminator = i, "root_section_boundary"
-            break
-    if end is None:
-        raise ValueError("EconomicEval block is not closed (no terminating tag or root boundary)")
-    block = lines[start + 1:end]
-    direct = owner_indent + 2
-    scalars: dict[str, list[str]] = {}
-    lists: dict[str, dict] = {}
-    opens = closes = 0
-    for raw in block:
-        text = raw.rstrip("\r\n")
-        stripped = text.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("End of List "):
-            closes += 1
-            continue
-        inner = len(text) - len(text.lstrip(" "))
-        declared = ECON_LIST.match(stripped)
-        if declared:
-            opens += 1
-            if inner == direct:
-                lists[declared.group(1)] = {"type": declared.group(3),
-                                            "declared_count": int(declared.group(2))}
-            continue
-        field = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", stripped)
-        if field and inner == direct:
-            scalars.setdefault(field.group(1), []).append(field.group(2))
-    if opens != closes:
-        raise ValueError("EconomicEval list structure is unbalanced: %d 'list of=' but %d 'End of List'"
-                         % (opens, closes))
-    return {
-        "present": True,
-        "owner": "TEcoEvaluation",
-        "terminator": terminator,
-        "native_type": "TEcoEvaluation",
-        "raw": "".join(block),
-        "scalars": scalars,
-        "lists": lists,
-        "native_consumption_verified": False,
-    }
+_saved_results = variant_readback.saved_results
+_economic_block = variant_readback.economic_block
 
 
 class VariantStore:
@@ -340,13 +114,11 @@ class VariantStore:
                         raise ValueError("Multiple system sections")
                     system = bounds
                 else:
-                    matches = VariantStore._field_indices(lines, bounds, "SubArrayId")
-                    if len(matches) != 1:
-                        raise ValueError("Subarray must have one SubArrayId")
-                    identifier = FIELD.fullmatch(lines[matches[0]].rstrip("\r\n"))[2]
-                    if not identifier.isdigit() or int(identifier) in arrays:
-                        raise ValueError("SubArrayId must be a unique positive integer")
-                    if int(identifier) < 1:
+                    indices = VariantStore._field_indices(lines, bounds, "SubArrayId")
+                    if len(indices) != 1:
+                        raise ValueError("Subarray requires one SubArrayId")
+                    identifier = FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]
+                    if not identifier.isdigit() or int(identifier) < 1 or int(identifier) in arrays:
                         raise ValueError("SubArrayId must be a unique positive integer")
                     arrays[int(identifier)] = bounds
                 active = None
@@ -395,16 +167,14 @@ class VariantStore:
         bom = data.startswith(b"\xef\xbb\xbf")
         if not name.isascii() and not bom and not add_utf8_bom:
             raise ValueError(f"Non-ASCII {field} values require UTF-8 BOM; use add_utf8_bom=true explicitly")
-        # The native file reader treats a BOM-less file as Windows-1252, so a variant whose
-        # *content* already carries non-ASCII (e.g. a fixed-plane `Comment=...25.0°...`) must
-        # still be BOM-marked or the original software re-saves the degree as `Â°`. Existing
-        # ASCII-only legacy files keep their no-BOM shape.
         if content is not None and not content.isascii():
             return b"\xef\xbb\xbf"
         return b"\xef\xbb\xbf" if bom or add_utf8_bom else b""
 
     @staticmethod
-    def _check_hash(data: bytes, expected: str) -> None:
+    def _check_hash(data: bytes, expected: str | None) -> None:
+        if expected is None:
+            return
         if (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected)
                 or hashlib.sha256(data).hexdigest() != expected.lower()):
             raise ValueError("Variant changed since inspection; provide current sha256")
@@ -415,10 +185,12 @@ class VariantStore:
             data = self._read(self._path(project, variant))
             _, lines = self._text(data)
             arrays, system = self._sections(lines)
+
             def values(bounds, types):
                 return {kind: [FIELD.fullmatch(lines[i].rstrip("\r\n"))[2]
                                for i in self._field_indices(lines, bounds, FIELDS[kind])]
                         for kind in types}
+
             return {"project": project, "variant": variant.upper(),
                     "sha256": hashlib.sha256(data).hexdigest(),
                     "subarrays": [{"id": identifier, "references": values(bounds, ("PAN", "OND"))}
@@ -557,16 +329,6 @@ class VariantStore:
 
     @staticmethod
     def _uv_edit_gate(lines, system, arrays, main_array) -> None:
-        """Gate for the present-only UVFactor (native wind-loss Uv) edit.
-
-        Accepts the genuine observed 8.1.0/8.1.6 Grid main array carrying either the tracker
-        ``$01900400`` or fixed ``$00100400`` Flags with ``$082A`` Flags2. Unlike the constant
-        UFactor editor it does NOT require an unshaded/geometry-free variant: the observed
-        UVFactor fixture is an 80-object shaded tracker with a nonzero-wind MET. This edit
-        rewrites only the stored UV literal and invalidates derived results, so any existing
-        tracking/shading/geometry/economic/input-control fields are preserved verbatim (never
-        stripped, cloned to fixed or default-filled).
-        """
         kinds = VariantStore._field_indices(lines, system, "SystemType") if system is not None else []
         versions = [VariantStore._field_indices(lines, bounds, "Version") for bounds in arrays.values()]
         if (main_array is None or len(kinds) != 1
@@ -583,142 +345,19 @@ class VariantStore:
         if len(VariantStore._field_indices(lines, main_array, "UVFactor")) != 1:
             raise ValueError("UVFactor must occur exactly once directly on the main array")
 
-    @staticmethod
-    def _legacy_dcgrid_read_scope(lines, system):
-        """Read-only scope for legacy 8.0 DCGrid declarations."""
-        if system is None:
-            return None
-        header_end = next((i for i in range(1, len(lines))
-                           if lines[i].strip().startswith("PVObject_")), len(lines))
-        root_versions = VariantStore._field_indices(lines, (0, header_end), "Version")
-        kinds = VariantStore._field_indices(lines, system, "SystemType")
-        if len(root_versions) != 1 or len(kinds) != 1:
-            return None
-        version = FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2]
-        system_type = FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2]
-        if not re.fullmatch(r"8\.0(?:\.[0-9]+)?", version) or system_type != "DCGrid":
-            return None
-        declared = {"SystemType": system_type}
-        for name in ("TypeRegul", "VNomAlim", "VPVMax", "RGridPV", "RGridAlim"):
-            indices = VariantStore._field_indices(lines, system, name)
-            if len(indices) == 1:
-                declared[name] = FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]
-        return {
-            "present": True,
-            "readonly": True,
-            "format_family": "DCGrid",
-            "source_version": version,
-            "system_declarations": declared,
-        }
-
     def inspect_parameters(self, project: str, variant: str,
                            include_saved_results: bool = False,
                            include_economics: bool = False,
                            include_topology: bool = False) -> dict:
-        with self.lock:
-            self._check_project(project)
-            data = self._read(self._path(project, variant))
-            text, lines = self._text(data)
-            arrays, system = self._sections(lines)
-            def fields(bounds, names):
-                return {name: values[0] for name in names
-                        if len(values := [FIELD.fullmatch(lines[i].rstrip("\r\n"))[2]
-                                         for i in self._field_indices(lines, bounds, name)]) == 1}
+        return variant_readback.inspect_parameters(
+            self, project, variant,
+            include_saved_results=include_saved_results,
+            include_economics=include_economics,
+            include_topology=include_topology,
+        )
 
-            def single(bounds, name):
-                indices = self._field_indices(lines, bounds, name)
-                return FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] if len(indices) == 1 else None
-
-            def inverter_state(bounds):
-                # Stored per-subarray inverter/module declaration read back verbatim, typed.
-                # PNomAC_InMPPT is the file's own value (an actual float), never derived from
-                # the OND PNomConv/NbMPPT; a missing, malformed or non-finite value is omitted
-                # rather than reported as 0. Used by the shared public readback API.
-                state = {}
-                for name in ("PVModule", "GInverter"):
-                    if (text := single(bounds, name)) is not None:
-                        state[name] = text
-                for name in ("NInverter", "NInvMPPT", "PowerSharingInverterId"):
-                    text = single(bounds, name)
-                    if text is not None and re.fullmatch(r"-?[0-9]+", text):
-                        state[name] = int(text)
-                if (text := single(bounds, "PNomAC_InMPPT")) is not None:
-                    try:
-                        value = float(text)
-                    except ValueError:
-                        value = None
-                    if value is not None and math.isfinite(value):
-                        state["PNomAC_InMPPT"] = value
-                return state
-
-            orientations = []
-            for index, line in enumerate(lines):
-                if line.strip() != "PVObject_=pvOrient":
-                    continue
-                end = next((i for i in range(index + 1, len(lines))
-                            if lines[i].strip() == "End of TOrientGroup"), None)
-                if end is None:
-                    raise ValueError("Unclosed orientation")
-                indices = self._field_indices(lines, (index, end), "NoOrient")
-                if len(indices) != 1:
-                    raise ValueError("Orientation requires one ID")
-                number = FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]
-                if not number.isdigit():
-                    raise ValueError("Orientation ID must be numeric")
-                self._orientation(lines, int(number))
-                values = fields((index, end), ("FieldType", "FieldTilt", "FieldAzim", "SummerTilt",
-                                               "WinterTilt", "WinterMonths", "UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"))
-                values.update(fields((index, end), TRACKING_FIELDS.get(values.get("FieldType"), ())))
-                if values.get("FieldType") in SHED_TYPES:
-                    values.update(fields((index, end), SHED_FIELDS.values()))
-                orientations.append({"id": int(number), "values": values})
-            main_array = self._main_array(lines)
-            names = self._display_name_fields(lines)
-            result = {"project": project, "variant": variant.upper(),
-                    "variant_name": FIELD.fullmatch(lines[names[0]].rstrip("\r\n"))[2] if len(names) == 1 else None,
-                    "utf8_bom": data.startswith(b"\xef\xbb\xbf"),
-                    "main_array": {"values": fields(main_array, ("UFactor", "UVFactor", "Flags", "Flags2", "MVNbTransfos", "VOutTransfo")) if main_array is not None else {},
-                                   "soiling": soiling_state(lines, main_array) if main_array is not None else None},
-                    "sha256": hashlib.sha256(data).hexdigest(), "orientations": orientations,
-                    "system_parameters": fields(system, ("SystemType", "Flags", "TempShift", "TempFixed",
-                                                         "TanPhi", "PLimGrid", "LimGrSeparLoss")) if system is not None else {},
-                    "generator": generator_state(lines, arrays, system),
-                    "grid_limit": grid_limit_state(lines, system),
-                    "auxiliaries": auxiliary_state(lines, system),
-                    "horizon": horizon_state(lines),
-                    "power_factor": power_factor_state(lines, system),
-                    "p50_p90": p50_state(lines),
-                    "power_controls": power_controls_state(lines, system),
-                    "ageing": ageing_model_state(lines, main_array) if main_array is not None else None,
-                    "inverter_temperature": inverter_temperature_state(lines, system),
-                     "transformers": transformer_state(lines),
-                      "ac_cabling": ac_cabling_state(lines),
-                       "dc_cabling": dc_cabling_state(lines),
-                     "system_unavailability": system_unavail_state(lines, system),
-                     "peak_shaving": peak_shaving_state(lines),
-                      "grid_storage": grid_storage_state(lines, system),
-                     "shading_scene": shading_state(lines),
-                    "source_metadata": {"stored_source_values": True},
-                    "subarrays": [{"id": identifier, "values": fields(bounds, (
-                        "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT", "NoOrientation",
-                        "VBkUpEncl_syst", "VBkUpDecl_syst", "LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI", "PQualityModP", "Flags")),
-                        "inverter_state": inverter_state(bounds),
-                        "string_mismatch": string_mismatch_state(lines, bounds),
-                        "iam": iam_model_state(lines, bounds)}
-                                  for identifier, bounds in sorted(arrays.items())]}
-            legacy_scope = self._legacy_dcgrid_read_scope(lines, system)
-            if legacy_scope is not None:
-                result["legacy_read_scope"] = legacy_scope
-            if include_saved_results:
-                result["saved_results"] = _saved_results(text, lines)
-            if include_economics:
-                result["economics"] = _economic_block(lines)
-            if include_topology:
-                result["topology"] = topology_state(lines)
-            return result
-
-    def update_parameters(self, project: str, variant: str, expected_sha256: str,
-                          subarray_id: int, orientation_id: int,
+    def update_parameters(self, project: str, variant: str, expected_sha256: str | None = None,
+                          subarray_id: int = 1, orientation_id: int = 1,
                           subarray_updates: dict[str, float] | None = None,
                           orientation_updates: dict[str, float] | None = None,
                           generator_updates: dict | None = None,
@@ -740,482 +379,32 @@ class VariantStore:
                           iam_updates: dict | None = None,
                           ageing_enabled: bool | None = None,
                           system_unavailability_updates: dict | None = None) -> dict:
-        allowed_subarray = {"NModSerie": (1, 100), "NInverter": (1, 10000), "NStringCh": (1, 2147483647),
-                            "NoOrientation": (1, 2147483647), "NInvMPPT": (1, 10000),
-                            "VBkUpEncl_syst": (0, 1),
-                            "VBkUpDecl_syst": (0, 1), "LIDLoss": (0, 100), "PMismMPP": (0, 100),
-                             "ModuleQualityLoss": (-5, 20),
-                             # Per-MPPT nominal AC power (kW). Positive and finite only; the
-                             # upper bound is intentionally the unbounded float sentinel rather
-                             # than a guessed hardware limit. Written as an existing declaration,
-                             # never derived here from the OND PNomConv/NbMPPT.
-                             "PNomAC_InMPPT": (0, math.inf)}
-        allowed_orientation = {"FieldTilt": (0, 90), "FieldAzim": (-180, 180)}
-        # UFactor (constant Uc) uses its bounded range; UVFactor (wind-loss Uv) accepts any finite non-negative number.
-        # JSON float is accepted, while bool/NaN/inf are refused below. No 0..100 or nonnegative
-        # Native bound is invented here; original validation of the stored value is deferred.
-        allowed_main_array = {"UFactor": (15, 100), "UVFactor": (-math.inf, math.inf)}
-        requested = ((subarray_updates, allowed_subarray), (orientation_updates, allowed_orientation),
-                     (main_array_updates, allowed_main_array))
-        ageing_transaction = ageing_updates is not None or ageing_enabled is not None
-        if system_unavailability_updates is not None and any(value is not None for value in (
-                subarray_updates, orientation_updates, main_array_updates, generator_updates,
-                power_sharing_enabled, independent_mppt_enabled, soiling_updates, grid_limit_updates,
-                auxiliary_updates, seasonal_updates, horizon_updates, inverter_temperature_updates,
-                power_factor_updates, p50_p90_updates, power_controls_updates, string_mismatch_updates,
-                ageing_updates, iam_updates, ageing_enabled)):
-            raise ValueError("System-unavailability removal requires a separate transaction; variant_name may accompany it")
-        if ageing_enabled is not None and type(ageing_enabled) is not bool:
-            raise ValueError("ageing_enabled must be a strict boolean")
-        if soiling_updates is not None and (any(changes for changes, _ in requested)
-                or generator_updates is not None or power_sharing_enabled is not None or independent_mppt_enabled is not None):
-            raise ValueError("Soiling updates require a separate transaction; variant_name may accompany them")
-        if grid_limit_updates is not None and (any(changes for changes, _ in requested)
-                or generator_updates is not None or soiling_updates is not None
-                or power_sharing_enabled is not None or independent_mppt_enabled is not None):
-            raise ValueError("Grid-limit updates require a separate transaction; variant_name may accompany them")
-        if auxiliary_updates is not None and (any(changes for changes, _ in requested)
-                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
-                or power_sharing_enabled is not None or independent_mppt_enabled is not None):
-            raise ValueError("Auxiliary updates require a separate transaction; variant_name may accompany them")
-        if seasonal_updates is not None and (any(changes for changes, _ in requested)
-                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
-                or auxiliary_updates is not None or power_sharing_enabled is not None or independent_mppt_enabled is not None):
-            raise ValueError("Seasonal updates require a separate transaction; variant_name may accompany them")
-        if horizon_updates is not None and (any(changes for changes, _ in requested)
-                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
-                or auxiliary_updates is not None or seasonal_updates is not None
-                or power_sharing_enabled is not None or independent_mppt_enabled is not None):
-            raise ValueError("Horizon updates require a separate transaction; variant_name may accompany them")
-        if inverter_temperature_updates is not None and (any(changes for changes, _ in requested)
-                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
-                or auxiliary_updates is not None or seasonal_updates is not None or horizon_updates is not None
-                or power_sharing_enabled is not None or independent_mppt_enabled is not None):
-            raise ValueError("Inverter-temperature updates require a separate transaction; variant_name may accompany them")
-        if power_factor_updates is not None and (any(changes for changes, _ in requested)
-                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
-                or auxiliary_updates is not None or seasonal_updates is not None or horizon_updates is not None
-                or inverter_temperature_updates is not None or power_sharing_enabled is not None
-                or independent_mppt_enabled is not None):
-            raise ValueError("Power-factor updates require a separate transaction; variant_name may accompany them")
-        if p50_p90_updates is not None and (any(changes for changes, _ in requested)
-                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
-                or auxiliary_updates is not None or seasonal_updates is not None or horizon_updates is not None
-                or inverter_temperature_updates is not None or power_factor_updates is not None
-                or power_sharing_enabled is not None or independent_mppt_enabled is not None):
-            raise ValueError("P50/P90 updates require a separate transaction; variant_name may accompany them")
-        if power_controls_updates is not None and (any(changes for changes, _ in requested)
-                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
-                or auxiliary_updates is not None or seasonal_updates is not None or horizon_updates is not None
-                or inverter_temperature_updates is not None or power_factor_updates is not None
-                or p50_p90_updates is not None or string_mismatch_updates is not None
-                or power_sharing_enabled is not None or independent_mppt_enabled is not None):
-            raise ValueError("Combined power controls require a separate transaction; variant_name may accompany them")
-        if string_mismatch_updates is not None and (any(changes for changes, _ in requested)
-                or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
-                or auxiliary_updates is not None or seasonal_updates is not None or horizon_updates is not None
-                or inverter_temperature_updates is not None or power_factor_updates is not None
-                or p50_p90_updates is not None or power_controls_updates is not None
-                or power_sharing_enabled is not None or independent_mppt_enabled is not None):
-            raise ValueError("String-mismatch updates require a separate transaction; variant_name may accompany them")
-        for extra, label in ((ageing_updates, "Ageing model"), (iam_updates, "IAM model"),
-                             (ageing_enabled, "Ageing enable")):
-            if extra is not None and (any(changes for changes, _ in requested)
-                    or generator_updates is not None or soiling_updates is not None or grid_limit_updates is not None
-                    or auxiliary_updates is not None or seasonal_updates is not None or horizon_updates is not None
-                    or inverter_temperature_updates is not None or power_factor_updates is not None
-                    or p50_p90_updates is not None or power_controls_updates is not None
-                    or string_mismatch_updates is not None
-                    or sum(value is not None for value in (ageing_updates, iam_updates, ageing_enabled)) > 1
-                    or power_sharing_enabled is not None or independent_mppt_enabled is not None):
-                raise ValueError(f"{label} updates require a separate transaction; variant_name may accompany them")
-        if not isinstance(dry_run, bool):
-            raise ValueError("dry_run must be a boolean")
-        if not isinstance(add_utf8_bom, bool):
-            raise ValueError("add_utf8_bom must be a boolean")
-        if add_utf8_bom and variant_name is None:
-            raise ValueError("add_utf8_bom requires variant_name")
-        if variant_name is not None:
-            self._validate_display_name(variant_name, "variant_name")
-        for name, switch in (("power_sharing_enabled", power_sharing_enabled), ("independent_mppt_enabled", independent_mppt_enabled)):
-            if switch is not None:
-                if not isinstance(switch, bool):
-                    raise ValueError(f"{name} must be a boolean")
-                if (any(changes for changes, _ in requested) or generator_updates is not None or variant_name is not None
-                        or power_sharing_enabled is not None and independent_mppt_enabled is not None):
-                    raise ValueError("Mode/sharing changes require separate parameter transactions")
-        if (not any(changes for changes, _ in requested) and not generator_updates and variant_name is None
-                and power_sharing_enabled is None and independent_mppt_enabled is None
-                and soiling_updates is None and grid_limit_updates is None and auxiliary_updates is None
-                and seasonal_updates is None and horizon_updates is None and inverter_temperature_updates is None
-                and power_factor_updates is None and p50_p90_updates is None and power_controls_updates is None
-                and string_mismatch_updates is None
-                and ageing_updates is None and iam_updates is None and ageing_enabled is None
-                and system_unavailability_updates is None) or any(
-                changes is not None and (not isinstance(changes, dict) or
-                                         any(key not in allowed for key in changes))
-                for changes, allowed in requested):
-            raise ValueError("Provide supported parameter updates or variant_name")
-        if generator_updates is not None and (not isinstance(generator_updates, dict) or not generator_updates):
-            raise ValueError("generator_updates must be a nonempty dictionary")
-        if generator_updates is not None and set(subarray_updates or {}) & {"VBkUpEncl_syst", "VBkUpDecl_syst"}:
-            raise ValueError("Use generator_updates.thresholds for thresholds in a generator transaction")
-        with self.lock:
-            self._check_project(project)
-            path = self._path(project, variant)
-            data = self._read(path)
-            self._check_hash(data, expected_sha256)
-            text, lines = self._text(data)
-            arrays, system = self._sections(lines)
-            name_change = None
-            bom_prefix = b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b""
-            if variant_name is not None:
-                bom_prefix = self._display_name_prefix(data, variant_name, add_utf8_bom, "variant_name")
-                index, = self._display_name_fields(lines, complete=True)
-                name_change = {"before": FIELD.fullmatch(lines[index].rstrip("\r\n"))[2], "after": variant_name}
-                lines[index] = replace_value(lines[index], variant_name)
-            main_array = self._main_array(lines) if main_array_updates else None
-            uv_only = bool(main_array_updates) and set(main_array_updates) == {"UVFactor"}
-            if main_array_updates and "UVFactor" in main_array_updates and not uv_only:
-                raise ValueError("UVFactor edits are a separate transaction; do not combine with UFactor")
-            if main_array_updates and not uv_only:
-                kinds = self._field_indices(lines, system, "SystemType") if system is not None else []
-                versions = [self._field_indices(lines, bounds, "Version") for bounds in arrays.values()]
-                if (main_array is None or len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
-                        or any(len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in ("8.1.0", "8.1.6") for indices in versions)):
-                    raise ValueError("Thermal editing requires a verified 8.1.0/8.1.6 grid main array")
-                for key, expected in (("Flags", "$00100400"), ("Flags2", "$082A")):
-                    indices = self._field_indices(lines, main_array, key)
-                    if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] != expected:
-                        raise ValueError("Thermal editing requires verified main-array Flags/Flags2")
-                self._require_no_geometry(lines)
-            elif uv_only:
-                self._uv_edit_gate(lines, system, arrays, main_array)
-            if subarray_updates or power_sharing_enabled is not None or independent_mppt_enabled is not None:
-                if not isinstance(subarray_id, int) or isinstance(subarray_id, bool) or subarray_id not in arrays:
-                    raise ValueError("Subarray ID does not exist")
-            for loss in set(subarray_updates or {}) & {"LIDLoss", "PMismMPP", "ModuleQualityLoss"}:
-                versions = self._field_indices(lines, arrays[subarray_id], "Version")
-                kinds = self._field_indices(lines, system, "SystemType") if system is not None else []
-                supported = ("8.1.0", "8.1.6")
-                if (len(versions) != 1 or FIELD.fullmatch(lines[versions[0]].rstrip("\r\n"))[2] not in supported
-                        or len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"):
-                    raise ValueError(f"{loss} editing requires a verified {'/'.join(supported)} grid subarray")
-            if set(subarray_updates or {}) & {"NModSerie", "LIDLoss", "PMismMPP", "ModuleQualityLoss"}:
-                self._require_no_geometry(lines)
-            loss_modes = {}
-            for key, label, mask in (("PMismMPP", "Mismatch", 0x00040000),
-                                     ("ModuleQualityLoss", "Module quality", 0x00100000)):
-                if key not in (subarray_updates or {}):
-                    continue
-                indices = self._field_indices(lines, arrays[subarray_id], "Flags")
-                if len(indices) != 1:
-                    raise ValueError(f"{label} editing requires one owning Flags field")
-                index = indices[0]
-                raw = FIELD.fullmatch(lines[index].rstrip("\r\n"))[2]
-                if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", raw):
-                    raise ValueError(f"{label} editing requires hexadecimal Flags")
-                flags = int(raw[1:], 16)
-                loss_modes[key] = {"default_before": bool(flags & mask), "default_after": False}
-                if loss_modes[key]["default_before"]:
-                    lines[index] = replace_value(lines[index], f"${flags & ~mask:0{len(raw) - 1}X}")
-            targets = [(subarray_updates, allowed_subarray, arrays[subarray_id])] if subarray_updates else []
-            if main_array_updates:
-                targets.append((main_array_updates, allowed_main_array, main_array))
-            if orientation_updates:
-                bounds = self._orientation(lines, orientation_id)
-                if any("PVObject_ShdTable" in line for line in lines[bounds[0]:bounds[1] + 1]):
-                    raise ValueError("Orientation has a dependent shading table")
-                self._require_no_geometry(lines)
-                self._ordinary_fixed_plane(lines, bounds, allow_missing_flags=True)
-                targets.append((orientation_updates, allowed_orientation, bounds))
-            uv_changed = False
-            for changes, allowed, bounds in targets:
-                for name, value in changes.items():
-                    if (not isinstance(value, (int, float)) or isinstance(value, bool)
-                            or not math.isfinite(value) or not allowed[name][0] <= value <= allowed[name][1]
-                            or name in ("NModSerie", "NInverter", "NStringCh", "NInvMPPT", "NoOrientation") and int(value) != value):
-                        raise ValueError(f"Invalid {name} value")
-                    # The stored 2-dp form must stay strictly positive: a tiny positive
-                    # that serializes to 0.00 is refused, not silently written as zero.
-                    if name == "PNomAC_InMPPT" and float(f"{value:.2f}") <= 0:
-                        raise ValueError(f"Invalid {name} value")
-                    if name == "ModuleQualityLoss":
-                        for field in ("PQualityModU", "PQualityModI"):
-                            indices = self._field_indices(lines, bounds, field)
-                            if len(indices) != 1:
-                                raise ValueError(f"{field} must occur exactly once in its section")
-                            lines[indices[0]] = replace_value(lines[indices[0]], f"{value:.3f}")
-                        continue
-                    indices = self._field_indices(lines, bounds, name)
-                    if len(indices) != 1:
-                        raise ValueError(f"{name} must occur exactly once in its section")
-                    if name in ("NInverter", "NStringCh", "NInvMPPT", "NoOrientation"):
-                        continue  # Grid quantities and orientation references are checked together below.
-                    index = indices[0]
-                    old = lines[index]
-                    prefix = old[:old.index("=") + 1]
-                    ending = "\r\n" if old.endswith("\r\n") else "\n" if old.endswith("\n") else ""
-                    rendered = (str(int(value)) if name == "NModSerie"
-                                else f"{value:.2f}" if name == "PNomAC_InMPPT" else f"{value:.3f}")
-                    lines[index] = f"{prefix}{rendered}{ending}"
-                    if name == "UVFactor":
-                        uv_changed = rendered != FIELD.fullmatch(old.rstrip("\r\n"))[2]
-            capacity = None
-            assignment = None
-            sharing = None
-            mppt_mode = None
-            if independent_mppt_enabled is not None or power_sharing_enabled is not None or subarray_updates and set(subarray_updates) & {"NInverter", "NStringCh", "NInvMPPT", "NoOrientation"}:
-                kinds = self._field_indices(lines, system, "SystemType") if system is not None else []
-                if (len(kinds) != 1
-                        or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"):
-                    raise ValueError("Inverter capacity editing requires a grid system")
-                self._require_no_geometry(lines, require_shading_section=True)
-                fields = self._field_indices(lines, arrays[subarray_id], "NoOrientation")
-                if len(fields) != 1:
-                    raise ValueError("Capacity editing requires one fixed-plane orientation")
-                orientation_raw = FIELD.fullmatch(lines[fields[0]].rstrip("\r\n"))[2]
-                if not orientation_raw.isdigit():
-                    raise ValueError("Capacity orientation ID must be an integer")
-                orientation = self._orientation(lines, int(orientation_raw))
-                types = self._field_indices(lines, orientation, "FieldType")
-                if len(types) != 1 or FIELD.fullmatch(lines[types[0]].rstrip("\r\n"))[2] != "FixedPlane":
-                    raise ValueError("Capacity editing requires a fixed-plane orientation")
-                if independent_mppt_enabled is not None:
-                    mppt_mode = set_independent_mppt(lines, arrays, subarray_id, independent_mppt_enabled)
-                if power_sharing_enabled is not None:
-                    sharing = set_power_sharing(lines, arrays, subarray_id, power_sharing_enabled)
-                if set(subarray_updates or {}) & {"NInverter", "NStringCh", "NInvMPPT"}:
-                    capacity = resize_capacity(lines, arrays, subarray_id,
-                        **{key: int(subarray_updates[field]) for key, field in (
-                            ("target_inverters", "NInverter"), ("target_strings", "NStringCh"), ("target_mppt", "NInvMPPT"))
-                           if field in subarray_updates})
-                if "NoOrientation" in (subarray_updates or {}):
-                    if grid_inventory(lines, arrays)["counts_valid"] is not True:
-                        raise ValueError("Orientation assignment requires complete consistent grid counts")
-                    _, groups = self._orientation_list(lines)
-                    if [identifier for _, _, identifier in groups] != list(range(1, len(groups) + 1)):
-                        raise ValueError("Orientation assignment requires sequential ordered IDs")
-                    branches, root = self._subarray_branches(lines, arrays, subarray_id)
-                    self._require_plane_branch_mode(root, branches)
-                    if (root.one("NStrOrient1")[1] != root.one("NStringCh")[1] or any(
-                            key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0"
-                            for key in root.fields)):
-                        raise ValueError("Orientation assignment requires all strings in one orientation")
-                    destination = int(subarray_updates["NoOrientation"])
-                    self._ordinary_fixed_plane(lines, orientation)
-                    self._ordinary_fixed_plane(lines, self._orientation(lines, destination))
-                    if int(orientation_raw) != destination:
-                        index = arrays[subarray_id][0] + root.one("NoOrientation")[0]
-                        lines[index] = replace_value(lines[index], str(destination))
-                    self._orientation_list(lines)
-                    assignment = {"subarray_id": subarray_id, "before": int(orientation_raw), "after": destination}
-            generator = None
-            if generator_updates is not None:
-                generator = replace_generator(lines, arrays, system, generator_updates, self.components)
-            soiling_change = grid_limit_change = auxiliary_change = seasonal_change = horizon_change = temperature_change = None
-            power_factor_change = None
-            p50_change = None
-            power_controls_change = None
-            string_mismatch_change = None
-            ageing_change = None
-            iam_change = None
-            unavailability_change = None
-            if any(value is not None for value in (soiling_updates, grid_limit_updates, auxiliary_updates, seasonal_updates, horizon_updates, inverter_temperature_updates, power_factor_updates, p50_p90_updates, power_controls_updates, string_mismatch_updates, ageing_updates, iam_updates, ageing_enabled, system_unavailability_updates)):
-                control = ("Soiling" if soiling_updates is not None else "Grid limit" if grid_limit_updates is not None
-                           else "Auxiliary" if auxiliary_updates is not None else "Seasonal" if seasonal_updates is not None
-                           else "Horizon" if horizon_updates is not None else "Inverter temperature" if inverter_temperature_updates is not None
-                           else "Power factor" if power_factor_updates is not None else "P50/P90" if p50_p90_updates is not None
-                           else "Ageing model" if ageing_transaction
-                           else "IAM model" if iam_updates is not None
-                           else "String mismatch" if string_mismatch_updates is not None
-                           else "System unavailability" if system_unavailability_updates is not None
-                           else "Combined power controls")
-                main = self._main_array(lines)
-                versions = [self._field_indices(lines, b, "Version") for b in arrays.values()]
-                header_end = next(i for i in range(1, len(lines)) if lines[i].strip().startswith("PVObject_"))
-                root_versions = self._field_indices(lines, (0, header_end), "Version")
-                kinds = self._field_indices(lines, system, "SystemType") if system is not None else []
-                if (len(root_versions) != 1 or FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2] != "8.1.6"
-                        or main is None or len(arrays) != 1 or len(kinds) != 1
-                        or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
-                        or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] != "8.1.6" for v in versions)
-                        or has_object(lines, "pvGridStorage")):
-                    raise ValueError(f"{control} editing requires a native 8.1.6 PV-only single-subarray Grid variant")
-                for key, accepted in (("Flags", ("$00100400", "$01900400")),
-                                      ("Flags2", ("$082A",))):
-                    if key == "Flags2" and ageing_transaction:
-                        # The shared ageing reader owns both enable states and the complete template.
-                        continue
-                    indices = self._field_indices(lines, main, key)
-                    if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in accepted:
-                        raise ValueError(f"{control} editing requires verified main-array Flags/Flags2")
-                self._require_no_geometry(lines)
-                if sum(line.strip() == "PVObject_=pvOrient" for line in lines) != 1:
-                    raise ValueError(f"{control} editing currently verifies one fixed plane")
-                if seasonal_updates is None:
-                    self._ordinary_fixed_plane(lines, self._orientation(lines, 1))
-                if soiling_updates is not None:
-                    soiling_change = replace_soiling(lines, main, soiling_updates)
-                elif grid_limit_updates is not None:
-                    grid_limit_change = replace_grid_limit(lines, system, grid_limit_updates)
-                elif auxiliary_updates is not None and auxiliary_updates.get("mode") != "profile":
-                    auxiliary_change = replace_auxiliaries(lines, system, auxiliary_updates)
-                else:
-                    if (orientation_id != 1 or [g[2] for g in self._orientation_list(lines)[1]] != [1]
-                            or has_object(lines, "pvLoad")
-                            or (seasonal_updates is not None or inverter_temperature_updates is not None or power_factor_updates is not None or p50_p90_updates is not None or power_controls_updates is not None
-                                or string_mismatch_updates is not None
-                                or ageing_transaction or iam_updates is not None or system_unavailability_updates is not None
-                                or (auxiliary_updates is not None and auxiliary_updates.get("mode") == "profile"))
-                            and any("PVObject_Horizon=" in line for line in lines)):
-                        raise ValueError(f"{control} editing requires one orientation, no loads and a supported horizon state")
-                    if (inverter_temperature_updates is None and power_factor_updates is None
-                            and power_controls_updates is None and system_unavailability_updates is None
-                            and not (auxiliary_updates is not None and auxiliary_updates.get("mode") == "profile")):
-                        flags = self._field_indices(lines, system, "Flags")
-                        if len(flags) != 1 or not re.fullmatch(r"\$0{1,8}", FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2]):
-                            raise ValueError(f"{control} editing requires plain Grid system Flags=$00")
-                    bounds = next(iter(arrays.values()))
-                    root = next(block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path)
-                    strings = root.one("NStringCh")[1]
-                    if (root.one("NoOrientation")[1] != "1" or not strings.isdigit() or int(strings) < 1
-                            or root.one("NStrOrient1")[1] != strings
-                            or any(key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0"
-                                   for key in root.fields) or grid_inventory(lines, arrays)["counts_valid"] is not True):
-                        raise ValueError(f"{control} editing requires complete circuit counts and every string in orientation 1")
-                    if ageing_transaction or iam_updates is not None or system_unavailability_updates is not None:
-                        sflags = self._field_indices(lines, bounds, "Flags")
-                        if (len(sflags) != 1
-                                or FIELD.fullmatch(lines[sflags[0]].rstrip("\r\n"))[2] != "$019E1002"
-                                or any(re.match(r"\s*P50_P90\s*=", line) for line in lines)):
-                            raise ValueError(f"{control} editing requires the verified 019E1002 subarray Flags and no P50/P90 assignment")
-                    if string_mismatch_updates is not None:
-                        sflags = self._field_indices(lines, bounds, "Flags")
-                        if (len(sflags) != 1
-                                or int(FIELD.fullmatch(lines[sflags[0]].rstrip("\r\n"))[2].lstrip("$"), 16) & ~0x00020000 != 0x019C1002
-                                or any("P50_P90=TP50_P90" in line for line in lines)):
-                            raise ValueError(f"{control} editing requires the verified 0x019C1002 subarray flag family and no P50/P90 block")
-                    if system_unavailability_updates is not None:
-                        root_flags = self._field_indices(lines, (0, header_end), "Flags")
-                        if (subarray_id != 1 or len(root_flags) != 1
-                                or not re.fullmatch(r"\$0{1,8}", FIELD.fullmatch(lines[root_flags[0]].rstrip("\r\n"))[2])):
-                            raise ValueError("System-unavailability removal requires the ordinary PV-only root and subarray 1")
-                        unavailability_change = replace_system_unavailability(lines, system, system_unavailability_updates)
-                    elif inverter_temperature_updates is not None:
-                        temperature_change = replace_inverter_temperature(lines, system, inverter_temperature_updates)
-                    elif power_factor_updates is not None:
-                        power_factor_change = replace_power_factor(lines, system, power_factor_updates)
-                    elif p50_p90_updates is not None:
-                        p50_change = replace_p50(lines, p50_p90_updates)
-                    elif power_controls_updates is not None:
-                        power_controls_change = replace_power_controls(lines, system, power_controls_updates)
-                    elif auxiliary_updates is not None:
-                        auxiliary_change = replace_auxiliaries(lines, system, auxiliary_updates)
-                    elif string_mismatch_updates is not None:
-                        string_mismatch_change = replace_string_mismatch(lines, bounds, string_mismatch_updates)
-                    elif ageing_updates is not None:
-                        ageing_change = replace_ageing_model(lines, main, ageing_updates)
-                    elif ageing_enabled is not None:
-                        ageing_change = replace_ageing_enabled(lines, main, ageing_enabled)
-                    elif iam_updates is not None:
-                        iam_change = replace_iam_model(lines, bounds, iam_updates)
-                    else:
-                        updates = seasonal_updates if seasonal_updates is not None else horizon_updates
-                        name_key = "orientation_name" if seasonal_updates is not None else "profile_name"
-                        display_name = updates.get(name_key) if isinstance(updates, dict) else None
-                        if display_name is not None:
-                            self._validate_display_name(display_name, name_key)
-                            if not display_name.isascii() and not bom_prefix:
-                                raise ValueError(f"Non-ASCII {name_key} requires an explicit UTF-8 BOM")
-                        if seasonal_updates is not None:
-                            seasonal_change = replace_seasonal(lines, self._orientation(lines, 1), seasonal_updates)
-                        else:
-                            horizon_change = replace_horizon(lines, horizon_updates)
-            # A changed UV factor invalidates this variant's own derived result cache: drop its
-            # root VarList result block and histograms and clear ONLY the root simulation-done
-            # bit, preserving every other bit and every INPUT (economic TEcoEvaluation, hourly
-            # tariff TVar, load/house profiles, geometry, component refs). Reuses the existing
-            # native format helper (no second parser); a malformed cache raises here, before any
-            # write. A no-op value leaves the cache untouched so the transaction stays a no-op.
-            cache_clear = None
-            if uv_changed:
-                from pvsyst_auto.native.headless import strip_result_cache
-                lines, cache_clear = strip_result_cache(lines)
-            edited_text = "".join(lines)
-            candidate = bom_prefix + edited_text.encode("utf-8")
-            self._text(candidate)
-            diff = "".join(itertools.islice(difflib.unified_diff(
-                text.splitlines(keepends=True), lines, fromfile=path.name,
-                tofile=path.name + " (candidate)"), 501))
-            result = {"project": project, "variant": variant.upper(),
-                "before_sha256": hashlib.sha256(data).hexdigest(),
-                "sha256": hashlib.sha256(candidate).hexdigest(), "changed": candidate != data,
-                "dry_run": dry_run, "diff": diff[:32000],
-                "diff_truncated": len(diff) > 32000 or len(diff.splitlines()) > 500}
-            if cache_clear is not None:
-                result["derived_cache"] = cache_clear
-            if soiling_change is not None:
-                result["soiling"] = soiling_change
-            if grid_limit_change is not None:
-                result["grid_limit"] = grid_limit_change
-            if auxiliary_change is not None:
-                result["auxiliaries"] = auxiliary_change
-            if seasonal_change is not None:
-                result["seasonal_orientation"] = seasonal_change
-            if horizon_change is not None:
-                result["horizon"] = horizon_change
-            if temperature_change is not None:
-                result["inverter_temperature"] = temperature_change
-            if power_factor_change is not None:
-                result["power_factor"] = power_factor_change
-            if p50_change is not None:
-                result["p50_p90"] = p50_change
-            if power_controls_change is not None:
-                result["power_controls"] = power_controls_change
-            if string_mismatch_change is not None:
-                result["string_mismatch"] = string_mismatch_change
-            if ageing_change is not None:
-                result["ageing"] = ageing_change
-            if iam_change is not None:
-                result["iam"] = iam_change
-            if unavailability_change is not None:
-                result["system_unavailability"] = unavailability_change
-            if name_change is not None:
-                result.update(name_change=name_change, bom_added=bool(bom_prefix) and not data.startswith(b"\xef\xbb\xbf"))
-            if "PMismMPP" in loss_modes:
-                result["mismatch"] = loss_modes["PMismMPP"]
-            if "ModuleQualityLoss" in loss_modes:
-                result["module_quality"] = loss_modes["ModuleQualityLoss"]
-            if mppt_mode is not None:
-                result["mppt_mode"] = mppt_mode
-            if sharing is not None:
-                result["power_sharing"] = sharing
-            if capacity is not None:
-                result["capacity"] = capacity
-            if assignment is not None:
-                result["orientation_assignment"] = assignment
-            if generator is not None:
-                new_arrays, new_system = self._sections(lines)
-                result.update(generator_before=generator["before"],
-                    generator_after=generator_state(lines, new_arrays, new_system),
-                    generator_component=generator["component"], warnings=generator["warnings"])
-            if dry_run or candidate == data:
-                return result
-
-            def generator_unchanged():
-                if generator is not None and generator["component"] is not None:
-                    component = generator["component"]
-                    if (component["library"] == "builtin" and
-                            self.components._path("GEN", component["filename"]).exists()):
-                        raise ValueError("Generator component changed: workspace now shadows builtin")
-                    target = self.components._path("GEN", component["filename"], component["library"])
-                    if hashlib.sha256(self.components._read(target)).hexdigest() != component["sha256"]:
-                        raise ValueError("Generator component changed while preparing the edit")
-
-            backup = self._replace_checked(path, data, candidate, prepare=lambda: self._backup(path, data),
-                                           verify=generator_unchanged)
-            return {**result, "backup_name": backup}
+        return variant_updates.update_parameters(
+            self, project, variant, expected_sha256, subarray_id, orientation_id,
+            subarray_updates=subarray_updates,
+            orientation_updates=orientation_updates,
+            generator_updates=generator_updates,
+            dry_run=dry_run,
+            power_sharing_enabled=power_sharing_enabled,
+            independent_mppt_enabled=independent_mppt_enabled,
+            main_array_updates=main_array_updates,
+            variant_name=variant_name,
+            add_utf8_bom=add_utf8_bom,
+            soiling_updates=soiling_updates,
+            grid_limit_updates=grid_limit_updates,
+            auxiliary_updates=auxiliary_updates,
+            seasonal_updates=seasonal_updates,
+            horizon_updates=horizon_updates,
+            inverter_temperature_updates=inverter_temperature_updates,
+            power_factor_updates=power_factor_updates,
+            p50_p90_updates=p50_p90_updates,
+            power_controls_updates=power_controls_updates,
+            string_mismatch_updates=string_mismatch_updates,
+            ageing_updates=ageing_updates,
+            iam_updates=iam_updates,
+            ageing_enabled=ageing_enabled,
+            system_unavailability_updates=system_unavailability_updates,
+        )
 
     def _backup_folder(self) -> Path:
         root = self._root()
@@ -1232,25 +421,12 @@ class VariantStore:
         return name
 
     def _replace_checked(self, path: Path, data: bytes, candidate: bytes, *, prepare=None, verify=None):
-        """Replace `path` only while it still holds the inspected bytes `data`.
-
-        The process lock does not cover the PVsyst GUI or other processes, so the file is
-        re-read before staging and again just before the atomic replace. `prepare` (a backup)
-        runs only once the first check passed and its result is returned; `verify` adds checks
-        just before the replace.
-        """
         return fileio.replace_checked(path, data, candidate, self._read,
                                       "Variant changed while preparing the edit",
                                       prepare=prepare, verify=verify)
 
     @staticmethod
     def _rollback(error: BaseException, steps, recovery: str) -> None:
-        """Attempt every undo step even after one fails, so a rollback never hides `error`.
-
-        Returns when every step succeeds and the caller re-raises `error`. Otherwise raises
-        an OSError chained from `error` naming what stayed unrecovered and how to recover;
-        an interrupt is still re-raised unchanged by the caller.
-        """
         failed = []
         for name, undo, *args in steps:
             try:
@@ -1283,7 +459,6 @@ class VariantStore:
                 "files": {path.name: hashlib.sha256(data).hexdigest() for path, data in snapshots}}
 
     def create_project(self, project: str, project_content: str, variants: dict[str, str]) -> dict:
-        """Create a complete supplied PRJ/VC set; no existing project is required."""
         if (not isinstance(project_content, str) or not isinstance(variants, dict) or not variants
                 or any(not isinstance(content, str) for content in variants.values())):
             raise ValueError("Supply PRJ text and a nonempty VC identifier-to-text map")
@@ -1302,14 +477,12 @@ class VariantStore:
             return self._create_project_files(project, snapshots)
 
     def clone_project(self, source_project: str, new_project: str) -> dict:
-        """Copy a project and its variants without rewriting embedded site/meteo snapshots."""
         with self.lock:
             self._check_project(source_project)
             source_root = self._root()
             target_prj = self._path(new_project)
             sources = [self._path(source_project)]
-            source_paths = list(source_root.iterdir())
-            for path in source_paths:
+            for path in list(source_root.iterdir()):
                 if path.name.casefold() == source_project.casefold():
                     continue
                 if self._belongs_to_project(path, source_project):
@@ -1346,15 +519,13 @@ class VariantStore:
             candidate = self._replace(data, updates, subarray_id) if updates else data
             if any(path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
                 raise FileExistsError(target.name)
-            # Staged, so a failed write leaves no partial variant blocking this name; like the
-            # former "xb" open, the publish never overwrites a variant created meanwhile.
             fileio.publish_new(target, candidate)
             return {"project": project, "variant": new_variant.upper(),
                     "source_project": source_project, "source_variant": source_variant.upper(),
                     "sha256": hashlib.sha256(candidate).hexdigest()}
 
     def update(self, project: str, variant: str, updates: dict[str, str],
-               expected_sha256: str, subarray_id: int = 1) -> dict:
+               expected_sha256: str | None = None, subarray_id: int = 1) -> dict:
         with self.lock:
             self._check_project(project)
             path = self._path(project, variant)
@@ -1366,448 +537,36 @@ class VariantStore:
             return {"project": project, "variant": variant.upper(), "backup_name": backup,
                     "sha256": hashlib.sha256(candidate).hexdigest()}
 
-    @staticmethod
-    def _subarray_branches(lines, arrays, identifier):
-        start, end = arrays[identifier]
-        root = next(block for block in objects("".join(lines[start:end + 1])) if not block.path)
-        root.one("NoOrientation")
-        if root.one("SubArrayId")[1] != str(identifier):
-            raise ValueError("Subarray ID does not match its owning object")
-        name = root.one("Comment")[1]
-        for other_id, (first, last) in arrays.items():
-            other = root if other_id == identifier else next(
-                block for block in objects("".join(lines[first:last + 1])) if not block.path)
-            if "PowerSharingInverterId" in other.fields and other.one("PowerSharingInverterId")[1] != "-1":
-                raise ValueError("Shared inverter power is not supported for subarray editing")
-
-        def walk(node):
-            yield node
-            for child in node.children:
-                yield from walk(child)
-
-        matches, owned = [], {start + root.one("SubArrayId")[0]}
-        for node in (item for tree in circuit_nodes(lines) for item in walk(tree)):
-            if node.kind != "InverterNode":
-                continue
-            members = list(walk(node))
-            ids = [member.one("SubArrayId") for member in members]
-            if str(identifier) not in ids:
-                continue
-            if any(value != str(identifier) for value in ids):
-                raise ValueError("Subarray must own complete inverter branches without shared allocation")
-            if any(member.one("SubArrayName") != name for member in members):
-                raise ValueError("Circuit branch names do not match the subarray")
-            owned.update(index for member in members for index in member.field_lines["SubArrayId"])
-            matches.append((node.line - 1, node.end_line - 1, members))
-        occurrences = {i for i, line in enumerate(lines)
-                       if (field := FIELD.fullmatch(line.rstrip("\r\n")))
-                       and field[1] == "SubArrayId" and field[2] == str(identifier)}
-        if not matches or not occurrences.issubset(owned):
-            raise ValueError("Subarray ID is referenced outside its complete inverter branches")
-        checked = grid_inventory(lines, arrays)
-        if any(row["id"] == identifier and row["explicit_mppt_inputs_match_declared"] is False
-               for row in checked["subarrays"]):
-            raise ValueError("Independent MPPT layout does not match its declared input count")
-        if len(matches) > 1 and checked["counts_valid"] is not True:
-            raise ValueError("Grouped subarray editing requires fully checked consistent grid counts")
-        return matches, root
-
-    @staticmethod
-    def _require_plane_branch_mode(root, branches):
-        flags = root.one("Flags")[1] if "Flags" in root.fields else ""
-        if re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) and int(flags[1:], 16) & 0x400:
-            if ("Version" not in root.fields or root.one("Version")[1] not in ("8.1.0", "8.1.6")
-                    or "PowerSharingInverterId" not in root.fields or root.one("PowerSharingInverterId")[1] != "-1"
-                    or any(not members[0].children or any(child.kind != "MPPTNode" for child in members[0].children)
-                           for _, _, members in branches)):
-                raise ValueError("Plane editing requires verified exclusive explicit MPPT allocation")
-        else:
-            require_ordinary_mppt(root)
-            if any(member.kind == "MPPTNode" for _, _, members in branches for member in members):
-                raise ValueError("Plane editing requires ordinary branches without explicit MPPT")
-        if any(set(member.fields) & {"NoOrientation", "NoOrient", "OrientationId"}
-               for _, _, members in branches for member in members):
-            raise ValueError("Circuit-level orientation references outside owned records require separate allocation handling")
+    _subarray_branches = staticmethod(variant_topology.subarray_branches)
+    _require_plane_branch_mode = staticmethod(variant_topology.require_plane_branch_mode)
 
     def validate_structure(self, project: str, variant: str) -> dict:
-        """Check known cross-object references; simulation remains the physical validator."""
-        with self.lock:
-            self._check_project(project)
-            data = self._read(self._path(project, variant))
-            _, lines = self._text(data)
-            arrays, system = self._sections(lines)
-            issues = []
-            warnings = []
-            orientation_ids = set()
-            for index, line in enumerate(lines):
-                if line.strip() not in ("PVObject_=pvOrient", "PVObject_=pvDomeOrient"):
-                    continue
-                closing = ("End of TOrientGroup" if line.strip() == "PVObject_=pvOrient"
-                           else "End of TDomeOrientGroup")
-                end = next((i for i in range(index + 1, len(lines)) if lines[i].strip() == closing), None)
-                if end is None:
-                    issues.append("Unclosed orientation")
-                    continue
-                identifiers = self._field_indices(lines, (index, end), "NoOrient")
-                if len(identifiers) != 1:
-                    issues.append("Orientation needs one NoOrient")
-                    continue
-                raw = FIELD.fullmatch(lines[identifiers[0]].rstrip("\r\n"))[2]
-                if not raw.isdigit() or int(raw) in orientation_ids:
-                    issues.append(f"Duplicate or invalid orientation ID: {raw}")
-                else:
-                    orientation_ids.add(int(raw))
-            list_headers = [line.strip() for line in lines if line.strip().startswith("Orientations, list of=")]
-            list_unchecked = []
-            if list_headers:
-                if (any(not line.endswith(" TOrientGroup") for line in list_headers)
-                        or any(line.strip() == "PVObject_=pvDomeOrient" for line in lines)):
-                    list_unchecked.append("orientation list counts for dome/unknown list types")
-                else:
-                    try:
-                        self._orientation_list(lines)
-                    except ValueError as exc:
-                        issues.append(str(exc))
-            for identifier, bounds in arrays.items():
-                indices = self._field_indices(lines, bounds, "NoOrientation")
-                if len(indices) != 1:
-                    issues.append(f"Subarray {identifier} needs one NoOrientation")
-                    continue
-                raw = FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]
-                if not raw.isdigit() or int(raw) not in orientation_ids:
-                    issues.append(f"Subarray {identifier} references unknown orientation {raw}")
-            system_type = None
-            unchecked = list_unchecked
-            circuit = None
-            if system is None:
-                issues.append("Missing pvSystem section")
-                unchecked.append("system circuit references")
-            else:
-                kinds = self._field_indices(lines, system, "SystemType")
-                if len(kinds) != 1:
-                    issues.append("System needs exactly one SystemType")
-                    unchecked.append("system circuit references")
-                else:
-                    system_type = FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2]
-                    if not system_type:
-                        issues.append("SystemType must not be empty")
-                    if system_type != "Grid":
-                        unchecked.append("system circuit references")
-                        warnings.append(f"Circuit checks are not implemented for SystemType={system_type!r}")
-                if system_type == "Grid":
-                    circuit = grid_inventory(lines, arrays)
-                    issues.extend(circuit["issues"])
-                    unchecked.extend(circuit["unchecked_checks"])
-            if any("PVObject_ShdTable" in line or "ListeObjets, list of=" in line for line in lines):
-                warnings.append("Shading geometry and derived factor tables require simulation verification")
-            return {"project": project, "variant": variant.upper(),
-                    "sha256": hashlib.sha256(data).hexdigest(),
-                    "valid": False if issues else None if unchecked else True,
-                    "checks_complete": not unchecked, "unchecked_checks": unchecked,
-                    "system_type": system_type,
-                    "grid_circuit": circuit,
-                    "issues": issues, "warnings": warnings,
-                    "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids)}
+        return variant_topology.validate_structure(self, project, variant)
 
     def _clone_subarray_data(self, data, source_subarray_id, *, clone_orientation=False,
                              share_inverter=False, reserved_ids=()):
-        """Build one cloned subarray in memory; never read or write workspace files."""
-        if not isinstance(source_subarray_id, int) or isinstance(source_subarray_id, bool):
-            raise ValueError("source_subarray_id must be an integer")
-        if not isinstance(clone_orientation, bool) or not isinstance(share_inverter, bool):
-            raise ValueError("clone_orientation and share_inverter must be booleans")
-        if share_inverter and clone_orientation:
-            raise ValueError("Shared-parent cloning requires the existing common orientation")
-        _, lines = self._text(data)
-        arrays, system = self._sections(lines)
-        if source_subarray_id not in arrays or system is None:
-            raise ValueError("Source subarray and grid system are required")
-        system_type = self._field_indices(lines, system, "SystemType")
-        if len(system_type) != 1 or FIELD.fullmatch(lines[system_type[0]].rstrip("\r\n"))[2] != "Grid":
-            raise ValueError("Only a grid system is supported")
-        self._require_no_geometry(lines, require_shading_section=True)
-        bounds = arrays[source_subarray_id]
-        orientation_fields = self._field_indices(lines, bounds, "NoOrientation")
-        if len(orientation_fields) != 1:
-            raise ValueError("Source subarray requires one orientation")
-        orientation_id = FIELD.fullmatch(lines[orientation_fields[0]].rstrip("\r\n"))[2]
-        if not orientation_id.isdigit():
-            raise ValueError("Source orientation is invalid")
-        orientation = self._orientation(lines, int(orientation_id))
-        field_type = self._field_indices(lines, orientation, "FieldType")
-        if len(field_type) != 1 or FIELD.fullmatch(lines[field_type[0]].rstrip("\r\n"))[2] != "FixedPlane":
-            raise ValueError("Only a fixed-plane orientation is supported")
-        matches, root = self._subarray_branches(lines, arrays, source_subarray_id)
-        if share_inverter:
-            from pvsyst_auto.project.circuit import positive_integer
-            flags = root.one("Flags")[1]
-            if (root.one("Version")[1] not in ("8.1.0", "8.1.6") or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags)
-                    or not int(flags[1:], 16) & 0x400 or root.one("NInverter")[1] != "1"
-                    or root.one("NInvMPPT")[1] != "1" or root.one("PowerSharingInverterId")[1] != "-1"
-                    or grid_inventory(lines, arrays)["counts_valid"] is not True or len(matches) != 1):
-                raise ValueError("Shared-parent cloning requires one verified independent unshared input/inverter")
-            inverter = matches[0][2][0]
-            if (positive_integer(inverter.one("NElements", "1"), "inverter multiplicity") != 1
-                    or len(inverter.children) != 1 or inverter.children[0].kind != "MPPTNode"
-                    or positive_integer(inverter.children[0].one("NElements", "1"), "MPPT multiplicity") != 1):
-                raise ValueError("Shared-parent cloning requires one direct explicit MPPT input")
-            if root.one("NStrOrient1")[1] != root.one("NStringCh")[1] or any(
-                    key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0" for key in root.fields):
-                raise ValueError("Shared-parent cloning requires all strings in one orientation")
-        current_ids = set(arrays) | set(reserved_ids)
-        new_id = max(current_ids) + 1
-        if new_id > 2147483647:
-            raise ValueError("No available subarray ID")
-        new_name = f"Sub-array #{new_id}"
-        new_array = lines[bounds[0]:bounds[1] + 1].copy()
-        for key, value in (("SubArrayId", str(new_id)), ("Comment", new_name)):
-            index = root.one(key)[0]
-            new_array[index] = replace_value(new_array[index], value)
-        new_orientation_id = int(orientation_id)
-        insertions = [(bounds[1] + 1, new_array)]
-        if clone_orientation:
-            self._require_plane_branch_mode(root, matches)
-            if grid_inventory(lines, arrays)["counts_valid"] is not True:
-                raise ValueError("Independent orientation cloning requires complete consistent grid counts")
-            if (root.one("NStrOrient1")[1] != root.one("NStringCh")[1] or any(
-                    key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0"
-                    for key in root.fields)):
-                raise ValueError("Independent orientation cloning requires all strings in one orientation")
-            self._ordinary_fixed_plane(lines, orientation)
-            header, groups = self._orientation_list(lines)
-            if [identifier for _, _, identifier in groups] != list(range(1, len(groups) + 1)):
-                raise ValueError("Independent orientation cloning requires sequential ordered IDs")
-            new_orientation_id = len(groups) + 1
-            if new_orientation_id > 2147483647:
-                raise ValueError("No available orientation ID")
-            new_plane = lines[orientation[0]:orientation[1] + 1].copy()
-            index = self._field_indices(lines, orientation, "NoOrient")[0] - orientation[0]
-            new_plane[index] = replace_value(new_plane[index], str(new_orientation_id))
-            index = root.one("NoOrientation")[0]
-            new_array[index] = replace_value(new_array[index], str(new_orientation_id))
-            lines[header] = re.sub(r"(?<==)[0-9]+", str(len(groups) + 1), lines[header], count=1)
-            insertions.append((groups[-1][1] + 1, new_plane))
-        for start, end, members in matches:
-            if share_inverter:
-                inverter = members[0]
-                port = inverter.children[0]
-                start, end, members = port.line - 1, port.end_line - 1, members[1:]
-                lines[inverter.field_lines["SubArrayId"][0]] = replace_value(lines[inverter.field_lines["SubArrayId"][0]], "0")
-                index = inverter.field_lines["SubArrayName"][0]
-                lines[index] = replace_value(lines[index], root.one("Comment")[1] + "; " + new_name)
-            branch = lines[start:end + 1].copy()
-            for member in members:
-                for key, value in (("SubArrayId", str(new_id)), ("SubArrayName", new_name)):
-                    index = member.field_lines[key][0] - start
-                    branch[index] = replace_value(branch[index], value)
-            insertions.append((end + 1, branch))
-        for offset, block in sorted(insertions, key=lambda item: item[0], reverse=True):
-            lines[offset:offset] = block
-        candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
-        _, checked = self._text(candidate)
-        checked_arrays, _ = self._sections(checked)
-        if new_id not in checked_arrays or len(checked_arrays) != len(arrays) + 1:
-            raise ValueError("Subarray structure validation failed")
-        if share_inverter:
-            inventory = grid_inventory(checked, checked_arrays)
-            groups = [group for group in inventory["inverter_groups"] if group.get("subarray_ids") == [source_subarray_id, new_id]]
-            if inventory["counts_valid"] is not True or len(groups) != 1:
-                raise ValueError("Shared-parent clone failed complete allocation validation")
-        else:
-            new_matches, _ = self._subarray_branches(checked, checked_arrays, new_id)
-            if len(new_matches) != len(matches):
-                raise ValueError("Subarray inverter groups were not completely copied")
-        if clone_orientation:
-            self._orientation_list(checked)
-            self._orientation(checked, new_orientation_id)
-        return candidate, {"subarray_id": new_id, "orientation_id": new_orientation_id,
-                           "orientation_cloned": clone_orientation, "inverter_group_count": len(matches),
-                           "shared_parent_created": share_inverter}
+        return variant_topology.clone_subarray_data(
+            self, data, source_subarray_id,
+            clone_orientation=clone_orientation,
+            share_inverter=share_inverter,
+            reserved_ids=reserved_ids,
+        )
 
     def clone_subarray(self, project: str, variant: str, source_subarray_id: int,
-                       expected_sha256: str, clone_orientation: bool = False, share_inverter: bool = False) -> dict:
-        """Duplicate a grid subarray with all its exclusively owned inverter groups."""
-        if not isinstance(source_subarray_id, int) or isinstance(source_subarray_id, bool):
-            raise ValueError("source_subarray_id must be an integer")
-        if not isinstance(clone_orientation, bool) or not isinstance(share_inverter, bool):
-            raise ValueError("clone_orientation and share_inverter must be booleans")
-        if share_inverter and clone_orientation:
-            raise ValueError("Shared-parent cloning requires the existing common orientation")
-        with self.lock:
-            self._check_project(project)
-            path = self._path(project, variant)
-            data = self._read(path)
-            self._check_hash(data, expected_sha256)
-            reserved_ids = set()
-            for item in self._root().iterdir():
-                if (item.stem.casefold() == project[:-4].casefold()
-                        and re.fullmatch(r"\.VC[A-Za-z0-9]+", item.suffix, re.I)):
-                    other_path = self._path(project, item.suffix[1:])
-                    _, other_lines = self._text(self._read(other_path))
-                    other_arrays, _ = self._sections(other_lines)
-                    reserved_ids.update(other_arrays)
-            candidate, details = self._clone_subarray_data(
-                data, source_subarray_id, clone_orientation=clone_orientation,
-                share_inverter=share_inverter, reserved_ids=reserved_ids)
-            backup = self._replace_checked(path, data, candidate, prepare=lambda: self._backup(path, data))
-            return {"project": project, "variant": variant.upper(), **details,
-                    "backup_name": backup, "sha256": hashlib.sha256(candidate).hexdigest()}
+                       expected_sha256: str | None = None, clone_orientation: bool = False,
+                       share_inverter: bool = False) -> dict:
+        return variant_topology.clone_subarray(
+            self, project, variant, source_subarray_id, expected_sha256,
+            clone_orientation=clone_orientation, share_inverter=share_inverter,
+        )
 
     def remove_subarray(self, project: str, variant: str, subarray_id: int,
-                        expected_sha256: str, remove_orientation: bool = False, shared_member: bool = False) -> dict:
-        """Remove a subarray and its owned groups, retaining an orientation still in use."""
-        if not isinstance(subarray_id, int) or isinstance(subarray_id, bool):
-            raise ValueError("subarray_id must be an integer")
-        if not isinstance(remove_orientation, bool) or not isinstance(shared_member, bool):
-            raise ValueError("remove_orientation and shared_member must be booleans")
-        if shared_member and remove_orientation:
-            raise ValueError("Shared-member deletion preserves the common orientation")
-        with self.lock:
-            self._check_project(project)
-            path = self._path(project, variant)
-            data = self._read(path)
-            self._check_hash(data, expected_sha256)
-            _, lines = self._text(data)
-            arrays, system = self._sections(lines)
-            if subarray_id not in arrays or len(arrays) < 2 or system is None:
-                raise ValueError("A target and another remaining subarray are required")
-            kinds = self._field_indices(lines, system, "SystemType")
-            if len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid":
-                raise ValueError("Only grid subarrays are supported")
-            self._require_no_geometry(lines, require_shading_section=True)
-            bounds = arrays[subarray_id]
-            no_orient = self._field_indices(lines, bounds, "NoOrientation")
-            if len(no_orient) != 1:
-                raise ValueError("Subarray needs one orientation")
-            orientation = FIELD.fullmatch(lines[no_orient[0]].rstrip("\r\n"))[2]
-            if not orientation.isdigit() or not 1 <= int(orientation) <= 2147483647:
-                raise ValueError("Orientation ID must be a positive 32-bit integer")
-            shared = any(other != subarray_id and any(
-                    (raw := FIELD.fullmatch(lines[i].rstrip("\r\n"))[2]).isdigit() and int(raw) == int(orientation)
-                    for i in self._field_indices(lines, other_bounds, "NoOrientation"))
-                    for other, other_bounds in arrays.items())
-            if shared and remove_orientation:
-                raise ValueError("Orientation is still referenced by another subarray")
-            if not shared and not remove_orientation:
-                raise ValueError("Orientation must remain in use by another subarray")
-            remaining_member = None
-            if shared_member:
-                checked = grid_inventory(lines, arrays)
-                groups = [group for group in checked["inverter_groups"] if subarray_id in group.get("subarray_ids", [])]
-                if (checked["counts_valid"] is not True or len(groups) != 1
-                        or len(groups[0]["subarray_ids"]) != 2 or groups[0]["power_sharing_id"] != -1
-                        or groups[0]["inverters"] != 1):
-                    raise ValueError("Shared-member deletion requires one complete disabled two-member parent")
-                member_ids = groups[0]["subarray_ids"]
-                roots = {}
-                for identifier, (first, last) in arrays.items():
-                    peer = next(block for block in objects("".join(lines[first:last + 1])) if not block.path)
-                    if "PowerSharingInverterId" in peer.fields and peer.one("PowerSharingInverterId")[1] != "-1":
-                        raise ValueError("Disable all power sharing before shared-member deletion")
-                    if identifier in member_ids:
-                        row = next(row for row in checked["subarrays"] if row["id"] == identifier)
-                        if (peer.one("NInverter")[1] != "1" or peer.one("NInvMPPT")[1] != "1"
-                                or peer.one("NoOrientation")[1] != orientation or row["circuit"]["inverters"] != 1
-                                or len(row["shared_inverter_lines"]) != 1
-                                or peer.one("NStrOrient1")[1] != peer.one("NStringCh")[1]
-                                or any(key.startswith("NStrOrient") and key != "NStrOrient1" and peer.one(key)[1] != "0" for key in peer.fields)):
-                            raise ValueError("Shared-member deletion requires single-input members in a common plane")
-                        roots[identifier] = peer
-                plane = self._orientation(lines, int(orientation))
-                types = self._field_indices(lines, plane, "FieldType")
-                if len(types) != 1 or FIELD.fullmatch(lines[types[0]].rstrip("\r\n"))[2] != "FixedPlane":
-                    raise ValueError("Shared-member deletion requires a fixed plane")
-                def walk(node):
-                    yield node
-                    for child in node.children:
-                        yield from walk(child)
-                parent = next(node for tree in circuit_nodes(lines) for node in walk(tree) if node.line == groups[0]["line"])
-                if parent.one("SubArrayId") != "0":
-                    raise ValueError("Shared-member deletion requires explicit parent owner 0")
-                port = next((node for node in parent.children if node.one("SubArrayId") == str(subarray_id)), None)
-                if port is None:
-                    raise ValueError("Shared-member deletion requires a direct port with the exact SubArrayId")
-                owned = {bounds[0] + roots[subarray_id].one("SubArrayId")[0]}
-                owned.update(index for node in walk(port) for index in node.field_lines["SubArrayId"])
-                references = {i for i, line in enumerate(lines) if (field := FIELD.fullmatch(line.rstrip("\r\n")))
-                              and field[1] == "SubArrayId" and field[2] == str(subarray_id)}
-                if not references.issubset(owned):
-                    raise ValueError("Shared member has references outside its owned subtree")
-                remaining_member = next(identifier for identifier in member_ids if identifier != subarray_id)
-                for key, value in (("SubArrayId", str(remaining_member)), ("SubArrayName", roots[remaining_member].one("Comment")[1])):
-                    index = parent.field_lines[key][0]
-                    lines[index] = replace_value(lines[index], value)
-                root = roots[subarray_id]
-                matches = [(port.line - 1, port.end_line - 1, list(walk(port)))]
-            else:
-                matches, root = self._subarray_branches(lines, arrays, subarray_id)
-            deletions = [bounds] + [(start, end) for start, end, _ in matches]
-            orientation_id_map = {}
-            if remove_orientation:
-                counts = grid_inventory(lines, arrays)
-                if counts["counts_valid"] is not True:
-                    raise ValueError("Orientation removal requires complete consistent grid counts")
-                header, groups = self._orientation_list(lines)
-                if len(groups) < 2:
-                    raise ValueError("Another orientation must remain")
-                if [identifier for _, _, identifier in groups] != list(range(1, len(groups) + 1)):
-                    raise ValueError("Orientation removal requires sequential ordered IDs")
-                plane = self._orientation(lines, int(orientation))
-                fields = self._field_indices(lines, plane, "FieldType")
-                if len(fields) != 1 or FIELD.fullmatch(lines[fields[0]].rstrip("\r\n"))[2] != "FixedPlane":
-                    raise ValueError("Only a fixed-plane orientation can be removed")
-                references = [i for i, line in enumerate(lines) if (field := FIELD.fullmatch(line.rstrip("\r\n")))
-                              and field[1] == "NoOrientation" and field[2].isdigit() and int(field[2]) == int(orientation)]
-                if references != [bounds[0] + root.one("NoOrientation")[0]]:
-                    raise ValueError("Orientation has references outside its owning subarray")
-                owned_references = set()
-                for first, last, identifier in groups:
-                    self._ordinary_fixed_plane(lines, (first, last))
-                    index = self._field_indices(lines, (first, last), "NoOrient")[0]
-                    owned_references.add(index)
-                    if identifier > int(orientation):
-                        orientation_id_map[str(identifier)] = identifier - 1
-                for identifier, (first, last) in arrays.items():
-                    array_root = root if identifier == subarray_id else next(
-                        block for block in objects("".join(lines[first:last + 1])) if not block.path)
-                    owned_branches, _ = self._subarray_branches(lines, arrays, identifier)
-                    self._require_plane_branch_mode(array_root, owned_branches)
-                    if (array_root.one("NStrOrient1")[1] != array_root.one("NStringCh")[1] or any(
-                            key.startswith("NStrOrient") and key != "NStrOrient1" and array_root.one(key)[1] != "0"
-                            for key in array_root.fields)):
-                        raise ValueError("Orientation removal requires all strings in one orientation")
-                    owned_references.add(first + array_root.one("NoOrientation")[0])
-                for index, line in enumerate(lines):
-                    field = FIELD.fullmatch(line.rstrip("\r\n"))
-                    if field and (field[1].startswith("NoOrient") or field[1] == "OrientationId"):
-                        if index not in owned_references:
-                            raise ValueError("Orientation removal has references outside owned records")
-                if orientation_id_map:
-                    for index in owned_references:
-                        raw = FIELD.fullmatch(lines[index].rstrip("\r\n"))[2]
-                        if str(int(raw)) in orientation_id_map:
-                            lines[index] = replace_value(lines[index], str(orientation_id_map[str(int(raw))]))
-                lines[header] = re.sub(r"(?<==)[0-9]+", str(len(groups) - 1), lines[header], count=1)
-                deletions.append(plane)
-            for first, last in sorted(deletions, reverse=True):
-                del lines[first:last + 1]
-            candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
-            _, checked = self._text(candidate)
-            checked_arrays, _ = self._sections(checked)
-            if subarray_id in checked_arrays or len(checked_arrays) != len(arrays) - 1:
-                raise ValueError("Subarray removal failed validation")
-            if shared_member:
-                self._subarray_branches(checked, checked_arrays, remaining_member)
-            if (len(matches) > 1 or remove_orientation or shared_member) and grid_inventory(checked, checked_arrays)["counts_valid"] is not True:
-                raise ValueError("Remaining grouped grid counts failed validation")
-            if remove_orientation:
-                self._orientation_list(checked)
-            backup = self._replace_checked(path, data, candidate, prepare=lambda: self._backup(path, data))
-            return {"project": project, "variant": variant.upper(), "removed_subarray_id": subarray_id,
-                    "removed_orientation_id": int(orientation) if remove_orientation else None,
-                    "orientation_id_map": orientation_id_map, "remaining_member_id": remaining_member,
-                    "inverter_group_count": len(matches),
-                    "backup_name": backup, "sha256": hashlib.sha256(candidate).hexdigest()}
+                        expected_sha256: str | None = None, remove_orientation: bool = False,
+                        shared_member: bool = False) -> dict:
+        return variant_topology.remove_subarray(
+            self, project, variant, subarray_id, expected_sha256,
+            remove_orientation=remove_orientation, shared_member=shared_member,
+        )
 
     def _archive_folder(self) -> Path:
         root = self._root()
@@ -1973,7 +732,6 @@ class VariantStore:
                 os.replace(temporary, path)
                 written.append(path)
         except BaseException as exc:
-            # Undo only files still holding this transaction's bytes; keep any later edit.
             self._rollback(exc, [(path.name, self._replace_checked, path, candidates[path], originals[path])
                                  for path in reversed(written)],
                            f"restore the originals from backup transaction {transaction_id}")
@@ -1986,18 +744,21 @@ class VariantStore:
                 "files": {path.name: hashlib.sha256(data).hexdigest()
                           for path, data in candidates.items()}}
 
-    def update_project_parameters(self, project: str, expected_files: dict[str, str],
-                                  project_name: str, dry_run: bool = False,
+    def update_project_parameters(self, project: str, expected_files: dict[str, str] | None = None,
+                                  project_name: str | None = None, dry_run: bool = False,
                                   add_utf8_bom: bool = False) -> dict:
+        if project_name is None:
+            raise ValueError("project_name is required")
         self._validate_display_name(project_name, "project_name")
         if not isinstance(dry_run, bool) or not isinstance(add_utf8_bom, bool):
             raise ValueError("dry_run and add_utf8_bom must be booleans")
         with self.lock:
             inventory = self.inspect_project(project)
-            if inventory["files"] != expected_files:
+            if expected_files is not None and inventory["files"] != expected_files:
                 raise ValueError("Project files changed since inspection")
+            files_to_read = inventory["files"] if expected_files is None else expected_files
             originals = {}
-            for name, digest in expected_files.items():
+            for name, digest in files_to_read.items():
                 path = self._path(project) if name == project else self._path(project, name[len(project[:-4]) + 1:])
                 data = self._read(path)
                 self._check_hash(data, digest)
@@ -2027,11 +788,13 @@ class VariantStore:
             return {**result, **self._commit_project_files(project, originals, candidates)}
 
     def update_project_sources(self, project: str, site_name: str, met_name: str,
-                               expected_files: dict[str, str]) -> dict:
-        """Rebind PRJ and every VC to one workspace SIT/MET pair."""
+                               expected_files: dict[str, str] | None = None) -> dict:
         with self.lock:
             inventory = self.inspect_project(project)
-            if inventory["files"] != expected_files or len(expected_files) < 2:
+            if expected_files is not None and inventory["files"] != expected_files:
+                raise ValueError("Project files changed since inspection or has no variants")
+            files_to_read = inventory["files"] if expected_files is None else expected_files
+            if len(files_to_read) < 2:
                 raise ValueError("Project files changed since inspection or has no variants")
             site_ref = self._workspace_asset("Sites", site_name)
             met_ref = self._workspace_asset("Meteo", met_name)
@@ -2061,7 +824,7 @@ class VariantStore:
             site_identity = identifiers[0]
             originals = {}
             candidates = {}
-            for name, digest in expected_files.items():
+            for name, digest in files_to_read.items():
                 path = self._path(project) if name == project else self._path(project, name[len(project[:-4]) + 1:])
                 data = self._read(path)
                 self._check_hash(data, digest)
@@ -2088,18 +851,18 @@ class VariantStore:
                 originals[path] = data
                 candidates[path] = candidate
             transaction = self._commit_project_files(project, originals, candidates)
-            return {"project": project, "site": site_name, "meteo": met_name,
-                    **transaction}
+            return {"project": project, "site": site_name, "meteo": met_name, **transaction}
 
     def restore_project_sources(self, project: str, backups: dict[str, str],
-                                expected_files: dict[str, str], confirm: bool = False) -> dict:
-        """Restore every PRJ/VC snapshot from a source/name project transaction."""
+                                expected_files: dict[str, str] | None = None,
+                                confirm: bool = False) -> dict:
         if not confirm:
             raise ValueError("Restore requires confirm=true")
         with self.lock:
             inventory = self.inspect_project(project)["files"]
-            if inventory != expected_files or set(backups) != set(expected_files):
+            if (expected_files is not None and inventory != expected_files) or set(backups) != set(inventory):
                 raise ValueError("Project files changed since inspection or backup set is incomplete")
+            files_to_read = inventory if expected_files is None else expected_files
             transaction_ids = set()
             for name, backup_name in backups.items():
                 match = (re.fullmatch(re.escape(name) + r"\.([0-9a-f]{32})\.bak", backup_name)
@@ -2127,14 +890,11 @@ class VariantStore:
                 raise ValueError("Backups must match one complete source transaction manifest")
             originals = {}
             candidates = {}
-            for name, digest in expected_files.items():
+            for name, digest in files_to_read.items():
                 path = self._path(project) if name == project else self._path(project, name[len(project[:-4]) + 1:])
                 data = self._read(path)
                 self._check_hash(data, digest)
                 backup_name = backups[name]
-                if (not isinstance(backup_name, str) or not re.fullmatch(
-                        re.escape(name) + r"\.[0-9a-f]{32}\.bak", backup_name)):
-                    raise ValueError("Backup name must match each project file")
                 snapshot = self._backup_folder() / backup_name
                 if snapshot.is_symlink() or snapshot.resolve().parent != self._backup_folder():
                     raise ValueError("Linked project backup is not supported")
@@ -2153,13 +913,13 @@ class VariantStore:
                 candidates[path] = previous
             return {"project": project, **self._commit_project_files(project, originals, candidates)}
 
-    def archive_project(self, project: str, expected_files: dict[str, str],
+    def archive_project(self, project: str, expected_files: dict[str, str] | None = None,
                         confirm: bool = False) -> dict:
         if not confirm:
             raise ValueError("Archive requires confirm=true")
         with self.lock:
             actual = self.inspect_project(project)["files"]
-            if actual != expected_files or len(actual) < 2:
+            if (expected_files is not None and actual != expected_files) or len(actual) < 2:
                 raise ValueError("Project files changed since inspection or has no variants")
             if len(actual) > MAX_ARCHIVE_MEMBERS:
                 raise ValueError(f"Project archive exceeds {MAX_ARCHIVE_MEMBERS} members")
@@ -2180,11 +940,11 @@ class VariantStore:
                     (folder / "manifest.json").unlink(missing_ok=True)
                     folder.rmdir()
                 except OSError:
-                    pass  # An emptied leftover folder must not hide the original error.
+                    pass
                 raise
             return {"project": project, "archive_name": folder.name, "files": list(actual)}
 
-    def archive_variant(self, project: str, variant: str, expected_sha256: str,
+    def archive_variant(self, project: str, variant: str, expected_sha256: str | None = None,
                         confirm: bool = False) -> dict:
         if not confirm:
             raise ValueError("Archive requires confirm=true")
@@ -2193,6 +953,7 @@ class VariantStore:
             path = self._path(project, variant)
             data = self._read(path)
             self._check_hash(data, expected_sha256)
+            digest = hashlib.sha256(data).hexdigest() if expected_sha256 is None else expected_sha256.lower()
             _, lines = self._text(data)
             self._sections(lines)
             members = self.inspect_project(project)["files"]
@@ -2205,7 +966,7 @@ class VariantStore:
             target.mkdir()
             try:
                 with (target / "manifest.json").open("x", encoding="utf-8") as stream:
-                    json.dump({"project": project, "files": {path.name: expected_sha256.lower()}}, stream)
+                    json.dump({"project": project, "files": {path.name: digest}}, stream)
                 os.replace(path, target / path.name)
             except BaseException as exc:
                 if (target / path.name).exists():
@@ -2215,7 +976,7 @@ class VariantStore:
                     (target / "manifest.json").unlink(missing_ok=True)
                     target.rmdir()
                 except OSError:
-                    pass  # An emptied leftover folder must not hide the original error.
+                    pass
                 raise
             return {"project": project, "variant": variant.upper(), "archive_name": archive_name}
 
@@ -2270,8 +1031,6 @@ class VariantStore:
             moved = []
             try:
                 for source, target in sources:
-                    # Validation can take a while; on Windows os.rename refuses (unlike
-                    # os.replace) a destination created since the existence check above.
                     os.rename(source, target)
                     moved.append((source, target))
             except BaseException as exc:
@@ -2283,7 +1042,7 @@ class VariantStore:
             return {"project": project, "restored": list(files)}
 
     def restore(self, project: str, variant: str, backup_name: str,
-                expected_sha256: str, confirm: bool = False) -> dict:
+                expected_sha256: str | None = None, confirm: bool = False) -> dict:
         if not confirm:
             raise ValueError("Restore requires confirm=true")
         with self.lock:

@@ -21,7 +21,7 @@ def simulate_template(cli, store, *, template_project="", variant="", new_projec
                       tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
                       report_pages=None, tracking=None, tracking_variant="",
                       nominal_dc_power_kw=None, tracking_power_source=""):
-    # ponytail: one workspace lock; separate workspaces for parallel native runs.
+    # Hold one workspace lock; use separate workspaces for parallel native runs.
     with store.lock:
         return _simulate_template(cli, store, template_project, variant, new_project,
                                   pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses,
@@ -442,9 +442,6 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             with paths["pdf"].open("rb") as stream:
                 if stream.read(5) != b"%PDF-":
                     raise ValueError("Native report is not a PDF")
-            if store.inspect_project(new_project)["files"] != result["working_files"]:
-                raise ValueError("Working files changed during native simulation")
-            check_inputs()
             if fingerprint(paths["csv"]) != output_snapshot:
                 raise ValueError("Native output changed across result validation stages")
             flags = result["metrics"]["diagnostic_flags"]

@@ -181,7 +181,7 @@ def build_sourced_component(store, *, component_type, template_name, new_name,
                 return result
             if store._read(original_path) != original:
                 raise ValueError("Template changed while preparing the component")
-            # ponytail: one existing store lock and one small source record, no job framework.
+            # Acquire the single store lock for this source record.
             manifest.parent.mkdir(parents=True, exist_ok=True)
             record = {key: value for key, value in result.items()
                       if key not in ("diff", "stage", "component_created", "dry_run")}

@@ -302,7 +302,7 @@ def check_site(path, report, country_code):
 
 def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
                     country_code="", time_basis="", dry_run=True, allow_window_creation=None):
-    # ponytail: reuse the workspace CLI lock, not a second job/concurrency framework.
+    # Reuse the workspace CLI lock rather than introducing a separate lock layer.
     with cli._lock:
         result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
                   "issues": [], "warnings": [], "artifacts": {}, "created_files": {},
@@ -356,12 +356,8 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
             # The shared atomic writer serializes first and replaces later states only with a complete
             # temporary copy, so a failed write never leaves a truncated manifest behind.
             write_json(manifest, result, first=first)
-        def unchanged():
-            if fingerprint(source) != report["sha256"]:
-                raise ValueError("Source CSV changed after preflight")
         save(first=True)
         try:
-            unchanged()
             result.update(status="running", stage="normalized_inputs")
             save()
             with paths["normalized_csv"].open("x", encoding="utf-8", newline="") as stream:
@@ -369,7 +365,6 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
                 writer.writerow(["Date", "GHI", "DHI", "Tamb"])
                 writer.writerows([[stamp.strftime("%Y-%m-%d %H:%M"), ghi, dhi, temp]
                                   for stamp, ghi, dhi, temp in normalized_rows(source, report)])
-            unchanged()
             with paths["mef"].open("xb") as stream:
                 stream.write(b"\xef\xbb\xbf" + MEF_TEMPLATE.encode("ascii"))
             build_monthly_weather_csv(paths["monthly_csv"],
@@ -392,7 +387,6 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
                                                               timeshift=0, log_level=3,
                                                               allow_window_creation=allow_window_creation)
             result["warnings"].extend(result["conversion"]["warnings"])
-            unchanged()
             result["stage"] = "met_declarations"
             save()
             # A wrong fixed plane time reference must never be published as a prepared basis.
@@ -402,7 +396,6 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
             if not result["met_declarations"]["valid"]:
                 raise ValueError("Generated MET time basis: "
                                  + "; ".join(result["met_declarations"]["issues"]))
-            unchanged()
             review = (result["conversion"]["warnings"] or result["site_creation"]["warnings"]
                       or result["met_declarations"]["unchecked_checks"])
             result.update(status="needs_review" if review else "prepared", stage="prepared")

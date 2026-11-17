@@ -1,4 +1,4 @@
-"""Fast in-memory MCP contract boundaries for tools, results, briefs, and schemas."""
+"""In-memory MCP integration tests for tool schemas, results, briefs, and window policy."""
 from __future__ import annotations
 
 import copy
@@ -10,7 +10,7 @@ import unittest
 from pvsyst_auto.api.schemas import HouseTaskRequest, SourcedHouseTaskRequest
 from pvsyst_auto.workflows.house import run_house_task
 from pvsyst_auto.workflows.sourced_house import run_sourced_house_task
-from tests.contracts._session import decode_reply, mcp_session
+from tests.integration._session import decode_reply, mcp_session
 
 
 SCENE = """  PVObject_Ombrage=pvShading
@@ -34,7 +34,7 @@ BATCH_SUMMARY = ("Ident;Create hourly;Error;E_Grid;PR\n"
 
 
 def _variant(scene):
-    return ("PVObject_=pvVCalcul\n  Version=8.1.6\n  Comment=Read contract\n"
+    return ("PVObject_=pvVCalcul\n  Version=8.1.6\n  Comment=Read test\n"
             "  PVObject_=pvSubArray\n    SubArrayId=1\n"
             "  End of PVObject pvSubArray\n" + scene + "End of PVObject pvVCalcul\n")
 
@@ -44,7 +44,7 @@ class _LockedStore:
         self.lock = threading.RLock()
 
 
-class McpCoreBoundaries(unittest.IsolatedAsyncioTestCase):
+class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_scene_list_excludes_group_metadata_and_preserves_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1,9 +1,9 @@
-"""Offline contract tests for the bounded Open-Meteo ERA5 acquisition module.
+"""Offline tests for the bounded Open-Meteo ERA5 acquisition module.
 
 Every provider call is replaced by a local fake, so these tests never touch the
-network and never compute a hash. They cover the public result shape, the time and
-unit contract, overwrite protection, provider/HTTP failures, fixed standard offsets
-(UTC+8 and UTC-10), leap years, missing provider hours and the blocked cases for
+network and never compute a hash. They cover the public result shape, time and
+unit formatting, overwrite protection, provider/HTTP failures, fixed standard offsets
+(UTC+8 and UTC-10), leap years, missing provider hours, and blocked cases for
 half-hour or year-varying standard offsets.
 """
 import csv

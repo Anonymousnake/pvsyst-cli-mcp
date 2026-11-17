@@ -84,7 +84,9 @@ class BatteryEditorTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), original)
 
     def test_requires_hash_correct_existing_path_and_activation(self):
-        self.rejected(expected_sha256=None)
+        self.rejected(expected_sha256="0" * 64)
+        no_hash = self.edit(expected_sha256=None, dry_run=True)
+        self.assertFalse(no_hash["conflict_checked"])
         self.rejected(use_file_curve=False)
         self.rejected(curve_updates={"CapaCourant": CAPACITY_POINTS})
         self.rejected(curve_updates={"SelfDisch_Temp": CAPACITY_POINTS})

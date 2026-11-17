@@ -161,10 +161,13 @@ def component_call(method: str, *args, **kwargs) -> dict:
     except (ValueError, FileNotFoundError, FileExistsError) as exc:
         raise ToolError(str(exc)) from None
 
+def variant_store() -> VariantStore:
+    store = components()
+    return VariantStore(store.workspace, store, store.lock)
+
 def variant_call(method: str, *args, **kwargs) -> dict:
     try:
-        store = components()
-        return getattr(VariantStore(store.workspace, store, store.lock), method)(*args, **kwargs)
+        return getattr(variant_store(), method)(*args, **kwargs)
     except (ValueError, FileNotFoundError, FileExistsError) as exc:
         raise ToolError(str(exc)) from None
 

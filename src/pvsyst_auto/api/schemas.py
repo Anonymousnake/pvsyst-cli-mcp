@@ -594,8 +594,8 @@ class SourcedHouseTaskRequest(BaseModel):
     source_variant: StrictStr | None = None
 
     @model_validator(mode="after")
-    def _preserve_source_hardware_contract(self):
-        """Conditional contract: preserve requires a source and year-only design; legacy ignores neither."""
+    def _validate_preserve_source_hardware(self):
+        """Ensure preserve_source_hardware provides a source project/variant, and legacy calls do not."""
         if self.prepare_mode != "preserve_source_hardware":
             if self.source_project is not None or self.source_variant is not None:
                 raise ValueError("source_project/source_variant require prepare_mode='preserve_source_hardware'; "

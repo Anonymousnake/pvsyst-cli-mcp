@@ -1,4 +1,4 @@
-"""In-memory MCP ClientSession helper for fast protocol-level contract tests."""
+"""In-memory MCP ClientSession helper for fast protocol-level integration tests."""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager

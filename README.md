@@ -105,7 +105,7 @@ from pvsyst_auto import PVsystCLI, PVsystError
 
 ## Development & tests
 
-Contract tests live under `tests/contracts/`. The [testing and release guide](docs/testing-and-release.md) describes the portable public-contract CI gate, wheel-install verification, and version-tagged draft releases. This gate needs no PVsyst installation or private samples and fails on skipped selected tests. Real-PVsyst and private-fixture contracts remain separate explicit opt-ins; an offline CI pass is not native acceptance.
+Integration and unit test suites live under `tests/integration/` and `tests/unit/`. See the [testing and release guide](docs/testing-and-release.md) for split test slices, CI verification, and release builds. Opt-in real-PVsyst tests live under `tests/e2e/`.
 
 ## License
 

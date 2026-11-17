@@ -3,14 +3,13 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import StrictBool, StrictFloat, StrictInt, StrictStr
-from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import prepare_design_project
 from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.project.domes import create_dome_allocation_variant
 from pvsyst_auto.scene.author import create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, NativeDCUpdates, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
-from pvsyst_auto.api.context import categorized_tool, cli, components, variant_call
+from pvsyst_auto.api.context import categorized_tool, cli, components, variant_call, variant_store
 
 
 @categorized_tool()
@@ -29,15 +28,15 @@ def pvsyst_inspect_project(project: str) -> dict:
     return variant_call("inspect_project", project)
 
 @categorized_tool()
-def pvsyst_archive_project(project: str, expected_files: dict[str, str],
+def pvsyst_archive_project(project: str, expected_files: dict[str, str] | None = None,
                            confirm: bool = False) -> dict:
-    """Archive up to 128 PRJ/VC members after matching every hash (requires confirm=true)."""
+    """Archive up to 128 PRJ/VC members (with optional file hash check; requires confirm=true)."""
     return variant_call("archive_project", project, expected_files, confirm)
 
 @categorized_tool()
-def pvsyst_archive_variant(project: str, variant: str, expected_sha256: str,
+def pvsyst_archive_variant(project: str, variant: str, expected_sha256: str | None = None,
                            confirm: bool = False) -> dict:
-    """Archive a VC if another variant remains, with SHA-256 guard (requires confirm=true)."""
+    """Archive a VC if another variant remains (with optional SHA-256 check; requires confirm=true)."""
     return variant_call("archive_variant", project, variant, expected_sha256, confirm)
 
 @categorized_tool()
@@ -57,21 +56,23 @@ def pvsyst_clone_project(source_project: str, new_project: str) -> dict:
     return variant_call("clone_project", source_project, new_project)
 
 @categorized_tool()
-def pvsyst_update_project_parameters(project: str, expected_files: dict[str, str],
-                                     project_name: StrictStr, dry_run: StrictBool = False,
+def pvsyst_update_project_parameters(project: str, project_name: StrictStr,
+                                     expected_files: dict[str, str] | None = None,
+                                     dry_run: StrictBool = False,
                                      add_utf8_bom: StrictBool = False) -> dict:
-    """Update a project's display title (Comment, 1..80 UTF-8 bytes) with full-project SHA-256 checks and backup."""
+    """Update a project's display title (Comment, 1..80 UTF-8 bytes) with backup and optional file hash checks."""
     return variant_call("update_project_parameters", project, expected_files, project_name, dry_run, add_utf8_bom)
 
 @categorized_tool()
 def pvsyst_update_project_sources(project: str, site_name: str, met_name: str,
-                                  expected_files: dict[str, str]) -> dict:
-    """Bind a workspace SIT/MET pair across PRJ and all its VC variants with SHA-256 guards and backup."""
+                                  expected_files: dict[str, str] | None = None) -> dict:
+    """Bind a workspace SIT/MET pair across PRJ and all its VC variants with backup and optional file hash checks."""
     return variant_call("update_project_sources", project, site_name, met_name, expected_files)
 
 @categorized_tool()
 def pvsyst_restore_project_sources(project: str, backups: dict[str, str],
-                                   expected_files: dict[str, str], confirm: bool = False) -> dict:
+                                   expected_files: dict[str, str] | None = None,
+                                   confirm: bool = False) -> dict:
     """Restore PRJ/VC snapshots from a project source/name transaction (requires confirm=true)."""
     return variant_call("restore_project_sources", project, backups, expected_files, confirm)
 
@@ -89,9 +90,10 @@ def pvsyst_clone_variant(project: str, source_variant: str, new_variant: str,
 
 @categorized_tool()
 def pvsyst_update_variant_components(project: str, variant: str,
-                                     updates: dict[str, str], expected_sha256: str,
+                                     updates: dict[str, str],
+                                     expected_sha256: str | None = None,
                                      subarray_id: StrictInt = 1) -> dict:
-    """Replace PAN/OND/BTR/GEN references in a variant with backup and SHA-256 guard."""
+    """Replace PAN/OND/BTR/GEN references in a variant with backup and optional SHA-256 check."""
     return variant_call("update", project, variant, updates, expected_sha256, subarray_id)
 
 @categorized_tool()
@@ -101,14 +103,16 @@ def pvsyst_validate_variant_structure(project: str, variant: str) -> dict:
 
 @categorized_tool()
 def pvsyst_clone_subarray(project: str, variant: str, source_subarray_id: StrictInt,
-                          expected_sha256: str, clone_orientation: StrictBool = False,
+                          expected_sha256: str | None = None,
+                          clone_orientation: StrictBool = False,
                           share_inverter: StrictBool = False) -> dict:
     """Duplicate a grid subarray and its owned inverter groups (optionally cloning its fixed plane or sharing its inverter)."""
     return variant_call("clone_subarray", project, variant, source_subarray_id, expected_sha256, clone_orientation, share_inverter)
 
 @categorized_tool()
 def pvsyst_remove_subarray(project: str, variant: str, subarray_id: StrictInt,
-                           expected_sha256: str, remove_orientation: StrictBool = False,
+                           expected_sha256: str | None = None,
+                           remove_orientation: StrictBool = False,
                            shared_member: StrictBool = False) -> dict:
     """Remove a grid subarray and its owned inverter groups (optionally pruning an unused fixed plane or shared MPPT member)."""
     return variant_call("remove_subarray", project, variant, subarray_id, expected_sha256, remove_orientation, shared_member)
@@ -131,14 +135,12 @@ def pvsyst_review_project_inputs(project: StrictStr, variant: StrictStr,
                                   preparation_manifest_name: StrictStr) -> dict:
     """Compare a preparation manifest from pvsyst_prepare_design_project against saved project/variant fields."""
     from pvsyst_auto.engineering.review import review_project_inputs
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return review_project_inputs(store, project=project, variant=variant,
+    return review_project_inputs(variant_store(), project=project, variant=variant,
                                  preparation_manifest_name=preparation_manifest_name)
 
 @categorized_tool()
 def pvsyst_update_variant_parameters(project: str, variant: str,
-                                     expected_sha256: str, subarray_id: StrictInt = 1,
+                                     expected_sha256: str | None = None, subarray_id: StrictInt = 1,
                                      orientation_id: StrictInt = 1,
                                      subarray_updates: dict[str, StrictFloat] | None = None,
                                      orientation_updates: dict[str, StrictFloat] | None = None,
@@ -188,8 +190,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
 
 @categorized_tool()
 def pvsyst_restore_variant(project: str, variant: str, backup_name: str,
-                           expected_sha256: str, confirm: bool = False) -> dict:
-    """Restore a variant from a backup snapshot with SHA-256 guard (requires confirm=true)."""
+                           expected_sha256: str | None = None, confirm: bool = False) -> dict:
+    """Restore a variant from a backup snapshot with optional SHA-256 check (requires confirm=true)."""
     return variant_call("restore", project, variant, backup_name, expected_sha256, confirm)
 
 @categorized_tool()
@@ -201,9 +203,7 @@ def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr
     """Create a new variant updating tracking parameters (UnlimTracking, TrackHorizNSAxis,
     TrackTiltedAxis, TrackVertAxis, TrackSunShield, TrackHorizAxis, TrackTwoAxis, TrackFrameNS,
     or TrackFrameEW) on an existing tracking template."""
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_tracking_variant(store, project=project, source_variant=source_variant,
+    return create_tracking_variant(variant_store(), project=project, source_variant=source_variant,
                                    new_variant=new_variant, tracking=tracking.model_dump(exclude_none=True),
                                    dry_run=dry_run, variant_name=variant_name,
                                    add_utf8_bom=add_utf8_bom)
@@ -216,9 +216,7 @@ def pvsyst_create_ac_cabling_variant(project: StrictStr, source_variant: StrictS
     """Create a new variant configuring uniform per-inverter AC cable length (0.1 m precision)
     and optional conductor/section."""
     from pvsyst_auto.energy.ac import create_ac_cabling_variant
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_ac_cabling_variant(store, project=project, source_variant=source_variant,
+    return create_ac_cabling_variant(variant_store(), project=project, source_variant=source_variant,
         new_variant=new_variant, ac=ac.model_dump(exclude_none=True), dry_run=dry_run,
         variant_name=variant_name, add_utf8_bom=add_utf8_bom)
 
@@ -229,9 +227,7 @@ def pvsyst_create_native_dc_cabling_variant(project: StrictStr, source_variant: 
     """Set DC wiring resistance (mOhm) or STC loss (%) via the open PVsyst 8.1.6 Chinese GUI
     (96 DPI) and save as a new variant (requires dry_run=false and confirm=true)."""
     from pvsyst_auto.native.dc import create_native_dc_cabling_variant
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_native_dc_cabling_variant(store, cli(), project=project, source_variant=source_variant,
+    return create_native_dc_cabling_variant(variant_store(), cli(), project=project, source_variant=source_variant,
         dc=dc.model_dump(), variant_name=variant_name, dry_run=dry_run, confirm=confirm)
 
 @categorized_tool()
@@ -242,9 +238,7 @@ def pvsyst_create_mv_night_disconnect_variant(project: StrictStr, source_variant
                                               add_utf8_bom: StrictBool = False) -> dict:
     """Create a new variant toggling the MV transformer NightDisconnect switch and main-array bit 29."""
     from pvsyst_auto.energy.transformer import create_mv_night_variant
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_mv_night_variant(store, project=project, source_variant=source_variant,
+    return create_mv_night_variant(variant_store(), project=project, source_variant=source_variant,
         new_variant=new_variant, night_disconnect=night_disconnect, dry_run=dry_run,
         variant_name=variant_name, add_utf8_bom=add_utf8_bom)
 
@@ -257,9 +251,7 @@ def pvsyst_create_shed_geometry_variant(project: StrictStr, source_variant: Stri
     """Create a new variant updating Sheds or SunShields pitch, tilt, count, width,
     inactive bands, shading factor, or electrical shading flag."""
     from pvsyst_auto.project.sheds import create_shed_variant
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_shed_variant(store, project=project, source_variant=source_variant,
+    return create_shed_variant(variant_store(), project=project, source_variant=source_variant,
         new_variant=new_variant, geometry=geometry.model_dump(exclude_none=True),
         dry_run=dry_run, variant_name=variant_name, add_utf8_bom=add_utf8_bom)
 
@@ -271,9 +263,7 @@ def pvsyst_create_dome_allocation_variant(project: StrictStr, source_variant: St
                                           variant_name: StrictStr | None = None,
                                           add_utf8_bom: StrictBool = False) -> dict:
     """Create a new variant rebalancing string counts between the two faces of a paired Dome template."""
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_dome_allocation_variant(store, project=project, source_variant=source_variant,
+    return create_dome_allocation_variant(variant_store(), project=project, source_variant=source_variant,
                                           new_variant=new_variant,
                                           first_orientation_strings=first_orientation_strings,
                                           dry_run=dry_run, variant_name=variant_name,
@@ -288,9 +278,8 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
                                  string_layout: StringLayoutBinding | None = None) -> dict:
     """Serialize named architectural meshes and rooftop PV tables (plus optional per-cell
     string_layout) into a PVCollada 2.0 (.pvc2) scene in workspace/UserData."""
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return create_house_pv_scene(store, component_store, project=project, variant=variant,
+    store = variant_store()
+    return create_house_pv_scene(store, store.components, project=project, variant=variant,
                                  output_name=output_name, house=house.model_dump(),
                                  layout=layout.model_dump(exclude_none=True), dry_run=dry_run,
                                  module_geometry=(module_geometry.model_dump()
@@ -308,9 +297,7 @@ def pvsyst_open_native_project(project: StrictStr, dry_run: StrictBool = True,
                                  confirm: StrictBool = False) -> dict:
     """Open a workspace project in the PVsyst 8.1.6 Chinese GUI (96 DPI), requiring dry_run=false and confirm=true."""
     from pvsyst_auto.native.project import open_native_project
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return open_native_project(store, cli(), project=project, dry_run=dry_run, confirm=confirm)
+    return open_native_project(variant_store(), cli(), project=project, dry_run=dry_run, confirm=confirm)
 
 @categorized_tool()
 def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
@@ -335,22 +322,17 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
                                "declared per-cell wiring silently."]}
     if method == "native":
         from pvsyst_auto.native.headless import import_house_pv_scene_native
-        component_store = components()
-        store = VariantStore(component_store.workspace, component_store, component_store.lock)
-        return import_house_pv_scene_native(store, component_store, scene_name, variant_name,
+        store = variant_store()
+        return import_house_pv_scene_native(store, store.components, scene_name, variant_name,
                                             dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
     if method != "gui":
         raise ValueError("method must be gui or native")
     from pvsyst_auto.native.scene import import_house_pv_scene
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return import_house_pv_scene(store, component_store, cli(), scene_name, variant_name,
+    store = variant_store()
+    return import_house_pv_scene(store, store.components, cli(), scene_name, variant_name,
                                  dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
 
 @categorized_tool()
 def pvsyst_prepare_design_project(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
     """Run component lookup, weather preparation, and project configuration without launching an annual simulation."""
-    current = cli()
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return prepare_design_project(current, store, spec=spec.model_dump(exclude_none=True), dry_run=dry_run)
+    return prepare_design_project(cli(), variant_store(), spec=spec.model_dump(exclude_none=True), dry_run=dry_run)

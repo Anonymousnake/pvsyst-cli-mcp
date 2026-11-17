@@ -368,7 +368,7 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
             if any(path.exists() for path in paths.values()):
                 raise ValueError("Comparison outputs must all be new filenames")
             result["artifacts"] = {kind: str(path) for kind, path in paths.items()}
-            inputs, bindings, snapshots, conditions, labels, filenames = [], [], [], [], set(), set()
+            inputs, bindings, conditions, labels, filenames = [], [], [], set(), set()
             required = {"label", "project", "variant", "csv_name", "declared_changes"}
             allowed = required | {"year", "nominal_dc_power_kw", "assumptions", "run_manifest_name"}
             for index, item in enumerate(scenarios):
@@ -408,7 +408,6 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                 scenario["assumptions"] = [_text(value, "assumption") for value in assumptions]
                 if item.get("run_manifest_name"):
                     safe_filename(item["run_manifest_name"], ".json")
-                snapshots.append(fingerprint(path))
                 context = _native_context(path)
                 expected = {"Project": item["project"],
                             "Simulation variant": f"{Path(item['project']).stem}.{scenario['variant']}"}
@@ -519,9 +518,6 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                 if not common:
                     raise ValueError("Scenarios have no common supported native result columns")
                 comparison = compare_results(inputs[0], inputs[index], common, include_key_periods=True)
-                if (comparison["baseline"]["sha256"] != snapshots[0]
-                        or comparison["target"]["sha256"] != snapshots[index]):
-                    raise ValueError("Native result changed between context inspection and comparison")
                 comparison.update(baseline_label=baseline["label"], target_label=candidate["label"])
                 comparison["soc_changes"] = {}
                 for name in ("SOC", "SOC_Beg", "SOC_End"):
@@ -537,13 +533,6 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                                          "target_at": candidate["result_summary"]["first"] if field == "first_value" else right[field + "_at"]}
                     comparison["soc_changes"][name] = values
                 result["metrics"].append(comparison)
-            for index, path in enumerate(inputs):
-                if fingerprint(path) != snapshots[index]:
-                    raise ValueError("Native result changed during engineering comparison")
-                if bindings[index] is not None:
-                    rebound = _run_binding(store, result["scenarios"][index], [])
-                    if rebound != bindings[index]:
-                        raise ValueError("Bound run record changed during engineering comparison")
             result["historical_input_binding_verified"] = all(binding is not None for binding in bindings)
             result["review_items"] = list(dict.fromkeys(result["review_items"]))
             result["summary"] = _explanations(result)
@@ -553,22 +542,16 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
             if not dry_run:
                 paths["json"].parent.mkdir(parents=True, exist_ok=True)
                 for kind, payload in (("csv", table), ("markdown", markdown)):
-                    path = workspace_file(store.workspace, "Results", paths[kind].name, paths[kind].suffix)
-                    if path != paths[kind]:
-                        raise ValueError("Comparison output folder changed during the operation")
-                    with path.open("x", encoding="utf-8-sig" if kind == "csv" else "utf-8", newline="") as stream:
+                    with paths[kind].open("x", encoding="utf-8-sig" if kind == "csv" else "utf-8", newline="") as stream:
                         active_output = kind
                         stream.write(payload)
                     result["written_artifacts"].append(kind)
                     active_output = None
                 result["report_files"] = {kind: fingerprint(paths[kind]) for kind in ("csv", "markdown")}
-                path = workspace_file(store.workspace, "Results", output_name, ".json")
-                if path != paths["json"]:
-                    raise ValueError("Comparison output folder changed during the operation")
                 active_output = "json"
                 # status keeps needs_review for a written report; created records that all three exist.
-                write_json(path, {**result, "created": True,
-                                  "written_artifacts": [*result["written_artifacts"], "json"]}, first=True)
+                write_json(paths["json"], {**result, "created": True,
+                                           "written_artifacts": [*result["written_artifacts"], "json"]}, first=True)
                 result["written_artifacts"].append("json")
                 result["created"] = True
                 active_output = None

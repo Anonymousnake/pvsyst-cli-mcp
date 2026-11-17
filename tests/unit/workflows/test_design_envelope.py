@@ -139,7 +139,7 @@ class DesignEnvelopeTests(unittest.TestCase):
         self.assertIn("muVocSpec", result["provenance"]["unused_serialized_fields"])
         self.assertIn("MuISC", result["provenance"]["unused_serialized_fields"])
 
-    def test_capacity_keys_match_planner_contract(self):
+    def test_capacity_keys_match_planner_schema(self):
         capacity = self.prepare()["capacity"]
         allowed = set(CAPACITY_NUMBERS) | {"capacity_tolerance_pct", "voltage_standard", "design_basis"}
         self.assertEqual(set(capacity), allowed)

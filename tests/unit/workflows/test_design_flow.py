@@ -1,8 +1,8 @@
-"""External contract tests for the unified single-project design flow.
+"""Unit tests for the unified single-project design flow.
 
 Every public dependency of ``pvsyst_design_flow`` is stubbed at its boundary: no component or
 variant parse, no hashing or fingerprinting, no provider request, no native CLI and no real
-weather/CSV inspection. The tests assert only public arguments, the phase/status contract and
+weather/CSV inspection. The tests assert only public arguments, phase/status behavior, and
 the absence of side effects - never a digest.
 """
 import copy
@@ -821,7 +821,7 @@ class DesignFlowTests(unittest.TestCase):
         self.assertEqual(result["preview"]["workspace"]["created_directories"], [])
         self.assertEqual(self.snapshot(), before)
 
-    def test_returned_contract_fields_are_always_present(self):
+    def test_returned_fields_are_always_present(self):
         result, _ = self.run_flow(spec())
         for key in ("status", "stage", "dry_run", "execution_preflight_complete", "issues",
                     "warnings", "selected", "preview", "metrics", "artifacts", "recovery"):

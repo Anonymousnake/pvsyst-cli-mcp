@@ -1,4 +1,4 @@
-name: Portable Contracts
+name: CI
 
 on:
   pull_request:
@@ -29,17 +29,16 @@ jobs:
         run: |
           python -m pip install build
           python -m build
-      - name: Install the wheel, not the checkout
+      - name: Install the wheel
         shell: bash
         run: python -m pip install dist/*.whl
       - name: Verify release tag matches installed version
         if: startsWith(github.ref, 'refs/tags/')
         run: python -c "import importlib.metadata, os; assert os.environ['GITHUB_REF_NAME'] == 'v' + importlib.metadata.version('pvsyst-cli-mcp'), 'Tag and package version differ'"
-      - name: Portable public contracts (zero skips)
-        run: python scripts/check_contracts.py --report dist/contracts.json
-      - name: Split unit suites (workflows & core regression slices)
-        run: >-
-          python scripts/run_tests.py --suite workflows -v
+      - name: Integration tests (zero skips)
+        run: python scripts/ci_checks.py --report dist/ci-report.json
+      - name: Split unit tests (workflows)
+        run: python scripts/run_tests.py --suite workflows -v
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -7,7 +7,7 @@ project comparison, no multi-subarray layout, no binary component analysis. Ever
 selected manufacturer files do not declare must be in the spec.
 
 This module owns the ordering only:
-strict spec gate, output-name preflight, read-only native capability/licence check,
+strict spec validation, output-name preflight, read-only native capability/licence check,
 discovery without capacity, the pure design envelope, a second discovery that confirms the
 accepted capacity against the template hardware, weather acquisition/preparation, then one
 annual simulation. Each phase accepts only its own explicit success status; anything else
@@ -990,8 +990,8 @@ def simulate_design(cli, store, *, spec: dict, dry_run=True):
     ``issues``, ``warnings``, ``selected``, ``preview``, ``metrics``, ``artifacts`` and
     ``recovery``. A dry run writes nothing; a real run never overwrites and never cleans up.
     """
-    # ponytail: one workspace lock for the whole flow; the weather helpers reuse the CLI lock, so
-    # the ordering store.lock -> cli._lock is fixed and no second job/concurrency layer is needed.
+    # Hold one workspace lock for the whole flow; weather helpers reuse the CLI lock,
+    # keeping lock ordering fixed as store.lock -> cli._lock.
     with store.lock:
         return _design_flow(cli, store, spec, dry_run)
 

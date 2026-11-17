@@ -1,28 +1,10 @@
-# Repeatable Native Acceptance
+# Result Comparison and Validation Runner
 
-The [acceptance CLI](../scripts/native_acceptance.py) separates **comparison of
-existing artifacts** from **a newly executed native calculation**. It calls the
-public `PVsystCLI` Python adapter and the original software. It neither builds a
-replacement physical model nor treats the project's file reader as a physical oracle.
-The CLI is checkout tooling; install this checkout's package before using it.
+[scripts/native_acceptance.py](../scripts/native_acceptance.py) compares existing reference CSV outputs against newly executed `PVsystCLI` simulations. It uses the local `PVsystCLI` wrapper and requires an explicit workspace, baseline CSV, and case definition JSON.
 
-## Case and Reference
+## Case Format
 
-Each case supplies a standalone workspace, an independently obtained native CSV,
-explicit provenance, and an input-equivalence evidence file. Provenance is recorded
-as `caller_declared_not_attested`: a string saying "GUI" does not prove that a GUI
-produced the file. Maintain the original GUI/CLI export, exact input declaration,
-equipment/weather/version basis, raw capture and acquisition steps outside the
-repository when vendor/private data cannot be redistributed. Do not commit private
-workspace copies, licenses or workstation-specific paths as permanent test fixtures.
-
-The self-contained external CLI contracts test validator behavior only. They use
-synthetic CSVs and explicitly assert zero new native consumption. They are not native
-acceptance and do not certify cross-version or GUI/headless physical parity.
-
-A case is UTF-8 JSON with unique keys and schema version 1. Relative file paths resolve
-against the case file's directory. `period.end` is exclusive; samples must cover every
-hour of every declared day, in the native 1969..2068 date window. For example:
+Offline tests in `tests/integration/test_acceptance_cli.py` validate the runner CLI using synthetic CSVs without invoking PVsyst. Real runs use a UTF-8 JSON case with unique keys and schema version 1, where relative paths resolve from the case directory and `period.end` is exclusive across hourly rows in the `1969..2068` date window. For example:
 
 ```json
 {
@@ -147,24 +129,6 @@ the isolated copy but never permits changing the original source.
 |---|---|---|
 | 8.1.6.49278 | Explicit allowlist, exact manifest match | New harness execution NOTRUN |
 | 8.1.7.49382 | Explicit allowlist, exact manifest match | Metadata reader checked; new harness execution NOTRUN |
-| Any other version, including 8.2 | Stops before native launch | No support inherited from another version |
+| Any other version, including 8.2 | Stops before running PVsyst | Unsupported version |
 
-The allowlist is an execution boundary, not a statement that every feature is accepted
-on either version. Baseline and candidate versions are declared separately; preserve
-per-feature/per-version results. Missing versions/references are NOTRUN, not passing
-matrix cells. Neither allowlisting nor an unknown-version rejection replaces the
-later production-wide version policy.
-
-This first gate covers a plain hourly native simulation through the public Python
-CLI adapter, not the MCP workflow's own state/confirmation contract. It does not
-certify arbitrary model construction, hardware/geometry semantic equivalence, native
-database contents, hidden global writes, all system families, GUI independence of
-every command, PDF loss diagrams, or saved-result persistence/reload. In particular,
-`persistence_acceptance=not_run` stays separate from CSV success. The recovered native
-`SaveAs VCi=Y` batch experiment remains a distinct future budgeted gate; it is not
-implemented by relabelling an hourly CSV as a saved VC.
-
-The verifier keeps byte snapshots in memory to avoid adding digest checks. Use a
-focused standalone acceptance fixture rather than a whole production data library;
-streamed byte comparison/archive can replace this when measured fixture size warrants
-it. Existing product conflict-token mechanisms are unchanged.
+The runner checks a plain hourly simulation through `PVsystCLI` and verifies column values against the supplied baseline CSV. Keep standalone fixtures small so in-memory byte checks stay fast; existing conflict-token checks on project files remain unchanged.

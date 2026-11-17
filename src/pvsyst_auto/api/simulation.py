@@ -3,12 +3,11 @@ from __future__ import annotations
 
 from pydantic import StrictBool, StrictInt, StrictStr
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
-from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.simulation import simulate_template
 from pvsyst_auto.workflows.sourced_design import prepare_sourced_design
 from pvsyst_auto.api.schemas import CapacityRequest, HouseTaskRequest, LossRequest, SingleDesignRequest, SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest, StrictNum, TrackingControls
-from pvsyst_auto.api.context import categorized_tool, cli, components, optional_path, simulation_csv_path, workspace_path
+from pvsyst_auto.api.context import categorized_tool, cli, components, optional_path, simulation_csv_path, variant_store, workspace_path
 from pvsyst_auto.components.identity import sourced_component
 
 
@@ -29,9 +28,8 @@ def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
     """Build a 3D house scene (.pvc2), import it via GUI or headless native builder,
     bind roof orientations, save a new variant, and run a full-year CLI simulation with checkpoint resume."""
     from pvsyst_auto.workflows.house import run_house_task
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return run_house_task(store, component_store, cli(), request=spec.model_dump(exclude_none=True),
+    store = variant_store()
+    return run_house_task(store, store.components, cli(), request=spec.model_dump(exclude_none=True),
         dry_run=dry_run, confirm=confirm, resume=resume, retry_simulation=retry_simulation)
 
 @categorized_tool()
@@ -51,10 +49,7 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
                              tracking_power_source: StrictStr = "") -> dict:
     """Clone a fixed-plane or UnlimTracking template project, apply component, weather,
     angle, capacity, or loss edits, and run a full-year simulation (year 1969..2068)."""
-    current = cli()
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return simulate_template(current, store, template_project=template_project, variant=variant,
+    return simulate_template(cli(), variant_store(), template_project=template_project, variant=variant,
         new_project=new_project, pan_name=pan_name, ond_name=ond_name, site_name=site_name,
         met_name=met_name, tilt=tilt, azimuth=azimuth, year=year, dry_run=dry_run,
         capacity=capacity.model_dump(exclude_none=True) if capacity is not None else None,
@@ -107,10 +102,7 @@ def pvsyst_run_simulation(project: str, variant: str,
 def pvsyst_simulate_design(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
     """Run a unified fixed_unshaded_grid design workflow: component lookup, template matching,
     capacity sizing, weather preparation/acquisition, and full-year simulation."""
-    current = cli()
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
-    return simulate_design(current, store, spec=spec.model_dump(exclude_none=True), dry_run=dry_run)
+    return simulate_design(cli(), variant_store(), spec=spec.model_dump(exclude_none=True), dry_run=dry_run)
 
 @categorized_tool()
 def pvsyst_prepare_sourced_design(pan_name: StrictStr, ond_name: StrictStr,
@@ -146,14 +138,13 @@ def pvsyst_run_sourced_house_task(spec: SourcedHouseTaskRequest, dry_run: Strict
     prepare_mode='preserve_source_hardware'), and run the 3D house simulation pipeline."""
     from pvsyst_auto.workflows.sourced_house import is_preserve_request, run_sourced_house_task
     current = cli()
-    component_store = components()
-    store = VariantStore(component_store.workspace, component_store, component_store.lock)
+    store = variant_store()
     with store.lock:
         request = spec.model_dump(exclude_none=True, exclude={"sources", "declarations", "goals"})
         # Branch before the loose-component/global sourced binding: preserve reuses the existing
         # source hardware and never needs a single loose PAN/OND file or a fabricated envelope.
         if is_preserve_request(request):
-            return run_sourced_house_task(store, component_store, current, request=request,
+            return run_sourced_house_task(store, store.components, current, request=request,
                 dry_run=dry_run, confirm=confirm, resume=resume, retry_simulation=retry_simulation,
                 accept_source_review=accept_source_review)
         goals = spec.goals.model_dump(exclude_none=True) if spec.goals is not None else {}
@@ -163,6 +154,6 @@ def pvsyst_run_sourced_house_task(spec: SourcedHouseTaskRequest, dry_run: Strict
         binding = pvsyst_prepare_sourced_design(
             pan_name=spec.design.module.file_name or "", ond_name=spec.design.inverter.file_name or "",
             sources=spec.sources, declarations=spec.declarations, design=SourcedDesignGoals(**goals))
-        return run_sourced_house_task(store, component_store, current, request=request, binding=binding,
+        return run_sourced_house_task(store, store.components, current, request=request, binding=binding,
             dry_run=dry_run, confirm=confirm, resume=resume, retry_simulation=retry_simulation,
             accept_source_review=accept_source_review)

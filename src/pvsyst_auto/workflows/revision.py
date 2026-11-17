@@ -473,18 +473,15 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                 report_language="en", report_pages=report_pages, log_level=3)
             record["run"] = run
             save("results")
-            output_snapshot = fingerprint(paths["csv"])
             record["native_context"] = _context(paths["csv"], new_project, new_variant,
                                                 assets["site"]["name"], assets["meteo"]["name"])
             if storage_mode:
                 from pvsyst_auto.workflows.storage import read_storage_year
                 record.update(read_storage_year(paths["csv"], paths["pdf"], year,
                     storage_preparation["load_record"], storage_preparation["load_values"], storage_preparation["after"]))
-                record["metrics"]["sha256"] = output_snapshot
+                record["metrics"]["sha256"] = fingerprint(paths["csv"])
             else:
                 record["metrics"] = annual_summary(paths["csv"], year, nominal_dc_power_kw)
-            if record["metrics"]["sha256"] != output_snapshot:
-                raise ValueError("Native CSV changed between context and annual interpretation")
             count = 0
             for headers, row in iter_result_csv(paths["csv"], strict=True):
                 if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in row[1:]):
@@ -495,12 +492,7 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             with paths["pdf"].open("rb") as stream:
                 if stream.read(5) != b"%PDF-":
                     raise ValueError("Native report is not a PDF")
-            if store.inspect_project(new_project)["files"] != record["working_files"]:
-                raise ValueError("Working design changed during native execution")
-            _check_assets(store, record)
-            record["result_files"] = {kind: fingerprint(paths[kind]) for kind in ("csv", "pdf")}
-            if record["result_files"]["csv"] != record["metrics"]["sha256"]:
-                raise ValueError("Native CSV changed during result interpretation")
+            record["result_files"] = {"csv": record["metrics"]["sha256"], "pdf": fingerprint(paths["pdf"])}
             record["warnings"].extend(run.get("warnings", []))
             record["warnings"].extend(record["metrics"].get("diagnostic_flags", []))
             record["warnings"].extend(record.get("storage_output", {}).get("review_items", []))

@@ -227,7 +227,7 @@ def save(path, value):
 
 
 def workspace_bytes(root):
-    # ponytail: fixture-sized byte snapshots; stream/archive if measured size warrants it.
+    # Fixture-sized byte snapshots; stream/archive if measured size warrants it.
     result = {}
     for directory, dirs, files in os.walk(root, followlinks=False):
         for name in dirs + files:

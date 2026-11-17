@@ -823,6 +823,30 @@ class VariantTests(unittest.TestCase):
         self.assertEqual(list((self.workspace / "Projects").glob("Partial.*")), [])
         self.assertEqual(self.original.read_bytes().decode("utf-8"), variant_text)
 
+    def test_optional_hash_guards_succeed_when_omitted_and_reject_when_stale(self):
+        self._prepare_project_sources()
+        renamed = self.store.update_project_parameters("Example.PRJ", project_name="Renamed")
+        self.assertEqual(renamed["name_change"]["after"], "Renamed")
+        sources_updated = self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET")
+        self.assertEqual(sources_updated["site"], "New.SIT")
+        self.store.restore_project_sources("Example.PRJ", sources_updated["backups"], confirm=True)
+
+        params = self.store.update_parameters("Example.PRJ", "VC0", subarray_updates={"NModSerie": 21})
+        self.assertTrue(params["changed"])
+        with self.assertRaisesRegex(ValueError, "changed since inspection"):
+            self.store.update_parameters("Example.PRJ", "VC0", expected_sha256="0" * 64, subarray_updates={"NModSerie": 22})
+
+        comp = self.store.update("Example.PRJ", "VC0", {"PAN": "new.PAN"})
+        self.assertIn("backup_name", comp)
+        restored = self.store.restore("Example.PRJ", "VC0", comp["backup_name"], confirm=True)
+        self.assertIn("sha256", restored)
+
+        self.store.clone("Example.PRJ", "VC0", "VC2")
+        archived_vc = self.store.archive_variant("Example.PRJ", "VC2", confirm=True)
+        self.store.restore_archive("Example.PRJ", archived_vc["archive_name"], confirm=True)
+        archived_prj = self.store.archive_project("Example.PRJ", confirm=True)
+        self.store.restore_archive("Example.PRJ", archived_prj["archive_name"], confirm=True)
+
 
 if __name__ == "__main__":
     unittest.main()

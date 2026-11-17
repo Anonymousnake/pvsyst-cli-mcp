@@ -87,4 +87,4 @@ cover summary notes params horizon shadings usersneeds results econeval circuit 
 - `time_step`、`start_date`/`end_date`（`MM.DD`、`YY.MM.DD` 或 `YYYY.MM.DD`）与 `report_pages` 合法；
 - 输出 CSV/PDF 文件名必须尚未存在，批处理逐时输出名唯一。
 
-上述错误文案沿用既有预检契约，未为新实现改写。**零进程保证只适用于在纯预检阶段即被拒绝的非法请求。** 纯预检通过后，合法请求仍会真实调用 `PVsystCLI`（真实 license 查询，TRIAL 且剩余执行次数为 0 会被拒；`help` 选项校验；原生仿真），返回形状不变。因此纯预检只是启动前的参数与工作区校验，**不代表原生仿真整体无进程或无界面**——合法执行会照常启动原生 CLI 进程，PDF、批处理等运行也保持既有原生行为。
+上述错误提示会在纯预检阶段即被拦截并返回，期间**不会启动 `PVsystCLI` 子进程，也不会写入任何结果文件**。预检通过后，请求会照常调用 `PVsystCLI`（含许可校验与仿真执行），PDF 与批处理仍按原生流程处理。

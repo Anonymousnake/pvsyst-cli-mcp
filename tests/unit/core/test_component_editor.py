@@ -87,7 +87,8 @@ class ComponentEditorTests(unittest.TestCase):
         self.assertFalse((self.root / "ComposPV" / ".mcp-backups").exists())
 
     def test_curve_requires_hash_and_explicit_auto_switch(self):
-        self.assert_rejected_without_write(expected_sha256=None)
+        no_hash = self.curve_edit(expected_sha256=None, dry_run=True)
+        self.assertFalse(no_hash["conflict_checked"])
         self.assert_rejected_without_write(expected_sha256="0" * 64)
         self.assert_rejected_without_write(use_file_curve=False)
         self.assert_rejected_without_write(use_file_curve="true")

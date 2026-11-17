@@ -3,28 +3,12 @@
 This is the `method="native"` branch of ``pvsyst_import_house_pv_scene``. It turns an
 authored ``.pvc2`` recipe (house meshes + PV tables) plus the current source variant into
 a NEW native ``pvVCalcul`` variant that carries a real ``pvShading`` block (and, opt-in,
-a ``pvModuleLayout``) built field-by-field from the declaration. It never reads a golden
-scene record, never touches PVsyst.ini/the clipboard/registry/licence, never starts
-PVsyst.exe or drives a GUI, and never runs a simulation.
+a ``pvModuleLayout``) built field-by-field from the input declarations without starting
+PVsyst.exe, modifying PVsyst.ini/clipboard/license state, or running a simulation.
 
-Construction reuses the product reader/author/coordinate maths and the product read-only
-verifiers. The stored record is verified before it is written; native loading/consumption
-remains a separate, unverified step. Only the record that this adapter can prove is
-written: two or more grouped fixed source orientations on one source PAN, each with its own
-inherited OND (one exclusive source subarray per orientation; each on one or more landscape
-zero-spacing tables via an explicit per-cell binding, or one landscape zero-spacing table per
-orientation on the legacy one-string-per-array profile), or one orientation / one subarray with 1..3 linear
-landscape zero-spacing tables sharing the source PAN/OND, or (fine layout) one orientation /
-one subarray with exactly two landscape zero-spacing tables of NModSerie modules each and two
-total independent MPPT inputs, table k binding global string k.
-
-An explicit per-cell ``string_layout`` is the general path: every table names its source
-subarray and every cell carries a global string ordinal, so several strings may share a
-table and a string may span tables. Capacity is bound to the global string (the owning
-source subarray's NModSerie); the global string intervals come from the source subarray
-declaration order (``scene.mapping.source_string_ranges``), so a table can never borrow a
-string from another subarray. One or more source subarrays (each on its own fixed plane)
-are supported; nothing is auto-allocated.
+Construction reuses the existing reader, geometry, and verification helpers across
+grouped orientations and explicit per-cell ``string_layout`` bindings (capacity bound to
+each global string's owning source subarray ``NModSerie``).
 """
 from __future__ import annotations
 
@@ -187,11 +171,8 @@ def _shd_table(idx, noc, profile, group, modules, turn):
 def build_pvshading(house, tables, modules, source, shading_mode="linear", *, max_tables=MAX_TABLES_SINGLE):
     """Return (pvShading text, {table_name: (slot, created)}, object/table counts).
 
-    Pure builder: every geometry/PV field is derived from the declaration. No golden
-    scene record is read. ``shading_mode`` only selects the complete pvShading.Flags
-    template; the module-layout block itself is added separately by the caller.
-    ``max_tables`` is the single-orientation table bound (legacy None 1..3, explicit
-    per-cell binding 1..MAX_TABLES).
+    Derives geometry and PV fields from the input declaration; ``shading_mode`` selects the
+    ``pvShading.Flags`` template and ``max_tables`` caps single-orientation table count.
     """
     pocket = house_profile(house)
     turn = _anchor_turn(source)

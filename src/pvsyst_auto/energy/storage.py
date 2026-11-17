@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import difflib
 import re
 from decimal import Decimal, InvalidOperation
 
@@ -10,6 +9,7 @@ from pvsyst_auto.energy.availability import native_availability
 
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.components.generator import direct_fields, finite, one
+from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 
 NUMERIC_FIELDS = {
     "soc_min": ("SOCDischDecl", 0, 1), "soc_max": ("SOCChDecl", 0, 1),
@@ -131,106 +131,94 @@ def grid_storage_state(lines, system):
 def create_grid_storage_variant(store, *, project, source_variant, new_variant, updates, dry_run=True,
                                 availability=None, allow_grid_export=None):
     """Create a new variant from an existing native storage system with bounded scalar edits."""
-    result={"status":"blocked","stage":"preflight","dry_run":dry_run,"issues":[],"warnings":[],
-            "artifacts":{},"variant_created":False,"native_consumption_verified":False}
-    with store.lock:
-        try:
-            if (type(dry_run) is not bool or not isinstance(updates,dict)
-                    or (not updates and allow_grid_export is None)):
-                raise ValueError("Supply strict storage updates or explicit grid export control and boolean dry_run")
-            if set(updates)-set(NUMERIC_FIELDS)-{"strategy"}:
-                raise ValueError("Unknown storage update fields")
-            store._check_project(project)
-            source,target=store._path(project,source_variant),store._path(project,new_variant)
-            if any(path.name.casefold()==target.name.casefold() for path in target.parent.iterdir()):
-                raise FileExistsError("Choose a new grid storage variant: "+target.name)
-            original=store._read(source)
-            text,lines=store._text(original)
-            _,system=store._sections(lines)
-            before,bounds,fields=storage_state(lines,system)
-            validate_storage(before, allow_weak=True, preserved=before)
-            edits={}
-            for name,value in updates.items():
-                if name=="strategy":
-                    if value not in STRATEGIES:
-                        raise ValueError("Only the verified self_consumption triplet is accepted; WeakGrid additionally needs a valid availability profile")
-                    edits.update(Strategy=STRATEGIES[value],ChargingStrategy="PVAvailable",DischStrategy="Immediate")
-                else:
-                    key,low,high=NUMERIC_FIELDS[name]
-                    edits[key]=decimal_text(finite(value,name,low,high if high is not None else float("inf"),positive=name.endswith("kw") or name.endswith("pct")))
-            for key,value in edits.items():
-                index,_=one(fields,key)
-                lines[index]=replace_value(lines[index],value)
-            set_grid_export(lines, system, allow_grid_export)
-            after,_,_=storage_state(lines,system)
-            weak = after["strategy"] == "WeakGrid"
-            validate_storage(after, allow_weak=availability is not None,
-                             preserved=before if "strategy" not in updates else None)
-            if (availability is not None) != weak:
-                raise ValueError("Supply a fresh complete availability declaration exactly when configuring WeakGrid")
-            candidate_text="".join(lines)
-            availability_snapshot = None
-            if weak:
-                first_child = next(i for i,line in enumerate(lines[1:],1) if line.strip().startswith("PVObject_"))
-                root = direct_fields(lines, (0, first_child))
-                root_flags = one(root, "Flags")[1]
-                if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", root_flags) or not int(root_flags[1:],16) & 0x80000:
-                    raise ValueError("WeakGrid requires an already enabled native self-consumption load")
-                newline = "\r\n" if "\r\n" in text else "\n"
-                profile, metadata, input_path, input_bytes = native_availability(store.workspace, availability, newline)
-                load_starts = [i for i,line in enumerate(lines) if line.strip()=="PVObject_UserNeeds=pvLoad"]
-                load_ends = [i for i,line in enumerate(lines) if line.strip()=="End of PVObject pvLoad"]
-                if len(load_starts)!=1 or len(load_ends)!=1 or load_starts[0]>=load_ends[0]:
-                    raise ValueError("WeakGrid requires one complete native load snapshot")
-                load_lines = lines[load_starts[0]:load_ends[0]]
-                year = metadata["year"] % 100
-                if (sum(line.strip()==f"DateBeg=01/01/{year:02d} 00:00" for line in load_lines)!=1
-                        or sum(line.strip()==f"DateEnd=31/12/{year:02d} 23:00" for line in load_lines)!=1):
-                    raise ValueError("Availability must match the complete owning load snapshot year")
-                local = "".join(lines[bounds[0]:bounds[1]+1])
-                starts = list(re.finditer(r"(?m)^[ \t]*PVObject_GridUnavail=pvUnavail[ \t]*\r?$", local))
-                ends = list(re.finditer(r"(?m)^[ \t]*End of PVObject pvUnavail[ \t]*\r?$", local))
-                if len(starts)>1 or len(ends)>1 or bool(starts)!=bool(ends):
-                    raise ValueError("Ambiguous owning grid availability object")
-                if starts:
-                    if starts[0].start()>=ends[0].end():
-                        raise ValueError("Unmatched grid availability object")
-                    # The profile ends with its own newline, so the replaced closing line's goes too.
-                    finish = ends[0].end() + local.startswith("\n", ends[0].end())
-                    local = local[:starts[0].start()] + profile + local[finish:]
-                else:
-                    close = local.rindex("End of PVObject pvGridStorage")
-                    line_start = local.rfind("\n",0,close)+1
-                    local = local[:line_start] + profile + local[line_start:]
-                candidate_text = "".join(lines[:bounds[0]]) + local + "".join(lines[bounds[1]+1:])
-                availability_snapshot = (input_path, input_bytes)
-                result["grid_availability"] = metadata
-            # Content-aware BOM through the shared boundary: keep the source marker, and also
-            # mark a BOM-less source whose rebuilt body already carries non-ASCII.
-            candidate=(store._display_name_prefix(original, new_variant, False, "variant_name",
-                                                  content=candidate_text)
-                       + candidate_text.encode("utf-8"))
-            _, checked = store._text(candidate)
+    def preflight():
+        if not isinstance(updates, dict) or (not updates and allow_grid_export is None):
+            raise ValueError("Supply strict storage updates or explicit grid export control and boolean dry_run")
+        if set(updates) - set(NUMERIC_FIELDS) - {"strategy"}:
+            raise ValueError("Unknown storage update fields")
+
+    def build(*, text, lines, result, **_):
+        _, system = store._sections(lines)
+        before, bounds, fields = storage_state(lines, system)
+        validate_storage(before, allow_weak=True, preserved=before)
+        edits = {}
+        for name, value in updates.items():
+            if name == "strategy":
+                if value not in STRATEGIES:
+                    raise ValueError("Only the verified self_consumption triplet is accepted; WeakGrid additionally needs a valid availability profile")
+                edits.update(Strategy=STRATEGIES[value], ChargingStrategy="PVAvailable", DischStrategy="Immediate")
+            else:
+                key, low, high = NUMERIC_FIELDS[name]
+                edits[key] = decimal_text(finite(value, name, low, high if high is not None else float("inf"), positive=name.endswith("kw") or name.endswith("pct")))
+        for key, value in edits.items():
+            index, _ = one(fields, key)
+            lines[index] = replace_value(lines[index], value)
+        set_grid_export(lines, system, allow_grid_export)
+        after, _, _ = storage_state(lines, system)
+        weak = after["strategy"] == "WeakGrid"
+        validate_storage(after, allow_weak=availability is not None,
+                         preserved=before if "strategy" not in updates else None)
+        if (availability is not None) != weak:
+            raise ValueError("Supply a fresh complete availability declaration exactly when configuring WeakGrid")
+        candidate_text = "".join(lines)
+        if weak:
+            first_child = next(i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_"))
+            root = direct_fields(lines, (0, first_child))
+            root_flags = one(root, "Flags")[1]
+            if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", root_flags) or not int(root_flags[1:], 16) & 0x80000:
+                raise ValueError("WeakGrid requires an already enabled native self-consumption load")
+            newline = "\r\n" if "\r\n" in text else "\n"
+            profile, metadata = native_availability(store.workspace, availability, newline)
+            load_starts = [i for i, line in enumerate(lines) if line.strip() == "PVObject_UserNeeds=pvLoad"]
+            load_ends = [i for i, line in enumerate(lines) if line.strip() == "End of PVObject pvLoad"]
+            if len(load_starts) != 1 or len(load_ends) != 1 or load_starts[0] >= load_ends[0]:
+                raise ValueError("WeakGrid requires one complete native load snapshot")
+            load_lines = lines[load_starts[0]:load_ends[0]]
+            year = metadata["year"] % 100
+            if (sum(line.strip() == f"DateBeg=01/01/{year:02d} 00:00" for line in load_lines) != 1
+                    or sum(line.strip() == f"DateEnd=31/12/{year:02d} 23:00" for line in load_lines) != 1):
+                raise ValueError("Availability must match the complete owning load snapshot year")
+            local = "".join(lines[bounds[0]:bounds[1] + 1])
+            starts = list(re.finditer(r"(?m)^[ \t]*PVObject_GridUnavail=pvUnavail[ \t]*\r?$", local))
+            ends = list(re.finditer(r"(?m)^[ \t]*End of PVObject pvUnavail[ \t]*\r?$", local))
+            if len(starts) > 1 or len(ends) > 1 or bool(starts) != bool(ends):
+                raise ValueError("Ambiguous owning grid availability object")
+            if starts:
+                if starts[0].start() >= ends[0].end():
+                    raise ValueError("Unmatched grid availability object")
+                finish = ends[0].end() + local.startswith("\n", ends[0].end())
+                local = local[:starts[0].start()] + profile + local[finish:]
+            else:
+                close = local.rindex("End of PVObject pvGridStorage")
+                line_start = local.rfind("\n", 0, close) + 1
+                local = local[:line_start] + profile + local[line_start:]
+            candidate_text = "".join(lines[:bounds[0]]) + local + "".join(lines[bounds[1] + 1:])
+            result["grid_availability"] = metadata
+
+        def verify(checked, _, res):
             _, checked_system = store._sections(checked)
             verified, _, _ = storage_state(checked, checked_system)
             validate_storage(verified, allow_weak=availability is not None,
                              preserved=before if "strategy" not in updates else None)
             if verified != after:
                 raise ValueError("Candidate did not retain the declared storage state")
-            diff="".join(difflib.unified_diff(text.splitlines(keepends=True),candidate_text.splitlines(keepends=True)))
-            result.update(status="ready",project=project,source_variant=source_variant,variant=new_variant,
-                          before=before,after=after,artifacts={"variant":str(target)},diff=diff[:32000],diff_truncated=len(diff)>32000)
-            if store._read(source)!=original or (availability_snapshot and availability_snapshot[0].read_bytes()!=availability_snapshot[1]):
-                raise ValueError("Storage template changed before creation")
-            if dry_run:
-                return result
-            result["stage"]="write"
-            with target.open("xb") as stream:
-                stream.write(candidate)
-            result.update(status="created",stage="created",variant_created=True)
-        except (ValueError,OSError,UnicodeError,TypeError,KeyError,StopIteration,csv.Error,InvalidOperation) as exc:
-            result["issues"].append(str(exc))
-            result["status"]="failed" if result["stage"]=="write" else "blocked"
-            if result["status"]=="failed":
-                result["warnings"].append("New variant may be a partial artifact; inspect the disclosed path. Original template is preserved.")
-    return result
+            res.update(before=before, after=after)
+
+        return {"candidate_text": candidate_text, "verify": verify}
+
+    return run_new_variant_transaction(
+        store,
+        project=project,
+        source_variant=source_variant,
+        new_variant=new_variant,
+        dry_run=dry_run,
+        bom_display_target=new_variant,
+        preflight=preflight,
+        build=build,
+        exists_prefix="Choose a new grid storage variant: ",
+        source_changed_error="Storage template changed before creation",
+        write_failure_warning="New variant may be a partial artifact; inspect the disclosed path. Original template is preserved.",
+        extra_exceptions=(csv.Error, InvalidOperation),
+        include_bom_added=False,
+        uppercase_variant=False,
+    )

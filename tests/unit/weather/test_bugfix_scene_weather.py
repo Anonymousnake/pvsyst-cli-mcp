@@ -287,7 +287,7 @@ class PrepareManifestWrites(unittest.TestCase):
 
 
 class ReviewStatusAndTrailingCsv(ReviewFixture):
-    def test_the_documented_status_contract_matches_the_reachable_statuses(self):
+    def test_the_documented_status_set_matches_the_reachable_statuses(self):
         report = self.review(acquisition_manifest_name="fixture_acquisition.json")
         self.assertEqual(report["status"], "needs_review")
         self.assertNotIn("scope", report)

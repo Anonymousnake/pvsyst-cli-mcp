@@ -1,6 +1,6 @@
 # 双朝向（双屋面）住宅 `.pvc2` 场景生成与回读
 
-在单朝向住宅建模（见[住宅与光伏建模](house-pv-modeling.md)）的基础上，`pvsyst_create_house_pv_scene` 和 `pvsyst_read_house_pv_scene` 支持为包含**两个及以上同质 PAN 固定朝向（同一 PAN 组件、每个朝向独占一个普通固定平面子阵列；各子阵列可继承各自的 OND 逆变器电气身份，仅共享同一 PAN 的组件几何）**的住宅工程生成和回读 `version 2` 格式的 `.pvc2` 场景文件。其中一个三固定朝向的单例已用本机 PVsyst 8.1.7 CLI 冷跑观测到原生消费后的 3 组几何计数、`pvModuleLayout` 计算态与 `ShdElec` 结果缓存（仅该单例；精细电气损失的独立精度无 A/B 能量对照、未证；不代表任意 N、NoGUI 或所有逆变器模式已完成；原软件可能对 `PNomAC_InMPPT` 做归一化，`getParamsActual` 才是实际生效值；本场景生成不是自动电气选型，`ComponentValidation`／电压设计／冷态原始独立流程均不在此做 autoSizing）。其中**双固定朝向（双屋面）**路径已通过 `pvsyst_run_house_task` 完成单栋双屋面的端到端原生仿真与交付（详见[工程交付中的双屋面章节](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。
+在单朝向住宅建模（见[住宅与光伏建模](house-pv-modeling.md)）的基础上，`pvsyst_create_house_pv_scene` 和 `pvsyst_read_house_pv_scene` 支持为包含**两个及以上同质 PAN 固定朝向（同一 PAN 组件、每个朝向独占一个普通固定平面子阵列，各子阵列可保留各自的 OND 逆变器）**的住宅工程生成和回读 `version 2` 格式的 `.pvc2` 场景文件。其中一个三固定朝向示例已通过 PVsyst 8.1.7 CLI 验证几何计数、`pvModuleLayout` 状态和 `ShdElec` 输出（注意 PVsyst 在加载时可能会对 `PNomAC_InMPPT` 归一化，具体以运行后的有效参数为准；场景生成只负责 3D 几何与接线关系，不做自动选型）。其中**双固定朝向（双屋面）**路径已通过 `pvsyst_run_house_task` 完成单栋双屋面的端到端原生仿真与交付（详见[工程交付中的双屋面章节](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。
 
 ## 源变体与输入结构要求
 

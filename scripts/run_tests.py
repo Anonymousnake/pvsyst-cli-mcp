@@ -15,11 +15,11 @@ SUITES = {
     "workflows": ["tests/unit/workflows"],
     "unit": ["tests/unit"],
     "mcp": [
-        "tests/contracts/test_mcp_core_boundaries.py",
-        "tests/contracts/test_variant_contracts.py",
-        "tests/contracts/test_scene_and_component_contracts.py",
+        "tests/integration/test_mcp_tools.py",
+        "tests/integration/test_variant_io.py",
+        "tests/integration/test_scene_components.py",
     ],
-    "contracts": ["tests/contracts"],
+    "integration": ["tests/integration"],
     "e2e": ["tests/e2e"],
 }
 
@@ -37,7 +37,7 @@ def main(argv=None):
 
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
-    targets = ["tests/unit", "tests/contracts"] if args.suite == "all" else SUITES[args.suite]
+    targets = ["tests/unit", "tests/integration"] if args.suite == "all" else SUITES[args.suite]
     loader = unittest.TestLoader()
     combined = unittest.TestSuite()
     for target in targets:

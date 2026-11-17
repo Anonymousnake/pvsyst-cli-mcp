@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import difflib
 import io
 import json
 import math
@@ -12,6 +11,7 @@ from pathlib import Path, PureWindowsPath
 
 from pvsyst_auto.energy.profiles import DATE_FORMATS, TIME_BASIS, UNITS, _inspect_load, _read
 from pvsyst_auto.project.paths import workspace_file
+from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.weather.csv import number
 
 DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -65,10 +65,7 @@ def load_snapshot(workspace, manifest_name):
     if any(stamp != original_stamp or not math.isclose(power, original_power, rel_tol=1e-11, abs_tol=1e-9)
            for (stamp, power), (original_stamp, original_power) in zip(values, expected, strict=True)):
         raise ValueError("Normalized load differs from its current declared raw input")
-    snapshots = {manifest: saved, source: original, profile: normalized}
-    if any(_read(path) != data for path, data in snapshots.items()):
-        raise ValueError("A load input changed while preparing the binding")
-    return record, profile, values, snapshots
+    return record, profile, values
 
 
 def hourly_load_block(profile, values, year, newline):
@@ -112,68 +109,58 @@ def hourly_load_block(profile, values, year, newline):
         "encoding_error_bound_kw": 0.5 / factor / 3.6}
 
 
+def upsert_load_block(text: str, block: str) -> tuple[str, bool]:
+    """Replace an existing ``pvLoad`` section in ``text``, returning ``(updated, replaced)``."""
+    starts = list(re.finditer(r"(?m)^[ \t]*PVObject_UserNeeds=pvLoad[ \t]*\r?$", text))
+    ends = list(re.finditer(r"(?m)^[ \t]*End of PVObject pvLoad[ \t]*\r?$", text))
+    if len(starts) > 1 or len(ends) > 1 or bool(starts) != bool(ends):
+        raise ValueError("Ambiguous owning load block")
+    if not starts:
+        return text, False
+    begin, finish = starts[0].start(), ends[0].end()
+    if begin >= finish:
+        raise ValueError("Unmatched owning load block")
+    return text[:begin] + block + text[finish + text.startswith("\n", finish):], True
+
+
 def create_load_variant(store, *, project, source_variant, new_variant, load_manifest_name, dry_run=True):
     """Preview or create a NEW VC only; keep its original system/strategy/site and sources intact."""
-    result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
-              "warnings": [], "artifacts": {}, "variant_created": False, "native_consumption_verified": False}
-    with store.lock:
-        try:
-            if type(dry_run) is not bool:
-                raise ValueError("Use a strict boolean")
-            store._check_project(project)
-            source, target = store._path(project, source_variant), store._path(project, new_variant)
-            if any(path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
-                raise FileExistsError("Choose a new variant: " + target.name)
-            original = store._read(source)
-            text, lines = store._text(original)
-            _, system = store._sections(lines)
-            if system is None:
-                raise ValueError("One owning pvSystem is required")
-            record, profile, values, snapshots = load_snapshot(store.workspace, load_manifest_name)
-            newline = "\r\n" if "\r\n" in text else "\n"
-            block, encoding = hourly_load_block(profile, values, record["year"], newline)
-            starts = list(re.finditer(r"(?m)^[ \t]*PVObject_UserNeeds=pvLoad[ \t]*\r?$", text))
-            ends = list(re.finditer(r"(?m)^[ \t]*End of PVObject pvLoad[ \t]*\r?$", text))
-            if len(starts) > 1 or len(ends) > 1 or bool(starts) != bool(ends):
-                raise ValueError("Ambiguous owning load block")
-            if starts:
-                begin, finish = starts[0].start(), ends[0].end()
-                if begin >= finish:
-                    raise ValueError("Unmatched owning load block")
-                # The block ends with its own newline, so the replaced closing line's goes too.
-                candidate_text = text[:begin] + block + text[finish + text.startswith("\n", finish):]
-            else:
-                # Insert at the start of the closing line so its indentation stays on that line.
-                closing = text.rfind("\n", 0, text.rindex("End of PVObject pvVCalcul")) + 1
-                candidate_text = text[:closing] + block + text[closing:]
-            # Reuse the shared display-name/BOM boundary with the FINAL body: a BOM-less source
-            # whose inherited text already carries a degree must still be marked UTF-8, or the
-            # original reader re-saves it as Windows-1252 mojibake.
-            bom_prefix = store._display_name_prefix(original, new_variant, False, "variant_name",
-                                                    content=candidate_text)
-            candidate = bom_prefix + candidate_text.encode("utf-8")
-            _, checked = store._text(candidate)
+    def build(*, text, lines, **_):
+        _, system = store._sections(lines)
+        if system is None:
+            raise ValueError("One owning pvSystem is required")
+        record, profile, values = load_snapshot(store.workspace, load_manifest_name)
+        newline = "\r\n" if "\r\n" in text else "\n"
+        block, encoding = hourly_load_block(profile, values, record["year"], newline)
+        candidate_text, replaced = upsert_load_block(text, block)
+        if not replaced:
+            closing = text.rfind("\n", 0, text.rindex("End of PVObject pvVCalcul")) + 1
+            candidate_text = text[:closing] + block + text[closing:]
+
+        def verify(checked, _, res):
             store._sections(checked)
-            result.update(status="ready", project=project, source_variant=source_variant, variant=new_variant,
-                          artifacts={"variant": str(target), "load_csv": str(profile)}, year=record["year"],
-                          utc_offset_hours=record["utc_offset_hours"], time_basis=record["time_basis"],
-                          load_encoding=encoding, annual_load_kwh=math.fsum(power for _, power in values),
-                          bom_added=bool(bom_prefix) and not original.startswith(b"\xef\xbb\xbf"))
-            result["warnings"].append("The load is an explicit embedded hourly snapshot. Later CSV changes require a new binding; file-reading progress logs do not prove CSV consumption.")
-            result["warnings"].append("Storage strategy, system flags, site/weather, topology and all non-load fields stay inherited. Verify native E_User and matching simulation year/timezone before claiming consumption.")
-            diff = "".join(difflib.unified_diff(text.splitlines(keepends=True), candidate_text.splitlines(keepends=True)))
-            result.update(diff=diff[:32000], diff_truncated=len(diff) > 32000)
-            if store._read(source) != original or any(_read(path) != data for path, data in snapshots.items()):
-                raise ValueError("A template/load input changed before variant creation")
-            if dry_run:
-                return result
-            result["stage"] = "write"
-            with target.open("xb") as stream:
-                stream.write(candidate)
-            result.update(status="created", stage="created", variant_created=True)
-        except (ValueError, OSError, UnicodeError, KeyError, TypeError, csv.Error) as exc:
-            result["issues"].append(str(exc))
-            result["status"] = "failed" if result["stage"] == "write" else "blocked"
-            if result["status"] == "failed":
-                result["warnings"].append("The new variant may contain a partial artifact; inspect the disclosed path before retrying. Original template is retained.")
-    return result
+            res.update(
+                artifacts={"load_csv": str(profile)},
+                year=record["year"],
+                utc_offset_hours=record["utc_offset_hours"],
+                time_basis=record["time_basis"],
+                load_encoding=encoding,
+                annual_load_kwh=math.fsum(power for _, power in values),
+            )
+            res["warnings"].append("The load is an explicit embedded hourly snapshot. Later CSV changes require a new binding; file-reading progress logs do not prove CSV consumption.")
+            res["warnings"].append("Storage strategy, system flags, site/weather, topology and all non-load fields stay inherited. Verify native E_User and matching simulation year/timezone before claiming consumption.")
+
+        return {"candidate_text": candidate_text, "verify": verify}
+
+    return run_new_variant_transaction(
+        store,
+        project=project,
+        source_variant=source_variant,
+        new_variant=new_variant,
+        dry_run=dry_run,
+        bom_display_target=new_variant,
+        build=build,
+        source_changed_error="A template/load input changed before variant creation",
+        extra_exceptions=(csv.Error,),
+        uppercase_variant=False,
+    )

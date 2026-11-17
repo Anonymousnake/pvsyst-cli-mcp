@@ -50,4 +50,4 @@
 
 使用跟踪器变体跑仿真并查看结果时，有几个容易混淆的地方需要注意：
 1. **PDF 报告里的 `no Shadings` 不代表没有排间遮挡**：`UnlimTracking` 等自带排间距（`Pitch`）和组件宽度（`CollectorWidth`）参数的跟踪类型，由 PVsyst 内核直接按二维几何计算排间互遮挡（或回溯角度）。只要没挂接独立的 3D 场景对象，PDF 摘要里就会显示 `Near Shadings: no Shadings`，但逐时 CSV 里的 `GlobShd`（遮挡后辐照）和当勾选 `UsesElectricalEffect=True` 时的 `ShdElec`（电气遮挡损失）是正常计算并导出的。
-2. **`.SFI` 变量名与 CSV 列名**：`.SFI` 输入文件里变量名带 `vi` 前缀（如 `viGlobShd`、`viShdElec`），而导出的 CSV 列名去掉了 `vi` 前缀（`GlobShd`、`ShdElec`）。当某项开关未启用、PVsyst 省略导出对应列时，结果读取器会如实反映该列未导出，不会凭空补全一列 0。
+2. **`.SFI` 变量名与 CSV 列名**：`.SFI` 输入文件里变量名带 `vi` 前缀（如 `viGlobShd`、`viShdElec`），而导出的 CSV 列名去掉了 `vi` 前缀（`GlobShd`、`ShdElec`）。当某项开关未启用、PVsyst 省略导出对应列时，结果读取器会保持该列缺失状态，不会自动补零。

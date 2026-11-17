@@ -47,7 +47,7 @@ Key status fields:
 
 If a run fails partway through, the working project, manifest, and any partial outputs are left on disk for debugging; pick a fresh `new_project` name when retrying.
 
-### Finite two-roof task: bounded native acceptance
+### Two-roof house workflow
 
 For residential rooftops with two roof planes, `pvsyst_run_house_task` chains `.pvc2` scene generation/reading, GUI scene import, orientation binding, coordinate verification, annual CLI simulation, and ZIP delivery (`operation="engineering_house"`).
 
