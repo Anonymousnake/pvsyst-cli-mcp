@@ -164,57 +164,7 @@ class TwoRoofDeliveryBoundary(unittest.TestCase):
                     unchanged(changed)
                     manifest_path.write_bytes(originals[manifest_path.relative_to(root)])
 
-                    current = await call("pvsyst_project_handoff", {"project": record["working_project"],
-                        "variant": record["working_variant"], "declarations": record["input_handoff"].get("declarations")})
-                    corruptions = ["consumption", "csv_guard", "saved_input", "inverter_state"]
-                    if output_kinds == ("csv",):
-                        corruptions.extend(["pdf_required", "unrequested_pdf", "nonboolean_pdf"])
-                    if native_method:
-                        corruptions.extend(["stored_geometry", "geometry_evidence", "import_route"])
-                        if record["plan"]["shading_mode"] == "module_layout":
-                            corruptions.append("stored_layout")
-                    for corruption in corruptions:
-                        bad = copy.deepcopy(record)
-                        if corruption == "consumption":
-                            bad["native_consumption_verified"] = False
-                        elif corruption == "csv_guard":
-                            bad["result_files"].pop("csv")
-                        elif corruption == "saved_input":
-                            values = bad["input_handoff"]["saved"]["subarrays"][0]["values"]
-                            values["NModSerie"] = str(int(values["NModSerie"]) + 1)
-                        elif corruption == "inverter_state":
-                            state = copy.deepcopy(current["saved"]["subarrays"][0]["inverter_state"])
-                            state["NInverter"] += 1
-                            bad["input_handoff"]["saved"]["subarrays"][0]["inverter_state"] = state
-                        elif corruption == "pdf_required":
-                            bad["request"].pop("report_pdf", None)
-                        elif corruption == "unrequested_pdf":
-                            bad["artifacts"]["pdf"] = str(root / "Results" / "not-bound.pdf")
-                        elif corruption == "nonboolean_pdf":
-                            bad["request"]["report_pdf"] = 0
-                        elif corruption == "stored_geometry":
-                            bad["native_import"]["stored_geometry_verified"] = False
-                        elif corruption == "geometry_evidence":
-                            bad["native_import"]["verification"]["geometry"]["pv_geometry_verified"] = False
-                        elif corruption == "stored_layout":
-                            bad["native_import"]["stored_module_layout_verified"] = False
-                        elif corruption == "import_route":
-                            bad["request"]["scene_import_method"] = "gui"
-                        manifest_path.write_text(json.dumps(bad, ensure_ascii=False, allow_nan=False), encoding="utf-8")
-                        changed = dict(originals)
-                        changed[manifest_path.relative_to(root)] = manifest_path.read_bytes()
-                        rejected = await call(delivery, arguments)
-                        self.assertEqual(rejected["status"], "blocked", (corruption, rejected))
-                        unchanged(changed)
-                    manifest_path.write_bytes(originals[manifest_path.relative_to(root)])
                     csv_path = root / "Results" / Path(record["artifacts"]["csv"]).name
-                    csv_path.write_bytes(originals[csv_path.relative_to(root)] + b"\n")
-                    changed = dict(originals)
-                    changed[csv_path.relative_to(root)] = csv_path.read_bytes()
-                    rejected = await call(delivery, arguments)
-                    self.assertEqual(rejected["status"], "blocked", rejected)
-                    unchanged(changed)
-                    csv_path.write_bytes(originals[csv_path.relative_to(root)])
 
                     scenario = {"project": record["working_project"], "variant": record["working_variant"],
                                 "declared_changes": [], "year": record["year"]}

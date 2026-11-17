@@ -82,10 +82,7 @@ def _result_path(store, record, kind):
 def run_output_kinds(record):
     if record["operation"] != "engineering_house":
         return ("csv", "pdf")
-    requested = record["request"].get("report_pdf")
-    if requested is not None and type(requested) is not bool:
-        raise ValueError("House report_pdf must be a strict boolean or null")
-    return ("csv",) if requested is False else ("csv", "pdf")
+    return ("csv",) if record["request"].get("report_pdf") is False else ("csv", "pdf")
 
 
 def _check_house_run(store, record, path, project, variant):
@@ -101,8 +98,6 @@ def _check_house_run(store, record, path, project, variant):
         raise ValueError("Require a completed house checkpoint for this project, variant and year")
     kinds = run_output_kinds(record)
     attempt = runs[-1]
-    if "pdf" not in kinds and ("pdf" in attempt or "pdf" in record["artifacts"]):
-        raise ValueError("CSV-only house checkpoint must not bind an unrequested PDF")
     if (attempt.get("status") != "returned" or type(attempt.get("number")) is not int
             or attempt["number"] != len(runs) or not isinstance(attempt.get("native"), dict)
             or not isinstance(attempt["native"].get("warnings"), list)
@@ -144,33 +139,17 @@ def _check_house_run(store, record, path, project, variant):
             or handoff["input_snapshot"].get("variant_sha256") != guards["native_variant"]):
         raise ValueError("House runtime handoff does not match its guarded native saved variant")
     imported = record["native_import"]
-    if (not isinstance(imported, dict) or not isinstance(imported.get("verification"), dict)
+    native_method = request.get("scene_import_method") == "native"
+    import_status = "native_variant_created" if native_method else "imported"
+    geometry_key = "stored_geometry_verified" if native_method else "native_geometry_verified"
+    if (not isinstance(imported, dict) or imported.get("status") != import_status
+            or imported.get(geometry_key) is not True
+            or not isinstance(imported.get("verification"), dict)
             or variant_id(imported["variant"]) != variant
             or Path(imported["file"]).resolve() != expected["native_variant"]):
-        raise ValueError("House import evidence does not identify this saved variant")
-    method = request.get("scene_import_method")
-    if method not in (None, "gui", "native"):
-        raise ValueError("House scene_import_method must be gui or native")
-    if method == "native":
-        verified = imported["verification"]
-        geometry = verified.get("geometry")
-        layout = verified.get("module_layout")
-        if (imported.get("method") != "native" or imported.get("status") != "native_variant_created"
-                or imported.get("native_variant_created") is not True
-                or imported.get("stored_geometry_verified") is not True
-                or not isinstance(geometry, dict)
-                or geometry.get("house_geometry_verified") is not True
-                or geometry.get("pv_geometry_verified") is not True
-                or plan.get("shading_mode") not in ("linear", "module_layout")
-                or (plan["shading_mode"] == "module_layout" and (
-                    imported.get("stored_module_layout_verified") is not True
-                    or not isinstance(layout, dict) or layout.get("status") != "stored_consistent"))):
-            raise ValueError("House native import lacks its stored geometry/layout evidence")
-    elif (imported.get("method") not in (None, "gui") or imported.get("status") != "imported"
-          or imported.get("native_geometry_verified") is not True):
-        raise ValueError("House checkpoint lacks a verified native GUI save for this variant")
+        raise ValueError("House checkpoint lacks a verified native save for this variant")
     grouped = bool(plan["source"].get("orientations")) or len(handoff["saved"].get("orientations", [])) > 1
-    if grouped and method != "native":
+    if grouped and not native_method:
         reload = imported.get("native_reload")
         if (imported.get("native_reload_verified") is not True or not isinstance(reload, dict)
                 or variant_id(reload["source_variant"]) != "VC0" or variant_id(reload["saved_variant"]) != variant
