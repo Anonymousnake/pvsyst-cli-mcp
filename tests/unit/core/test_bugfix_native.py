@@ -69,6 +69,31 @@ class CLITests(unittest.TestCase):
                     self.assertNotIn(secret, message + caught.exception.diagnostics)
                 self.assertIn("partial line", caught.exception.diagnostics)
 
+    def test_double_quotes_never_reach_the_cli_command_line(self):
+        # PVsystCLI (Delphi) ignores list2cmdline's \" escape, so a quote could inject an option.
+        injected = 'a" -osf:C:\\Temp\\evil.sit "'
+        weather = self.workspace / "Meteo" / "weather.csv"
+        site = self.workspace / "Sites" / "new.sit"
+        self.client._help_cache["create-site"] = "--site-name|-sn:"
+        calls = {
+            "site name": lambda: self.client.create_site(injected, 0, 0, weather, site),
+            "site source": lambda: self.client.create_site("Site", 0, 0, weather, site, source=injected),
+            "license key": lambda: self.client.license_activate(injected, confirm=True),
+            "customer id": lambda: self.client.license_deactivate(injected, confirm=True),
+            "any command": lambda: self.client._run("create-site", f"-sn:{injected}"),
+        }
+        with contextlib.ExitStack() as stack:
+            launchers = [stack.enter_context(mock.patch("subprocess.run"))]
+            if os.name == "nt":
+                from pvsyst_auto.native import _winlaunch
+                launchers.append(stack.enter_context(mock.patch.object(_winlaunch, "run")))
+            for name, call in calls.items():
+                with self.subTest(name), self.assertRaisesRegex(ValueError, "double quotes") as caught:
+                    call()
+                self.assertNotIn("evil", str(caught.exception))
+        for launcher in launchers:
+            launcher.assert_not_called()
+
     def test_empty_version_output_is_a_cli_error_and_a_bridge_stop(self):
         for stdout, stderr in (("", ""), (None, None), ("  \n", "\r\n")):
             with self.subTest(stdout=stdout), mock.patch.object(
