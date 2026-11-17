@@ -175,8 +175,13 @@ class McpCoreBoundaries(unittest.IsolatedAsyncioTestCase):
     def test_window_policy_schema_and_preflight(self):
         for model in (HouseTaskRequest, SourcedHouseTaskRequest):
             self.assertIsNone(model.model_fields["allow_window_creation"].default)
+            self.assertIsNone(model.model_fields["report_pdf"].default)
             self.assertEqual(model.model_construct(allow_window_creation=False).model_dump(exclude_none=True)["allow_window_creation"], False)
             self.assertNotIn("allow_window_creation", model.model_construct(allow_window_creation=None).model_dump(exclude_none=True))
+            self.assertNotIn("report_pdf", model.model_construct(report_pdf=None).model_dump(exclude_none=True))
+            with self.assertRaises(Exception):
+                model(source_project="A.PRJ", source_variant="VC0", new_project="B.PRJ", variant_name="V",
+                      year=2020, house={"kind": "mesh", "meshes": []}, layout={}, report_pdf="false")
         res = run_house_task(_LockedStore(), None, None, request={"scene_import_method": "gui", "allow_window_creation": False})
         self.assertEqual(res["status"], "blocked")
         self.assertTrue(any("allow_window_creation=false requires" in m for m in res["issues"]))
