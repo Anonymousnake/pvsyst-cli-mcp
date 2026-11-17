@@ -106,7 +106,8 @@ def collected_keys(value, found=None):
 class AcquisitionTests(unittest.TestCase):
     def setUp(self):
         self._temporary = tempfile.TemporaryDirectory()
-        self.workspace = Path(self._temporary.name)
+        # Resolve like the workspace code does: %TEMP% can be an 8.3 short path.
+        self.workspace = Path(self._temporary.name).resolve()
         (self.workspace / "Meteo").mkdir()
         (self.workspace / "Results").mkdir()
 

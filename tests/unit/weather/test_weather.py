@@ -87,7 +87,8 @@ class WeatherTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        # Resolve like the workspace code does: %TEMP% can be an 8.3 short path.
+        self.root = Path(temporary.name).resolve()
         (self.root / "Meteo").mkdir()
         self.path = self.root / "Meteo" / "weather.csv"
 

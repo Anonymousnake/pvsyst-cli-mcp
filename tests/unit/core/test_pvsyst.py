@@ -35,7 +35,8 @@ class PVsystTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.workspace = Path(self.tmp.name) / "workspace"
+        # Resolve like PVsystCLI does: %TEMP% can be an 8.3 short path (e.g. a user name with a space).
+        self.workspace = Path(self.tmp.name).resolve() / "workspace"
         for folder in ("Projects", "Models", "Results", "Meteo", "Sites"):
             (self.workspace / folder).mkdir(parents=True)
         (self.workspace / "Projects" / "Example.PRJ").write_text("example", encoding="utf-8")
