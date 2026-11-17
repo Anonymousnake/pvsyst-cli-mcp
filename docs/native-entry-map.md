@@ -86,4 +86,4 @@
 | 既有光储系统参数修改 | MCP 已封装 | `pvsyst_create_grid_storage_variant` 修改 SOC、充放电功率、效率、`PowerShift` 48 槽充放电曲线、`PeakShaving` `grid_limit_kw` 与 `allow_grid_export`（系统 bit 27 防逆流位），保留 `pvShading`/`pvModuleLayout` 并自动清理 `VarList` |
 | 削峰（Peak Shaving）放电窗口 | MCP 已封装 | `pvsyst_create_peak_shaving_variant` 修改现有削峰变体（支持内置/工作区锂电 `.BTR` 与 3D 场景）的放电时序（`AfterSunset` 或起止小时窗口），见[削峰放电控制](native-peak-shaving.md) |
 | 完整 AC 光储能量流导出 | MCP 已封装 | `pvsyst_build_sfi(variables="grid_storage")` 自动包含 `CL_Over`（变流器限幅损失）等完整能量平衡列 |
-| 概率/家用电器负荷、随机停电、DC 耦合混储 | 仅分析记录，未开放写入 | 底层字段调查见[负荷与储能模式笔记](native-load-storage-controls.md) |
+| 概率/家用电器负荷、随机停电、DC 耦合混储 | 实测边界锁定 | 概率/家用电器负荷与随机停电见[负荷与储能模式笔记](native-load-storage-controls.md)；PVsyst 8.1.7 并网储能仅实现 Common AC Bus（无 DC 直充电池端口），`coupling` 锁定 `"ac_coupled"` 并在传入 `"dc_coupled"`/`"hybrid"` 时显式拒接 |

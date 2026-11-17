@@ -20,4 +20,4 @@
 PVsyst 的并网储能（`pvGridStorage`）包含 `SelfConsumption`（自发自用）、`WeakGrid`（弱电网备电）、`PeakShaving`（削峰）和 `Power shifting` 四种模式：
 - **`PeakShaving` 的特殊根标志状态**：当在 GUI 里配置 `PeakShaving`（削峰，充电策略 `PVToGridMin`）时，PVsyst 会把 `pvLoad` 用户负荷块删掉（因为削峰只看并网点上限 `PLimGrid`，不需要用户负荷曲线），但**根部 `pvVCalcul.Flags` 依然保留着 `$00080000`（bit 19）**！因此解析和修改削峰模板时，不能拿纯光伏变体“有 bit 19 就必须有 `pvLoad`”的规则去报错。
 - **电网随机停电 vs PV 系统随机故障**：`WeakGrid` 下的电网停电配置保存在 `pvUnavail`（`HourlyVal=GrdUnav`），而详细损失里的 PV 系统故障停运保存在 `pvSystem` 直属的 `SystemUnavail`，两者类名相近但归属和作用完全不同。目前 `WeakGrid` 支持通过完整的 0/1 逐时 CSV 绑定停电序列（见[AC 光储系统](grid-storage-parameters.md)）。
-- **AC 耦合 vs 混合逆变器 DC 电池口**：当前的储能创建与修改工具均针对集中式 AC 耦合架构（`pvGridStorage` 下配置独立的 AC 充电器与电池逆变器参数）；混合逆变器的 DC 电池端口与强制电网充电时间表暂未开放。
+- **AC 耦合 vs 混合逆变器 DC 电池口（PVsyst 8.1.7 实测锁定）**：依据 PVsyst 8.1.7 官方架构文档（`grid-storage-system-architecture.html`）及 `PVsystCLI.exe` RTTI 实测，PVsyst 8.1.7 并网储能**仅实现公共 AC 母线（Common AC Bus）模型**（`.OND` 中的 `IsHybrid=True` 仅为组件目录标记，不影响仿真的交流限幅 `IL_Pmax` 或直流直充路径）。因此在 `pvsyst_create_grid_storage_system` / `pvsyst_create_grid_storage_variant` 中显式锁定 `coupling="ac_coupled"`，拒绝伪装为 DC 耦合或限幅回收；若需评估直流耦合系统，可按 PVsyst 官方建议将等效变换链效率折算写入 `BattRect*Effic` 与 `BattInv*Effic`。

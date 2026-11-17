@@ -392,6 +392,7 @@ NativeLoadRequest = Annotated[
 class GridStorageUpdates(BaseModel):
     """Native existing AC-coupled storage controls and schedules; unknown fields stop at the boundary."""
     model_config = ConfigDict(extra="forbid")
+    coupling: Literal["ac_coupled"] = "ac_coupled"
     strategy: Literal["self_consumption", "weak_grid", "peak_shaving", "power_shift"] | None = None
     charging_strategy: Literal[
         "pv_available", "pv_above_thresh", "pv_to_grid_min", "pv_prod_fraction", "spec_charg_power"
@@ -437,6 +438,7 @@ class BatteryPackDesign(BaseModel):
 
 class GridStorageDesign(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    coupling: Literal["ac_coupled"] = "ac_coupled"
     strategy: Literal["self_consumption", "weak_grid", "peak_shaving", "power_shift"]
     charging_strategy: Literal[
         "pv_available", "pv_above_thresh", "pv_to_grid_min", "pv_prod_fraction", "spec_charg_power"

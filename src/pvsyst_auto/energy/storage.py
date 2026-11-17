@@ -603,10 +603,20 @@ def grid_storage_state(lines, system):
 def create_grid_storage_variant(store, *, project, source_variant, new_variant, updates, dry_run=True,
                                 availability=None, allow_grid_export=None):
     """Create a new variant updating scalar, strategy, schedule, grid limit, or export controls on AC storage."""
-    allowed_keys = set(NUMERIC_FIELDS) | CONTROL_UPDATE_KEYS
+    allowed_keys = set(NUMERIC_FIELDS) | CONTROL_UPDATE_KEYS | {"coupling"}
 
     def preflight():
-        if not isinstance(updates, dict) or (not updates and allow_grid_export is None):
+        if not isinstance(updates, dict):
+            raise ValueError("Supply strict storage updates or explicit grid export control and boolean dry_run")
+        coupling = updates.get("coupling")
+        if coupling is not None and coupling != "ac_coupled":
+            raise ValueError(
+                "PVsyst 8.1.7 only implements Common AC Bus grid storage (pvGridStorage); "
+                "DC-coupled hybrid battery ports and DC clipping recovery are unsupported "
+                "(use equivalent AC charger/inverter efficiencies with coupling='ac_coupled')"
+            )
+        clean = {k: v for k, v in updates.items() if k != "coupling"}
+        if not clean and allow_grid_export is None:
             raise ValueError("Supply strict storage updates or explicit grid export control and boolean dry_run")
         if set(updates) - allowed_keys:
             raise ValueError("Unknown storage update fields")
@@ -619,7 +629,8 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
 
         scalar_edits = {}
         merged_state = dict(before)
-        for name, value in updates.items():
+        clean_updates = {k: v for k, v in updates.items() if k != "coupling"}
+        for name, value in clean_updates.items():
             if name in NUMERIC_FIELDS:
                 key, low, high = NUMERIC_FIELDS[name]
                 num = finite(value, name, low, high if high is not None else float("inf"),
@@ -627,7 +638,7 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
                 scalar_edits[key] = decimal_text(num)
                 merged_state[name] = num
 
-        structural = bool(CONTROL_UPDATE_KEYS & set(updates))
+        structural = bool(CONTROL_UPDATE_KEYS & set(clean_updates))
         if not structural:
             for key, value in scalar_edits.items():
                 index, _ = one(fields, key)
@@ -637,9 +648,9 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
             weak = after["strategy"] == "WeakGrid"
             validate_storage(after, allow_weak=availability is not None, preserved=before)
         else:
-            controls = resolve_storage_controls(updates, base=before, system_grid_limit=_system_grid_limit(lines, system))
+            controls = resolve_storage_controls(clean_updates, base=before, system_grid_limit=_system_grid_limit(lines, system))
             merged_state.update(controls)
-            if "grid_limit_kw" in controls and ("grid_limit_kw" in updates or controls["strategy"] == "PeakShaving"):
+            if "grid_limit_kw" in controls and ("grid_limit_kw" in clean_updates or controls["strategy"] == "PeakShaving"):
                 set_system_grid_limit(lines, system, controls["grid_limit_kw"])
                 _, system = store._sections(lines)
             set_grid_export(lines, system, allow_grid_export)

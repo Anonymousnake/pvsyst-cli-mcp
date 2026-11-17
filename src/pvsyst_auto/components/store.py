@@ -90,7 +90,7 @@ def electrical_inventory(kind: str, text: str) -> dict:
         else:
             converter, = [block for block in blocks if block.path == "Converter" and block.object_type == "TConverter"]
             result["modes"] = {name: converter.fields[name][0][1] if len(converter.fields.get(name, [])) == 1 else None
-                               for name in ("ModeOper", "CompPMax", "CompVMax")}
+                               for name in ("ModeOper", "CompPMax", "CompVMax", "IsHybrid")}
             specifications = {"PNomConv": ("kW", converter), "PMaxOUT": ("kW", converter),
                               "VMppMin": ("V", converter), "VMPPMax": ("V", converter),
                               "VAbsMax": ("V", converter), "IDCMax": ("A", converter),
@@ -116,6 +116,9 @@ def electrical_inventory(kind: str, text: str) -> dict:
             if status != "declared":
                 result["issues"].append(f"{name}: {status}; not a verified design constraint")
         if kind == "OND":
+            if result["modes"].get("IsHybrid") == "True":
+                result["unverified"].append({"field": "IsHybrid", "unit": None,
+                    "reason": "OND IsHybrid=True is catalog metadata only; PVsyst 8.1.7 only simulates Common AC Bus grid storage (pvGridStorage) and does not expose DC-coupled battery ports"})
             result["unverified"].append({"field": "per_MPPT_limits", "unit": None,
                 "reason": "Converter current and hardware MPPT counts do not establish per-input limits, short-circuit ratings or string allocation"})
         result["status"] = "readable" if result["fields"] else "unreadable"

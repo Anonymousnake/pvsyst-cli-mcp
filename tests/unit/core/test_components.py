@@ -265,6 +265,12 @@ class ComponentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "CapNomC10"):
             self.store.create("BTR", "pb_missing.BTR", no_cap_btr)
 
+        hyb_ond = OND.replace("    PNomConv=50\n", "    IsHybrid=True\n    PNomConv=50\n")
+        self.store.create("OND", "hybrid_meta.OND", hyb_ond)
+        hyb_elec = self.store.inspect("OND", "hybrid_meta.OND")["electrical"]
+        self.assertEqual(hyb_elec["modes"]["IsHybrid"], "True")
+        self.assertTrue(any(item["field"] == "IsHybrid" for item in hyb_elec["unverified"]))
+
     def test_paths_and_backup_restrictions(self):
         for bad in ("../sample.GEN", "..\\sample.GEN", "C:\\sample.GEN",
                     "sample.OND", "sample.GEN.", "CON/GEN"):

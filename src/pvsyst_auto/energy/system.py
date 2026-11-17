@@ -41,7 +41,14 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             raise ValueError("battery.library must be 'workspace' or 'builtin'")
         if not isinstance(storage, dict):
             raise ValueError("Complete explicit native storage declaration is required")
-        storage_clean = {k: v for k, v in storage.items() if v is not None}
+        coupling = storage.get("coupling")
+        if coupling is not None and coupling != "ac_coupled":
+            raise ValueError(
+                "PVsyst 8.1.7 only implements Common AC Bus grid storage (pvGridStorage); "
+                "DC-coupled hybrid battery ports and DC clipping recovery are unsupported "
+                "(use equivalent AC charger/inverter efficiencies with coupling='ac_coupled')"
+            )
+        storage_clean = {k: v for k, v in storage.items() if v is not None and k != "coupling"}
         allowed_storage = set(NUMERIC_FIELDS) | CONTROL_UPDATE_KEYS
         if not (set(NUMERIC_FIELDS) | {"strategy"}) <= set(storage_clean) or set(storage_clean) - allowed_storage:
             raise ValueError("Complete explicit battery and native storage declarations are required")

@@ -538,6 +538,21 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("DischStrategy=MinMaxHour", vc5)
         self.assertIn("HourBegDisch=19", vc5)
 
+        # DC-coupled / hybrid storage fails closed cleanly (PVsyst 8.1.7 Common AC Bus boundary)
+        bad_dc = create_grid_storage_system(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC6",
+            battery=builtin_batt, storage={**ps_base, "coupling": "dc_coupled"},
+            load_manifest_name=None, dry_run=False,
+        )
+        self.assertEqual(bad_dc["status"], "blocked")
+        self.assertIn("Common AC Bus", bad_dc["issues"][0])
+        bad_dc_upd = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC1", new_variant="VC6",
+            updates={"coupling": "hybrid", "soc_min": 0.25}, dry_run=False,
+        )
+        self.assertEqual(bad_dc_upd["status"], "blocked")
+        self.assertIn("Common AC Bus", bad_dc_upd["issues"][0])
+
 
 if __name__ == "__main__":
     unittest.main()
