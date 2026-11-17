@@ -1,4 +1,5 @@
 """Regression coverage for the nine September audit findings; no vendor execution."""
+import asyncio
 import hashlib
 import json
 import re
@@ -6,6 +7,8 @@ import sys
 import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
+
+from mcp.server.mcpserver.exceptions import ToolError
 
 from tests.unit.core import test_components, test_pvsyst, test_variants
 from pvsyst_auto.api import app as _registered_app, context as server
@@ -301,6 +304,20 @@ class AuditRegressions(unittest.TestCase):
                     self.assertIsNone(direct["energy_kwh"])
                     self.assertEqual(direct["observed_energy_kwh"], 20)
                     self.assertEqual((direct["sum"], direct["mean"], direct["max"]), (20, 10, 10))
+
+    def test_os_errors_reach_the_mcp_client_with_their_message(self):
+        # A result CSV held open by Excel raises PermissionError; its reason must not be dropped.
+        cases = ((PermissionError(13, "Permission denied", "locked.csv"),
+                  "PermissionError: [Errno 13] Permission denied: 'locked.csv'"),
+                 (FileNotFoundError("gone.csv"), "pvsyst_read_rows: gone.csv"))
+        with fixture(test_pvsyst.PVsystTests) as case, patch.object(server, "_cli", case.client):
+            (case.workspace / "Results" / "locked.csv").write_text("date;E_Grid\n;kW\n01/01/90 00:00;10\n")
+            for error, message in cases:
+                with self.subTest(error=type(error).__name__), \
+                        patch.object(api_results, "read_result_page", side_effect=error), \
+                        self.assertRaises(ToolError) as raised:
+                    asyncio.run(server.mcp.call_tool("pvsyst_read_rows", {"csv_name": "locked.csv"}))
+                self.assertIn(message, str(raised.exception))
 
     def test_all_missing_or_irregular_results_have_no_complete_energy(self):
         scenarios = (("00:00;\n01:00;NaN\n02:00;inf", 0, 0, False, 60),

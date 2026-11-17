@@ -112,6 +112,20 @@ async def reject_unknown_tool_arguments(ctx: ServerRequestContext[Any, Any],
 
 mcp.middleware.append(reject_unknown_tool_arguments)
 
+# Failures whose message is returned verbatim, as before.
+_VERBATIM_ERRORS = (ValueError, FileNotFoundError, FileExistsError, PVsystError)
+# Everything mapped to a ToolError. Any other OSError (a CSV/PDF locked by another program,
+# a full disk, a launcher failure) would otherwise reach the client as the SDK's bare
+# "Error executing tool" with its message dropped.
+_REPORTED_ERRORS = (ValueError, OSError, PVsystError)
+
+
+def _tool_error(exc: Exception) -> ToolError:
+    if isinstance(exc, _VERBATIM_ERRORS):
+        return ToolError(str(exc))
+    return ToolError(f"{type(exc).__name__}: {exc}")
+
+
 def categorized_tool():
     """Label MCP descriptions without changing established wire-level tool names."""
     def register(func):
@@ -125,8 +139,8 @@ def categorized_tool():
         def guarded(*args, **kwargs):
             try:
                 return func(*args, **kwargs)
-            except (ValueError, FileNotFoundError, FileExistsError, PVsystError) as exc:
-                raise ToolError(str(exc)) from None
+            except _REPORTED_ERRORS as exc:
+                raise _tool_error(exc) from None
         mcp.tool(description=f"[{category}] {inspect.getdoc(func)}")(guarded)
         return func
     return register
@@ -158,15 +172,15 @@ def components() -> ComponentStore:
 def component_call(method: str, *args, **kwargs) -> dict:
     try:
         return getattr(components(), method)(*args, **kwargs)
-    except (ValueError, FileNotFoundError, FileExistsError) as exc:
-        raise ToolError(str(exc)) from None
+    except _REPORTED_ERRORS as exc:
+        raise _tool_error(exc) from None
 
 def variant_call(method: str, *args, **kwargs) -> dict:
     try:
         store = components()
         return getattr(VariantStore(store.workspace, store, store.lock), method)(*args, **kwargs)
-    except (ValueError, FileNotFoundError, FileExistsError) as exc:
-        raise ToolError(str(exc)) from None
+    except _REPORTED_ERRORS as exc:
+        raise _tool_error(exc) from None
 
 def workspace_path(folder: str, filename: str, extension: str) -> Path:
     """Allow a filename only within a named directory of the configured workspace."""
