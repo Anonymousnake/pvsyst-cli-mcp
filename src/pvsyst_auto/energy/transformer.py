@@ -5,6 +5,7 @@ from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.project.circuit import circuit_nodes, TRANSFORMER_KEYS
 from pvsyst_auto.project.tracking import _require_scope
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 NIGHT_DISCONNECT_FLAG = 0x20000000
 MAIN_FLAGS = ("$01F00400", "$21F00400")
@@ -27,8 +28,8 @@ def _profile(store, lines):
     if (len(mains) != 1 or mains[0].path != "PVObject_PVMainArray" or not mains[0].end_line
             or len(circuits) != 1 or not circuits[0].end_line
             or circuits[0].path != "PVObject_PVMainArray/PVObject_SystemCircuit"
-            or circuits[0].one("Version")[1] != "8.1.6" or circuits[0].one("Flags")[1] != "$00"):
-        raise ValueError("Requires one complete owning native main array and 8.1.6 circuit")
+            or circuits[0].one("Version")[1] not in NATIVE_TEXT or circuits[0].one("Flags")[1] != "$00"):
+        raise ValueError(f"Requires one complete owning native main array and {TEXT_LABEL} circuit")
     main = mains[0]
     for name, value in MAIN_PROFILE.items():
         if main.one(name)[1] != value:

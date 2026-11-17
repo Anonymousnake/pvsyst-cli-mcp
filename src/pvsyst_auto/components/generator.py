@@ -5,10 +5,11 @@ import math
 import re
 
 from pvsyst_auto.components.editor import ASSIGNMENT, OBJECT_CLOSE_ALIAS, replace_value
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 THRESHOLDS = ("VBkUpEncl_syst", "VBkUpDecl_syst")
 GENERATOR_MASK = 0x20
-SUPPORTED_VERSIONS = ("8.1.0", "8.1.6")
+SUPPORTED_VERSIONS = NATIVE_TEXT_OR_SEED
 
 
 def direct_fields(lines, bounds):
@@ -81,7 +82,7 @@ def state(lines, arrays, system):
                             if re.match(r"\s*PVObject_.*=pv\w+", line)), len(lines) - 1)
         root = direct_fields(lines, (0, first_child))
         if one(root, "Version")[1] not in SUPPORTED_VERSIONS:
-            raise ValueError("Generator configuration supports variant Version=8.1.0 or 8.1.6")
+            raise ValueError(f"Generator configuration supports variant Version={SEED_LABEL}")
         fields = direct_fields(lines, system)
         if one(fields, "SystemType")[1] != "Battery":
             raise ValueError("Generator configuration requires SystemType=Battery")

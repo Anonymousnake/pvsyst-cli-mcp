@@ -8,6 +8,7 @@ from itertools import product
 
 from pvsyst_auto.project.circuit import circuit_nodes, inventory
 from pvsyst_auto.scene.author import MAX_VERTICES, _dot, _num, _rotate_z, _sub
+from pvsyst_auto.versions import NATIVE_TEXT, PV_TABLE_SOURCES
 
 # Native 8.1.6 writes six decimals; the retained case coordinates differ by up
 # to 8e-6 m. This adapter comparison tolerance is not a placement offset.
@@ -20,7 +21,6 @@ ANGLE_TOL = 1e-6
 # module-layout geometry/counts/module->string assignment; only the engine version
 # token and the post-computation state labels advance. Unknown sources/versions or
 # unknown states still raise.
-PV_TABLE_SOURCES = frozenset({("osPVCollada", "8.1.6"), ("osPVCollada", "8.1.7")})
 MODULE_LAYOUT_GLOBAL_STATES = frozenset({"mlDefStrings", "mlDefInverters", "mlShd3DCalculated"})
 MODULE_LAYOUT_TABLE_STATES = frozenset({"mlDefStrings", "mlDefInverters"})
 
@@ -200,7 +200,7 @@ def verify_grouped_hardware(source_blocks, target_blocks, source_lines, target_l
 
 
 def _native_mesh(block, lines):
-    if block.one("Source")[1] != "osPVCollada" or block.one("Version")[1] != "8.1.6":
+    if block.one("Source")[1] != "osPVCollada" or block.one("Version")[1] not in NATIVE_TEXT:
         raise ValueError("House verification requires the recorded native PVCollada save version")
     if any(_number(block.one(key)[1]) != 0 for key in ("DInclin", "BaseSlope", "DAzimut")):
         raise ValueError("House verification requires the observed baked, zero-angle native mesh records")
@@ -433,7 +433,7 @@ def verify_pv_geometry(blocks, tables, modules, source, *, anchor_turn=None):
     for block in blocks:
         if block.object_type != "pvShdArrayTable":
             continue
-        if (block.one("Source")[1] != "osPVCollada" or block.one("Version")[1] != "8.1.6"
+        if (block.one("Source")[1] != "osPVCollada" or block.one("Version")[1] not in NATIVE_TEXT
                 or block.one("TypeOrigine")[1] != "1" or block.one("NElemChamps")[1] != "1"):
             raise ValueError("PV verification requires the recorded PVCollada table/origin type")
         frame = [_number(value) for value in block.one("Cadre")[1].rstrip(",").split(",")]
@@ -589,7 +589,7 @@ def _verify_narrow_module_layout(blocks, lines):
         plane = planes[_integer(array.one("NoOrientation")[1])]
         reference = _integer(layout.one("NoField3DCreated")[1])
         table = created.get(reference)
-        if (table is None or table.one("Version")[1] != "8.1.6"
+        if (table is None or table.one("Version")[1] not in NATIVE_TEXT
                 or table.one("Source")[1] != "osPVCollada"
                 or table.path.rsplit("/", 1)[-1] != "PVObject_" + layout.one("NoField3D")[1]
                 or layout.one("NoShed3D")[1] != "1" or layout.one("NIdentical")[1] != "1"

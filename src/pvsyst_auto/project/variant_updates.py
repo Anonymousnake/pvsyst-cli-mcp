@@ -22,6 +22,7 @@ from pvsyst_auto.energy.unavailability import replace_system_unavailability
 from pvsyst_auto.native.grid_limit import replace_grid_limit
 from pvsyst_auto.native.horizon import replace_horizon
 from pvsyst_auto.native.p50 import replace_p50
+from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
 from pvsyst_auto.project.circuit import (
     inventory as grid_inventory,
     resize_capacity,
@@ -130,9 +131,9 @@ def _apply_core_edits(store, lines, arrays, system, *, subarray_id, orientation_
         kinds = store._field_indices(lines, system, "SystemType") if system is not None else []
         versions = [store._field_indices(lines, bounds, "Version") for bounds in arrays.values()]
         if (main_array is None or len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
-                or any(len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in ("8.1.0", "8.1.6")
+                or any(len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT_OR_SEED
                        for indices in versions)):
-            raise ValueError("Thermal editing requires a verified 8.1.0/8.1.6 grid main array")
+            raise ValueError(f"Thermal editing requires a verified {SEED_LABEL} grid main array")
         for key, expected in (("Flags", "$00100400"), ("Flags2", "$082A")):
             indices = store._field_indices(lines, main_array, key)
             if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] != expected:
@@ -147,10 +148,10 @@ def _apply_core_edits(store, lines, arrays, system, *, subarray_id, orientation_
     for loss in set(subarray_updates or {}) & {"LIDLoss", "PMismMPP", "ModuleQualityLoss"}:
         versions = store._field_indices(lines, arrays[subarray_id], "Version")
         kinds = store._field_indices(lines, system, "SystemType") if system is not None else []
-        supported = ("8.1.0", "8.1.6")
+        supported = NATIVE_TEXT_OR_SEED
         if (len(versions) != 1 or FIELD.fullmatch(lines[versions[0]].rstrip("\r\n"))[2] not in supported
                 or len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"):
-            raise ValueError(f"{loss} editing requires a verified {'/'.join(supported)} grid subarray")
+            raise ValueError(f"{loss} editing requires a verified {SEED_LABEL} grid subarray")
     if set(subarray_updates or {}) & {"NModSerie", "LIDLoss", "PMismMPP", "ModuleQualityLoss"}:
         store._require_no_geometry(lines)
 
@@ -291,12 +292,12 @@ def _apply_single_control(store, lines, arrays, system, *, subarray_id, orientat
     header_end = next(i for i in range(1, len(lines)) if lines[i].strip().startswith("PVObject_"))
     root_versions = store._field_indices(lines, (0, header_end), "Version")
     kinds = store._field_indices(lines, system, "SystemType") if system is not None else []
-    if (len(root_versions) != 1 or FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2] != "8.1.6"
+    if (len(root_versions) != 1 or FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT
             or main is None or len(arrays) != 1 or len(kinds) != 1
             or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
-            or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] != "8.1.6" for v in versions)
+            or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT for v in versions)
             or has_object(lines, "pvGridStorage")):
-        raise ValueError(f"{control} editing requires a native 8.1.6 PV-only single-subarray Grid variant")
+        raise ValueError(f"{control} editing requires a native {TEXT_LABEL} PV-only single-subarray Grid variant")
 
     for key, accepted in (("Flags", ("$00100400", "$01900400")), ("Flags2", ("$082A",))):
         if key == "Flags2" and ageing_tx:

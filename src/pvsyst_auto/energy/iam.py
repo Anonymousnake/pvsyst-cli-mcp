@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from pvsyst_auto.components.editor import ASSIGNMENT, Profile, objects, replace_value
 from pvsyst_auto.components.generator import finite, one
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 COMPONENT_BIT = 0x20
 ALLOWED_FLAGS2 = (0x20, 0x00)
@@ -129,8 +130,8 @@ def _read(lines, bounds):
     if len(owners) != 1:
         raise ValueError("Require one owning pvSubArray header")
     fields = owners[0].fields
-    if one(fields, "Version")[1] != "8.1.6":
-        raise ValueError("IAM model editing requires subarray Version=8.1.6")
+    if one(fields, "Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"IAM model editing requires subarray Version={TEXT_LABEL}")
     index, raw = one(fields, "Flags2")
     # objects() reports line numbers relative to the slice, so rebase before matching
     index += bounds[0]

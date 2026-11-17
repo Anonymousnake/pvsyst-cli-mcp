@@ -11,6 +11,7 @@ from pvsyst_auto.components.editor import objects, root_block
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED
 
 NS = "http://www.collada.org/2008/03/COLLADASchema"
 PV = "https://pvcollada.org/2026/XMLSchema"
@@ -719,7 +720,7 @@ def source_profile(store, lines, arrays, system, *, allow_groups=False):
         if len(arrays) > 1:
             branches, owned = store._subarray_branches(lines, arrays, identifier)
             store._require_plane_branch_mode(owned, branches)
-            if (owned.one("Version")[1] not in ("8.1.0", "8.1.6")
+            if (owned.one("Version")[1] not in NATIVE_TEXT_OR_SEED
                     or owned.one("NStrOrient1")[1] != owned.one("NStringCh")[1]
                     or any(key.startswith("NStrOrient") and key != "NStrOrient1" and owned.one(key)[1] != "0"
                            for key in owned.fields)):

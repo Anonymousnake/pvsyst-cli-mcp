@@ -6,6 +6,7 @@ import re
 from pvsyst_auto.components.editor import ASSIGNMENT, root_block
 from pvsyst_auto.components.generator import direct_fields, one
 from pvsyst_auto.project.circuit import circuit_nodes, inventory as grid_inventory
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 
 def _blocks_request(blocks):
@@ -46,8 +47,8 @@ def _inspect_blocks(store, data):
     first_child = next((index for index in range(1, len(lines))
                         if (match := ASSIGNMENT.fullmatch(lines[index].rstrip("\r\n")))
                         and match[2].startswith("PVObject_")), len(lines) - 1)
-    if one(direct_fields(lines, (0, first_child)), "Version")[1] not in {"8.1.0", "8.1.6"}:
-        raise ValueError("Block preparation requires native variant Version=8.1.0/8.1.6")
+    if one(direct_fields(lines, (0, first_child)), "Version")[1] not in NATIVE_TEXT_OR_SEED:
+        raise ValueError(f"Block preparation requires native variant Version={SEED_LABEL}")
     main_fields = root_block(lines, main).fields
     for key, expected in (("Flags", 0x00100400), ("Flags2", 0x082A)):
         raw = one(main_fields, key)[1]
@@ -96,8 +97,8 @@ def _inspect_blocks(store, data):
     for identifier in arrays:
         branches, root = store._subarray_branches(lines, arrays, identifier)
         store._require_plane_branch_mode(root, branches)
-        if root.one("Version")[1] not in {"8.1.0", "8.1.6"}:
-            raise ValueError("Block preparation requires native subarray Version=8.1.0/8.1.6")
+        if root.one("Version")[1] not in NATIVE_TEXT_OR_SEED:
+            raise ValueError(f"Block preparation requires native subarray Version={SEED_LABEL}")
         orientation = root.one("NoOrientation")[1]
         if not orientation.isdigit() or int(orientation) not in planes:
             raise ValueError("Each source block requires one declared ordinary fixed plane")

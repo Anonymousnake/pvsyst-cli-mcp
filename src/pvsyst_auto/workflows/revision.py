@@ -14,6 +14,7 @@ from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, w
 from pvsyst_auto.results import annual_summary, fingerprint
 from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.weather.preparation import inspect_met_calendar
+from pvsyst_auto.versions import CLI_TRACKING_BUILDS
 
 
 ASSET_FOLDERS = {"Sites": (".SIT",), "Meteo": (".MET",), "ComposPV/PVmodules": (".PAN",),
@@ -401,8 +402,9 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
                 raise ValueError("PVsystCLI reports no remaining trial executions")
             version = cli.version()
-            if tracking_mode and version != "PVsystCLI 8.1.6 (rev. 49278)":
-                raise ValueError("Tracking revision requires the verified native8.1.6rev49278 executable")
+            if tracking_mode and version not in CLI_TRACKING_BUILDS:
+                raise ValueError("Tracking revision requires a verified PVsystCLI build: "
+                                 + ", ".join(CLI_TRACKING_BUILDS))
             record.update(status="ready", source_project=source_project, source_variant=source_variant,
                           working_project=new_project, working_variant=new_variant, year=year,
                           objective=objective, nominal_dc_power_kw=nominal_dc_power_kw, power_source=power_source,

@@ -6,6 +6,7 @@ import re
 
 from pvsyst_auto.components.editor import replace_value, root_block
 from pvsyst_auto.project.circuit import circuit_nodes, inventory, positive_integer, resize_capacity
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED
 
 NUMBERS = (
     "target_dc_kw", "max_dc_ac_ratio", "cold_voc_v", "hot_vmp_v", "cold_vmp_v",
@@ -76,7 +77,7 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
         if (root.one("NStrOrient1")[1] != root.one("NStringCh")[1] or any(
                 key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0" for key in root.fields)):
             raise ValueError("Require all strings in the common fixed plane")
-        if (root.one("Version")[1] not in ("8.1.0", "8.1.6") or not flags & 0x400
+        if (root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or not flags & 0x400
                 or flags & 0x100 or root.one("PowerSharingInverterId")[1] != "-1"):
             raise ValueError("Require verified independent MPPT mode with disabled power sharing")
         plane = positive_integer(root.one("NoOrientation")[1], "NoOrientation")

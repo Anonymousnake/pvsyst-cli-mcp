@@ -10,6 +10,7 @@ from pvsyst_auto.energy.availability import native_availability
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.components.generator import direct_fields, finite, one
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 NUMERIC_FIELDS = {
     "soc_min": ("SOCDischDecl", 0, 1), "soc_max": ("SOCChDecl", 0, 1),
@@ -48,8 +49,8 @@ def set_grid_export(lines, system, allow_grid_export):
 def storage_state(lines, system):
     """Read owning declared storage fields."""
     root_end = next((i for i,line in enumerate(lines[1:],1) if line.strip().startswith("PVObject_")), len(lines)-1)
-    if one(direct_fields(lines,(0,root_end)), "Version")[1] not in ("8.1.0", "8.1.6"):
-        raise ValueError("Grid storage requires a verified 8.1.0/8.1.6 text variant")
+    if one(direct_fields(lines,(0,root_end)), "Version")[1] not in NATIVE_TEXT_OR_SEED:
+        raise ValueError(f"Grid storage requires a verified {SEED_LABEL} text variant")
     if system is None:
         raise ValueError("One grid pvSystem is required")
     fields = direct_fields(lines, system)

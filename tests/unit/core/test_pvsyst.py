@@ -596,6 +596,21 @@ class PVsystTests(unittest.TestCase):
                     asyncio.run(server.mcp.call_tool("pvsyst_read_rows", {"csv_name": "locked.csv"}))
                 self.assertIn(message, str(raised.exception))
 
+    def test_centralized_version_allowlists_stay_explicit_and_reject_unverified(self):
+        from pvsyst_auto import versions
+        for name in ("NATIVE_TEXT", "NATIVE_TEXT_OR_SEED", "CLI_TRACKING_BUILDS"):
+            value = getattr(versions, name)
+            self.assertIsInstance(value, tuple, name)
+            self.assertTrue(value and len(set(value)) == len(value), name)
+        self.assertTrue(set(versions.NATIVE_TEXT) < set(versions.NATIVE_TEXT_OR_SEED))
+        self.assertIn("8.1.0", versions.NATIVE_TEXT_OR_SEED)
+        self.assertEqual(versions.TEXT_LABEL, "/".join(versions.NATIVE_TEXT))
+        self.assertEqual(versions.SEED_LABEL, "/".join(versions.NATIVE_TEXT_OR_SEED))
+        self.assertIn(versions.HEADLESS_RECORD_VERSION, versions.NATIVE_TEXT)
+        self.assertEqual(versions.GUI_BUILD, ("8.1.6", "49278"))
+        for token in ("8.1.5", "8.2.0", "9.0.0"):
+            self.assertNotIn(token, versions.NATIVE_TEXT_OR_SEED)
+
 
 if __name__ == "__main__":
     unittest.main()

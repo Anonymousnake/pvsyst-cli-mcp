@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
 from pvsyst_auto.components.generator import finite, one
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 YEAR_FIELD = "NoYearSimul"
 MEAN_FIELD = "ModuleDegradFactor"
@@ -112,8 +113,8 @@ def _read(lines, bounds, require_enabled=True):
                        if line.strip().startswith("PVObject_")), shift)
     versions = [m[4] for m in (ASSIGNMENT.fullmatch(lines[i].rstrip("\r\n"))
                                for i in range(1, header_end)) if m is not None and m[2] == "Version"]
-    if len(versions) != 1 or versions[0] != "8.1.6":
-        raise ValueError("Ageing model editing requires root Version=8.1.6")
+    if len(versions) != 1 or versions[0] not in NATIVE_TEXT:
+        raise ValueError(f"Ageing model editing requires root Version={TEXT_LABEL}")
     enabled = _flags2_state(one(root.fields, "Flags2")[1])
     if require_enabled and not enabled:
         raise ValueError("Ageing model editing requires the verified enabled template")

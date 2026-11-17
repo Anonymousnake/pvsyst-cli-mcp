@@ -27,11 +27,12 @@ from pvsyst_auto.project.circuit import circuit_nodes, inventory as grid_invento
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
 from pvsyst_auto.project.paths import project_path
 from pvsyst_auto.engineering.sizing import plan_capacity
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 SEED_STEM = "_DEMO_Residential"
 SEED_VARIANT = "VC0"
 SEED_SUBARRAY = 1
-SEED_VERSIONS = ("8.1.0", "8.1.6")
+SEED_VERSIONS = NATIVE_TEXT_OR_SEED
 DATA_RO_FOLDER = re.compile(r"PVsyst8\.1(?:\.\d+)?_Data", re.I)
 CLI_VERSION = re.compile(r"\b8\.1(?:\.\d+)?\b")
 MAX_MPPT_INPUTS = 64
@@ -231,7 +232,7 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
     if _field_value(store, lines, bounds, "SubArrayId") != str(SEED_SUBARRAY):
         raise ValueError("The seed subarray identifier does not match its section")
     if version not in SEED_VERSIONS:
-        raise ValueError("The seed subarray must declare Version=8.1.0/8.1.6")
+        raise ValueError(f"The seed subarray must declare Version={SEED_LABEL}")
     if (not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags_before)
             or int(flags_before[1:], 16) & INDEPENDENT_MPPT_BIT):
         raise ValueError("The seed subarray must be in ordinary NInvMPPT=1 mode with explicit Flags")

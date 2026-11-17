@@ -25,6 +25,7 @@ from pvsyst_auto.scene.mapping import (
     verify_module_layout, verify_pv_geometry)
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.scene.state import shading_state
+from pvsyst_auto.versions import HEADLESS_RECORD_VERSION
 
 # pvShading.Flags is mode-specific on native 8.1.6 saved records: linear=$20000100;
 # detailed module-layout=$20100900 (0x100000 selects fine shading, 0x800 enables the
@@ -38,7 +39,7 @@ SHADING_FLAGS = {"linear": "$20000100", "module_layout": "$20100900"}
 FORMAT = {
     "shading_scalars": [("Precision", "1"), ("FracOmbreMod", "1.000"),
                         ("FracOmbreThin", "0.400"), ("DisplayedRef", "refGeographical")],
-    "version": "8.1.6",
+    "version": HEADLESS_RECORD_VERSION,
     "table_flags": "$02200024",
     "table_npelemres": "10",
     "table_colors": [("ColorTechn", "$00FF0000"), ("ColorSurf", "$00FF9999"),

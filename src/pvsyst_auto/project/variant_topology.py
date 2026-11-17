@@ -7,6 +7,7 @@ import re
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.components.store import FIELD
 from pvsyst_auto.project.circuit import circuit_nodes, inventory as grid_inventory, positive_integer, require_ordinary_mppt
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED
 
 
 def subarray_branches(lines, arrays, identifier):
@@ -58,7 +59,7 @@ def subarray_branches(lines, arrays, identifier):
 def require_plane_branch_mode(root, branches):
     flags = root.one("Flags")[1] if "Flags" in root.fields else ""
     if re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) and int(flags[1:], 16) & 0x400:
-        if ("Version" not in root.fields or root.one("Version")[1] not in ("8.1.0", "8.1.6")
+        if ("Version" not in root.fields or root.one("Version")[1] not in NATIVE_TEXT_OR_SEED
                 or "PowerSharingInverterId" not in root.fields or root.one("PowerSharingInverterId")[1] != "-1"
                 or any(not members[0].children or any(child.kind != "MPPTNode" for child in members[0].children)
                        for _, _, members in branches)):
@@ -190,7 +191,7 @@ def clone_subarray_data(store, data, source_subarray_id, *, clone_orientation=Fa
     matches, root = subarray_branches(lines, arrays, source_subarray_id)
     if share_inverter:
         flags = root.one("Flags")[1]
-        if (root.one("Version")[1] not in ("8.1.0", "8.1.6") or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags)
+        if (root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags)
                 or not int(flags[1:], 16) & 0x400 or root.one("NInverter")[1] != "1"
                 or root.one("NInvMPPT")[1] != "1" or root.one("PowerSharingInverterId")[1] != "-1"
                 or grid_inventory(lines, arrays)["counts_valid"] is not True or len(matches) != 1):

@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 
 from pvsyst_auto.components.editor import ASSIGNMENT, replace_value, root_block
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 NODE = re.compile(r"([A-Za-z][A-Za-z0-9_]*Node) (Start|End);")
 KINDS = {"InjectionPointNode", "TransformerNode", "InverterNode", "MPPTNode", "StringNode"}
@@ -269,7 +270,7 @@ def inventory(lines, arrays):
             group_ids = {value.get("PowerSharingInverterId") for value in configs}
             models = {value.get("GInverter", "").casefold() for value in configs}
             shared = (len(set(member_ids)) > 1 and len({value.get("Version") for value in configs}) == 1
-                      and all(value.get("Version") in ("8.1.0", "8.1.6") for value in configs)
+                      and all(value.get("Version") in NATIVE_TEXT_OR_SEED for value in configs)
                       and all(re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flag) and int(flag[1:], 16) & 0x400 for flag in flags)
                       and len(models) == 1 and "" not in models and group_ids in ({"-1"}, {"0"}))
             if shared:
@@ -358,7 +359,7 @@ def inventory(lines, arrays):
                "shared_inverter_lines": [group["line"] for group in result["inverter_groups"]
                                          if identifier in group.get("subarray_ids", [])]}
         flags = values.get("Flags", "")
-        if (values.get("Version") in ("8.1.0", "8.1.6") and re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags)
+        if (values.get("Version") in NATIVE_TEXT_OR_SEED and re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags)
                 and int(flags[1:], 16) & 0x400):
             try:
                 inputs = positive_integer(values.get("NInvMPPT"), f"Subarray {identifier}: NInvMPPT")
@@ -443,8 +444,8 @@ def set_independent_mppt(lines, arrays, subarray_id, enabled):
     start, end = arrays[subarray_id]
     root = root_block(lines, (start, end))
     flags = root.one("Flags")[1]
-    if root.one("Version")[1] not in ("8.1.0", "8.1.6") or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
-        raise ValueError("MPPT mode switching requires verified Version=8.1.0/8.1.6 Flags")
+    if root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
+        raise ValueError(f"MPPT mode switching requires verified Version={SEED_LABEL} Flags")
     if root.one("PowerSharingInverterId")[1] != "-1":
         raise ValueError("MPPT mode switching requires explicit unshared PowerSharingInverterId=-1")
     if root.one("NStrOrient1")[1] != root.one("NStringCh")[1] or any(
@@ -523,7 +524,7 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
         if (target_mppt is not None and (target_inverters is not None or target_strings is not None)
                 or inverter_scaling and target_strings is not None):
             raise ValueError("Independent NInverter/NInvMPPT/NStringCh edits must be separate")
-        versions = ("8.1.0", "8.1.6")
+        versions = NATIVE_TEXT_OR_SEED
         if ("Version" not in root.fields or root.one("Version")[1] not in versions
                 or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) or not int(flags[1:], 16) & 0x400):
             field = "NInverter" if inverter_scaling else "NStringCh" if target_strings is not None else "NInvMPPT"

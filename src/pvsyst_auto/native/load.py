@@ -8,6 +8,7 @@ from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.components.generator import finite
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
+from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 START = "PVObject_UserNeeds=pvLoad"
 END = "End of PVObject pvLoad"
@@ -184,8 +185,8 @@ def flat_load(lines):
 def _require_scope(store, lines, arrays, system):
     """Verified native 8.1.6 PV-only single-subarray Grid variant; no storage, scene or P50."""
     root = root_block(lines)
-    if root.one("Version")[1] != "8.1.6":
-        raise ValueError("Requires a native 8.1.6 variant")
+    if root.one("Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"Requires a native {TEXT_LABEL} variant")
     flags = root.one("Flags")[1]
     if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) or int(flags[1:], 16) not in (0, 0x00080000):
         raise ValueError("Root Flags must be 0 or 0x80000")
@@ -205,8 +206,8 @@ def _require_scope(store, lines, arrays, system):
     if main_root.one("Flags")[1] != "$01900400" or main_root.one("Flags2")[1] != "$082A":
         raise ValueError("Main array requires the verified Flags=$01900400 and Flags2=$082A")
     sub_root = root_block(lines, next(iter(arrays.values())))
-    if sub_root.one("Version")[1] != "8.1.6":
-        raise ValueError("Subarray requires the verified 8.1.6 declaration")
+    if sub_root.one("Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"Subarray requires the verified {TEXT_LABEL} declaration")
     if sub_root.one("Flags")[1] != "$019E1002":
         raise ValueError("Subarray requires the verified 019E1002 flag family")
     strings = sub_root.one("NStringCh")[1]

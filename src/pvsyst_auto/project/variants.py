@@ -15,6 +15,7 @@ from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.components.store import ComponentStore, FIELD, MAX_PROJECT_BYTES
 from pvsyst_auto.project import fileio, variant_readback, variant_topology, variant_updates
 from pvsyst_auto.project.paths import project_path, project_root
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -334,9 +335,9 @@ class VariantStore:
         if (main_array is None or len(kinds) != 1
                 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
                 or not versions or any(len(indices) != 1
-                                       or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in ("8.1.0", "8.1.6")
+                                       or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT_OR_SEED
                                        for indices in versions)):
-            raise ValueError("UVFactor editing requires a verified 8.1.0/8.1.6 grid main array")
+            raise ValueError(f"UVFactor editing requires a verified {SEED_LABEL} grid main array")
         flags = VariantStore._field_indices(lines, main_array, "Flags")
         flags2 = VariantStore._field_indices(lines, main_array, "Flags2")
         if (len(flags) != 1 or FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2] not in ("$00100400", "$01900400")
