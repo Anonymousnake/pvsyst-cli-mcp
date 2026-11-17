@@ -7,7 +7,8 @@ The portable CI gate below checks public package/MCP behavior, not a PVsyst mode
 physical accuracy, shading parity, or a complete replacement of the application.
 It needs neither an installed PVsyst binary nor a private sample directory.
 
-The CI selects portable public contract classes explicitly. They cover installed
+The CI uses standard unittest discovery in `tests/contracts/offline/`. These existing
+self-contained contracts cover installed
 console/module/legacy launch, tool-group discovery, strict arguments, scene metadata,
 report-page validation, result and batch reading, invalid requests that must not
 launch the CLI or write outputs, and the acceptance CLI's offline validation and
@@ -39,14 +40,22 @@ working directories. The report records actual test/error/skip counts and explic
 sets `native_acceptance` to `not_run`. Standard unittest output contains the individual
 failure tracebacks. Retain both if a check fails.
 
+The two existing native cases formerly mixed into portable modules now live in
+`test_native_indexed_batch_e2e.py` and `test_multi_orientation_native_e2e.py` under
+`tests/contracts/`. Their methods, requests and opt-in variables are unchanged;
+they are not collected by the offline entrypoint.
+
 The current stale-CLI-adapter regression family is also run in CI using the installed
 wheel and `PYTHONPATH=tests`: `DesignFlowTests`, `StandardTemplateTests`, the simulation
 and revision terminal-state classes, and `ExplicitCountLineTests`. These existing
 assertions are unchanged; only their fake CLI signatures now accept the real adapter's
 optional per-request window policy. The 64-error reproduction and the corrected
 70-test run are separate evidence, not a claim that every legacy test passed.
-The separately reported two longstanding failures have not yet been identified from
-a reproducible command or retained traceback and remain an open issue.
+The two longstanding failures were reproduced in `test_simulation.SimulationTests`:
+`test_template_preview_execution_failure_and_reverse_recovery` and
+`test_capacity_envelope_plan_configuration_and_recovery`. Their fixture emits a native
+warning, and the product already returns `needs_review`; the two old expected values
+now match that behavior. No product code or additional assertions were needed.
 
 ## CI and Releases
 

@@ -17,7 +17,7 @@ import unittest
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 
 # Minimal generated native pvAddress record (CRLF, UTF-8, no BOM), matching the
 # Sellers field layout observed in shipped 8.1.7 DataRO: Comment/Version/Flags/

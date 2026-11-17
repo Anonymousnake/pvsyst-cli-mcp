@@ -40,7 +40,7 @@ from pathlib import Path
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 CREATE_TOOL = "pvsyst_create_house_pv_scene"
 READ_SCENE_TOOL = "pvsyst_read_house_pv_scene"
 IMPORT_TOOL = "pvsyst_import_house_pv_scene"

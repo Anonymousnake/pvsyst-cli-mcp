@@ -30,7 +30,7 @@ from pathlib import Path
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 
 # sitecustomize dropped on the server's PYTHONPATH: a real launch counter.
 GUARD_SOURCE = (

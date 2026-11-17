@@ -30,7 +30,7 @@ import unittest
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 UPDATE_TOOL = "pvsyst_update_variant_parameters"
 GET_TOOL = "pvsyst_get_variant_parameters"
 FAKE_CLI = b"Not an executable: this contract must not run PVsyst"

@@ -9,7 +9,7 @@ import unittest
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 SCENE = """  PVObject_Ombrage=pvShading
     Flags=$00000100
     ListeObjets, list of=1 TShdObject

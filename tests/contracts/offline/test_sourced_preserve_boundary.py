@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from pvsyst_auto.api.schemas import SourcedHouseTaskRequest
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 HOUSE = {"kind": "mesh", "meshes": [{"name": "m",
          "vertices": [[0, 0, 0], [1, 0, 0], [1, 1, 0]], "triangles": [[0, 1, 2]]}]}
 LAYOUT = {"module_rows": 1, "module_columns": 1, "orientation": "portrait",

@@ -34,7 +34,7 @@ from pathlib import Path
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 FAKE_CLI = b"Not an executable: these read/plan contracts must not run PVsyst"
 READ_VARIANT_TOOL = "pvsyst_get_variant_parameters"
 UPDATE_VARIANT_TOOL = "pvsyst_update_variant_parameters"

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 ENTRY = REPO / "scripts" / "native_acceptance.py"
 
 
