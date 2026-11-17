@@ -19,6 +19,7 @@ CONTRACTS = (
     "test_result_reading_boundary.ResultReadingBoundary",
     "test_batch_summary_reader_boundary.BatchSummaryReaderBoundary",
     "test_run_simulation_preflight_no_launch_boundary.RunSimulationPreflightNoLaunchBoundary",
+    "test_native_acceptance_cli_boundary.NativeAcceptanceCLIContract",
 )
 
 
