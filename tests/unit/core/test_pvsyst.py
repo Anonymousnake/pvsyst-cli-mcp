@@ -603,13 +603,21 @@ class PVsystTests(unittest.TestCase):
             self.assertIsInstance(value, tuple, name)
             self.assertTrue(value and len(set(value)) == len(value), name)
         self.assertTrue(set(versions.NATIVE_TEXT) < set(versions.NATIVE_TEXT_OR_SEED))
+        self.assertEqual(versions.NATIVE_TEXT, ("8.1.6", "8.1.7"))
         self.assertIn("8.1.0", versions.NATIVE_TEXT_OR_SEED)
+        self.assertIn("PVsystCLI 8.1.7 (rev. 49382)", versions.CLI_TRACKING_BUILDS)
         self.assertEqual(versions.TEXT_LABEL, "/".join(versions.NATIVE_TEXT))
         self.assertEqual(versions.SEED_LABEL, "/".join(versions.NATIVE_TEXT_OR_SEED))
         self.assertIn(versions.HEADLESS_RECORD_VERSION, versions.NATIVE_TEXT)
-        self.assertEqual(versions.GUI_BUILD, ("8.1.6", "49278"))
-        for token in ("8.1.5", "8.2.0", "9.0.0"):
+        self.assertEqual(versions.GUI_BUILDS, (("8.1.6", "49278"), ("8.1.7", "49382")))
+        for token in ("8.1.5", "8.1.8", "8.2.0", "9.0.0"):
             self.assertNotIn(token, versions.NATIVE_TEXT_OR_SEED)
+        from pvsyst_auto.native import scene as native_scene
+        fake_817 = type("Cli", (), {"cli": str(self.client.cli), "version": lambda _s: "PVsystCLI 8.1.7 (rev. 49382)"})()
+        fake_818 = type("Cli", (), {"cli": str(self.client.cli), "version": lambda _s: "PVsystCLI 8.1.8 (rev. 49527)"})()
+        self.assertIn("49382", native_scene._check_cli(fake_817))
+        with self.assertRaises(native_scene.UnsupportedEnvironment):
+            native_scene._check_cli(fake_818)
 
 
 if __name__ == "__main__":

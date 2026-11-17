@@ -1,12 +1,14 @@
 """Representative grouped circuits, sparse serialization and inconsistent inputs."""
 import tempfile
 import unittest
+import re
 from pathlib import Path
 
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.project.circuit import inventory, set_independent_mppt, set_power_sharing
 from pvsyst_auto.project.template import _declare_explicit_counts
 from pvsyst_auto.project.variants import VariantStore
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 
 GROUP = """InverterNode Start;
@@ -130,7 +132,7 @@ class GridTests(unittest.TestCase):
         arrays = ARRAY.replace("NInvMPPT=1", "Version=8.1.0\nFlags=$001E0402\nPowerSharingInverterId=-1\nNInvMPPT=6")
         text = grid_text(group, arrays).replace("End of PVObject pvVCalcul",
             "PVObject_Ombrage=pvShading\nFlags=$00\nEnd of PVObject pvShading\nEnd of PVObject pvVCalcul")
-        for version in ("8.1.0", "8.1.6"):
+        for version in NATIVE_TEXT_OR_SEED:
             before = self.inspect(text.replace("Version=8.1.0", "Version=" + version))
             original = self.path.read_bytes()
             preview = self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NInvMPPT": 12}, dry_run=True)
@@ -174,7 +176,7 @@ class GridTests(unittest.TestCase):
             self.assertEqual(self.path.read_bytes(), original)
 
         explicit = text.replace("    StringNode Start;", "    StringNode Start;\nNElements=1")
-        for version in ("8.1.0", "8.1.6"):
+        for version in NATIVE_TEXT_OR_SEED:
             before = self.inspect(explicit.replace("Version=8.1.0", "Version=" + version))
             original = self.path.read_bytes()
             preview = self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NStringCh": 12}, dry_run=True)
@@ -191,7 +193,7 @@ class GridTests(unittest.TestCase):
                 self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NStringCh": 9})
             self.assertEqual(self.path.read_bytes(), original)
         for candidate, reason in (
-                (explicit.replace("Version=8.1.0", "Version=8.1.5"), "verified Version=8.1.0/8.1.6"),
+                (explicit.replace("Version=8.1.0", "Version=8.1.5"), re.escape(f"verified Version={SEED_LABEL}")),
                 (text.replace("Version=8.1.0", "Version=8.1.6"), "explicit StringNode NElements")):
             before = self.inspect(candidate)
             original = self.path.read_bytes()
@@ -200,7 +202,7 @@ class GridTests(unittest.TestCase):
             self.assertEqual(self.path.read_bytes(), original)
         planes = text.replace("PVObject_=pvOrient", "Orientations, list of=1 TOrientGroup\nPVObject_=pvOrient").replace(
             "End of TOrientGroup\n", "End of TOrientGroup\nEnd of Orientations\n").replace("FieldType=FixedPlane", "Flags=$00\nFieldType=FixedPlane")
-        for version in ("8.1.0", "8.1.6"):
+        for version in NATIVE_TEXT_OR_SEED:
             version_planes = planes.replace("Version=8.1.0", "Version=" + version)
             before = self.inspect(version_planes)
             original = self.path.read_bytes()
@@ -272,7 +274,7 @@ class GridTests(unittest.TestCase):
                 self.store.restore("Example.PRJ", "VC0", second_plane["backup_name"], guard["sha256"], True)
                 self.assertEqual(self.path.read_bytes(), baseline)
         whole = text.replace("$001E0402", "$001E0002").replace("NInvMPPT=6", "NInvMPPT=1")
-        for version in ("8.1.0", "8.1.6"):
+        for version in NATIVE_TEXT_OR_SEED:
             before = self.inspect(whole.replace("Version=8.1.0", "Version=" + version))
             original = self.path.read_bytes()
             preview = self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, independent_mppt_enabled=True, dry_run=True)
@@ -294,7 +296,7 @@ class GridTests(unittest.TestCase):
 
         before = self.inspect(whole.replace("Version=8.1.0", "Version=8.1.5"))
         original = self.path.read_bytes()
-        with self.assertRaisesRegex(ValueError, "verified Version=8.1.0/8.1.6"):
+        with self.assertRaisesRegex(ValueError, re.escape(f"verified Version={SEED_LABEL}")):
             self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, independent_mppt_enabled=True)
         self.assertEqual(self.path.read_bytes(), original)
 
@@ -379,7 +381,7 @@ class GridTests(unittest.TestCase):
         self.assertEqual(r["issues"], [])
         self.assertIsNone(r["grid_circuit"]["totals"])
         self.assertFalse(r["grid_circuit"]["counts_complete"])
-        for version in ("8.1.0", "8.1.6"):
+        for version in NATIVE_TEXT_OR_SEED:
             leaf = GROUP[GROUP.index("    StringNode Start;"):GROUP.index("  Children=End")]
             port = "MPPTNode Start;\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n" + leaf + "Children=End\nMPPTNode End;\n"
             shared = ("InverterNode Start;\nNElements=2\nSubArrayName=Array A; Array B\nChildren=Start\n" + port

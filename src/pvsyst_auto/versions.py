@@ -8,7 +8,7 @@ from __future__ import annotations
 
 # Declared `Version=` of text records that exact-profile editors rewrite in place
 # (losses, energy management, orientations, curves, commercial forms, ...).
-NATIVE_TEXT: tuple[str, ...] = ("8.1.6",)
+NATIVE_TEXT: tuple[str, ...] = ("8.1.6", "8.1.7")
 
 # Editors that also accept the 8.1.0 records shipped as DataRO demo/seed variants.
 NATIVE_TEXT_OR_SEED: tuple[str, ...] = ("8.1.0",) + NATIVE_TEXT
@@ -20,10 +20,16 @@ HEADLESS_RECORD_VERSION = "8.1.6"
 PV_TABLE_SOURCES = frozenset({("osPVCollada", "8.1.6"), ("osPVCollada", "8.1.7")})
 
 # `PVsystCLI version` lines accepted by the tracking simulation/revision flows.
-CLI_TRACKING_BUILDS: tuple[str, ...] = ("PVsystCLI 8.1.6 (rev. 49278)",)
+CLI_TRACKING_BUILDS: tuple[str, ...] = (
+    "PVsystCLI 8.1.6 (rev. 49278)",
+    "PVsystCLI 8.1.7 (rev. 49382)",
+)
 
-# Release and build tokens the Win32 GUI bridge was recorded against (captions, metrics).
-GUI_BUILD: tuple[str, str] = ("8.1.6", "49278")
+# Release and build tokens the Win32 GUI bridge was checked against (captions, metrics).
+GUI_BUILDS: tuple[tuple[str, str], ...] = (
+    ("8.1.6", "49278"),
+    ("8.1.7", "49382"),
+)
 
 TEXT_LABEL = "/".join(NATIVE_TEXT)
 SEED_LABEL = "/".join(NATIVE_TEXT_OR_SEED)

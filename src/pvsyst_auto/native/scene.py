@@ -27,7 +27,7 @@ from pvsyst_auto.scene.mapping import verify_grouped_hardware, verify_house_geom
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.scene.author import _num, check_tables, house_profile, resolve_source_geometry, source_profile, table_profiles
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.versions import GUI_BUILD
+from pvsyst_auto.versions import GUI_BUILDS
 
 EXPECTED_DPI = 96
 EXPECTED_SIZE = {"TPerspectiveForm": (1475, 899), "TOrientManageForm": (1126, 826),
@@ -509,7 +509,7 @@ def _check_cli(cli):
     except PVsystError as exc:
         # A failed/timed-out query is a bridge stop with a result, not an escaping CLI error.
         _fail("The native CLI version query failed: %s" % exc)
-    if any(token not in text for token in GUI_BUILD):
+    if not any(all(token in text for token in pair) for pair in GUI_BUILDS):
         raise UnsupportedEnvironment("Unexpected native build: " + text.strip()[:120])
     return text.strip()
 
