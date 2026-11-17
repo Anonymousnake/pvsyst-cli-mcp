@@ -94,5 +94,4 @@ def replace_grid_limit(lines, system, updates):
     bounds = (system[0], system[1] + len(work) - count)
     after = _read(work, bounds)[3]
     lines[:] = work
-    return {"before": before, "after": after,
-            "scope": "Native 8.1.6 PV-only active kW limit at injection point; separate grid loss"}
+    return {"before": before, "after": after}

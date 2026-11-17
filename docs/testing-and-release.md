@@ -23,6 +23,14 @@ contracts as private fixture dependencies are removed; do not silently weaken or
 remove their existing acceptance criteria. Legacy mock-heavy tests are not relabelled
 as end-to-end tests by being run in CI.
 
+## Test Layout & Split Execution
+
+Tests are split into independent layers and domain slices so local edits only need to run the affected slice instead of the whole suite:
+
+- `tests/contracts/`: Fast MCP tool, schema, variant, scene/component, entrypoint, and acceptance-CLI boundaries (no private workspace fixtures or repeated CLI subprocess overhead). Run `--suite mcp` for the <5s in-process MCP slice, `--suite contracts` for all contracts, or `python scripts/check_contracts.py` for the zero-skip release gate.
+- `tests/unit/core/`, `tests/unit/energy/`, `tests/unit/weather/`, `tests/unit/workflows/`: Offline unit tests split by domain. Run any individual slice via `python scripts/run_tests.py --suite <core|energy|weather|workflows|unit>`.
+- `tests/e2e/`: Opt-in tests targeting a real local Windows `PVsystCLI.exe` installation (`python scripts/run_tests.py --suite e2e`).
+
 ## Local Reproduction
 
 Use a clean Python 3.10+ virtual environment, then run from the checkout:
@@ -32,29 +40,14 @@ python -m pip install build
 python -m build
 python -m pip install dist/pvsyst_cli_mcp-0.1.0-py3-none-any.whl
 python scripts/check_contracts.py --report dist/contracts.json
+python scripts/run_tests.py --suite workflows -v
 ```
 
-The installed package is exercised alongside checkout entrypoints, from temporary
-working directories. The report records actual test/error/skip counts and explicitly
-sets `native_acceptance` to `not_run`. Standard unittest output contains the individual
-failure tracebacks. Retain both if a check fails.
-
-The current stale-CLI-adapter regression family is also run in CI using the installed
-wheel and `PYTHONPATH=tests`: `DesignFlowTests`, `StandardTemplateTests`, the simulation
-and revision terminal-state classes, and `ExplicitCountLineTests`. These existing
-assertions are unchanged; only their fake CLI signatures now accept the real adapter's
-optional per-request window policy. The 64-error reproduction and the corrected
-70-test run are separate evidence, not a claim that every legacy test passed.
-The separately reported two longstanding failures have not yet been identified from
-a reproducible command or retained traceback and remain an open issue.
+The installed package is exercised alongside checkout entrypoints from temporary working directories. The report records actual test/error/skip counts.
 
 ## CI and Releases
 
-`.github/workflows/contracts.yml` runs on pull requests, main pushes, manual requests,
-and `v*` tags. It builds wheel and source distributions, installs the wheel, and runs
-the portable gate plus the affected regression family on Windows and Linux with
-Python 3.10 and 3.12. It retains distributions and the JSON result even after a test
-failure. A workflow file in a worktree is not proof that remote CI has run.
+`.github/workflows/contracts.yml` runs on pull requests, main pushes, manual requests, and `v*` tags. It builds wheel and source distributions, installs the wheel, and runs `scripts/check_contracts.py` plus the `workflows` slice on Windows and Linux with Python 3.10 and 3.12.
 
 The version source remains `[project].version` in `pyproject.toml`; it is `0.1.0`
 until an intentional release change. For a release:
@@ -68,8 +61,7 @@ until an intentional release change. For a release:
    tested Linux/Python-3.12 wheel and source distribution. Review the documented native
    evidence/support boundaries before publishing the draft.
 
-There is no automatic PyPI upload, automatic version bump, or claim of native
-certification. Creating a tag/draft is a separate publication action, not a side effect
+Creating a tag/draft is a separate publication action, not a side effect
 of local verification. Native acceptance needs its own explicit machine, version,
 fixture provenance, independent reference, execution budget, raw artifacts, and
 pass/fail/NOTRUN decision.

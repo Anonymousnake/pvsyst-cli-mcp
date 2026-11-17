@@ -446,8 +446,7 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                     if specific is not None and not math.isfinite(specific):
                         raise ValueError("Specific period yield exceeds finite numeric range")
                     period["specific_grid_yield"] = {"source_column": grid, "nominal_dc_power_kw": nominal,
-                        "kwh_per_kwp": specific,
-                        "scope": "Observed period only; caller-declared nameplate capacity, not a sizing certification"}
+                        "kwh_per_kwp": specific}
                 scenario.update(native_context=context, historical_input_binding_verified=binding is not None,
                                 condition_basis="bound_run_handoff" if binding is not None else "current_saved_state_only",
                                 input_handoff=historical, current_handoff=current, result_summary=period)

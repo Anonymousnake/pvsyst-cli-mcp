@@ -16,8 +16,8 @@ NUMBERS = (
 
 
 def plan_capacity(store, lines, array_id, pan, inverter, request):
-    """No writes/fitting: keep mode and full homogeneous hardware MPPT allocation."""
-    result = {"status": "blocked", "issues": [], "scope": "Declared design envelope, not native temperature-model reproduction or design certification"}
+    """Plan uniform MPPT series/parallel/inverter counts against declared bounds."""
+    result = {"status": "blocked", "issues": []}
     def issue(field, message):
         result["issues"].append({"field": "capacity." + field, "message": message})
     allowed = {*NUMBERS, "capacity_tolerance_pct", "voltage_standard", "design_basis"}
@@ -182,9 +182,7 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
                     "mppt_operating_current_a": parallel * values["module_max_operating_current_a"],
                     "mppt_short_circuit_current_a": parallel * values["module_max_short_circuit_current_a"]},
             search_bounds={"series_modules": [1, 100], "parallel_strings_per_mppt": [1, 100], "inverter_count": [1, 10000]},
-            unverified_checks=["Declared envelope accuracy and climate coverage", "Native temperature model/fitting and project sizing-temperature settings",
-                               "Other manufacturer contractual limits and physical connectors", "Combiner, cable, protection and loss-parameter refitting"],
-            selection="capacity error rounded to 1e-9 percent, then fewer inverters, then series closest to template; no energy/cost optimization")
+            selection="capacity error rounded to 1e-9 percent, then fewer inverters, then series closest to template")
     except (ValueError, KeyError) as exc:
         issue("template_or_components", str(exc))
     return result

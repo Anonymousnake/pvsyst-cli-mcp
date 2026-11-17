@@ -1,19 +1,4 @@
-"""Bind AI-extracted numeric design values to caller-declared source text.
-
-This is a source-consistency checker, not a guaranteed PDF/table reader. Each
-declaration carries the excerpt it was extracted from plus the exact numeric
-token and unit token found there. The module verifies that the tokens occur in
-the excerpt as standalone tokens, that the excerpt occurs in the declared text
-as a whitespace-normalized contiguous fragment, that the unit token maps to the
-declared unit through an explicit literal whitelist, and that the numeric token
-equals the declared value without rescaling. Bound values are assembled into the
-existing design request and handed to ``prepare_design_envelope``.
-
-Missing inputs return a draft for the caller/AI to complete; nothing is inferred
-and no exception is raised. The returned text never includes a full source text.
-
-No fetching, PDF parsing, hash, file IO or SDK call is performed here.
-"""
+"""Bind AI-extracted numeric design values to caller-declared source text."""
 from __future__ import annotations
 
 import math
@@ -22,11 +7,6 @@ from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.engineering.envelope import prepare_design_envelope
 
-
-SCOPE = ("Source-consistency checker over caller-declared text only: excerpt, numeric token and unit "
-         "token agree with the declared value. Document authenticity, manufacturer model fitting, page "
-         "layout, regional climate extremes and component identity are not certified, and a declared "
-         "locator is never fetched.")
 
 SOURCE_KEYS = ("kind", "title", "locator", "text", "model")
 SOURCE_KINDS = ("manufacturer", "site", "assumption")
@@ -473,7 +453,7 @@ def prepare_sourced_design(module_electrical, inverter_electrical, *, manufactur
     """Bind declared excerpts, assemble an engineering draft and reuse the design envelope."""
     binding = bind_source_values(manufacturer_model=manufacturer_model, sources=sources,
                                  declarations=declarations)
-    result = {"status": "blocked", "scope": SCOPE, "electrical_design": None, "capacity": None,
+    result = {"status": "blocked", "electrical_design": None, "capacity": None,
               "envelope": None, "issues": binding["issues"], "missing_fields": [],
               "warnings": binding["warnings"], "needs_review": binding["needs_review"],
               "provenance": binding["provenance"]}
@@ -525,8 +505,7 @@ def prepare_sourced_design(module_electrical, inverter_electrical, *, manufactur
     ambient = accepted.get("temperatures.min_ambient_c")
     if ambient is not None:
         draft["temperatures"]["min_ambient_basis"] = (
-            "caller-declared design minimum ambient temperature cited in " + ambient[0]["label"]
-            + "; caller-declared design value; site-extreme validity is not established by the quote")[:MAX_META_CHARS]
+            "caller-declared design minimum ambient temperature cited in " + ambient[0]["label"])[:MAX_META_CHARS]
     irradiance = draft.get("effective_irradiance")
     if irradiance:
         labels = [accepted[field][0]["label"] for field in

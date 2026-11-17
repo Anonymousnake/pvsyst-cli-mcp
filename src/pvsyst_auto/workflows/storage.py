@@ -107,7 +107,6 @@ def prepare_storage_revision(store, project, variant, new_variant, updates,
             else:
                 result["database_references"].append({"kind": "BTR", "name": battery,
                                                       "resolution": "native_database_uninspected"})
-                result["warnings"].append("Inherited native battery database contents are uninspected; hardware/BMS compatibility is not certified.")
             if store._read(source) != original or any(path.read_bytes() != data for path, data in snapshots.items()):
                 raise ValueError("A source variant or prepared load/availability input changed during preflight")
             result.update(status="ready", before=before, after=preview["after"],
@@ -232,6 +231,4 @@ def read_storage_year(csv_path, pdf_path, year, load_record, load_values, state)
                 "power_export_precision": "Six significant figures with a 0.001 kW per-column floor",
                 "ac_balance_verified": not missing_balance, "ac_balance_missing_columns": missing_balance,
                 "max_ac_balance_residual_kw": balance_max if not missing_balance else None,
-                "max_ac_balance_export_bound_kw": balance_bound_max if not missing_balance else None,
-                "battery_energy_scope": "Native battery DC-side charge/discharge totals; no capacity-times-SOC model",
-                "hardware_compatibility_certified": False}}
+                "max_ac_balance_export_bound_kw": balance_bound_max if not missing_balance else None}}

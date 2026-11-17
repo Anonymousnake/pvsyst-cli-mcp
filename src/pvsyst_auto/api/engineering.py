@@ -14,18 +14,8 @@ def pvsyst_prepare_block_project(source_project: StrictStr, source_variant: Stri
                                  new_project: StrictStr,
                                  blocks: Annotated[list[EngineeringBlock], Field(min_length=1, max_length=100)],
                                  dry_run: StrictBool = True) -> dict:
-    """Prepare one NEW project from explicit counts of fully defined native block types.
-    Each block names a unique source_subarray_id and count INCLUDING the original.
-    Cover every source subarray exactly once, at most 100 blocks in total. Copy whole
-    exclusive inverter/MPPT/string branches with their source equipment, counts and
-    ordinary fixed-plane orientation. Do not infer internal wiring, resize hardware,
-    choose models or change angles. Only the selected source VC and PRJ are published.
-    Preview builds in memory without writes; execution never overwrites or backs up
-    an existing project. No native run, GUI, INI, weather acquisition or certification.
-    Unsupported shading, sharing and common load/storage/transformer/limit/auxiliary
-    systems stop; inherited weather/losses/electrical suitability require review.
-    Prepared mapping and serialized counts do not prove native consumption.
-    """
+    """Assemble a new project by repeating fixed subarray blocks from a template project
+    by integer counts (1..100 total blocks covering every source subarray)."""
     from pvsyst_auto.workflows.blocks import prepare_block_project
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -34,26 +24,15 @@ def pvsyst_prepare_block_project(source_project: StrictStr, source_variant: Stri
 
 @categorized_tool()
 def pvsyst_review_engineering_brief(brief: EngineeringBriefRequest) -> dict:
-    """Review caller-structured cited engineering facts before a native project exists.
-    Aggregate same-scope conflicts, whole-string and block quantities, declared DC/AC
-    arithmetic, nameplate Pmax versus Vmp*Imp and missing exact PAN/OND/hourly weather.
-    Use explicit count/W/kW/kWh/V/A/deg/m units and PDF physical page citations; no
-    automatic unit conversion, chapter selection, equipment or topology inference.
-    Readonly with no files, PDF, native executable, license, network, GUI or INI access.
-    Source quotes remain caller declarations. Returns blocked or needs_review only;
-    even consistent facts do not certify equipment, physics or engineering readiness.
-    """
+    """Check structured feasibility claims (module/inverter counts, strings, block schedules,
+    and required PAN/OND/weather filenames) for internal consistency and missing inputs."""
     return review_engineering_brief(brief)
 
 @categorized_tool()
 def pvsyst_project_handoff(project: StrictStr, variant: StrictStr,
                            declarations: dict[StrictStr, Any] | None = None) -> dict:
-    """Read saved equipment, counts, orientation/circuit relationships and input dependencies.
-    Includes explicit caller declarations, inherited values, missing inputs and engineering
-    review items. Fixed/tracking and existing AC storage use the native saved records.
-    Readonly: no GUI, license query, simulation, repairs or writes. ready/needs_review
-    describe the handoff only; native_consumption_verified remains false.
-    """
+    """Read saved equipment, counts, orientation/circuit relationships, weather, load,
+    and storage settings alongside caller declarations and missing inputs."""
     from pvsyst_auto.engineering.handoff import build_project_handoff
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -61,19 +40,8 @@ def pvsyst_project_handoff(project: StrictStr, variant: StrictStr,
 
 @categorized_tool()
 def pvsyst_run_engineering_task(spec: EngineeringRevisionRequest, dry_run: StrictBool = True) -> dict:
-    """Preview or execute an isolated revision of a fixed/UnlimTracking or existing AC-storage project.
-    State the engineering objective, nameplate kWp/source and explicit supported changes.
-    Existing equipment/counts/weather stay inherited; no model fitting or sizing inference.
-    Existing AC storage accepts storage scalar updates and a prepared load_manifest_name;
-    WeakGrid additionally requires the complete availability declaration. The stored load
-    must match its prepared snapshot and site standard UTC offset. Native annual results
-    verify actual load/SOC/AC limits; storage never uses the PV-only E_Grid PR formula.
-    Preview writes nothing. Execution creates a NEW project/VC, reloads via native CLI,
-    runs one complete hourly year, produces native CSV/PDF and records the actual run
-    inputs for comparison and delivery. Existing names stop; failure retains evidence
-    without automatic retry/rollback. Inspect stage and native_consumption_verified as
-    well as status: needs_review can mean a completed run still requiring engineering review.
-    """
+    """Apply an isolated revision (fixed angles/losses, UnlimTracking controls, or AC-coupled
+    storage with hourly load) in a new project and run a full-year simulation."""
     from pvsyst_auto.workflows.revision import run_engineering_task
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -82,15 +50,8 @@ def pvsyst_run_engineering_task(spec: EngineeringRevisionRequest, dry_run: Stric
 @categorized_tool()
 def pvsyst_compare_engineering_scenarios(objective: StrictStr, scenarios: list[EngineeringScenario],
                                         output_name: StrictStr, dry_run: StrictBool = True) -> dict:
-    """Organize two or three native result scenarios around an explicit engineering question.
-    First scenario is baseline with no declared changes. Each candidate declares its
-    intended changed saved-input groups/paths. Completed engineering run manifests bind
-    historical inputs to CSVs; unbound historical results retain needs_review. Compare
-    only actual native columns with aligned timestamps/units; missing columns stay missing.
-    Returns Chinese explanations and key-hour differences without claiming optimality
-    or a single cause for simultaneous changes. Preview is readonly; execution writes
-    new JSON/CSV/Markdown comparison files under Results without rerunning PVsyst.
-    """
+    """Compare two or three completed simulation runs against a baseline scenario and write
+    JSON, CSV, and Markdown comparison reports under workspace/Results."""
     from pvsyst_auto.engineering.comparison import compare_engineering_scenarios
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -101,14 +62,8 @@ def pvsyst_compare_engineering_scenarios(objective: StrictStr, scenarios: list[E
 @categorized_tool()
 def pvsyst_export_engineering_delivery(manifest_name: StrictStr, output_name: StrictStr,
                                       dry_run: StrictBool = True, comparison_name: StrictStr = "") -> dict:
-    """Package a completed engineering run as a NEW local Results ZIP.
-    Reads one workspace run manifest and checks its input/output binding. Includes the
-    selected native PRJ/VC, original CSV/PDF, Chinese summary and input handoff. Optional
-    house runs additionally include their genuine task manifest, authored PVC2 and SFI.
-    comparison_name includes its bound scenarios and Chinese comparison report. Commercial
-    component/weather files remain external dependencies. Export does not certify the
-    design or upgrade a review status. Preview writes nothing; existing ZIPs stop.
-    """
+    """Bundle a completed engineering run (and optional scenario comparison) with its PRJ/VC,
+    result CSV/PDF, and Markdown handoff summary into a ZIP archive under workspace/Results."""
     from pvsyst_auto.workflows.delivery import export_engineering_delivery
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)

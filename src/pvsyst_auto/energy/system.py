@@ -137,10 +137,6 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
                           cycle_sow=cycle, static_sow=static, load_encoding=encoding, year=record["year"],
                           utc_offset_hours=record["utc_offset_hours"], diff=diff[:32000], diff_truncated=len(diff)>32000,
                           bom_added=bool(bom_prefix) and not original.startswith(b"\xef\xbb\xbf"))
-            result["warnings"].append("This constructs native centralized AC-coupled storage, not hybrid DC battery ports or a grid-charging tariff controller. DC port/BMS compatibility and hardware sizing are not certified.")
-            result["warnings"].append("Battery model/counts/temperature/SOW and efficiencies are caller-declared, not inferred from PV or climate. SOCDischSelf is the WeakGrid self-use reserve; it remains unused as a backup reserve under SelfConsumption.")
-            result["warnings"].append(f"TempBattRef has no separate input: it repeats the first (January) declared monthly battery temperature, {decimal_text(temperatures[0])} C. This adapter choice is not a declared or verified battery reference temperature.")
-            result["warnings"].append("PV design, geometry, component references and site/weather remain inherited. Run matching native year/timezone and verify loads, SOC and energy before claiming consumption.")
             if store._read(source) != original or any(path.read_bytes() != data for path, data in snapshots.items()):
                 raise ValueError("A source battery/load/template changed before creation")
             if dry_run:

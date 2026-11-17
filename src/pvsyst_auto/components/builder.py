@@ -1,4 +1,4 @@
-"""Cited scalar edits on complete templates, not a datasheet-to-physics fitter."""
+"""Derive a PAN or OND file from a template using cited datasheet values."""
 from __future__ import annotations
 
 import difflib
@@ -18,21 +18,15 @@ SCALAR_UNITS = {
 }
 DIMENSION_UNITS = {"Width": ("m", "mm"), "Height": ("m", "mm"),
                    "Depth": ("m", "mm"), "Weight": ("kg",)}
-SCOPE = ("User-defined template-derived component. Numeric citations are checked against "
-         "caller-declared source text, not authenticated manufacturer documents. Unspecified "
-         "model parameters, hardware declarations and curves stay inherited. No diode-model "
-         "refitting, automatic efficiency profile generation, temperature coefficient conversion, "
-         "hardware sizing or physical certification is performed. A referencing native simulation "
-         "and independent engineering review remain necessary.")
 
 
 def build_sourced_component(store, *, component_type, template_name, new_name,
                            manufacturer, model, sources, declarations,
                            source_library="workspace", dry_run=True,
                            acknowledge_inherited_model=False):
-    """Preview or create one NEW component plus a source/assumption record."""
+    """Preview or create a new component from cited values and a template."""
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
-              "issues": [], "warnings": [], "provenance": [], "scope": SCOPE,
+              "issues": [], "warnings": [], "provenance": [],
               "component_created": False, "artifacts": {}, "model_refitted": False}
     def issue(field, message):
         result["issues"].append({"field": field, "message": str(message)})
@@ -179,7 +173,6 @@ def build_sourced_component(store, *, component_type, template_name, new_name,
                                               fromfile=template_name, tofile=new_name))
             result["diff"] = diff[:32000]
             result["diff_truncated"] = len(diff) > 32000
-            result["warnings"].append({"field": "inherited_model", "message": SCOPE})
             if dry_run:
                 return result
             if not acknowledge_inherited_model:
@@ -192,7 +185,6 @@ def build_sourced_component(store, *, component_type, template_name, new_name,
             manifest.parent.mkdir(parents=True, exist_ok=True)
             record = {key: value for key, value in result.items()
                       if key not in ("diff", "stage", "component_created", "dry_run")}
-            record["scope"] += " This record describes the candidate, not proof that its file was created or simulated."
             encoded_record = json.dumps(record, ensure_ascii=False, indent=2, allow_nan=False)
             result["stage"] = "creation"
             created = False

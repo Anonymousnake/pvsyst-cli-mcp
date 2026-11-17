@@ -256,8 +256,7 @@ def _prepare(store, components, request):
             "inherited_parameters": store.inspect_parameters(project, variant),
             "inherited_project_parameters": {key: project_root.one(key)[1]
                 for key in ("DesignTempMin", "TempOper", "TempOperMin", "TempOperMax", "TranspositionAlgorithm", "ACLossesRef")
-                if key in project_root.fields},
-            "inherited_scope": "Hardware/counts/angles/losses and bound SIT/MET remain from the selected source; no sizing/climate/design certification."}
+                if key in project_root.fields}}
     return paths, plan
 
 

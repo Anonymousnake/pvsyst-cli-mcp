@@ -13,7 +13,6 @@ START = "PVObject_UserNeeds=pvLoad"
 END = "End of PVObject pvLoad"
 ANCHOR = "SimulPlots=Start"
 BOM = b"\xef\xbb\xbf"
-# Adapter bound only; not a native or engineering limit.
 LIMIT = 1e6
 STEP = Decimal("0.001")
 COMMENTS = {"constant": "MCP native constant load", "monthly": "MCP native monthly load",
@@ -47,7 +46,7 @@ def _decimal(text, label, maximum=LIMIT):
     if not value.is_finite():
         raise ValueError(f"{label} must be finite")
     if value < 0 or value > Decimal(str(maximum)):
-        raise ValueError(f"{label} must be within 0..{_plain(maximum)} (adapter bound, not a native limit)")
+        raise ValueError(f"{label} must be within 0..{_plain(maximum)}")
     if value != value.quantize(STEP):
         raise ValueError(f"{label} must use at most 0.001 steps")
     return value
@@ -297,12 +296,6 @@ def create_native_load_variant(store, *, project, source_variant, new_variant, l
                           bom_added=bool(bom_prefix) and not original.startswith(BOM))
             if name_change is not None:
                 result["name_change"] = name_change
-            result["warnings"].append(
-                "Only one new VC is written: root bit19 and the owning pvLoad are set, optional root Comment changes, "
-                "and pvSystem/PRJ/weather/topology/other loads stay inherited. Saving is not native consumption.")
-            result["warnings"].append(
-                "Supported subset is native 8.1.6 PV-only single-subarray Grid without storage, scene, module layout, "
-                "saved horizon or P50/P90. Probability, HouseHold and HourlyFile blocks stop instead of being replaced.")
             diff = "".join(difflib.unified_diff(text.splitlines(keepends=True),
                                                candidate_text.splitlines(keepends=True)))
             result.update(diff=diff[:32000], diff_truncated=len(diff) > 32000)

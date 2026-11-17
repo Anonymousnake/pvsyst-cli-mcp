@@ -331,9 +331,7 @@ def search_locations(query, country_code=""):
     result = {"status": "blocked", "query": query, "country_code": country_code,
               "provider": GEOCODING_LABEL, "candidate_count": 0, "candidates": [],
               "ambiguous": False, "selection_required": True, "request_url": None,
-              "issues": [], "warnings": [],
-              "scope": "Provider candidates with GeoNames place elevation and IANA zone; "
-                       "no candidate is selected automatically and no weather is downloaded."}
+              "issues": [], "warnings": []}
     if not isinstance(query, str) or not 2 <= len(query.strip()) <= 100:
         result["issues"].append("query must be 2..100 characters of a place name")
         return result
@@ -625,10 +623,7 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
               "location": None, "standard_utc_offset_hours": None, "plan": None,
               "units": dict(CSV_UNITS), "artifacts": {}, "created_files": {},
               "provider_echo": None, "raw_preserved": False, "issues": [], "warnings": [],
-              "review_required": [],
-              "scope": "Public Open-Meteo ERA5 GHI/DHI plus a linear endpoint-mean ambient "
-                       "temperature; native MET conversion and pyranometer quality are not "
-                       "certified here."}
+              "review_required": []}
     manifest_path = None
     try:
         if type(dry_run) is not bool:
@@ -743,9 +738,7 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
             "grid_elevation_m": payload.get("elevation"), "timezone": payload.get("timezone"),
             "utc_offset_seconds": payload.get("utc_offset_seconds"),
             "hourly_units": payload.get("hourly_units"),
-            "generationtime_ms": payload.get("generationtime_ms"),
-            "note": "echoed coordinates are ERA5 0.25 degree grid centres and the echoed "
-                    "elevation is a DEM value; site metadata keeps the requested place instead"}
+            "generationtime_ms": payload.get("generationtime_ms")}
         if site["elevation_m"] is None:
             echo_elevation = payload.get("elevation")
             if isinstance(echo_elevation, (int, float)) and not isinstance(echo_elevation, bool) \

@@ -4,8 +4,7 @@ Scope
 -----
 One new single-subarray, single-ordinary-fixed-plane, unshaded grid project per call. No
 project comparison, no multi-subarray layout, no binary component analysis. Everything the
-selected manufacturer files do not declare must be in the spec: nothing is inferred, no
-template count is silently reused, and no manufacturer certification is implied.
+selected manufacturer files do not declare must be in the spec.
 
 This module owns the ordering only:
 strict spec gate, output-name preflight, read-only native capability/licence check,
@@ -745,16 +744,9 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         if envelope["status"] != "ready" or envelope.get("capacity") is None:
             return _stop(result, "design_envelope")
         flat_capacity = envelope["capacity"]
-        result["warnings"].append(
-            "The design envelope is a public linear relation over declared manufacturer data bound to "
-            f"the selected identity {label}; it is a source binding, not a manufacturer certification")
     else:
         flat_capacity = direct
-        result["preview"]["envelope"] = {"status": "supplied",
-                                         "capacity": dict(direct), "scope": "direct capacity input"}
-        result["warnings"].append(
-            "The capacity object was supplied directly; the flow confirms it against the template "
-            "hardware but does not re-derive or replace any declared design input")
+        result["preview"]["envelope"] = {"status": "supplied", "capacity": dict(direct)}
 
     confirm, stopped = _phase(result, "template_capacity", lambda: discover(flat_capacity))
     if stopped is not None:
@@ -888,9 +880,6 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         if prepare.get("status") == "needs_review":
             inherited_review = True
         if dry_run:
-            result["warnings"].append(
-                "No SIT/MET exists yet, so the annual simulation is planned but not preflighted; "
-                "the flow does not claim a completed preflight here")
             return _stop(result, "planned", "ready_for_weather")
         manifest_name = Path((prepare.get("artifacts") or {}).get("manifest", "")).name or manifest_name
     elif not manifest_name:
@@ -911,9 +900,6 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         # The seed is written only after the capacity/seed preflight and the weather phase succeeded,
         # so a failed provider request never leaves a half-built seed behind.
         if dry_run:
-            result["warnings"].append(
-                "The seed template exists only as an in-memory preview, so the annual simulation is "
-                "neither run nor preflighted and this dry run does not claim ready")
             return _stop(result, "planned", "ready_for_weather")
         # Projects is part of the verified folder set that the workspace_init step already created.
         seed, stopped = _phase(result, "template_seed", lambda: prepare_standard_template(

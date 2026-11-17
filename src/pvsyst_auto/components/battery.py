@@ -13,7 +13,6 @@ ALIASES = {CAPACITY_ALIAS: CAPACITY_TAG, "SelfDisch_Temp": "IAutoShape",
            "Capa_Temperature": "CapaTemper", "VMaxCharge_Rate": "VMaxChargeRate"}
 KNOWN_TAGS = frozenset((*ALIASES.values(), "DVGassShape", "NbCycleMax"))
 RATIO_RANGE = (1.15, 1.45)
-SCOPE = "BTR capacity versus discharge duration; other battery curves are inspection-only"
 
 
 def _control(blocks: list[ObjectBlock]) -> dict:
@@ -80,7 +79,7 @@ def battery_curve_inventory(text: str) -> dict:
     try:
         blocks = objects(text)
     except ValueError as exc:
-        return {"scope": SCOPE, "items": [], "errors": [str(exc)], "truncated": False}
+        return {"items": [], "errors": [str(exc)], "truncated": False}
     control = _control(blocks)
     found = [b for b in blocks if isinstance(b, Profile)]
     items = []
@@ -110,7 +109,6 @@ def battery_curve_inventory(text: str) -> dict:
                 "point_count_range": [4, MAX_POINTS],
                 "requires_expected_sha256": True,
                 "requires_use_file_curve": profile.path == CAPACITY_ALIAS,
-                "simulation_effect": "unverified",
                 "axes": ["discharge duration (h)", "capacity relative to C10"] if capacity else None}
         if capacity:
             item.update(ratio_100h=None, value_errors=[])
@@ -125,7 +123,7 @@ def battery_curve_inventory(text: str) -> dict:
             except ValueError as exc:
                 item["value_errors"].append(str(exc))
         items.append(item)
-    return {"scope": SCOPE, "control": control, "items": items, "truncated": len(found) > len(items)}
+    return {"control": control, "items": items, "truncated": len(found) > len(items)}
 
 
 def replace_battery_curve(text: str, updates: dict[str, list[list[float]]],

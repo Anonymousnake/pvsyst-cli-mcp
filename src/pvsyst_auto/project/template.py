@@ -38,8 +38,6 @@ MAX_MPPT_INPUTS = 64
 INDEPENDENT_MPPT_BIT = 0x400
 RETAINED_FIELDS = ("NModSerie", "LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI",
                    "PQualityModP", "PMismUFixe", "PNomAC_InMPPT")
-SCOPE = ("New-only construction from the installed demo seed; counts and references are "
-         "declared, not physically certified")
 
 
 def _issue(result: dict, field: str, message) -> None:
@@ -366,7 +364,7 @@ def prepare_standard_template(cli, store, *, ond_electrical, pan_name, ond_name,
 
 def _prepare(cli, store, ond_electrical, pan_name, ond_name, new_project, dry_run, capacity, pan_fields,
              allow_window_creation=None):
-    result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "scope": SCOPE,
+    result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
               "request": {"project": new_project, "module": pan_name, "inverter": ond_name,
                           "capacity": capacity is not None},
               "source": {}, "definition": {}, "changes": [], "retained_defaults": [],

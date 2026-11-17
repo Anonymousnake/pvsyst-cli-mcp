@@ -157,7 +157,4 @@ def replace_auxiliaries(lines, system, updates):
         if _read(candidate, (system[0], system[0] + len(body) + 1))[3] != after:
             raise ValueError("Candidate auxiliary state differs from the request")
         lines[:] = candidate
-    scope = ("Native operating/night auxiliary powers with the constant threshold and proportional terms, "
-             "restricted to the verified native families" if mode == "profile" else
-             "Native whole-system operating/night auxiliary powers; thresholds and proportional term stay zero")
-    return {"before": before, "after": after, "scope": scope}
+    return {"before": before, "after": after}

@@ -109,8 +109,7 @@ def review_project_inputs(store, *, project, variant, preparation_manifest_name)
                                                    else _within_saved_precision(actual, declared))
                 result["comparisons"].append({"field": field, "owner": owner, "unit": unit,
                     "declared": expected, "expected_saved": saved, "actual_saved": actual,
-                    "status": "missing" if actual is None else "matches" if same else "differs",
-                    "scope": "stored_value_only"})
+                    "status": "missing" if actual is None else "matches" if same else "differs"})
 
             refs = references["subarrays"][0]["references"]
             for kind, key in (("PAN", "pan_name"), ("OND", "ond_name")):
@@ -172,11 +171,7 @@ def review_project_inputs(store, *, project, variant, preparation_manifest_name)
                 native_mode_flags={"subarray": array["values"].get("Flags"),
                                    "main_array": parameters["main_array"]["values"].get("Flags"),
                                    "main_array_flags2": parameters["main_array"]["values"].get("Flags2")},
-                loss_mode_interpretation_performed=False,
-                unchecked_checks=["Saved disk state only; unsaved GUI/runtime values are not observed",
-                    "Baseline declarations are not authenticated or certified; model/meteorology file contents are not compared",
-                    "Loss values do not prove native default/manual mode or physical effectiveness",
-                    "No automatic repair, geometry/cache invalidation or annual simulation was performed"])
+                loss_mode_interpretation_performed=False)
             return result
         except (ValueError, OSError, KeyError, TypeError) as exc:
             result.update(status="blocked", issues=[str(exc)], comparisons=[], declared_not_native=[])

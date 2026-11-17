@@ -21,8 +21,6 @@ OUTER = ("Comment", "Flags", "FracAlbedo") + DERIVED
 INNER = ("NPtsMax", "NPtsEff", "LastCompile", "Mode")
 POINT = re.compile(r"Point_([0-9]{1,3})")
 LAST_COMPILE = "$81"
-SCOPE = ("Root pvHorizon tag block only; native 8.1.6 horizon profile, "
-         "not an interpolation, albedo or energy model")
 
 
 def _number(value, label, low, high, step=False):
@@ -205,14 +203,14 @@ def replace_horizon(lines, updates):
     located = _locate(lines)
     if mode == "none":
         if located is None:
-            return {"before": before, "after": before, "scope": SCOPE}
+            return {"before": before, "after": before}
         start, end = located
         stop = end + 1 if end + 1 < len(lines) and not lines[end + 1].strip() else end
         del lines[start:stop + 1]
         after = {"mode": "none", "profile_name": None, "points": []}
     elif (before["mode"] == "profile" and before["profile_name"] == name
             and before["points"] == [list(pair) for pair in points]):
-        return {"before": before, "after": before, "scope": SCOPE}
+        return {"before": before, "after": before}
     elif before["mode"] == "profile" and before["points"] == [list(pair) for pair in points]:
         start, end = located
         index = next(i for i in range(start + 1, end) if
@@ -232,4 +230,4 @@ def replace_horizon(lines, updates):
             lines[located[0]:located[1] + 1] = _body(indent, name, points, ending)
         after = {"mode": "profile", "profile_name": name,
                  "points": [[x, y] for x, y in points]}
-    return {"before": before, "after": after, "scope": SCOPE}
+    return {"before": before, "after": after}

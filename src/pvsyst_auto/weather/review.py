@@ -1,22 +1,4 @@
-"""Read-only weather review backend: prepared CSV -> native result, plus provider evidence.
-
-This module answers one question without touching the CLI, the licence, any hash or any
-file on disk: *do the numbers and the time labels in this workspace agree, and what is
-still unverified?* It never writes, never runs a simulation and never fingerprints a file.
-
-Contract of the returned report:
-
-* ``status`` is ``blocked`` or ``needs_review``; this profile never reports ``completed``.
-  The effective sun-position time shift cannot be verified from this evidence, so that
-  standing review item stays listed even when every numeric check agrees, and a readable
-  review is never a physical certification.
-* ``provider_to_csv`` compares the raw provider payload rebuilt with the very same
-  converter the acquisition module uses. That is a same-converter consistency check, not
-  an independent algorithm proof.
-* ``time_basis`` reports what the native ``.MET`` header and the ``.SIT`` file *declare*.
-  Hourly values and labels matching row by row does **not** show that the effective
-  sun-position time shift is zero; no public field exposes that residual.
-"""
+"""Read-only weather review backend: prepared CSV -> native result, plus provider evidence."""
 from __future__ import annotations
 
 import csv
@@ -44,13 +26,6 @@ MET_ROOT_FIELDS = ("Version", "Flags", "IsSourceUt", "HourShift", "TimeShift",
                    "DateDebF", "DateFinF")
 MET_SITE_FIELDS = ("Version", "Site", "Latitude", "Longitude", "Altitude", "TimeZone", "HLeg")
 SIT_ROOT_FIELDS = ("Version", "Site", "Latitude", "Longitude", "Altitude", "TimeZone", "HLeg")
-
-SCOPE = ("Read-only hourly-value, label and declared-field review of one prepared CSV against one "
-         "native result. No simulation, no licence, no CLI call, no write and no hashing: the CSV is "
-         "re-inspected through the hash-free inspector, so this report carries no checksum field. "
-         "Hourly data and label agreement does not certify the effective sun-position time shift, the "
-         "clear-sky model or the ERA5 source quality; that sun-position item always stays open, so a "
-         "readable review ends as needs_review, never as a physical certification.")
 
 
 def _read_declarations(path: Path, limit: int, root_fields: tuple[str, ...],
@@ -344,15 +319,6 @@ def _time_basis_declaration(workspace: Path, weather_manifest_name: str, native_
                   met_site_fields=met_site, sit_fields=sit_fields,
                   met_header_read_stop=stop, reviewed=True,
                   declared_source_year=_declared_source_year(met_fields))
-    result["met_header_read_scope"] = (
-        "Declared owning fields only, and that bound is the narrow contract of this review entry point "
-        "rather than a claim that a PVsyst object can never be parsed: the root time fields of the "
-        "pvMeteo object and the site fields nested in its PVObject_SiteMet child are taken from at most "
-        f"{MAX_MET_HEADER_BYTES} bytes of leading text, and the read ends at the first measured-value "
-        "list, unknown nested object, closing marker or non-declaration line. Both the UTF-8 and the "
-        "cp1252 decoding of a site label are accepted, so a legal non-ASCII name cannot hide the time "
-        "fields after it. No hour array, curve table, compressed or binary block is read or "
-        "interpreted, and no nested value is ever reported as a root owning field.")
     result["conflicts"].extend(declaration_issues)
     result["context_matches"] = (result["consumed_met"] == met_path.name
                                  and result["consumed_sit"] == sit_path.name
@@ -380,15 +346,9 @@ def _time_basis_declaration(workspace: Path, weather_manifest_name: str, native_
 
 def review_weather(workspace, *, csv_name, native_csv_name, year, acquisition_manifest_name="",
                    weather_manifest_name=""):
-    """Review one prepared weather CSV against one native result, read-only.
-
-    ``year`` must be a strict ``int`` in 1969..2068. The CSV is re-inspected with the
-    hash-free inspector, so a historical manifest report is never trusted. Nothing is
-    written, hashed, simulated or certified.
-    """
+    """Review one prepared weather CSV against one native result, read-only."""
     result = {"status": "blocked", "issues": [], "warnings": [], "source_summary": None,
-              "provider_to_csv": None, "csv_to_native": None, "review_items": [], "time_basis": None,
-              "scope": SCOPE}
+              "provider_to_csv": None, "csv_to_native": None, "review_items": [], "time_basis": None}
     try:
         if not isinstance(workspace, (str, Path)):
             raise ValueError("workspace must be a path")
@@ -464,27 +424,16 @@ def review_weather(workspace, *, csv_name, native_csv_name, year, acquisition_ma
         review_items.append("The provider leg is unverified: the CSV declares its own source, but the "
                             "manifest, raw payload and rebuilt rows were not all confirmed here.")
     if provider is not None and not provider_issues:
-        review_items.append("Hourly Tamb uses the disclosed endpoint_mean approximation (the mean of the two "
-                            "bounding provider instants), not a measured hourly mean; no sub-hourly "
-                            "observation exists in the raw payload, so no hourly-mean accuracy is claimed.")
+        review_items.append("Hourly Tamb uses the endpoint_mean approximation (the mean of the two "
+                            "bounding provider instants).")
     if result["csv_to_native"] is not None:
         columns = result["csv_to_native"]["columns"]
         if any(state["outside_review_threshold"] for state in columns.values()):
-            review_items.append("Native values differ from the prepared CSV beyond the disclosed review "
-                                "thresholds. The per-column (max_abs, MAE, RMSE, mean_signed) and per-month "
-                                "deltas are reported in csv_to_native; no cause is attributed here and no "
-                                "rounding or storage behaviour is certified.")
-        else:
-            review_items.append("Native hourly values and labels match the prepared CSV within the disclosed "
-                                "review thresholds; this is a data-level agreement, not a physical check.")
+            review_items.append("Native values differ from the prepared CSV beyond review "
+                                "thresholds (details in csv_to_native).")
     review_items.extend(time_basis["conflicts"])
     review_items.append("The effective sun-position time shift inside the native run is unverified in this "
-                        "evidence: the declared HourShift/TimeShift/TimeShiftTotalMin fields and row-by-row "
-                        "label agreement do not establish that the residual applied to the sun position is "
-                        "zero. This states what this report cannot show, not that such a field is absent "
-                        "everywhere.")
+                        "evidence.")
     result["review_items"] = review_items
-    # The unverified sun-position residual above is a standing review obligation of this profile that
-    # this evidence can never clear, so a readable review always ends as needs_review.
     result["status"] = "needs_review"
     return result

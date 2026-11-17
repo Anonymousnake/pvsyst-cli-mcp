@@ -149,5 +149,4 @@ def replace_seasonal(lines, bounds, updates):
             "after": {"field_type": "SeasonalTilt",
                       "orientation_name": name if name is not None else before["orientation_name"],
                       "base_slope": None, "summer_tilt": summer, "winter_tilt": winter,
-                      "winter_months": months},
-            "scope": "Whole orientation; native 8.1.6 seasonal tilt, not a seasonal or irradiance model"}
+                      "winter_months": months}}

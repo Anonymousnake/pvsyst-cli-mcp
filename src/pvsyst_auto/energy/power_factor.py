@@ -144,5 +144,4 @@ def replace_power_factor(lines, system, updates):
         if checked != after:
             raise ValueError("Candidate power factor state differs from the request")
         lines[:] = candidate
-    return {"before": before, "after": after,
-            "scope": "Native whole-system power factor tags only; no cos conversion or power model"}
+    return {"before": before, "after": after}

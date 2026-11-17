@@ -101,5 +101,4 @@ def replace_inverter_temperature(lines, system, updates):
         if _read(candidate, (system[0], system[0] + len(body) + 1))[3] != after:
             raise ValueError("Candidate inverter temperature state differs from the request")
         lines[:] = candidate
-    return {"before": before, "after": after,
-            "scope": "Native whole-system inverter temperature control; no thermal or power model"}
+    return {"before": before, "after": after}

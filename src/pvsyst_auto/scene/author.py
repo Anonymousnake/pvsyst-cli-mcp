@@ -1073,9 +1073,7 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                 result["string_layout_state"] = binding_state
             result["warnings"].append(
                 "Module metadata provenance: " + modules["metadata_source"] + ". Geometry uses metres; "
-                "only pv:module dimensions use millimetres. Depth is caller-provided geometry. "
-                "Explicit metadata for a native database reference requires PVsyst's own import consistency "
-                "check; writing this file does not verify a manufacturer model.")
+                "only pv:module dimensions use millimetres.")
             result["warnings"].append(
                 "Azimuth uses the COLLADA convention (north = 0, clockwise) and is only verified for a "
                 "northern-hemisphere site. House and table origins use the orientation1 anchor frame; "
@@ -1084,16 +1082,6 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                 "Azimuth uses the COLLADA convention (north = 0, clockwise) and is only verified for a "
                 "northern-hemisphere site. House and table share one parent rotation, so the table translation "
                 "is expressed in the house local frame.")
-            if "orientations" in source:
-                result["warnings"].append("Grouped orientation authoring does not certify native geometry: the bounded native path separately assigns, places, saves and reloads each region before simulation.")
-            if pocket["kind"] == "mesh":
-                result["warnings"].append(
-                    "House geometry is AI/caller-authored, not reconstructed from a fixed roof template. "
-                    "Checks cover finite non-degenerate triangles and PV corner projections onto the named "
-                    "planar roof, not solid topology, holes, full panel intersections or structural design.")
-            result["warnings"].append(
-                "This is an external PVCollada 2.0 file and the tested version still labels PVC2 support as beta: "
-                "writing it does not prove that PVsyst imports it as a shading scene or consumes it.")
             if store._read(source_path) != original:
                 raise ValueError("Source variant changed while preparing the scene file")
             for pan_path, pan_bytes in pan_snapshots:

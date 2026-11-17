@@ -103,13 +103,13 @@ class PowerControlLimitUpdates(BaseModel):
     separate_loss: StrictBool | None = None
 
 class PowerControlsUpdates(BaseModel):
-    """One native transaction; the standalone editors retain their existing domains."""
+    """Combined power factor and grid limit transaction."""
     model_config = ConfigDict(extra="forbid")
     power_factor: PowerFactorUpdates
     grid_limit: PowerControlLimitUpdates
 
 class P50P90Updates(BaseModel):
-    """Complete native P50 parameters for an existing GUI-produced result template."""
+    """P50/P90 probabilistic simulation parameters on an existing result block."""
     model_config = ConfigDict(extra="forbid")
     MeteoKind: Literal["SpecYear", "TMY"]
     P90Custom: StrictInt
@@ -245,55 +245,39 @@ class PlacedPVTableLayout(BaseModel):
     roof_mesh: StrictStr
 
 class NamedPVTableLayout(PlacedPVTableLayout):
-    """One named region; dual-source authoring explicitly selects its stored orientation ID.
-
-    ``module_geometry`` binds THIS table's module metadata, used only when the source PAN is a
-    built-in database reference without a readable loose file (the opaque reference cannot supply
-    per-source width/length). It never overrides a genuine readable loose PAN; a mismatching
-    geometry is refused so a heterogeneous pair is not silently collapsed to the first PAN."""
+    """Named PV region; grouped authoring selects orientation_id, optional source_subarray_id, and optional module_geometry."""
     name: StrictStr
     orientation_id: StrictInt | None = None
-    # Optional explicit source SubArray owner. Only needed when several source subarrays share one
-    # NoOrientation; omitted keeps the unique-owner (one subarray per orientation) behaviour.
+    # Optional explicit source SubArray owner when several source subarrays share one NoOrientation.
     source_subarray_id: StrictInt | None = None
     module_geometry: ModuleGeometry | None = None
 
 class NamedPVTablesLayout(BaseModel):
-    """Named regions on one source plane, or one region per two explicit source planes."""
+    """List of 1..64 named PV table regions."""
     model_config = ConfigDict(extra="forbid")
     tables: Annotated[list[NamedPVTableLayout], Field(min_length=1, max_length=64)]
 
 class ModuleCellBinding(BaseModel):
-    """One explicit native module cell; row/col are 1-based grid positions and global_string 0
-    marks an unassigned draft cell. No native string allocation is inferred from a cell."""
+    """One module cell (1-based row/col and global_string; 0 marks an unassigned draft cell)."""
     model_config = ConfigDict(extra="forbid")
     row: Annotated[StrictInt, Field(ge=1)]
     col: Annotated[StrictInt, Field(ge=1)]
     global_string: Annotated[StrictInt, Field(ge=0)]
 
 class TableStringBinding(BaseModel):
-    """Per-table cell wiring keyed by the table's declared name; subarray_id is the real source id."""
+    """Per-table cell wiring keyed by table name and source subarray_id."""
     model_config = ConfigDict(extra="forbid")
     name: StrictStr
     subarray_id: Annotated[StrictInt, Field(ge=1)]
     cells: list[ModuleCellBinding]
 
 class StringLayoutBinding(BaseModel):
-    """Optional sibling of layout: a thin explicit projection of native per-module string wiring."""
+    """Explicit per-module string wiring across named PV tables."""
     model_config = ConfigDict(extra="forbid")
     tables: Annotated[list[TableStringBinding], Field(min_length=1, max_length=64)]
 
 class HouseTaskRequest(BaseModel):
-    """Complete authored geometry plus one exact source; no inferred engineering inputs.
-
-    Optional report_pdf selects the report artifact: omitted/None/True keeps the original
-    default PDF, while an explicit False requests the CSV-only output. StrictBool rejects
-    0/1 or 'false' so the mode is never coerced; omitting it keeps the historical shape.
-    Optional allow_window_creation selects the Native window policy for the final CLI run:
-    omitted/None keeps the historical default, an explicit False always denies window
-    creation (rejected in preflight when combined with the GUI import method), True allows.
-    StrictBool rejects 0/1 or 'false' so a windowless request is never coerced.
-    """
+    """3D house task specification: authored house mesh, PV layout, source variant, and run options."""
     model_config = ConfigDict(extra="forbid")
     source_project: StrictStr
     source_variant: StrictStr
@@ -589,16 +573,7 @@ class SourcedDesignGoals(BaseModel):
     design_basis_extra: StrictStr | None = None
 
 class SourcedHouseTaskRequest(BaseModel):
-    """Cited source inputs plus the existing preparation and house schemas.
-
-    report_pdf mirrors HouseTaskRequest: omitted/None/True keeps the original default PDF,
-    an explicit False requests the CSV-only child house run, and False is forwarded rather
-    than dropped. Omitting it adds no key, preserving the historical request/checkpoint shape.
-    allow_window_creation mirrors HouseTaskRequest and is forwarded unchanged to the child;
-    omitted/None keeps the historical default, False always denies Native window creation for
-    the final run (rejected before source preparation when combined with the GUI import
-    method), True allows. StrictBool rejects 0/1 or 'false'.
-    """
+    """Cited source inputs plus house geometry, layout, and optional prepare_mode."""
     model_config = ConfigDict(extra="forbid")
     design: SingleDesignRequest
     new_project: StrictStr
@@ -614,9 +589,6 @@ class SourcedHouseTaskRequest(BaseModel):
     shading_mode: Literal["linear", "module_layout"] | None = None
     scene_import_method: Literal["gui", "native"] | None = None
     allow_window_creation: StrictBool | None = None
-    # Explicit high-level reuse: prepare_mode drives the existing source variant unchanged
-    # instead of preparing a new source from design. All three default to None so the legacy
-    # request/checkpoint dump is byte-for-byte unchanged (api/simulation.py dumps exclude_none).
     prepare_mode: Literal["preserve_source_hardware"] | None = None
     source_project: StrictStr | None = None
     source_variant: StrictStr | None = None

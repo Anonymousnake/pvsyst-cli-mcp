@@ -151,8 +151,7 @@ def inspect_met_calendar(path, year):
     segments, _ = read_object_prefix(path)
     fields = declared_fields(segments, "root", ("DateDebF", "DateFinF"))
     report = {"requested_year": year, "coverage": "unverified", "declarations": fields,
-              "issues": [], "warnings": [],
-              "scope": "Native MET root dates only; not hourly completeness or time-basis certification"}
+              "issues": [], "warnings": []}
     dates = {}
     for key in ("DateDebF", "DateFinF"):
         entries = fields.get(key, ())
@@ -250,10 +249,7 @@ def check_generated_met(path, *, time_zone):
         elif value not in ("60", "60.0"):
             issues.append(f"Generated MET root declares {key}={value}, not a 60 minute step")
     return {"valid": not issues, "issues": issues, "unchecked_checks": unchecked,
-            "header_read_stop": stop, "root": root, "site": site,
-            "scope": "Declared owning fields of the generated MET only, read from a bounded text "
-                     "prefix; the encoded hour array is not parsed, and a declared legal-time basis "
-                     "is not a certification of the simulation time reference."}
+            "header_read_stop": stop, "root": root, "site": site}
 
 
 def normalized_rows(path, report):
@@ -301,8 +297,7 @@ def check_site(path, report, country_code):
             raise ValueError("Native SIT monthly " + key + " differs beyond its printed precision")
     return {"coordinates_timezone_months_match": True, "country": value("Country"),
             "coordinate_precision_deg": precision["Latitude"], "altitude_precision_m": precision["Altitude"],
-            "monthly_precision_kwh_m2": 0.051, "monthly_temperature_precision_degC": 0.0051,
-            "scope": "Serialized site fields and observed monthly inputs, not geocoding or climate certification"}
+            "monthly_precision_kwh_m2": 0.051, "monthly_temperature_precision_degC": 0.0051}
 
 
 def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
@@ -349,7 +344,6 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
                           artifacts={key: str(path) for key, path in paths.items()},
                           mapping={"GHI": "GlobHor (W/m2)", "DHI": "DiffHor (W/m2)", "Tamb": "T_Amb (degC)"})
             result["warnings"].extend(report["warnings"])
-            result["warnings"].append("Prepared MET still requires a native full-year simulation and source-weather comparison; no binary MET parsing or clear-sky certification")
             if dry_run:
                 return result
         except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
@@ -486,14 +480,7 @@ def load_weather_manifest(workspace, name, year, sit_name, met_name):
 
 
 def compare_native_weather(csv_path, source, report):
-    """Compare native hourly weather against the prepared CSV, row by row.
-
-    Rounding/conversion review is unchanged: the original ``max_abs_delta``,
-    ``signed_delta_sum`` and ``outside_review_threshold`` keys and the ``needs_review``
-    decision based on them are retained. MAE, RMSE, mean signed bias, per-month deltas and
-    a signed annual irradiance difference are added alongside them. Nothing here is a
-    physical or clear-sky certification.
-    """
+    """Compare native hourly weather against the prepared CSV, row by row."""
     units = result_units(csv_path, strict=True)
     for key in ("GlobHor", "DiffHor"):
         if units.get(key) not in ("W/m2", "W/m\u00b2"):
@@ -560,7 +547,4 @@ def compare_native_weather(csv_path, source, report):
                                            for key in ("GlobHor", "DiffHor")},
             "temperature_mean_delta_degC": stats["T_Amb"]["mean_signed"],
             "monthly": monthly,
-            "reported_delta_measures": ["MAE", "RMSE", "mean_signed", "max_abs"],
-            "scope": "Disclosed rounding/conversion review heuristic, not native storage precision or "
-                     "physical certification. Deltas are native minus prepared CSV; irradiance deltas "
-                     "integrate to kWh/m2 only on a regular hourly step."}
+            "reported_delta_measures": ["MAE", "RMSE", "mean_signed", "max_abs"]}

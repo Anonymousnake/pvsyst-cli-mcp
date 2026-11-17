@@ -294,9 +294,7 @@ def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
             "missing_hours": len(missing), "unexpected_timestamps": len(unexpected),
             "missing_examples": [str(stamp) for stamp in sorted(missing)[:12]],
             "duplicate_timestamps": duplicates, "nonincreasing_timestamps": out_of_order,
-            "invalid_dates": invalid_dates, "nonzero_minute_records": off_grid, "months": months,
-            "scope": "Raw standard CSV, explicit units and one full hourly year. No gap filling, time shifting, "
-                     "MET parsing, MEF/SIT matching, clear-sky quality check or native conversion certification."})
+            "invalid_dates": invalid_dates, "nonzero_minute_records": off_grid, "months": months})
     return result
 
 

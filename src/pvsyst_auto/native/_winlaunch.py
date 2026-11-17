@@ -41,6 +41,8 @@ _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _WAIT_TIMEOUT = 0x00000102
 _WAIT_FAILED = 0xFFFFFFFF
 _INFINITE = 0xFFFFFFFF
+# CreateFileW reports failure with INVALID_HANDLE_VALUE (-1), never with NULL.
+_INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 # Desktop DACL values for the "no window" path. Create with DESKTOP_ALL_ACCESS
 # so this handle carries WRITE_DAC, which SetUserObjectSecurity needs to attach
 # the deny ACE; the resulting DACL then grants this user every desktop right
@@ -216,6 +218,14 @@ def _fail(step: str) -> OSError:
     return OSError(0, "%s failed (winerror %d)" % (step, ctypes.get_last_error()))
 
 
+def _open_file(path: str, access: int, disposition: int, sa, step: str):
+    handle = _CreateFileW(path, access, _FILE_SHARE_RW, ctypes.byref(sa), disposition,
+                          _FILE_ATTRIBUTE_NORMAL, None)
+    if not handle or handle == _INVALID_HANDLE_VALUE:
+        raise _fail(step)
+    return handle
+
+
 def _read_stream(path: str) -> str:
     try:
         with open(path, "rb") as stream:
@@ -336,18 +346,9 @@ def run(argv: list[str], cwd, timeout, *,
             raise _fail("SetInformationJobObject")
 
         sa = _SECURITY_ATTRIBUTES(ctypes.sizeof(_SECURITY_ATTRIBUTES), None, True)
-        hout = _CreateFileW(out_path, _GENERIC_WRITE, _FILE_SHARE_RW, ctypes.byref(sa),
-                            _CREATE_ALWAYS, _FILE_ATTRIBUTE_NORMAL, None)
-        if not hout:
-            raise _fail("CreateFileW(stdout)")
-        herr = _CreateFileW(err_path, _GENERIC_WRITE, _FILE_SHARE_RW, ctypes.byref(sa),
-                            _CREATE_ALWAYS, _FILE_ATTRIBUTE_NORMAL, None)
-        if not herr:
-            raise _fail("CreateFileW(stderr)")
-        hnin = _CreateFileW("NUL", _GENERIC_READ, _FILE_SHARE_RW, ctypes.byref(sa),
-                            _OPEN_EXISTING, _FILE_ATTRIBUTE_NORMAL, None)
-        if not hnin:
-            raise _fail("CreateFileW(stdin)")
+        hout = _open_file(out_path, _GENERIC_WRITE, _CREATE_ALWAYS, sa, "CreateFileW(stdout)")
+        herr = _open_file(err_path, _GENERIC_WRITE, _CREATE_ALWAYS, sa, "CreateFileW(stderr)")
+        hnin = _open_file("NUL", _GENERIC_READ, _OPEN_EXISTING, sa, "CreateFileW(stdin)")
 
         size = ctypes.c_size_t(0)
         _InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))

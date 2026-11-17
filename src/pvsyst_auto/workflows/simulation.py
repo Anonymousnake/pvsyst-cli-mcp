@@ -185,8 +185,7 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             "requested_losses": losses or {},
             "template_subarray_fields": {key: value for key, value in parameters["subarrays"][0]["values"].items()
                                          if key in ("LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI", "PQualityModP", "Flags")},
-            "template_main_array_fields": parameters.get("main_array", {}).get("values", {}),
-            "scope": "Unspecified fields retain template settings and native default modes; no installation/loss fitting"}
+            "template_main_array_fields": parameters.get("main_array", {}).get("values", {})}
         result["template_files"] = original["files"]
         result["template_preserved"] = True
         result["structure"] = structure
@@ -291,15 +290,6 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
         except (ValueError, OSError, PVsystError, subprocess.TimeoutExpired) as exc:
             issue("simulation", cli._redact(str(exc)))
     result["inputs"] = assets
-    result["warnings"].extend([
-        ("Template string/inverter counts are retained; voltage/current sizing and optimal design are not verified."
-         if capacity is None else "Counts satisfy the supplied design envelope; MPPT topology/mode are retained. Envelope accuracy, native model sizing and energy/cost optimality are not certified."),
-        "Requested SIT/MET filenames and simulation year are checked in native output; geographic/time-reference compatibility is not certified.",
-        ("Tracking database PAN/OND are inherited references, not loose-file parameter inspection. Nameplate kWp/source are caller-declared and native-PR cross-checked, not inferred from filenames or cached sizing. Native database contents are not snapshotted or engineering-certified; review remains required."
-         if tracking_mode else "PAN/OND checks cover static fields, not internal model fitting; native results retain a conservative anomaly screen."),
-        ("Tracking recovery retains the isolated clone/new VC/outputs for review and manual archiving; no automatic rollback or resume."
-         if tracking_mode else "Recovery is reverse-order whole-file restoration with fresh-state guards; not a cross-process lock or crash-atomic job."),
-    ])
     if result["issues"]:
         return result
     result["status"] = "ready"
