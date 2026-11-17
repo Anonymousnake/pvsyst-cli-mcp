@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 class TwoRoofDeliveryBoundary(unittest.TestCase):
     def test_completed_native_two_roof_resume_and_delivery(self):
-        configured = os.environ.get("PVSYST_TWO_ROOF_DELIVERY_FIXTURE")
+        configured = os.environ.get("PVSYST_HOUSE_DELIVERY_FIXTURE") or os.environ.get("PVSYST_TWO_ROOF_DELIVERY_FIXTURE")
         if not configured:
             self.skipTest("Set the explicit completed two-roof house-task manifest; no native claim")
         manifest = Path(configured)
@@ -35,8 +35,14 @@ class TwoRoofDeliveryBoundary(unittest.TestCase):
         self.assertEqual(record["phase"], "completed")
         self.assertIn(record["status"], ("completed", "needs_review"))
         self.assertTrue(record["native_consumption_verified"])
-        self.assertTrue(record["native_import"]["native_reload_verified"])
-        self.assertTrue(record["native_import"]["native_reload"]["native_validity"]["valid"])
+        native_method = record["request"].get("scene_import_method") == "native"
+        output_kinds = ("csv",) if record["request"].get("report_pdf") is False else ("csv", "pdf")
+        if native_method:
+            self.assertEqual(record["native_import"]["status"], "native_variant_created")
+            self.assertTrue(record["native_import"]["stored_geometry_verified"])
+        else:
+            self.assertTrue(record["native_import"]["native_reload_verified"])
+            self.assertTrue(record["native_import"]["native_reload"]["native_validity"]["valid"])
         self.assertEqual([item["id"] for item in record["plan"]["source"]["orientations"]], [1, 2])
         spec = copy.deepcopy(record["request"])
         self.assertEqual({table["orientation_id"] for table in spec["layout"]["tables"]}, {1, 2})
@@ -66,7 +72,7 @@ class TwoRoofDeliveryBoundary(unittest.TestCase):
             for asset in record["input_assets"].values():
                 self.assertEqual(asset["library"], "workspace")
                 copy_asset(asset["folder"], asset["name"])
-            for kind in ("csv", "pdf"):
+            for kind in output_kinds:
                 copy_asset("Results", Path(record["artifacts"][kind]).name)
 
             def relocate(value):
@@ -78,12 +84,14 @@ class TwoRoofDeliveryBoundary(unittest.TestCase):
             manifest_path = root / "Results" / manifest.name
             manifest_path.write_text(json.dumps(record, ensure_ascii=False, allow_nan=False, indent=2) + "\n",
                                      encoding="utf-8")
+            comparison_csv = root / "Results" / "comparison-observed-copy.csv"
+            shutil.copy2(root / "Results" / Path(record["artifacts"]["csv"]).name, comparison_csv)
             originals = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
             members = set(root.rglob("*"))
             executable = directory / "PVsystCLI.exe"
             executable.write_bytes(b"No native execution in completed two-roof delivery contract")
-            environment = dict(os.environ, PVSYST_WORKSPACE=str(root), PVSYST_CLI=str(executable))
-            environment.pop("PVSYST_BUILTIN_COMPONENTS", None)
+            environment = {key: value for key, value in os.environ.items() if not key.startswith("PVSYST_")}
+            environment.update(PVSYST_WORKSPACE=str(root), PVSYST_CLI=str(executable), PYTHONDONTWRITEBYTECODE="1")
             parameters = StdioServerParameters(command=sys.executable, args=[str(REPO / "pvsyst_mcp_server.py")],
                 cwd=str(REPO), env=environment)
             async with stdio_client(parameters) as (read, write):
@@ -156,6 +164,25 @@ class TwoRoofDeliveryBoundary(unittest.TestCase):
                     unchanged(changed)
                     manifest_path.write_bytes(originals[manifest_path.relative_to(root)])
 
+                    csv_path = root / "Results" / Path(record["artifacts"]["csv"]).name
+
+                    scenario = {"project": record["working_project"], "variant": record["working_variant"],
+                                "declared_changes": [], "year": record["year"]}
+                    comparison = await call("pvsyst_compare_engineering_scenarios", {
+                        "objective": "Check recorded house binding against an unbound observed copy",
+                        "scenarios": [dict(scenario, label="recorded", csv_name=csv_path.name, run_manifest_name=manifest.name),
+                                      dict(scenario, label="observed copy", csv_name=comparison_csv.name)],
+                        "output_name": "house-comparison.json", "dry_run": True})
+                    self.assertEqual(comparison["status"], "needs_review", comparison)
+                    self.assertTrue(comparison["scenarios"][0]["historical_input_binding_verified"])
+                    self.assertFalse(comparison["scenarios"][1]["historical_input_binding_verified"])
+                    if native_method:
+                        bound = comparison["scenarios"][0]["bound_run"]["house"]
+                        self.assertEqual(bound["import_method"], "native")
+                        self.assertTrue(bound["stored_geometry_verified"])
+                        self.assertEqual(bound["native_geometry_verified"], record["native_import"]["native_geometry_verified"])
+                    unchanged()
+
                     preview = await call(delivery, arguments)
                     self.assertEqual(preview["status"], "ready", preview)
                     self.assertEqual(preview["task_status"], record["status"])
@@ -163,15 +190,20 @@ class TwoRoofDeliveryBoundary(unittest.TestCase):
                     self.assertFalse(preview["native_consumption_verified"])
                     expected = {"summary.md", "inputs.md", "Results/" + manifest.name,
                                 "Projects/" + record["working_project"], "Projects/" + saved_variant.name}
-                    expected.update("Results/" + Path(record["artifacts"][kind]).name for kind in ("csv", "pdf"))
+                    expected.update("Results/" + Path(record["artifacts"][kind]).name for kind in output_kinds)
                     expected.update(record["input_assets"][kind]["folder"] + "/" + record["input_assets"][kind]["name"]
                                     for kind in ("scene", "sfi"))
                     self.assertTrue(expected.issubset(preview["included_files"]))
                     evidence = {"regions": record["geometry"]["tables"],
                         "native_geometry_verified": record["native_import"]["native_geometry_verified"],
-                        "house_mapping": record["native_import"]["verification"]["house_mapping"],
-                        "pv_mapping": record["native_import"]["verification"]["pv_mapping"],
-                        "native_reload_verified": True, "native_reload": record["native_import"]["native_reload"]}
+                        "house_mapping": record["native_import"]["verification"].get("house_mapping"),
+                        "pv_mapping": record["native_import"]["verification"].get("pv_mapping"),
+                        "native_reload_verified": record["native_import"].get("native_reload_verified"),
+                        "native_reload": record["native_import"].get("native_reload")}
+                    if native_method:
+                        evidence.update(import_method="native", stored_geometry_verified=True,
+                                        stored_module_layout_verified=record["native_import"].get("stored_module_layout_verified"),
+                                        native_consumption_verified=True)
                     blocks = [json.loads(block) for block in re.findall(r"```json\n(.*?)\n```", preview["inputs_markdown"], re.S)]
                     self.assertIn(evidence, blocks)
                     for table in spec["layout"]["tables"]:
@@ -185,6 +217,8 @@ class TwoRoofDeliveryBoundary(unittest.TestCase):
                     self.assertEqual(Path(exported["artifact"]["zip"]), output)
                     with zipfile.ZipFile(output) as package:
                         self.assertTrue(expected.issubset(package.namelist()))
+                        if output_kinds == ("csv",):
+                            self.assertFalse(any(name.lower().endswith(".pdf") for name in package.namelist()))
                         for name in expected - {"summary.md", "inputs.md"}:
                             self.assertEqual(package.read(name), (root / name).read_bytes(), name)
                         self.assertEqual(package.read("summary.md").decode("utf-8"), exported["summary_markdown"])

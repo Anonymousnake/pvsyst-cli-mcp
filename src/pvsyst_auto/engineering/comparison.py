@@ -462,6 +462,11 @@ def compare_engineering_scenarios(store, *, objective, scenarios, output_name, d
                             "native_geometry_verified": imported.get("native_geometry_verified"),
                             "native_reload_verified": imported.get("native_reload_verified"),
                             "verification": imported.get("verification"), "native_reload": imported.get("native_reload")}
+                        if imported.get("method") == "native":
+                            scenario["bound_run"]["house"].update(
+                                import_method="native", stored_geometry_verified=imported.get("stored_geometry_verified"),
+                                stored_module_layout_verified=imported.get("stored_module_layout_verified"),
+                                native_consumption_verified=binding["native_consumption_verified"])
                 result["scenarios"].append(scenario)
                 inputs.append(path)
                 bindings.append(binding)

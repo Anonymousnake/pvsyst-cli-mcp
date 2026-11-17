@@ -79,6 +79,12 @@ def _result_path(store, record, kind):
     return path
 
 
+def run_output_kinds(record):
+    if record["operation"] != "engineering_house":
+        return ("csv", "pdf")
+    return ("csv",) if record["request"].get("report_pdf") is False else ("csv", "pdf")
+
+
 def _check_house_run(store, record, path, project, variant):
     request, plan, runs = record["request"], record["plan"], record["runs"]
     year = record["year"]
@@ -90,12 +96,13 @@ def _check_house_run(store, record, path, project, variant):
             or not isinstance(runs, list) or not 1 <= len(runs) <= 99
             or any(not isinstance(run, dict) for run in runs)):
         raise ValueError("Require a completed house checkpoint for this project, variant and year")
+    kinds = run_output_kinds(record)
     attempt = runs[-1]
     if (attempt.get("status") != "returned" or type(attempt.get("number")) is not int
             or attempt["number"] != len(runs) or not isinstance(attempt.get("native"), dict)
             or not isinstance(attempt["native"].get("warnings"), list)
             or not isinstance(record.get("output_guards"), dict)
-            or set(record["output_guards"]) != {"csv", "pdf"}
+            or set(record["output_guards"]) != set(kinds)
             or record.get("result_files") != record["output_guards"]):
         raise ValueError("House run lacks a returned native attempt and matching output guards")
     stem = Path(project).stem
@@ -108,7 +115,7 @@ def _check_house_run(store, record, path, project, variant):
     for kind, target in expected.items():
         if Path(record["artifacts"][kind]).resolve() != target:
             raise ValueError("House artifact does not match its controlled project path: " + kind)
-    for kind in ("csv", "pdf"):
+    for kind in kinds:
         name = stem + f"_house_run{len(runs):02d}." + kind
         if attempt.get(kind) != name or _result_path(store, record, kind).name != name:
             raise ValueError("House outputs do not identify the last recorded native attempt")
@@ -132,14 +139,17 @@ def _check_house_run(store, record, path, project, variant):
             or handoff["input_snapshot"].get("variant_sha256") != guards["native_variant"]):
         raise ValueError("House runtime handoff does not match its guarded native saved variant")
     imported = record["native_import"]
-    if (not isinstance(imported, dict) or imported.get("status") != "imported"
-            or imported.get("native_geometry_verified") is not True
+    native_method = request.get("scene_import_method") == "native"
+    import_status = "native_variant_created" if native_method else "imported"
+    geometry_key = "stored_geometry_verified" if native_method else "native_geometry_verified"
+    if (not isinstance(imported, dict) or imported.get("status") != import_status
+            or imported.get(geometry_key) is not True
             or not isinstance(imported.get("verification"), dict)
             or variant_id(imported["variant"]) != variant
             or Path(imported["file"]).resolve() != expected["native_variant"]):
         raise ValueError("House checkpoint lacks a verified native save for this variant")
     grouped = bool(plan["source"].get("orientations")) or len(handoff["saved"].get("orientations", [])) > 1
-    if grouped:
+    if grouped and not native_method:
         reload = imported.get("native_reload")
         if (imported.get("native_reload_verified") is not True or not isinstance(reload, dict)
                 or variant_id(reload["source_variant"]) != "VC0" or variant_id(reload["saved_variant"]) != variant
@@ -194,7 +204,7 @@ def load_engineering_run(store, manifest_name, *, project=None, variant=None, cs
             if record.get("operation") == "engineering_house":
                 _check_house_run(store, record, path, actual_project, actual_variant)
             _check_assets(store, record)
-            for kind in ("csv", "pdf"):
+            for kind in run_output_kinds(record):
                 target = _result_path(store, record, kind)
                 if kind == "csv" and csv_name is not None and target.name.casefold() != csv_name.casefold():
                     raise ValueError("Run binding identifies a different result CSV")

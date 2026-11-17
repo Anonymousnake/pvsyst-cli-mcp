@@ -32,11 +32,16 @@ def _house_evidence(task):
     imported = task.get("native_import") or {}
     verification = imported.get("verification") or {}
     reload = imported.get("native_reload") or {}
-    return {"regions": (task.get("geometry") or {}).get("tables"),
-            "native_geometry_verified": imported.get("native_geometry_verified"),
-            "house_mapping": verification.get("house_mapping"), "pv_mapping": verification.get("pv_mapping"),
-            "native_reload_verified": imported.get("native_reload_verified"),
-            "native_reload": reload if reload else None}
+    evidence = {"regions": (task.get("geometry") or {}).get("tables"),
+                "native_geometry_verified": imported.get("native_geometry_verified"),
+                "house_mapping": verification.get("house_mapping"), "pv_mapping": verification.get("pv_mapping"),
+                "native_reload_verified": imported.get("native_reload_verified"),
+                "native_reload": reload if reload else None}
+    if imported.get("method") == "native":
+        evidence.update(import_method="native", stored_geometry_verified=imported.get("stored_geometry_verified"),
+                        stored_module_layout_verified=imported.get("stored_module_layout_verified"),
+                        native_consumption_verified=task.get("native_consumption_verified"))
+    return evidence
 
 
 def _summary(task, handoff, manifest_name, comparison=None, delivery_review_required=False, house_runs=()):
@@ -111,7 +116,7 @@ def _summary(task, handoff, manifest_name, comparison=None, delivery_review_requ
         lines.append("- 本次任务未记录额外警告。")
     if handoff.get("missing_items"):
         lines.append("- 输入交接仍有 " + str(len(handoff["missing_items"])) + " 项补件/依据事项，详见 inputs.md。")
-    lines.extend(["- 包内含各收录方案的原生 PRJ、选中 VC、CSV 和 PDF；设备模型、气象、负荷等外部依赖按 inputs.md 另行准备。",
+    lines.extend(["- 包内含各收录方案的原生 PRJ、选中 VC 和运行清单绑定的结果文件；设备模型、气象、负荷等外部依赖按 inputs.md 另行准备。",
                   "- 打包成功表示成果已整理；工程依据和任务复核状态沿用运行清单。完整变更、警告及输入说明见 inputs.md。", ""])
     return "\n".join(lines)
 
@@ -188,6 +193,19 @@ def _saved_inputs(saved):
     return saved
 
 
+def _saved_inputs_match(current, recorded):
+    current, recorded = _saved_inputs(current), _saved_inputs(recorded)
+    if isinstance(current, dict) and isinstance(recorded, dict):
+        before, after = recorded.get("subarrays"), current.get("subarrays")
+        if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+            for old, new in zip(before, after):
+                if (isinstance(old, dict) and isinstance(new, dict) and old.get("id") == new.get("id")
+                        and "inverter_state" not in old):
+                    # Legacy handoffs predate this added view; the loader still guards the entire VC.
+                    new.pop("inverter_state", None)
+    return current == recorded
+
+
 def _comparison_report(store, comparison_name, load_run):
     safe_filename(comparison_name, ".json")
     path = _result_path(store, comparison_name, ".json")
@@ -228,7 +246,7 @@ def _comparison_report(store, comparison_name, load_run):
         csv_name = safe_filename(scenario["csv_name"], ".csv")
         task = load_run(store, manifest, project=project, variant=variant, csv_name=csv_name)
         if (not isinstance(scenario.get("input_handoff"), dict)
-                or _saved_inputs(scenario["input_handoff"].get("saved")) != _saved_inputs(task["input_handoff"].get("saved"))):
+                or not _saved_inputs_match(scenario["input_handoff"].get("saved"), task["input_handoff"].get("saved"))):
             raise ValueError("Comparison scenario inputs differ from its recorded native run")
         bindings.append({"run_manifest_name": manifest, "project": project, "variant": variant,
                          "csv_name": csv_name, "label": scenario.get("label", project + "/" + variant), "task": task})
@@ -257,7 +275,7 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
             if output.exists():
                 raise FileExistsError("Delivery already exists; use a new output_name")
             # Local import keeps the run producer independent of its delivery consumer.
-            from pvsyst_auto.workflows.revision import _asset_path, load_engineering_run
+            from pvsyst_auto.workflows.revision import _asset_path, load_engineering_run, run_output_kinds
             comparison, comparison_files, comparison_bytes = None, {}, None
             if comparison_name:
                 comparison, comparison_files, comparison_bytes, bindings = _comparison_report(
@@ -283,12 +301,12 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
                         or handoff.get("variant", "").upper() != variant):
                     raise ValueError("Runtime input handoff does not identify this working project and variant")
                 current = build_project_handoff(store, project=project, variant=variant, declarations=handoff.get("declarations"))
-                if current["status"] == "blocked" or _saved_inputs(current["saved"]) != _saved_inputs(handoff.get("saved")):
+                if current["status"] == "blocked" or not _saved_inputs_match(current["saved"], handoff.get("saved")):
                     raise ValueError("Saved inputs differ from the run-time handoff; no mismatched delivery was created")
                 project_path, variant_path = store._path(project), store._path(project, variant)
-                csv_path = _result_path(store, run["artifacts"]["csv"], ".csv")
-                pdf_path = _result_path(store, run["artifacts"]["pdf"], ".pdf")
-                files = [("Projects", project_path), ("Projects", variant_path), ("Results", csv_path), ("Results", pdf_path)]
+                files = [("Projects", project_path), ("Projects", variant_path)]
+                files.extend(("Results", _result_path(store, run["artifacts"][kind], "." + kind))
+                             for kind in run_output_kinds(run))
                 if run.get("operation") == "engineering_house":
                     files.append(("Results", _result_path(store, run["artifacts"]["manifest"], ".json")))
                     for kind in ("scene", "sfi"):
