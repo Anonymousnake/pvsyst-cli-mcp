@@ -548,7 +548,7 @@ class SourceInputTests(unittest.TestCase):
         self.assertTrue(result["needs_review"])
         self.assertTrue([warning for warning in result["warnings"]
                          if warning["field"] == "temperatures.min_ambient_c"])
-        self.assertIn("site-extreme validity is not established",
+        self.assertIn("S1 Generic module datasheet",
                       result["electrical_design"]["temperatures"]["min_ambient_basis"])
 
     def test_cited_engineering_goal_and_conflict_with_design(self):

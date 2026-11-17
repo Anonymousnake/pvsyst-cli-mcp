@@ -132,8 +132,7 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
                                 availability=None, allow_grid_export=None):
     """Create a new variant from an existing native storage system with bounded scalar edits."""
     result={"status":"blocked","stage":"preflight","dry_run":dry_run,"issues":[],"warnings":[],
-            "artifacts":{},"variant_created":False,"native_consumption_verified":False,
-            "scope":"Existing centralized native AC-coupled Grid storage. No hybrid DC-port construction, new hardware sizing or grid-charging tariff controller is inferred."}
+            "artifacts":{},"variant_created":False,"native_consumption_verified":False}
     with store.lock:
         try:
             if (type(dry_run) is not bool or not isinstance(updates,dict)
@@ -221,9 +220,6 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
             diff="".join(difflib.unified_diff(text.splitlines(keepends=True),candidate_text.splitlines(keepends=True)))
             result.update(status="ready",project=project,source_variant=source_variant,variant=new_variant,
                           before=before,after=after,artifacts={"variant":str(target)},diff=diff[:32000],diff_truncated=len(diff)>32000)
-            result["warnings"].append("SOC values are fractions. SOCDischSelf is the WeakGrid reserve threshold: grid availability preserves it; outages permit discharge toward SOCDischDecl. It is unused as backup reserve in SelfConsumption. No grid-charge schedule or independent controller is added.")
-            result["warnings"].append("PMaxCharge is the charger's AC input limit; PMaxDisch is the battery inverter's AC output limit. They are not DC port powers. Battery current/voltage and BMS compatibility stay unverified.")
-            result["warnings"].append("Source PRJ/VC, PV components, battery filename/counts, temperature/SOW, load snapshot, site and topology stay unchanged. Only declared system grid-export bit27 may change; omitted export control preserves it. No grid-charge schedule or target SOC is invented.")
             if store._read(source)!=original or (availability_snapshot and availability_snapshot[0].read_bytes()!=availability_snapshot[1]):
                 raise ValueError("Storage template changed before creation")
             if dry_run:

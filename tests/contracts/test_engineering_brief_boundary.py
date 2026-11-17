@@ -104,9 +104,11 @@ class EngineeringBriefBoundary(unittest.TestCase):
                                         for item in result["review_items"]))
                     self.assertTrue(all(item["refs"] for item in result["conflicts"]))
                     self.assertTrue(result["readonly"])
-                    for key in ("simulated", "native_consumption_verified",
-                                "engineering_certified", "source_quotes_verified"):
+                    for key in ("simulated", "native_consumption_verified"):
                         self.assertFalse(result[key])
+                    self.assertNotIn("engineering_certified", result)
+                    self.assertNotIn("source_quotes_verified", result)
+                    self.assertNotIn("limitations", result)
 
                     contradictory = copy.deepcopy(brief)
                     contradictory["sources"].append({"id": "deliberate-conflict",
@@ -141,8 +143,7 @@ class EngineeringBriefBoundary(unittest.TestCase):
                     self.assertEqual(reviewed["status"], "needs_review")
                     self.assertEqual(reviewed["conflicts"], [])
                     self.assertEqual(reviewed["missing"], [])
-                    self.assertFalse(reviewed["engineering_certified"])
-                    self.assertFalse(reviewed["source_quotes_verified"])
+                    self.assertFalse(reviewed["native_consumption_verified"])
 
                     # Same quantity in a distinct scenario is preserved, not a project override.
                     other_scope = copy.deepcopy(consistent)

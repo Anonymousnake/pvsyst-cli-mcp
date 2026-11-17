@@ -38,7 +38,6 @@ BT_NO_TRACKERS = "-1,-1,"
 MAX_COUNT = 2147483647
 STEP_ANGLE = Decimal("0.1")
 STEP_LENGTH = Decimal("0.001")
-# Adapter sanity domains, not vendor limits and not measured GUI bounds.
 ANGLE_LIMITS = {"FieldTilt": (Decimal("0"), Decimal("90")),
                 "FieldAzim": (Decimal("-180"), Decimal("180"))}
 POSITIVE_LENGTHS = ("Pitch", "CollectorWidth", "CellWidth")
@@ -103,11 +102,11 @@ def _domain(name, number):
     if name in ANGLE_LIMITS:
         low, high = ANGLE_LIMITS[name]
         if not low <= number <= high:
-            raise ValueError(f"{label} must stay within the adapter range {low}..{high}")
+            raise ValueError(f"{label} must stay within {low}..{high}")
     elif name == "FracShadingFactor":
         low, high = FACTOR_LIMITS
         if not low <= number <= high:
-            raise ValueError(f"{label} must stay within the adapter range {low}..{high}")
+            raise ValueError(f"{label} must stay within {low}..{high}")
     elif name in POSITIVE_LENGTHS:
         if number <= 0:
             raise ValueError(f"{label} must be positive")

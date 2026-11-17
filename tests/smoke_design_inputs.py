@@ -495,7 +495,7 @@ async def run(checks):
                               str(wired_data.get("status")))
                     # A component block returns the server's own short structure (with "stage");
                     # its absence proves both identities bound and the backend produced the result.
-                    checks.ok("scope" in wired_data and "stage" not in wired_data
+                    checks.ok("electrical_design" in wired_data and "stage" not in wired_data
                               and isinstance(wired_data.get("missing_fields"), list),
                               "both identities bind, so the backend validation result is returned",
                               json.dumps(sorted(wired_data))[:200])

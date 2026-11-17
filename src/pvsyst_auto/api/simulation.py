@@ -6,7 +6,7 @@ from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.simulation import simulate_template
-from pvsyst_auto.workflows.sourced_design import SCOPE as SOURCED_DESIGN_SCOPE, prepare_sourced_design
+from pvsyst_auto.workflows.sourced_design import prepare_sourced_design
 from pvsyst_auto.api.schemas import CapacityRequest, HouseTaskRequest, LossRequest, SingleDesignRequest, SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest, StrictNum, TrackingControls
 from pvsyst_auto.api.context import categorized_tool, cli, components, optional_path, simulation_csv_path, workspace_path
 from pvsyst_auto.components.identity import sourced_component
@@ -14,18 +14,8 @@ from pvsyst_auto.components.identity import sourced_component
 
 @categorized_tool()
 def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
-    """Create a NEW hourly export definition in workspace/Models.
-    variables=grid_storage includes common PV outputs plus native load, SOC,
-    battery/grid flows, EUnused and all three converter losses CL_Chrg, CL_InvB,
-    CL_Over. Include CL_Over when reviewing native grid-storage energy balance;
-    this exports PVsyst values, not a separate storage calculation.
-    variables=soiling adds native GlobSlg/SlgLoss irradiance outputs to common PV
-    outputs; native runs may omit these columns when soiling is disabled.
-    variables=grid_limit adds PGridLim, EGrdLim, EUnused and EOutInv. PGridLim is
-    the native limit, EGrdLim the grid-curtailment loss, not EUnused. EOutInv is
-    not the bounded injection column. Disabled runs may omit limit columns.
-    variables=shading adds GlobShd/ShdElec; native linear-mode runs may omit ShdElec,
-    and a defined detailed layout can legitimately have zero electrical loss."""
+    """Create a new hourly export definition (.SFI) in workspace/Models from a preset group
+    (energy, inverter_losses, all_common, shading, soiling, grid_limit, grid_storage) or comma-separated vi* variables."""
     target = workspace_path("Models", filename, ".sfi")
     names = (VAR_GROUPS[variables] if variables in VAR_GROUPS
              else [part.strip() for part in variables.split(",")])
@@ -36,55 +26,8 @@ def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
 def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
                             confirm: StrictBool = False, resume: StrictBool = False,
                             retry_simulation: StrictBool = False) -> dict:
-    """Deliver one AI-authored residential project through existing native entries.
-    Source must be the existing bounded fixed PV-only northern-site template,
-    with identical bound workspace SIT/MET in PRJ/VC. Hardware/counts/angles/losses,
-    source engineering defaults and weather remain inherited and disclosed, never sized
-    or guessed. AI supplies a complete mesh house and one/two placed PV regions in spec;
-    all module counts/source-PAN metadata and native8.1.6CN/DPI96 boundaries remain.
-    Two source orientations require one explicitly named region per orientation1/2,
-    the same source PAN with each subarray's own inherited OND, anchor azimuth zero
-    and distinct source planes. Native table
-    properties assign each plane and place its declared coordinates; SHD exports,
-    saved VC and actual GUI reload verify every mesh/region before the annual run.
-    Optional spec.shading_mode=module_layout invokes the native detailed electrical
-    layout path for two landscape zero-spacing, single-string groups and exports
-    ShdElec. Omitting it preserves the original request/checkpoint representation.
-    Optional spec.scene_import_method="native" routes the SAME supported two-fixed-table
-    recipe through the existing headless native importer (no GUI/INI/clipboard) and records
-    the new variant as STORED-only: stored_geometry_verified (and stored_module_layout_verified
-    for module_layout) may be true, while imported/native_geometry_verified/native_reload_verified
-    and native_consumption_verified stay false until the normal CLI simulation consumes that VC.
-    Omitting it keeps the original GUI import route and request/checkpoint shape; unsupported
-    recipes stop with a concrete issue before writing and there is no silent GUI fallback.
-    Preview writes nothing/does not activate or launch GUI; cold execution requires
-    dry_run=false and confirm=true, configured DataPath and NO preexisting native GUI.
-    It exclusively creates a working PRJ/VC0, PVC2 and SFI, opens one owned GUI, imports/
-    associates/checks/shading-tables/SavesAs one NEW native variant, then normally closes
-    only its actual Popen. Unknown dialogs/unsaved-work questions are not dismissed.
-    A NEW CLI process reloads the saved variant, recomputes native shading and generates
-    the explicit full-year CSV/PDF. Completeness/context/finite columns/GlobShd and source
-    preservation are checked using existing result validators; no replacement PV model.
-    File creation, native save and simulation-consumption remain distinct checkpoints.
-    Results/<new-project-stem>_house_task.json records the exact request and guarded files;
-    existing artifacts are never overwritten/deleted. Resume requires the IDENTICAL spec
-    and explicit resume=true; no checkpoint PID grants ownership. Partial unverified native
-    saves need inspection, not blind reimport. A failed run keeps its outputs: explicit
-    retry_simulation=true chooses NEW attempt names, without rebuilding the saved scene.
-    A completed retry-free resume revalidates artifacts and runs no new GUI/simulation.
-    Status/phase/issues matter, not just MCP is_error; any unexpected stop retains evidence.
-    Process coordination is one server/workspace RLock, not a global desktop/task service.
-    Optional spec.string_layout is an explicit per-cell wiring block read from the request and
-    stored in the .pvc2 recipe; it is only accepted with scene_import_method='native' and
-    shading_mode='module_layout' (GUI/linear stop before writing, never dropping the wiring).
-    The native importer then reads the binding from that recipe; a draft (global_string=0) is
-    written but blocks native import until complete. Omitting it keeps the historical shape.
-    Optional spec.allow_window_creation selects the Native window policy for the final CLI
-    simulation: omitted/None keeps the historical default, an explicit False always denies
-    window creation for this run, and True allows. A strict False is incompatible with the GUI
-    import method (which inherently opens the native window) and is rejected in preflight
-    before any write or GUI action instead of silently switching the default method. False
-    constrains Native window creation; it does not assert every task is already GUI-free."""
+    """Build a 3D house scene (.pvc2), import it via GUI or headless native builder,
+    bind roof orientations, save a new variant, and run a full-year CLI simulation with checkpoint resume."""
     from pvsyst_auto.workflows.house import run_house_task
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -106,54 +49,8 @@ def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictSt
                              tracking_variant: StrictStr = "",
                              nominal_dc_power_kw: StrictNum | None = None,
                              tracking_power_source: StrictStr = "") -> dict:
-    """Preflight or execute one template-to-full-year grid simulation without GUI.
-    Supply an existing valid PRJ/VC, loose text PAN/OND, workspace SIT/MET, tilt,
-    year and a NEW project filename. Missing inputs return field-specific issues.
-    Native MET root date declarations are checked before creating the working project;
-    generic-1990, absent or unreadable dates remain disclosed, not inferred from filenames.
-    Scope: completely checked single subarray/fixed plane, no active shading/layout,
-    PRCorrTemp=False; retain template counts unless capacity is explicitly supplied.
-    capacity plans integer series/strings/inverters against declared design voltages,
-    currents, temperatures, IEC/UL module voltage rating and maximum DC:AC ratio.
-    Require independent unshared 8.1.0/8.1.6, one repeatable inverter/MPPT/string branch,
-    full hardware MPPT population and crystalline PAN at STC; mode/topology stays intact.
-    Design envelope/source are required, not guessed from raw temperature coefficients.
-    No native temperature-model reproduction, hardware selection or design certification.
-    Optional weather_manifest_name binds prepare_weather provenance to the requested
-    year/SIT/MET, explicitly loads native weather, and compares hourly GHI/DHI/Tamb;
-    changed files stop before writes. Conversion/rounding concerns remain needs_review.
-    dry_run=true (default) writes nothing and consumes no simulation execution.
-    dry_run=false copies/configures the project, runs Jan 1 through Dec 31 hourly,
-    validates native context/complete year, and returns energy, standard PR, IL_Pmax,
-    warnings, CSV/PDF/SFI and a persisted JSON manifest with reverse recovery steps.
-    Existing project/output files are never overwritten. Failure retains the original
-    template and working files/backups/manifest; no automatic retry or destructive cleanup.
-    status is blocked/ready/completed/needs_review/failed; inspect it, not just MCP is_error.
-    Extreme IL_Pmax versus STC reference energy triggers a disclosed review heuristic,
-    not a claim of native physical validation or an automatic model repair.
-    Year is 1969..2068 due to two-digit native CSV dates. Restart host for this tool.
-    azimuth overrides the template plane azimuth in -180..180 degrees (zero south, west
-    positive); losses accepts only LIDLoss, PMismMPP and ModuleQualityLoss on the
-    subarray plus UFactor on the whole main array. Template fields left unspecified keep
-    their saved values, and the returned configuration_summary discloses the requested
-    angles and losses; no loss is fitted, inferred or defaulted.
-    Optional report_pages is a nonempty list of native page names (for example
-    ["summary", "losses"]); omit it for the default complete report. Invalid pages
-    stop in preflight, and the request/manifest records the selection.
-    Explicit tracking + tracking_variant selects an existing verified native8.1.6
-    UnlimTracking template flow instead: omit tilt/azimuth/capacity/losses; exact source
-    PAN/OND database references and equipment counts stay inherited. This branch requires
-    explicit positive nominal_dc_power_kw and printable tracking_power_source; these are
-    declarations cross-checked against native PR, not guessed from names/cached sizing.
-    Loose workspace/builtin model shadows stop; database internals are not inspected or
-    snapshotted. Only CLI8.1.6rev49278, and completed consumption retains needs_review.
-    Reuses create_tracking_variant to
-    create a NEW VC in the isolated clone, then the same yearly native load/report/
-    context/integrity checks plus finite actual columns and GlobShd. No type conversion,
-    arbitrary geometry or other tracker families. native_consumption_verified becomes
-    true only after validated completion, not engineering certification. Its recovery is
-    review/manual archive of the entire new clone/VC/outputs; no stale per-file undo,
-    automatic retry/resume, deletion or repeat on an existing project/output."""
+    """Clone a fixed-plane or UnlimTracking template project, apply component, weather,
+    angle, capacity, or loss edits, and run a full-year simulation (year 1969..2068)."""
     current = cli()
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -179,21 +76,8 @@ def pvsyst_run_simulation(project: str, variant: str,
                           recompute_shading: bool | None = None,
                           log_level: int | None = None,
                           allow_window_creation: bool | None = None) -> dict:
-    """Run an existing project/variant. Regular CSV/PDF go to Results.
-    For a single run, csv_name accepts a bare filename (e.g. run01) or a .csv
-    filename (run01.csv); both create Results/run01.csv. Existing outputs are
-    never overwritten. For batch_params_name, leave csv_name/pdf_name empty:
-    the CLI generates UserBatch/UserHourly outputs automatically.
-    Optional inputs live in Models (SFI,RVT), Meteo (MET), UserData (DAT),
-    UserBatch (batch CSV/RVT), or Sites (SIT). Unsupported options fail early.
-    Optional allow_window_creation selects the Native window policy for this one
-    request, threaded to the option-help and simulation CLI processes it starts:
-    omitted/None keeps the historical per-command default (a bare hourly CSV is
-    already windowless; PDF/batch keep the old behavior), an explicit False always
-    denies window creation for this run without falling back to an allowing desktop
-    or GUI, and True explicitly allows. False constrains Native window creation; it
-    does not assert that every task is already certified GUI-free.
-    Each run can consume a license execution."""
+    """Run a single or batch simulation via PVsystCLI.exe on an existing project/variant,
+    writing CSV/PDF outputs to Results or batch outputs to UserBatch/UserHourly."""
     current = cli()
     options = dict(
         sfi=optional_path("Models", sfi_name, ".sfi"),
@@ -221,34 +105,8 @@ def pvsyst_run_simulation(project: str, variant: str,
 
 @categorized_tool()
 def pvsyst_simulate_design(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
-    """Preflight or execute one bounded design flow from declared inputs without the GUI.
-    spec.new_project names the NEW working project and is required. scope is fixed to
-    fixed_unshaded_grid: one subarray, one ordinary fixed plane, a Grid system,
-    PRCorrTemp=False and no active geometry, layout or shading scene. The flow locates
-    exact loose PAN/OND components and an eligible workspace template. If no template
-    or variant is pinned and no candidate is eligible, it can derive a NEW template from the installed 8.1
-    residential seed, preserving its source fields and declaring the target MPPT counts.
-    It builds the linear design envelope from declared inputs, plans integer capacity,
-    configures the working project and, with dry_run=false, runs the full year.
-    The verified 8.1 workspace root must be named PVsyst8.1_Data. Read-only preflight
-    reports missing standard folders and blocks file conflicts or escaping paths;
-    execution fills missing empty folders without renaming the root or replacing files.
-    weather.mode=existing uses the named workspace SIT/MET pair, weather.mode=csv names a
-    staged standard hourly CSV, and weather.mode=open_meteo acquires one public ERA5 year.
-    Dry-run with open_meteo or a not-yet-created standard template returns
-    ready_for_weather with execution_preflight_complete=false: this is an input/template
-    plan, not a runnable native design. electrical_design requires declared coefficients
-    with units and sources, and source-declared current limits. Voltage/current field
-    names imply V/A when units are omitted; explicitly contradictory units are blocked.
-    Missing required data returns concrete issues; an empty object never becomes ready.
-    losses overrides LIDLoss, PMismMPP and ModuleQualityLoss on the subarray and UFactor
-    on the main array. Every field of spec that is not supplied keeps the template value;
-    no loss, coefficient, temperature or azimuth is fitted, inferred or defaulted, and no
-    design is certified here. status is blocked/ready/ready_for_weather/completed/
-    needs_review/failed; inspect it, not just MCP is_error. Year is 1969..2068. The
-    returned issues, warnings, transactions and recovery steps state exactly what was and
-    was not changed. Optional spec.report_pages selects native PDF page names; omitted
-    means the complete default report, and invalid lists stop before discovery/weather."""
+    """Run a unified fixed_unshaded_grid design workflow: component lookup, template matching,
+    capacity sizing, weather preparation/acquisition, and full-year simulation."""
     current = cli()
     component_store = components()
     store = VariantStore(component_store.workspace, component_store, component_store.lock)
@@ -259,30 +117,15 @@ def pvsyst_prepare_sourced_design(pan_name: StrictStr, ond_name: StrictStr,
                                   sources: dict[str, SourceTextRequest],
                                   declarations: list[SourceDeclarationRequest],
                                   design: SourcedDesignGoals | None = None) -> dict:
-    """Bind caller-declared excerpts to source text and build the design-envelope request.
-    pan_name and ond_name are exact loose component filenames (workspace first, then the
-    installed library): a manufacturer-only search is never substituted and no model is
-    inferred. The identity label is composed from the owning objects as "PAN manufacturer
-    PAN model / OND manufacturer OND model" and cannot be overridden by the caller. A
-    root-only text component and an 8.1.6 GUI component are both accepted: the root object
-    is required, a PVObject_Commercial block is optional and its identity wins, while a
-    disagreement between the two, a repeated declared field or a legacy binary or non-UTF-8
-    file returns blocked with the concrete field. sources maps short ids to declared source
-    text whose kind is manufacturer, site or assumption; declarations claims one value per
-    field, each tied to a source id, an excerpt and the exact value/unit tokens it must
-    agree with, and the declared source text itself is never returned. design carries
-    explicit engineering goals only, so no envelope, coefficient or limit can be injected
-    without a citation. status is ready, needs_review or blocked; the assembled
-    electrical_design draft, the reused envelope result and the citation provenance come
-    back, and the declared excerpts are a source-consistency check between the claimed
-    value and the quoted loose component identity, not a manufacturer certification."""
+    """Bind cited datasheet values and units against loose PAN/OND files to build
+    an electrical_design envelope request."""
     selected = {}
     store = components()
     with store.lock:  # one lock for both reads: a concurrent workspace update cannot split them
         for kind, filename in (("PAN", pan_name), ("OND", ond_name)):
             field, message, payload = sourced_component(store, kind, filename)
             if payload is None:
-                return {"status": "blocked", "stage": "components", "scope": SOURCED_DESIGN_SCOPE,
+                return {"status": "blocked", "stage": "components",
                         "issues": [{"field": field, "message": message}], "warnings": [],
                         "electrical_design": None, "capacity": None, "envelope": None,
                         "missing_fields": [], "needs_review": False, "provenance": []}
@@ -299,35 +142,8 @@ def pvsyst_prepare_sourced_design(pan_name: StrictStr, ond_name: StrictStr,
 def pvsyst_run_sourced_house_task(spec: SourcedHouseTaskRequest, dry_run: StrictBool = True,
         confirm: StrictBool = False, resume: StrictBool = False, retry_simulation: StrictBool = False,
         accept_source_review: StrictBool = False) -> dict:
-    """Bind cited inputs, prepare a source project without an annual run, then deliver one house.
-    design reuses SingleDesignRequest, but module/inverter require exact loose file_name and
-    capacity/electrical_design must be absent: the existing cited-source helper builds the
-    electrical draft. sources/declarations/goals reuse pvsyst_prepare_sourced_design semantics;
-    an explicit design.target_dc_kw is also an engineering goal, never a guessed rating.
-    Missing/mismatched citations return needs_context and the concrete draft without writes.
-    design.new_project is the NEW source; spec.new_project is a DISTINCT final house project.
-    Complete house/layout/module geometry reuse the existing native house input contract.
-    Dry-run on a fresh source is ready_for_preparation or ready_for_weather, not full house
-    preflight; it writes nothing and launches no GUI. Execution requires dry_run=false AND
-    confirm=true. Source review additionally requires accept_source_review=true, and remains
-    needs_review in the final result; confirmation never certifies source authenticity.
-    Prepared source and house manifests own recovery: resume rechecks request/provenance,
-    canonical inputs and prepared files, then resumes the existing child checkpoint without
-    another preparation/annual baseline. Partial source preparation remains inspectable via
-    its existing recovery transactions, not automatically repeated or silently overwritten.
-    Final annual execution is only the existing native house task. GUI/version/DPI/topology
-    bounds are unchanged. Existing user windows are not taken over, INI is not edited here.
-    Weather assets/source review are checked; the house path does not add hourly comparison
-    against the source weather CSV. It reports weather_native_comparison_performed=false.
-    Raw source text is not persisted or echoed; accepted citation provenance is preserved.
-    No new PV/sizing/dispatch model or general job framework.
-    spec.shading_mode/scene_import_method/string_layout are forwarded to the child house request;
-    an explicit string_layout requires scene_import_method='native' with shading_mode='module_layout'
-    and stops before any source preparation otherwise. Omitting them keeps the GUI/linear shape.
-    spec.allow_window_creation is forwarded unchanged to the child house request (False is carried,
-    not dropped): omitted/None keeps the historical default, False always denies Native window
-    creation for the final run, True allows. A strict False with the GUI import method is rejected
-    before any source preparation, so a windowless request never prepares a project first."""
+    """Bind cited datasheet inputs, prepare a source project (or reuse an existing source via
+    prepare_mode='preserve_source_hardware'), and run the 3D house simulation pipeline."""
     from pvsyst_auto.workflows.sourced_house import is_preserve_request, run_sourced_house_task
     current = cli()
     component_store = components()

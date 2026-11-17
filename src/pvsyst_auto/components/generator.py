@@ -73,8 +73,7 @@ def _read_number(fields, name):
 def state(lines, arrays, system):
     result = {"supported": False, "errors": [], "enabled": None, "filename": None,
               "operating_power_kw": None, "flags": None, "subarrays": [],
-              "threshold_units": "native normalized voltage thresholds (0..1); not SOC",
-              "scope": "8.1.0/8.1.6 standalone Battery system; runtime dispatch requires simulation"}
+              "threshold_units": "normalized voltage thresholds (0..1)"}
     try:
         if system is None:
             raise ValueError("No pvSystem object")

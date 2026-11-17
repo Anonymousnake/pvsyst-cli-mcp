@@ -196,8 +196,7 @@ class SharedTopologyReadContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(owner["fields"].get("FutureMarker"), ["PRESERVE_ME"])
                 absent = await self._get(session, variant="VC4", include_topology=True)
                 self.assertEqual(absent["topology"],
-                                 {"present": False, "issues": [], "roots": [],
-                                  "scope": absent["topology"]["scope"]})
+                                 {"present": False, "issues": [], "roots": []})
 
     async def test_malformed_circuit_reports_issue_not_empty_verified_tree(self):
         self._write("T.VC5", _vc(circuit=_shared_circuit(close=False)))

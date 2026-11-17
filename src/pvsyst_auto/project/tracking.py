@@ -11,7 +11,6 @@ from pvsyst_auto.project.circuit import inventory as grid_inventory
 BOM = b"\xef\xbb\xbf"
 STEP = Decimal("0.1")
 
-# Adapter ranges only; the native GUI limits are not measured.
 RANGES = {"AxisAzim": (Decimal("-20"), Decimal("20")),
           "MinPhi": (Decimal("-60"), Decimal("-45")),
           "MaxPhi": (Decimal("45"), Decimal("60"))}
@@ -133,15 +132,14 @@ def _stepped(number, field):
     except (InvalidOperation, ArithmeticError):
         raise ValueError(f"{field} is outside the decimal range this adapter can step") from None
     if number != stepped:
-        raise ValueError(f"{field} must use at most 0.1 steps (adapter range, not a native limit)")
+        raise ValueError(f"{field} must use at most 0.1 steps")
     return number
 
 
 def _angle(number, field):
-    """Declared adapter domains, not measured native GUI bounds."""
     low, high = RANGES[field]
     if not low <= number <= high:
-        raise ValueError(f"{field} must stay within the adapter range {low}..{high}")
+        raise ValueError(f"{field} must stay within {low}..{high}")
     return _stepped(number, field)
 
 

@@ -182,9 +182,7 @@ def compare_results(baseline, target, columns, *, include_key_periods=False):
             "baseline": {"filename": paths[0].name, "sha256": hashes[0]},
             "target": {"filename": paths[1].name, "sha256": hashes[1]},
             "columns": list(columns), "rows": count, "first": first, "last": last,
-            "step_minutes": step, "summary": stats,
-            "scope": "Identical parsed timestamps and units; paired finite samples only. "
-                     "Completeness covers rows present, not the intended simulation period or input equivalence."}
+            "step_minutes": step, "summary": stats}
     if include_key_periods:
         result["key_periods"] = [key_periods[name] for name in columns if name in key_periods]
     return result

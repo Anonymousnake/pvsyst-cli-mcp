@@ -412,9 +412,8 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                           cli_version=version, license=license_state, report_pages=report_pages)
             if storage_mode:
                 record.update(load_manifest_name=load_manifest_name, availability=availability)
-            record["warnings"].append("Nameplate/source are declared; equipment limits, fitted models and site climate are not certified.")
             if record["database_references"]:
-                record["warnings"].append("Inherited native database model contents are uninspected; engineering review remains required.")
+                record["warnings"].append("Inherited native database model contents are uninspected.")
         except (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired) as exc:
             record["issues"].append(str(exc))
             return record

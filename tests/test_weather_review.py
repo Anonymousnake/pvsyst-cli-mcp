@@ -317,7 +317,7 @@ class CompleteYearContract(ReviewFixture):
         self.assertGreater(column["max_abs_delta"], 0.0)
         self.assertGreater(column["outside_review_threshold"], 0)
         self.assertEqual(report["status"], "needs_review")
-        self.assertTrue(any("no cause is attributed here" in item
+        self.assertTrue(any("csv_to_native" in item
                             for item in report["review_items"]), report["review_items"])
 
     def test_shifted_native_labels_block_the_review(self):
@@ -566,8 +566,7 @@ class TimeBasisContract(ReviewFixture):
         self.assertGreater(basis["met_fields"]["TimeShift"][0]["line"], 0)
         # The real file ends its declarations at the measured value list.
         self.assertIn("measured value lists", basis["met_header_read_stop"]["reason"])
-        self.assertIn("PVObject_SiteMet", basis["met_header_read_scope"])
-        self.assertIn("narrow contract", basis["met_header_read_scope"])
+        self.assertNotIn("met_header_read_scope", basis)
 
     def test_object_close_marker_also_ends_the_read(self):
         basis = self.write_time_basis(var_meteo=False, end_of_data=False).basis()
@@ -706,9 +705,9 @@ class CompareStatsContract(ReviewFixture):
         source = self.root / "Meteo" / self.csv_name
         report = inspect_weather_values(source, self.year)
         comparison = compare_native_weather(self.root / "Results" / self.native_name, source, report)
-        for key in ("rows", "timestamps_match", "columns", "needs_review", "review_thresholds",
-                    "scope"):
+        for key in ("rows", "timestamps_match", "columns", "needs_review", "review_thresholds"):
             self.assertIn(key, comparison)
+        self.assertNotIn("scope", comparison)
         for state in comparison["columns"].values():
             for key in ("max_abs_delta", "signed_delta_sum", "outside_review_threshold",
                         "samples", "max_abs", "mae", "rmse", "mean_signed"):

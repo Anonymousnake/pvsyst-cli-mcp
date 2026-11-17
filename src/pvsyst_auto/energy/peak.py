@@ -12,7 +12,6 @@ from pvsyst_auto.energy.storage import storage_state, validate_storage
 
 BOM = b"\xef\xbb\xbf"
 EDITABLE = ("DischStrategy", "HourBegDisch", "HourEndDisch")
-# Adapter bounds only; the native GUI limits are not measured.
 HOUR_LIMIT = 23
 SYSTEM_TEXT = {"Flags": "$17000040", "SystemType": "Grid",
                "BatteryFile": "Universal_Adjustable_LI.BTR", "LimGrSeparLoss": "False",
@@ -55,7 +54,7 @@ def discharge_values(discharge):
             if type(value) is not int:
                 raise ValueError(f"{name} must be a strict integer")
             if not 0 <= value <= HOUR_LIMIT:
-                raise ValueError(f"{name} must be within 0..{HOUR_LIMIT} (adapter range, not a native limit)")
+                raise ValueError(f"{name} must be within 0..{HOUR_LIMIT}")
             bounds.append(value)
         if bounds[0] == bounds[1]:
             raise ValueError("start_hour and end_hour must differ")
@@ -238,15 +237,6 @@ def create_peak_shaving_variant(store, *, project, source_variant, new_variant, 
                           bom_added=bool(bom_prefix) and not original.startswith(BOM))
             if name_change is not None:
                 result["name_change"] = name_change
-            result["warnings"].append(
-                "Only one new VC is written: DischStrategy plus the two optional hour endpoints change; strategy, "
-                "charging strategy, SOC, power limits, efficiencies, grid limit, root/system flags, battery hardware "
-                "and geometry stay at their verified values. Saving is not native consumption.")
-            result["warnings"].append(
-                "Supported subset is the verified native PeakShaving profile with root Flags=$00080000 and no load. "
-                "Hours are native hour slots only: endpoint inclusivity is not inferred, AfterSunset does not mean "
-                "discharging solely in hours without irradiance, and creating this variant does not prove that this "
-                "run consumes it.")
             diff = "".join(difflib.unified_diff(text.splitlines(keepends=True),
                                                candidate_text.splitlines(keepends=True)))
             result.update(diff=diff[:32000], diff_truncated=len(diff) > 32000)
@@ -324,5 +314,4 @@ def peak_shaving_state(lines):
                 "reason": "unrecorded discharge strategy"}
     return {"mode": "configured", "discharge": discharge,
             "charging_strategy": fields["ChargingStrategy"],
-            "values": {key: fields[key] for key in sorted(expected)},
-            "scope": "stored native strategy and fields; no dispatch, SoC or efficiency model"}
+            "values": {key: fields[key] for key in sorted(expected)}}

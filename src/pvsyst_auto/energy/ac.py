@@ -22,7 +22,7 @@ def _length(raw):
     except ArithmeticError:
         raise ValueError("AC length is outside the supported decimal range") from None
     if not 0 < value <= 100000 or value != stepped:
-        raise ValueError("AC length must be positive, at most 100000 m and in exact 0.1 m steps (adapter domain)")
+        raise ValueError("AC length must be positive, at most 100000 m and in exact 0.1 m steps")
     return value
 
 

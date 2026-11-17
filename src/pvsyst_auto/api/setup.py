@@ -16,24 +16,22 @@ def pvsyst_license_info() -> dict:
 
 @categorized_tool()
 def pvsyst_license_activate(key: str, confirm: bool = False) -> dict:
-    """Activate a CLI license using a supplied key. Requires confirm=true;
-    MCP clients may retain tool arguments, so handle license keys accordingly."""
+    """Activate a CLI license using a supplied key (requires confirm=true)."""
     return cli().license_activate(key, confirm=confirm)
 
 @categorized_tool()
 def pvsyst_license_deactivate(customer_id: str, confirm: bool = False) -> dict:
-    """Deactivate this computer's CLI license. Requires confirm=true."""
+    """Deactivate this computer's CLI license (requires confirm=true)."""
     return cli().license_deactivate(customer_id, confirm=confirm)
 
 @categorized_tool()
 def pvsyst_license_sync(confirm: bool = False) -> dict:
-    """Synchronize CLI license information with its server. Requires confirm=true."""
+    """Synchronize CLI license information with its server (requires confirm=true)."""
     return cli().license_sync(confirm=confirm)
 
 @categorized_tool()
 def pvsyst_export_logs() -> dict:
-    """Export CLI diagnostic logs to a ZIP under workspace/Results.
-    The archive may contain private data; only its path is returned."""
+    """Export CLI diagnostic logs to a ZIP archive under workspace/Results."""
     root = cli().workspace.resolve(strict=True)
     folder = (root / "Results").resolve()
     if root not in folder.parents:

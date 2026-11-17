@@ -63,17 +63,7 @@ def _declared_numbers(text: str) -> list[float] | None:
 
 
 def _saved_results(text: str, lines: list[str]) -> dict:
-    """Read the result cache a native save wrote into the variant, as stored.
-
-    Returns the ``pvSimulFile`` output declaration, every ``VarList`` ``TVarSimul``
-    entry in file order, and histogram / shading-factor-table counts. A month-
-    resolution entry yields its stored ``ValMonth`` numbers; an hour-resolution entry
-    yields its untouched packed ``Day_*`` rows, because that codec is not decoded
-    here. Nothing is summed, converted, re-modelled or presented as Original-verified:
-    a unit is reported only when the file declares one, so ``unit`` stays null and
-    ``declared_type`` carries the native type code instead of an assumed kWh/kW.
-    A malformed cache is reported in ``issues`` and keeps whatever parsed.
-    """
+    """Read the result cache stored inside the variant."""
     issues = []
     try:
         blocks = objects(text)
@@ -192,11 +182,7 @@ def _saved_results(text: str, lines: list[str]) -> dict:
             "entries": entries},
         "histograms": {"count": sum(histogram_types.values()), "types": histogram_types},
         "shading_factor_tables": {"count": factor_tables},
-        "issues": issues,
-        "note": ("Stored native declarations read verbatim from this variant only. The packed "
-                 "Day_* rows are not decoded and no value is summed, unit-converted or re-modelled; "
-                 "a null unit means the VarList declares none. Nothing here is evidence that the "
-                 "original software produced, accepts or can recover these results.")}
+        "issues": issues}
 
 
 ECON_OPEN = "EconomicEval=TEcoEvaluation"
@@ -204,23 +190,7 @@ ECON_LIST = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*), list of=([0-9]+) ([A-Za-z_][
 
 
 def _economic_block(lines: list[str]) -> dict:
-    """Read the variant's stored native ``EconomicEval=TEcoEvaluation`` input block, verbatim.
-
-    This is a stored-declaration read of one root field of ``pvVCalcul``: the raw text of the
-    block, the native scalars that are unambiguous direct children (duplicate names such as a
-    second ``DiscountRate`` are kept as a list, never flattened), and the direct list
-    declarations (``InvestmentCosts``/``OperatingCosts``/``Loans`` counts and item types).
-    Nothing is unit-converted, price/currency-translated, summed or modelled: no finance,
-    IRR/LCOE or cashflow arithmetic, and no claim the original software evaluates or can
-    recover these inputs (``native_consumption_verified`` is always false).
-
-    Boundary is the explicit ``End of TEcoEvaluation`` tag when present, else the next
-    root-level (indent <= owner) section. It never truncates at the first ``EndTags`` and does
-    not need a following ``VarList``, so a valid cold source with no result cache still yields
-    the complete block. A missing block reports ``present=False``; an unclosed or structurally
-    unbalanced (``End of List`` count != ``list of=`` count) block raises instead of returning
-    partial data.
-    """
+    """Read the variant's stored ``EconomicEval=TEcoEvaluation`` block."""
     found = [i for i, line in enumerate(lines) if line.strip() == ECON_OPEN]
     if not found:
         return {"present": False}
@@ -279,10 +249,6 @@ def _economic_block(lines: list[str]) -> dict:
         "lists": lists,
         "fields_scope": "stored_declaration",
         "native_consumption_verified": False,
-        "note": ("Verbatim stored native economic-input block from this variant only. No "
-                 "currency conversion, finance/IRR/LCOE arithmetic or output is computed, "
-                 "assumed or verified; how the original software loads or evaluates it, and "
-                 "whether a saved economic result exists, remains unproven."),
     }
 
 
@@ -620,15 +586,7 @@ class VariantStore:
 
     @staticmethod
     def _legacy_dcgrid_read_scope(lines, system):
-        """Bounded read-only scope for the known legacy 8.0 DCGrid source form.
-
-        Classifies only the genuine legacy declaration shape: the root ``Version`` is
-        8.0.x AND the single ``SystemType`` is exactly ``DCGrid``. Any other 8.0
-        system, an 8.1 source, or a missing/duplicate signature returns None, so the
-        prior payload is untouched and no general 8.0 support is implied. It reports
-        the stored DCGrid electrical declarations verbatim; no inverter/battery
-        default is invented and this is not a physics or Original-verified quantity.
-        """
+        """Read-only scope for legacy 8.0 DCGrid declarations."""
         if system is None:
             return None
         header_end = next((i for i in range(1, len(lines))
@@ -652,9 +610,6 @@ class VariantStore:
             "format_family": "DCGrid",
             "source_version": version,
             "system_declarations": declared,
-            "note": ("Read-only stored legacy 8.0 DCGrid declarations, verbatim; not an "
-                     "8.1 edit/upgrade gate, not native physics or Original-verified, and "
-                     "no inverter/battery default is added."),
         }
 
     def inspect_parameters(self, project: str, variant: str,
@@ -744,17 +699,7 @@ class VariantStore:
                      "peak_shaving": peak_shaving_state(lines),
                       "grid_storage": grid_storage_state(lines, system),
                      "shading_scene": shading_state(lines),
-                    "source_metadata": {
-                        "stored_source_values": True,
-                        "note": ("subarrays[].inverter_state reports the STORED declaration values read "
-                                 "verbatim from the variant file for each SubArrayId, and is not a computed "
-                                 "or Original-verified quantity. Subarrays are listed in numeric-ascending "
-                                 "SubArrayId order (the existing public presentation order), kept distinct "
-                                 "from the native NoStringGlob allocation order (raw source-list appearance). "
-                                 "Original PVsyst may normalize them on load/import (e.g. PNomAC_InMPPT 3.75 -> "
-                                 "2.50); a legal file declaration/edit does not prove the original software "
-                                 "accepted that numeric value. A missing, malformed or non-finite field is "
-                                 "omitted, never 0.")},
+                    "source_metadata": {"stored_source_values": True},
                     "subarrays": [{"id": identifier, "values": fields(bounds, (
                         "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT", "NoOrientation",
                         "VBkUpEncl_syst", "VBkUpDecl_syst", "LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI", "PQualityModP", "Flags")),
@@ -807,8 +752,7 @@ class VariantStore:
                              # never derived here from the OND PNomConv/NbMPPT.
                              "PNomAC_InMPPT": (0, math.inf)}
         allowed_orientation = {"FieldTilt": (0, 90), "FieldAzim": (-180, 180)}
-        # UFactor (constant Uc) keeps its adapter range. UVFactor (native wind-loss Uv) has no
-        # sourced native range, so it uses a finite-but-unbounded adapter domain: any finite
+        # UFactor (constant Uc) uses its bounded range; UVFactor (wind-loss Uv) accepts any finite non-negative number.
         # JSON float is accepted, while bool/NaN/inf are refused below. No 0..100 or nonnegative
         # Native bound is invented here; original validation of the stored value is deferred.
         allowed_main_array = {"UFactor": (15, 100), "UVFactor": (-math.inf, math.inf)}
@@ -1562,7 +1506,6 @@ class VariantStore:
                     "valid": False if issues else None if unchecked else True,
                     "checks_complete": not unchecked, "unchecked_checks": unchecked,
                     "system_type": system_type,
-                    "scope": "orientation, grid circuit references and serialized inverter/string counts; not physical validation",
                     "grid_circuit": circuit,
                     "issues": issues, "warnings": warnings,
                     "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids)}
@@ -2147,7 +2090,6 @@ class VariantStore:
                 candidates[path] = candidate
             transaction = self._commit_project_files(project, originals, candidates)
             return {"project": project, "site": site_name, "meteo": met_name,
-                    "note": "Historical weather origin fields remain from the source variant",
                     **transaction}
 
     def restore_project_sources(self, project: str, backups: dict[str, str],

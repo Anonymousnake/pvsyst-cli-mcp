@@ -1,13 +1,4 @@
-"""Native 8.1.6 IAM model selection for the owning pvSubArray.
-
-``_read`` / ``iam_model_state`` / ``replace_iam_model`` take ``(lines, bounds)`` and
-only ever touch the owning subarray. Blocks are located through the shared object
-parser by object path, never by flattened line scanning. No curve, Fresnel, cosine
-or interpolation value is computed, and no other component's cache is copied.
-Accepted source shapes are limited to the verified component-state forms (no
-``pvIAM`` block, a retained Ashrae block, a preserved ``FresnelAR`` optics cache)
-and the stored Ashrae state; the ``ashrae_b0`` adapter domain is 0..1.
-"""
+"""Native 8.1.6 IAM model selection for the owning pvSubArray."""
 from __future__ import annotations
 
 import re
@@ -31,12 +22,6 @@ FRESNEL_KEYS = ("Flags", "IAMMode") + OPTIC_KEYS
 # A user point table keeps only the profile: no optics fields are stored.
 USER_KEYS = ("Flags", "IAMMode")
 CACHE_KEYS = ("NPtsMax", "NPtsEff", "LastCompile", "Mode")
-SCOPE = ("Owning subarray only; native IAM component bit5 and the pvIAM IAMMode/B0_IAM fields. "
-         "Accepted source shapes: component with no pvIAM block, component with a retained Ashrae "
-         "block, component with a preserved FresnelAR optics cache, and the stored Ashrae state. "
-         "A retained cache is reported as stored metadata and is never treated as an effective "
-         "ASHRAE model while bit5 is set. No curve evaluation. FresnelSmooth and UserProfile are "
-         "reported read-only: their stored tables are returned verbatim and never generated.")
 
 
 def _blocks(lines, bounds):
@@ -184,7 +169,7 @@ def _read(lines, bounds):
             b0 = None
             points = _stored_points(parsed, block)
             state = {"effective": model, "stored_model": model, "stored_ashrae_b0": None,
-                     "points": points, "scope": "stored table reported verbatim; not evaluated"}
+                     "points": points}
             return fields, index, raw, block, state
         else:
             raise ValueError("Require a verified Ashrae, component FresnelAR, FresnelSmooth or UserProfile pvIAM state")
@@ -270,6 +255,6 @@ def replace_iam_model(lines, bounds, updates):
     # the body may change the block height, so re-read the candidate with its own bounds
     after = _read(candidate, (bounds[0], bounds[0] + 1 + len(body)))[4]
     if before == after:
-        return {"before": before, "after": after, "scope": SCOPE}
+        return {"before": before, "after": after}
     lines[bounds[0] + 1:bounds[1]] = body
-    return {"before": before, "after": after, "scope": SCOPE}
+    return {"before": before, "after": after}

@@ -68,8 +68,7 @@ until an intentional release change. For a release:
    tested Linux/Python-3.12 wheel and source distribution. Review the documented native
    evidence/support boundaries before publishing the draft.
 
-There is no automatic PyPI upload, automatic version bump, or claim of native
-certification. Creating a tag/draft is a separate publication action, not a side effect
+Creating a tag/draft is a separate publication action, not a side effect
 of local verification. Native acceptance needs its own explicit machine, version,
 fixture provenance, independent reference, execution budget, raw artifacts, and
 pass/fail/NOTRUN decision.

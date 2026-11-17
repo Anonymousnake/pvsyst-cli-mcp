@@ -1,10 +1,4 @@
-"""Minimal native string-voltage-mismatch helper.
-
-Serialises only the verified native pair -- the owning pvSubArray default bit and
-PMismString -- reusing the shared editor helpers. No loss, probability or energy
-calculation is performed, and no other object or field is touched. The real `lines`
-are never mutated before the whole target body is computed and every check passed.
-"""
+"""Minimal native string-voltage-mismatch helper."""
 from __future__ import annotations
 
 import re
@@ -17,11 +11,10 @@ DEFAULT_BIT = 0x00020000          # bit17: set = native default, clear = manual 
 FIELD = "PMismString"
 ANCHOR = "PMismMPP"               # GUI order: PMismString follows PMismMPP ...
 SIBLING = "PMismUFixe"            # ... and in the saved file it follows PMismUFixe too
-SCOPE = "Owning pvSubArray only; native string-voltage-mismatch default bit and PMismString"
 
 
 def _domain(number):
-    """Adapter support envelope (0.01..100, 0.01 steps); zero is expressed as mode default."""
+    """Supported range 0.01..100 in 0.01 steps; zero selects mode default."""
     number = finite(number, "loss_percent", minimum=0.01, maximum=100)
     scaled = Decimal(str(number)) * 100
     if scaled != scaled.to_integral_value():
@@ -123,7 +116,7 @@ def replace_string_mismatch(lines, bounds, updates):
     fields, flags, before = _read(lines, bounds)
     after = {"mode": mode, "loss_percent": value}
     if before == after:
-        return {"before": before, "after": after, "scope": SCOPE}
+        return {"before": before, "after": after}
     body = _body(lines, bounds, fields, flags, mode, value)
     lines[bounds[0] + 1:bounds[1]] = body
-    return {"before": before, "after": after, "scope": SCOPE}
+    return {"before": before, "after": after}

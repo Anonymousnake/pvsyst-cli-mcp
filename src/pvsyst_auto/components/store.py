@@ -74,8 +74,7 @@ def inspect_curves(kind: str, text: str) -> dict:
 
 def electrical_inventory(kind: str, text: str) -> dict:
     """Read declared reference-point parameters in their owning PAN/OND objects."""
-    result = {"fields": {}, "issues": [], "unverified": [],
-              "scope": "Reference-point nameplate/input fields only; not model fitting, temperature sizing or MPPT allocation"}
+    result = {"fields": {}, "issues": [], "unverified": []}
     try:
         blocks = objects(text)
         root, = [block for block in blocks if not block.path]
@@ -347,10 +346,8 @@ class ComponentStore:
                 result["scalar_aliases"] = PAN_ALIASES
             if kind == "REV":
                 # pvAddress has no electrical curves and no commercial IV form by design.
-                result["curves"] = {"scope": "REV seller address has no electrical curves",
-                                    "items": [], "truncated": False}
-                result["commercial"] = {"scope": "REV seller address has no commercial IV form",
-                                        "editable": False, "fields": {}, "errors": [],
+                result["curves"] = {"items": [], "truncated": False}
+                result["commercial"] = {"editable": False, "fields": {}, "errors": [],
                                         "remarks": [], "remarks_count": 0, "remarks_truncated": False}
             else:
                 result["curves"] = inspect_curves(kind, self._text(kind, data)[1])
@@ -400,9 +397,6 @@ class ComponentStore:
         result = self.inspect(kind, name, library, limit=1)
         result.pop("lines", None)
         result.pop("fields", None)
-        result["scope"] = ("legacy header only; copy bytes and run a project for validation"
-                           if result["format"] == "legacy-binary" else
-                           "static structure and known fields; run a project for model validation")
         return result
 
     def _backup_folder(self, kind: str) -> Path:
@@ -874,8 +868,6 @@ class ComponentStore:
                          "enclosure_threshold_present": any(item["enclosure"] is not None
                                                             for item in subarrays),
                          "release_threshold_present": any(item["release"] is not None
-                                                          for item in subarrays),
-                         "note": "File reference alone does not activate a generator; inspect simulation outputs"}
+                                                          for item in subarrays)}
         return {"project": f"{base}.PRJ", "variant": variant, "references": refs,
-                "generator_configuration": generator,
-                "note": "Encrypted built-in databases are not enumerable; unknown is not proof of absence"}
+                "generator_configuration": generator}

@@ -8,7 +8,6 @@ from pvsyst_auto.components.editor import objects, replace_value, require_flat, 
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 
 BOM = b"\xef\xbb\xbf"
-# Adapter bound only; the native GUI and engineering limits are not measured.
 ALLOCATION_MAX = 39
 SUB_PROFILE = {"Version": "8.1.6", "Flags": "$019E1002", "Flags2": "$20", "SubArrayId": "1",
                "NoOrientation": "1", "NoOrientation2": "2", "NStringCh": "40", "NModSerie": "25",
@@ -28,7 +27,7 @@ DOME_BACK = {"Version": "8.1.6", "Flags": "$00", "NoOrient": "2", "FieldType": "
 
 
 def allocation(value, label):
-    """Strict integer, adapter-bounded to the verified 40-string template."""
+    """Strict integer, bounded to the 40-string template."""
     if type(value) is int:
         number = value
     elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
@@ -36,7 +35,7 @@ def allocation(value, label):
     else:
         raise ValueError(f"{label} must be a strict integer")
     if not 1 <= number <= ALLOCATION_MAX:
-        raise ValueError(f"{label} must be within 1..{ALLOCATION_MAX} (adapter range, not a native limit)")
+        raise ValueError(f"{label} must be within 1..{ALLOCATION_MAX}")
     return number
 
 
@@ -197,14 +196,7 @@ def create_dome_allocation_variant(store, *, project, source_variant, new_varian
             if name_change is not None:
                 result["name_change"] = name_change
             result["warnings"].append(
-                "Only one new VC is written: NStrOrient1 and an optional root Comment change. No inverter, string, "
-                "module, subarray or orientation record is created or copied, and NoOrientation2 is not modified. "
-                "Saving is not native consumption.")
-            result["warnings"].append(
-                "Supported subset is the verified native two-face Dome profile: one subarray sharing both faces, "
-                "NStringCh=40 with the second face implied by NoOrientation2=2. The remaining strings on face two are "
-                "not written as NStrOrient2 because the native template does not store that field. The 1..39 bound is "
-                "an adapter range, not a measured GUI or engineering limit.")
+                "East and west string allocations must remain within 1..39 strings per face.")
             diff = "".join(difflib.unified_diff(text.splitlines(keepends=True),
                                                candidate_text.splitlines(keepends=True)))
             result.update(diff=diff[:32000], diff_truncated=len(diff) > 32000)

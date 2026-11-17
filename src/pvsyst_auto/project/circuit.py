@@ -129,8 +129,7 @@ def transformer_state(lines):
     stored: this function does not convert units, derive reference power, or decide
     whether a loss fraction is physically consistent.
     """
-    result = {"layers": [], "count": 0, "nested": False, "issues": [],
-              "scope": "serialized transformer fields and nesting; not electrical validation"}
+    result = {"layers": [], "count": 0, "nested": False, "issues": []}
     try:
         roots = circuit_nodes(lines)
     except (UnsupportedCircuit, ValueError) as exc:
@@ -172,9 +171,7 @@ def topology_state(lines):
     and member order are kept), no count is derived, and no electrical grouping or
     power allocation is decided here.
     """
-    result = {"present": False, "issues": [], "roots": [],
-              "scope": "serialized native pvCircuit node tree with raw stored fields; "
-                       "not electrical sizing, allocation or Original-verified"}
+    result = {"present": False, "issues": [], "roots": []}
     starts = [i for i, line in enumerate(lines) if line.strip() == "PVObject_SystemCircuit=pvCircuit"]
     ends = [i for i, line in enumerate(lines) if line.strip() == "End of PVObject pvCircuit"]
     if not starts and not ends:
@@ -214,8 +211,7 @@ def inventory(lines, arrays):
     """
     result = {"issues": [], "unchecked_checks": [], "inverter_groups": [],
               "subarrays": [], "totals": None,
-              "counts_complete": False, "counts_valid": None,
-              "scope": "serialized circuit references and inverter/string counts; not electrical sizing"}
+              "counts_complete": False, "counts_valid": None}
     issues, unchecked = result["issues"], result["unchecked_checks"]
     try:
         roots = circuit_nodes(lines)
@@ -466,8 +462,7 @@ def set_independent_mppt(lines, arrays, subarray_id, enabled):
     if inventory(lines, arrays)["counts_valid"] is not True:
         raise ValueError("MPPT mode switching failed structure validation")
     return {"subarray_id": subarray_id, "enabled_before": was_enabled, "enabled_after": enabled,
-            "inputs_before": before_quantity, "inputs_after": quantity,
-            "scope": "mode declaration only; serialized layout preserved, no hardware allocation or loss refitting"}
+            "inputs_before": before_quantity, "inputs_after": quantity}
 
 
 def set_power_sharing(lines, arrays, subarray_id, enabled):
@@ -508,8 +503,7 @@ def set_power_sharing(lines, arrays, subarray_id, enabled):
     if inventory(lines, arrays)["counts_valid"] is not True:
         raise ValueError("Power-sharing settings failed structure validation")
     return {"subarray_ids": members, "inverter_line": group["line"],
-            "enabled_before": group["power_sharing_id"] == 0, "enabled_after": enabled,
-            "scope": "existing group 0 automatic sharing; no topology or nominal-power refitting"}
+            "enabled_before": group["power_sharing_id"] == 0, "enabled_after": enabled}
 
 
 def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_strings=None, target_mppt=None):
@@ -637,8 +631,7 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
               "inverters_before": positive_integer(root.one("NInverter")[1], "NInverter"),
               "inverters_after": positive_integer(root.one("NInverter")[1], "NInverter") if independent and not inverter_scaling else target,
               "strings_before": strings, "strings_after": scaled_strings,
-              "groups": selected, "string_groups": string_groups,
-              "scope": "proportional serialized allocation; not electrical sizing or loss refitting"}
+              "groups": selected, "string_groups": string_groups}
     if independent:
         result.update(mppt_inputs_before=positive_integer(root.one("NInvMPPT")[1], "NInvMPPT"),
                       mppt_inputs_after=scaled_inputs if inverter_scaling else target, mppt_groups=mppt_groups)

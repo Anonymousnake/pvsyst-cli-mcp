@@ -44,12 +44,11 @@ def _load_records(blocks):
 
 
 def build_project_handoff(store, *, project, variant, declarations=None):
-    """Describe saved inputs; neither declarations nor readable files certify a design."""
+    """Collect saved project/variant inputs and caller declarations."""
     result = {"status": "blocked", "readonly": True, "issues": [], "saved": {},
               "declarations": {}, "external_dependencies": [], "missing_items": [],
               "review_items": [], "native_consumption_verified": False,
-              "runtime_state_observed": False,
-              "scope": "Saved inputs and explicit caller declarations; no physical, source or native-consumption certification"}
+              "runtime_state_observed": False}
     with store.lock:
         try:
             project, variant = project_name(project), variant_id(variant)

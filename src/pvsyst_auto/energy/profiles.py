@@ -170,8 +170,6 @@ def prepare_load_profile(cli, *, csv_name, year, output_name, utc_offset_hours,
                           artifacts={"csv": str(target), "manifest": str(record)},
                           normalized_format={"header": ["Date", "P Load"], "units": ["", "kW"],
                                              "date_format": "pvsyst_dot", "encoding": "ASCII", "separator": ";"})
-            result["warnings"].append("Native calendar lookup ignores the input year; this importer verifies the requested year and leap day explicitly. No filling, resampling, annual renormalization or DST shift is performed.")
-            result["warnings"].append("A prepared CSV alone does not prove the variant reads it; bind and verify the native hourly load output before claiming consumption.")
             if _read(source) != original:
                 raise ValueError("Source load CSV changed during preparation")
             result["source_preserved"] = True

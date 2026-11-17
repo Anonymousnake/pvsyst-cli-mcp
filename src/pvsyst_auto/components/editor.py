@@ -302,12 +302,12 @@ def _edit_errors(profile: Profile, points: list[list[float]]) -> list[str]:
 
 def curve_inventory(kind: str, text: str) -> dict:
     if kind != "OND":
-        return {"scope": "OND power curves only", "items": [], "truncated": False}
+        return {"items": [], "truncated": False}
     try:
         blocks = objects(text)
         found = [block for block in blocks if isinstance(block, Profile)]
     except ValueError as exc:
-        return {"scope": "OND power curves only", "items": [], "errors": [str(exc)], "truncated": False}
+        return {"items": [], "errors": [str(exc)], "truncated": False}
     control, _ = _curve_control(blocks)
     items = []
     for profile in found[:16]:
@@ -331,10 +331,8 @@ def curve_inventory(kind: str, text: str) -> dict:
                       "point_count_editable": not edit_errors and not point_count_errors(profile),
                       "point_count_errors": point_count_errors(profile) if not errors else errors,
                       "point_count_range": [4, MAX_POINTS],
-                      "simulation_effect": "unverified",
                       "axes": ["input power (W)", "output power (W)"] if supported else None})
-    return {"scope": "OND power curves only; physical behavior requires simulation",
-            "control": control, "items": items, "truncated": len(found) > len(items)}
+    return {"control": control, "items": items, "truncated": len(found) > len(items)}
 
 
 def replace_curves(kind: str, text: str, updates: dict[str, list[list[float]]],

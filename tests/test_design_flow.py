@@ -258,8 +258,7 @@ class DesignFlowTests(unittest.TestCase):
         self.assertEqual(envelope_calls[0]["target_dc_kw"], 100.0)
         self.assertEqual(calls[1]["capacity"], capacity())
         self.assertIn("module.GRef: not 1000 W/m2", result["warnings"])
-        self.assertTrue(any("source binding, not a manufacturer certification" in warning
-                            for warning in result["warnings"]))
+        self.assertNotIn("scope", result)
         forwarded = mocks["simulate_template"].call_args.kwargs
         self.assertEqual(forwarded["azimuth"], 0.0)
         self.assertEqual(forwarded["tilt"], 20.0)

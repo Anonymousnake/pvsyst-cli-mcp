@@ -33,11 +33,9 @@ BOOLS = ("PxxReport", "PxxMainResults")
 VARIAB = ("MeteoAnnualVariab", "PVModelVariab", "InverterVariab", "SoilingVariab",
           "DegradVariab", "CustomVariab")
 PLOT_KIND = 1
-SCOPE = "Root P50_P90 tag block only; native 8.1.6 P50 fields, no probability calculation"
 
 
 def _step(value, label, low, high):
-    """Adapter support envelope checked with the shared finite() helper, plus 0.001 steps."""
     number = finite(value, label, minimum=low, maximum=high)
     scaled = Decimal(str(number)) * 1000
     if scaled != scaled.to_integral_value():
@@ -166,11 +164,11 @@ def replace_p50(lines, updates):
         raise ValueError("Require an existing root P50_P90 block; this editor never creates one")
     fields, before = got
     if before == target:
-        return {"before": before, "after": before, "scope": SCOPE}
+        return {"before": before, "after": before}
     for key, (index, raw) in fields.items():
         value = target[key]
         rendered = ("True" if value is True else "False") if key in BOOLS else (
             format(value, ".3f") if key in VARIAB or key == "YearDevFromAver" else str(value))
         if rendered != raw:
             lines[index] = replace_value(lines[index], rendered)
-    return {"before": before, "after": target, "scope": SCOPE}
+    return {"before": before, "after": target}

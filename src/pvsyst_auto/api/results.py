@@ -12,14 +12,8 @@ from pvsyst_auto.api.context import categorized_tool, result_path, workspace_pat
 def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR",
                         folder: str = "Results", compare_to: str = "",
                         compare_folder: str | None = None) -> dict:
-    """Summarize hourly or subhour SFI rows in Results or UserHourly.
-    Complete energy requires finite samples and regular cadence; observed energy excludes missing samples.
-    With compare_to, return target (csv_name) minus baseline (compare_to), using
-    1..64 distinct columns, identical explicit units and identical increasing
-    timestamps. compare_folder defaults to folder. No resampling/conversion.
-    Statistics use finite pairs only; missing pairs and coverage are explicit.
-    Power differences in W/kW integrate to kWh only at a regular cadence.
-    Comparison verifies both file hashes before/after reading; it runs no simulation."""
+    """Summarize hourly or sub-hourly SFI rows in Results or UserHourly, or diff
+    target (csv_name) minus baseline (compare_to) across 1..64 aligned columns."""
     requested = tuple(column.strip() for column in columns.split(",") if column.strip())
     if compare_to:
         baseline_folder = folder if compare_folder is None else compare_folder

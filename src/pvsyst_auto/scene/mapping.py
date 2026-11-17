@@ -18,9 +18,8 @@ ANGLE_TOL = 1e-6
 # Verified stored-state allow-lists (explicit pairs/tokens, never a version prefix).
 # A native 8.1.7 re-save keeps the same osPVCollada PV-table grammar and the same
 # module-layout geometry/counts/module->string assignment; only the engine version
-# token and the post-computation state labels advance.  Unknown sources/versions or
-# unknown states still raise, so a stored_consistent result never claims a second
-# native computation or physical certification.
+# token and the post-computation state labels advance. Unknown sources/versions or
+# unknown states still raise.
 PV_TABLE_SOURCES = frozenset({("osPVCollada", "8.1.6"), ("osPVCollada", "8.1.7")})
 MODULE_LAYOUT_GLOBAL_STATES = frozenset({"mlDefStrings", "mlDefInverters", "mlShd3DCalculated"})
 MODULE_LAYOUT_TABLE_STATES = frozenset({"mlDefStrings", "mlDefInverters"})
@@ -653,9 +652,7 @@ def _verify_narrow_module_layout(blocks, lines):
     return {"configured": True, "status": "stored_consistent", "tables": result,
             "global_state": owners[0].one("ModLayoutGlobState")[1],
             "module_count": sum(row["module_count"] for row in result),
-            "native_consumption_verified": False,
-            "scope": "Stored native8.1.6 landscape/zero-spacing layout: two-array one-string-per-table, or "
-                     "single-orientation two-table two-global-string; simulation mode and consumption are separate"}
+            "native_consumption_verified": False}
 
 
 # ---------------------------------------------------------------------------
@@ -673,8 +670,7 @@ _MODULE_RECORD = re.compile(r"([0-9]+),([0-9]+),([0-9]+),([0-9]+),")
 
 def _review(issues):
     return {"configured": True, "status": "needs_review", "issues": list(issues),
-            "native_consumption_verified": False,
-            "scope": "Stored layout is outside the verified native profile or its references are inconsistent"}
+            "native_consumption_verified": False}
 
 
 def _matches_single_narrow(arrays, tables, layouts):
@@ -891,10 +887,7 @@ def _assess_general_module_layout(blocks, lines):
     status = "invalid" if issues else ("draft_incomplete" if draft else "stored_consistent")
     result = {"configured": True, "status": status, "tables": rows_out,
               "global_state": owners[0].one("ModLayoutGlobState")[1],
-              "module_count": total_cells, "native_consumption_verified": False,
-              "scope": "Stored native per-cell string layout: capacity bound to the global string "
-                       "(== source NModSerie); strings may span tables, a table may hold several, "
-                       "and each global belongs to exactly one source subarray"}
+              "module_count": total_cells, "native_consumption_verified": False}
     if issues:
         result["issues"] = issues
     if status == "draft_incomplete":

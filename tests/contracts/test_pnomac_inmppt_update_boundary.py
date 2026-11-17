@@ -247,8 +247,7 @@ class PNomACInMPPTContract(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(state["PNomAC_InMPPT"], 7.50)
                 meta = body["source_metadata"]
                 self.assertTrue(meta["stored_source_values"])
-                self.assertIn("normalize", meta["note"])
-                self.assertIn("does not prove", meta["note"])
+                self.assertNotIn("note", meta)
 
     async def test_before_after_pnom_reads_actual_stored_float(self):
         """Read 3.75 -> edit to 2.50 -> read 2.50, as the actual stored float (never derived)."""

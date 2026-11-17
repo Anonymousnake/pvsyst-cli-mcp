@@ -109,8 +109,7 @@ def _value(key, value):
 def commercial_inventory(kind, text):
     result = {"path": PATH, "editable": False, "errors": [], "fields": {},
               "remarks": [], "remarks_count": 0, "remarks_truncated": False,
-              "max_remarks": MAX_REMARKS, "requires_expected_sha256": True,
-              "scope": "Commercial form; prices by seller and model-specific options are separate"}
+              "max_remarks": MAX_REMARKS, "requires_expected_sha256": True}
     try:
         root, block = _blocks(text)
         for key, spec in FORM.items():

@@ -1,8 +1,4 @@
-"""Read-only arithmetic and source handoff for a caller-structured engineering brief.
-
-This is not a PDF reader, electrical designer, model fitter or PVsyst adapter.
-All sources and excerpts are caller declarations; no locator is opened.
-"""
+"""Read-only arithmetic and source handoff for a caller-structured engineering brief."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -271,8 +267,7 @@ def review_engineering_brief(brief: EngineeringBriefRequest | dict) -> dict:
         checks.append({"code": "storage_nominal_hours", "scope": "project",
             "formula": "storage_energy_kwh / storage_power_kw",
             "value": number(decimal(storage_energy) / decimal(storage_power)), "unit": "h",
-            "refs": refs([storage_energy, storage_power]),
-            "meaning": "名义能量／功率比，不是可用时长、调度或储能物理模型。"})
+            "refs": refs([storage_energy, storage_power])})
         review_items.append({"code": "storage_basis", "scope": "project",
             "message": "需真实BTR／PCS、SOC、效率、温度、SOW、连接与策略；不由MW/MWh推断。",
             "refs": refs([storage_power, storage_energy]),
@@ -287,16 +282,9 @@ def review_engineering_brief(brief: EngineeringBriefRequest | dict) -> dict:
         "operation": "engineering_brief_review", "schema_version": 1,
         "status": "blocked" if conflicts or missing else "needs_review",
         "readonly": True, "simulated": False, "native_consumption_verified": False,
-        "engineering_certified": False, "source_quotes_verified": False,
         "sources": [source.model_dump() for source in brief.sources],
         "facts": [claim.model_dump() for claim in brief.claims],
         "blocks": [block.model_dump() for block in brief.blocks],
         "checks": checks, "conflicts": conflicts, "missing": missing,
         "review_items": review_items, "next_actions": list(dict.fromkeys(next_actions)),
-        "limitations": [
-            "只检查调用方结构化声明及十进制数量算术；不读取PDF、文件或网络，不验证引用真实性。",
-            "不选择厂家型号、拟合模型、校核温度／电气包络、重建拓扑、算遮阴或储能调度。",
-            "资产名称仅是声明，未检查文件存在、完整模型或逐时覆盖；一致输入仍需工程复核及原生验证。",
-            "nominal_capacity_kw是摘要口径，不与实际dc_capacity_kw自动等同；不同scope不互相覆盖。",
-        ],
     }

@@ -326,7 +326,6 @@ class WorkspaceTests(unittest.TestCase):
             self.assertIn("    " + line + "\r\n", text)
         self.assertIn("  End of PVObject pvSystem\r\n  PVObject_UserNeeds=pvLoad\r\n", text)
         self.assertTrue(text.endswith("  End of PVObject pvGridStorage\r\n  End of PVObject pvVCalcul\r\n"))
-        self.assertTrue(any("TempBattRef" in warning and "January" in warning for warning in result["warnings"]))
 
     def test_storage_system_replaces_an_existing_load_without_a_blank_line(self):
         self.prepare_load()

@@ -1,12 +1,4 @@
-"""Native ageing model inputs and the verified enable switch.
-
-Writes NoYearSimul, ModuleDegradFactor and, through a separate entry point, only the
-main-array ageing enable bit; the optional template inputs KeepMCValues and the RMS
-ISC/VOC percentages stay inside the same verified field set. It never creates or removes
-the pvAgeing block, never edits the stored factors it reports, and performs no
-yearly-factor or stochastic calculation. The accepted numeric range is an adapter
-support envelope, not a native limit; a zero rate is a real value, not a disabled state.
-"""
+"""Native ageing model inputs and enable switch."""
 from __future__ import annotations
 
 import re
@@ -40,8 +32,6 @@ FLAGS2_RE = re.compile(r"\$[0-9A-Fa-f]{1,8}")
 AGE_TEMPLATE_ORDER = ("Flags", KEEP_MC, "PlotKind", "CurveWarranty", "ProgressMode",
                       "NSigmaLimit", "ImpDegradSharing", RMS_ISC, RMS_VOC,
                       "ModuleYearWarr", "ModuleWarranty")
-SCOPE = "Native ageing model inputs only; stored factors are reported, never written"
-ENABLE_SCOPE = SCOPE + "; writes only the verified main-array ageing enable bit"
 MODEL_KEYS = ("simulation_year", "annual_module_degradation_percent")
 RMS_ISC_KEY = "modules_rms_year_isc_percent"
 RMS_VOC_KEY = "modules_rms_year_voc_percent"
@@ -52,7 +42,7 @@ def _year(value):
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("simulation_year must be a strict integer")
     if not 1 <= value <= 30:
-        raise ValueError("simulation_year must stay inside the adapter domain 1..30")
+        raise ValueError("simulation_year must be in 1..30")
     return value
 
 
@@ -168,8 +158,7 @@ def _read(lines, bounds, require_enabled=True):
              "annual_module_degradation_percent": _percent_native(one(age.fields, MEAN_FIELD)[1]),
              "stored_loss_factor_percent": stored[STORED_LOSS],
              "stored_mismatch_factor_percent": stored[STORED_MISMATCH],
-             "template": {key: one(age.fields, key)[1] for key in AGE_TEMPLATE_ORDER},
-             "note": "stored factors are native metadata; native recomputes the applied loss"}
+             "template": {key: one(age.fields, key)[1] for key in AGE_TEMPLATE_ORDER}}
     return shift, root, age, state
 
 
@@ -212,14 +201,14 @@ def replace_ageing_model(lines, bounds, updates):
     owner = {YEAR_FIELD: root.fields, MEAN_FIELD: age.fields, KEEP_MC: age.fields,
              RMS_ISC: age.fields, RMS_VOC: age.fields}
     if all(one(owner[key], key)[1] == raw for key, raw in plan):
-        return {"before": before, "after": before, "scope": SCOPE}
+        return {"before": before, "after": before}
     candidate = list(lines)
     for key, raw in plan:
         entry = one(owner[key], key)
         candidate[shift + entry[0]] = replace_value(candidate[shift + entry[0]], raw)
     after = _read(candidate, bounds)[3]
     lines[:] = candidate
-    return {"before": before, "after": after, "scope": SCOPE}
+    return {"before": before, "after": after}
 
 
 def replace_ageing_enabled(lines, bounds, enabled):
@@ -238,4 +227,4 @@ def replace_ageing_enabled(lines, bounds, enabled):
     if after["enabled"] is not enabled:
         raise ValueError("The candidate template did not reach the requested enable state")
     lines[:] = candidate
-    return {"before": before, "after": after, "scope": ENABLE_SCOPE}
+    return {"before": before, "after": after}

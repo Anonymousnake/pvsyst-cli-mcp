@@ -951,12 +951,6 @@ def import_house_pv_scene_native(store, components, scene_name, variant_name,
                                                         and written["geometry"].get("pv_geometry_verified")),
                           stored_module_layout_verified=shading_mode == "module_layout" and bool(
                               written["module_layout"].get("status") == "stored_consistent"))
-            result["warnings"].append(
-                "Wrote one NEW native input variant only. Geometry and layout are stored and verified "
-                "(stored_geometry_verified/stored_module_layout_verified); PVsyst has NOT loaded or consumed "
-                "them (native_geometry_verified/native_module_layout_verified/native_consumption_verified/"
-                "imported stay false). Run an explicit simulation to verify native consumption. The source "
-                "variant/PAN are unchanged.")
         except (ValueError, OSError, UnicodeError, KeyError, TypeError, StopIteration,
                 FileExistsError, RuntimeError) as exc:
             result["issues"].append(str(exc))

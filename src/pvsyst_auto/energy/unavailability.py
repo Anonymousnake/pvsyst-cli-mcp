@@ -8,8 +8,6 @@ from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
 START = "SystemUnavail=TUnavailability"
 SETTINGS_KEYS = ("TimeFraction", "NbPeriods", "MinDuration", "MaxDuration", "RandomInit")
 MAX_PERIODS = 1000
-SCOPE = ("stored random-outage settings and periods of the owning pvSystem; not a grid "
-         "availability snapshot and not a regenerated schedule")
 
 
 def _value(line):
@@ -48,7 +46,7 @@ def system_unavail_state(lines, system):
             settings[key] = value
         elif key == "DateBeg":
             if len(periods) >= MAX_PERIODS:
-                return {"configured": True, "issue": "SystemUnavail period list exceeds the adapter ceiling"}
+                return {"configured": True, "issue": f"SystemUnavail period list exceeds {MAX_PERIODS} entries"}
             duration = None
             for probe in range(index + 1, min(index + 4, end)):
                 inner = _value(lines[probe])
@@ -66,7 +64,7 @@ def system_unavail_state(lines, system):
     if undated:
         issues.append(f"{undated} SystemUnavail period(s) lack a Duration within three lines of DateBeg")
     result = {"configured": True, "mode": mode, "settings": settings,
-              "periods": periods, "period_count": len(periods), "scope": SCOPE}
+              "periods": periods, "period_count": len(periods)}
     if issues:
         result["issues"] = issues
     return result
@@ -120,5 +118,4 @@ def replace_system_unavailability(lines, system, updates):
     if after["configured"]:
         raise ValueError("Native outage removal did not clear the owning declaration")
     lines[:] = candidate
-    return {"before": before, "after": after, "native_consumption_verified": False,
-            "scope": "Remove existing PV-system outages only; restore the transaction backup to recover the original schedule"}
+    return {"before": before, "after": after, "native_consumption_verified": False}

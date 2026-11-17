@@ -63,8 +63,7 @@ def shading_state(lines):
     return {"mode": "active", "flags": raw, "object_count": declared,
             "object_types": types, "values": scene,
             "pv_bindings": _pv_bindings(lines, types),
-            "module_layout": module_layout_state(lines),
-            "scope": "stored scene/PV declarations only; generic geometry, source XML and native consumption are not verified"}
+            "module_layout": module_layout_state(lines)}
 
 
 def module_layout_state(lines):
@@ -80,8 +79,7 @@ def module_layout_state(lines):
         return assess_module_layout(objects("".join(normalized)), normalized)
     except (ValueError, KeyError, OverflowError) as exc:
         return {"configured": True, "status": "needs_review", "issues": [str(exc)],
-                "native_consumption_verified": False,
-                "scope": "Stored layout is outside the verified native profile or its references are inconsistent"}
+                "native_consumption_verified": False}
 
 
 def _pv_bindings(lines, types):

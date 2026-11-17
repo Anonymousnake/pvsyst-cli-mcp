@@ -123,14 +123,9 @@ def prepare_block_project(store, source_project, source_variant, new_project, bl
     result = {
         "operation": "block_project_preparation", "schema_version": 1,
         "status": "blocked", "dry_run": dry_run, "prepared": False, "simulated": False,
-        "native_consumption_verified": False, "engineering_certified": False,
+        "native_consumption_verified": False,
         "review_required": True, "source": {}, "working": {}, "plan": [], "mapping": [],
-        "serialized_counts": None, "issues": [], "warnings": [
-            "Only the verified main-array Flags=$00100400/Flags2=$082A profile with system Flags=0 and no circuit transformer is supported.",
-            "Only explicitly complete native blocks are repeated; no report quantities, MPPT connections or angles are inferred.",
-            "Source site/weather, losses, component models, orientations and metering boundary remain inherited and require engineering review.",
-            "Preparation is not native loading, energy simulation, electrical validation or equipment certification.",
-        ], "artifacts": {},
+        "serialized_counts": None, "issues": [], "warnings": [], "artifacts": {},
     }
     publishing = False
     try:

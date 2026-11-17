@@ -290,8 +290,7 @@ class ReviewStatusAndTrailingCsv(ReviewFixture):
     def test_the_documented_status_contract_matches_the_reachable_statuses(self):
         report = self.review(acquisition_manifest_name="fixture_acquisition.json")
         self.assertEqual(report["status"], "needs_review")
-        self.assertNotIn("completed", report["scope"])
-        self.assertIn("never reports ``completed``", review_module.__doc__)
+        self.assertNotIn("scope", report)
 
     def test_a_prepared_csv_with_trailing_delimiters_is_reviewed(self):
         (self.root / "Meteo" / self.csv_name).write_text(

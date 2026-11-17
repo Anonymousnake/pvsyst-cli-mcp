@@ -1,50 +1,10 @@
-"""Prepare the flat template-capacity input from declared manufacturer data.
-
-Scope boundary
---------------
-This module builds a *public linear design envelope*. It reads only declared
-reference-point fields from an already-inspected PAN/OND electrical inventory
-(`pvsyst_components.electrical_inventory`) and combines them with
-caller-supplied manufacturer coefficients or with caller-supplied direct
-manufacturer limits. The accepted relations are the public linear temperature
-relations used for design-time voltage and current checks.
-
-What it deliberately does not do
---------------------------------
-* It never reads or converts serialized component coefficients such as
-  ``muVocSpec``, ``muISC`` or ``muPmpReq``: their units are not declared inside
-  the component file, and two observed files differ by three orders of
-  magnitude for the same key.
-* It never derives a Vmp temperature slope from a Pmax (gamma) coefficient.
-* It never derives a per-MPPT current rating from a whole-converter current
-  field such as ``IDCMax``, and never divides a converter rating by an MPPT
-  count.
-* It does not reproduce PVsyst's native one-diode temperature model, does not
-  write the native project design temperatures, and does not certify a design.
-
-Design temperatures are *module* temperatures: ``min_ambient_c`` is the site
-absolute-voltage reference (IEC 62548-1 uses the lowest temperature ever
-observed, not a single weather-file annual minimum), while the operating
-temperatures are cell temperatures during usual winter/summer operation. A
-weather file's annual extreme is never accepted as a design extreme.
-
-Unit trust boundary: a declaration object accepts only ``value``, ``unit`` and
-``source``. An omitted unit follows the field meaning (A for current limits and
-A/degC or pct/degC for currents, V for the voltage envelope); an explicit unit
-that does not match is refused with a specific ``.unit`` issue, and no unit is
-ever converted or silently reinterpreted.
-
-No file read, hash, SDK or native call is performed here.
-"""
+"""Build a linear voltage/current design envelope from declared manufacturer inputs."""
 from __future__ import annotations
 
 import math
 
 from pvsyst_auto.engineering.sizing import NUMBERS as CAPACITY_NUMBERS
 
-
-SCOPE = ("Public linear design envelope from declared manufacturer data; not native "
-         "one-diode fitting, native design-temperature settings or design certification")
 
 VOLTAGE_UNITS = ("pct_per_degC", "V_per_degC")
 CURRENT_UNITS = ("pct_per_degC", "A_per_degC")
@@ -226,13 +186,12 @@ def prepare_design_envelope(module_electrical, inverter_electrical, request):
     selected PAN and OND. The caller is responsible for having matched those
     components to ``request['manufacturer_model']``.
 
-    Returns ``status`` (ready/blocked), ``capacity`` (the flat input consumed by
-    the template capacity planner when ready), ``issues`` (missing or
-    inadmissible design inputs), ``warnings``, ``provenance`` (method, formula
-    text, reference-point values and every declared source) and ``scope``.
+    Returns ``status`` (ready/blocked), ``capacity`` (input consumed by
+    the template capacity planner when ready), ``issues``, ``warnings``,
+    and ``provenance``.
     """
     result = {"status": "blocked", "capacity": None, "issues": [], "warnings": [],
-              "provenance": {}, "scope": SCOPE, "envelope_mode": None}
+              "provenance": {}, "envelope_mode": None}
     if not isinstance(request, dict):
         _issue(result, "request", "Provide the design-envelope request object")
         return result
@@ -602,7 +561,6 @@ def prepare_design_envelope(module_electrical, inverter_electrical, request):
         status="ready", capacity=capacity, envelope_mode=mode,
         provenance={
             "method": "public linear temperature envelope",
-            "scope": SCOPE,
             "envelope_mode": mode,
             "selected_component": manufacturer_model,
             "module_reference": {name: module_electrical["fields"].get(name) for name in MODULE_STC},
