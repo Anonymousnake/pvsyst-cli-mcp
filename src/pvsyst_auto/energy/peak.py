@@ -5,11 +5,12 @@ import re
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, require_flat, root_block
-from pvsyst_auto.components.generator import direct_fields
+from pvsyst_auto.components.generator import direct_fields, one
+from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.energy.storage import storage_state, validate_storage
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
-from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 EDITABLE = ("DischStrategy", "HourBegDisch", "HourEndDisch")
 HOUR_LIMIT = 23
@@ -129,13 +130,15 @@ def peak_block(lines):
 
 
 def _require_scope(store, lines, arrays, system):
-    """Verified native 8.1.6 PeakShaving profile: root bit19 without a load, storage system flags."""
-    root = root_block(lines)
-    if root.one("Version")[1] not in NATIVE_TEXT:
-        raise ValueError(f"Requires a native {TEXT_LABEL} variant")
-    flags = root.one("Flags")[1]
-    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) or int(flags[1:], 16) != 0x00080000:
-        raise ValueError("This PeakShaving profile requires root Flags=$00080000")
+    """Verified native PeakShaving profile: root bit19 without a load, storage system flags."""
+    root_block(lines)
+    header_end = next((i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_")), len(lines))
+    header = direct_fields(lines, (0, header_end))
+    if one(header, "Version")[1] not in NATIVE_TEXT_OR_SEED:
+        raise ValueError(f"Requires a {SEED_LABEL} variant")
+    flags = one(header, "Flags")[1]
+    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) or not (int(flags[1:], 16) & 0x00080000):
+        raise ValueError("This PeakShaving profile requires root user-load bit19 (0x00080000)")
     if system is None or len(arrays) != 1:
         raise ValueError("Requires one pvSystem and one subarray")
     if any(block.object_type == "pvLoad" for block in objects("".join(lines))):
@@ -150,8 +153,8 @@ def _require_scope(store, lines, arrays, system):
     if main_root.one("Flags")[1] != "$01900400" or main_root.one("Flags2")[1] != "$082A":
         raise ValueError("Main array requires the verified Flags=$01900400 and Flags2=$082A")
     sub_root = root_block(lines, next(iter(arrays.values())))
-    if sub_root.one("Version")[1] not in NATIVE_TEXT or sub_root.one("Flags")[1] != "$019E1002":
-        raise ValueError(f"Subarray requires the verified {TEXT_LABEL} declaration and 019E1002 flags")
+    if sub_root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or sub_root.one("Flags")[1] != "$019E1002":
+        raise ValueError(f"Subarray requires the verified {SEED_LABEL} declaration and 019E1002 flags")
     if sub_root.one("Flags2")[1] != "$20":
         raise ValueError("Subarray requires the verified Flags2=$20")
     strings = sub_root.one("NStringCh")[1]
@@ -163,9 +166,8 @@ def _require_scope(store, lines, arrays, system):
         raise ValueError("Every other NStrOrient* must be zero")
     store._orientation_list(lines)
     store._ordinary_fixed_plane(lines, store._orientation(lines, 1))
-    store._require_no_geometry(lines)
-    if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
-        raise ValueError("P50/P90 and saved horizon objects are outside this batch")
+    if any(re.match(r"\s*P50_P90\s*=", line) for line in lines):
+        raise ValueError("P50/P90 objects are outside this batch")
     if grid_inventory(lines, arrays)["counts_valid"] is not True:
         raise ValueError("Requires complete consistent native grid counts")
 
@@ -191,6 +193,8 @@ def create_peak_shaving_variant(store, *, project, source_variant, new_variant, 
             start, end = window
             candidate_lines[index + 1:index + 1] = [f"{indent}HourBegDisch={start}{ending}",
                                                     f"{indent}HourEndDisch={end}{ending}"]
+        if any(line.strip().startswith("VarList, list of=") for line in candidate_lines):
+            candidate_lines, _ = strip_result_cache(candidate_lines)
 
         def verify(checked, _, res):
             checked_arrays, _ = store._sections(checked)

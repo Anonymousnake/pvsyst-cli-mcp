@@ -289,7 +289,8 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                 raise ValueError("Revision supports one completely checked Grid subarray and orientation")
             data = store._read(store._path(source_project, source_variant))
             _, lines = store._text(data)
-            store._require_no_geometry(lines)
+            if set(changes) & {"tilt", "azimuth", "tracking"}:
+                store._require_no_geometry(lines)
             blocks = objects("".join(lines))
             storage_mode = any(block.object_type == "pvGridStorage" for block in blocks)
             if not storage_mode and (any(block.object_type == "pvLoad" for block in blocks)

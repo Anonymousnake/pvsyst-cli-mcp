@@ -7,7 +7,7 @@
 除了单点改参工具外，仓库提供了一套串联“输入审查 → 隔离改参仿真 → 多方案比选 → 交付打包”的工程级工作流（详见[工程修订与交付](engineering-delivery.md)）：
 1. **固定倾角 / `UnlimTracking` 工程修订**：基于现有工程克隆独立副本，修改倾角、方位角、详细损失或跟踪器参数，跑完全年仿真并生成中文交接说明。
 2. **集中式 AC 光储对比评估**：绑定全年逐时负荷与储能充放电参数，对比不同储能配置下的自用电量、弃光与 SOC 表现（见[光储工程评估](engineering-storage.md)）。
-3. **双坡屋顶住宅 3D 场景交付**：生成单栋双坡屋顶 `.pvc2` 场景，通过 GUI 桥完成导入、逐表朝向关联、坐标归位与阴影表计算，再交由 CLI 跑全年仿真并打包交付（见[双屋面交付说明](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。
+3. **双坡屋顶住宅 3D 场景交付**：生成单栋双坡屋顶 `.pvc2` 场景，通过无 GUI 原生写入完成 3D 场景构建、逐表朝向绑定与 `module_layout` 接线，再交由 CLI 跑全年仿真并打包交付（见[双屋面交付说明](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。
 
 ## 各领域实现方式与限制
 

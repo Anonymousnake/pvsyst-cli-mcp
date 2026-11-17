@@ -21,10 +21,17 @@ class SoilingUpdates(BaseModel):
     yearly_loss_pct: StrictNum | None = None
     monthly_loss_pct: list[StrictNum] | None = None
 
-class SystemUnavailabilityUpdates(BaseModel):
-    """Remove existing native PV-system outages without generating a schedule."""
+class UnavailabilityPeriod(BaseModel):
+    """Explicit PVsyst planned outage start timestamp (DD/MM/YY HH:MM) and duration in hours."""
     model_config = ConfigDict(extra="forbid")
-    mode: Literal["none"]
+    date_beg: StrictStr
+    duration_hours: StrictNum
+
+class SystemUnavailabilityUpdates(BaseModel):
+    """Configure explicit outage periods or remove existing native PV-system outages."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["none", "periods"]
+    periods: Annotated[list[UnavailabilityPeriod], Field(min_length=1, max_length=1000)] | None = None
 
 class GridLimitUpdates(BaseModel):
     """Native constant active-power limit at the grid injection point."""

@@ -264,6 +264,146 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(blocked["issues"], ["Every prepared load row must be one Date;P Load pair"])
         self.assertFalse((self.root / "Projects/Fixture.VC1").exists())
 
+    def test_system_unavailability_authoring_and_geometry_combo(self):
+        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+        from pvsyst_auto.native.load import create_native_load_variant
+        from pvsyst_auto.energy.peak import create_peak_shaving_variant
+
+        lines = crlf(SYSTEM)
+        added = replace_system_unavailability(
+            lines, (2, 5),
+            {"mode": "periods", "periods": [
+                {"date_beg": "10/01/23 08:00", "duration_hours": 12.5},
+                {"date_beg": "15/06/23 00:00", "duration_hours": 24},
+            ]},
+        )
+        self.assertTrue(added["after"]["configured"])
+        self.assertEqual(added["after"]["mode"], "Periods")
+        self.assertEqual(added["after"]["period_count"], 2)
+        self.assertIn("    Flags=$00010000\r\n", lines)
+        self.assertIn("    SystemUnavail=TUnavailability\r\n", lines)
+        self.assertIn("        DateBeg=10/01/23 08:00\r\n", lines)
+        self.assertIn("        Duration=12.500\r\n", lines)
+
+        replaced = replace_system_unavailability(
+            lines, (2, len(lines) - 2),
+            {"mode": "periods", "periods": [{"date_beg": "01/03/23 09:00", "duration_hours": 4}]},
+        )
+        self.assertEqual(replaced["before"]["period_count"], 2)
+        self.assertEqual(replaced["after"]["period_count"], 1)
+
+        removed = replace_system_unavailability(lines, (2, len(lines) - 2), {"mode": "none"})
+        self.assertFalse(removed["after"]["configured"])
+        self.assertIn("    Flags=$00000000\r\n", lines)
+        self.assertNotIn("SystemUnavail", "".join(lines))
+
+        for bad in (
+            {"mode": "periods", "periods": []},
+            {"mode": "periods", "periods": [{"date_beg": "31/02/23 00:00", "duration_hours": 4}]},
+            {"mode": "periods", "periods": [{"date_beg": "01/01/23 00:00", "duration_hours": 0}]},
+            {"mode": "none", "periods": [{"date_beg": "01/01/23 00:00", "duration_hours": 1}]},
+        ):
+            with self.assertRaises(ValueError):
+                replace_system_unavailability(list(lines), (2, len(lines) - 2), bad)
+
+        # Native load and peak shaving now compose cleanly with an active 3D shading scene + VarList
+        circuit = (
+            "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.6\n      Flags=$00\n"
+            "      InjectionPointNode Start;\n        Children=Start\n          InverterNode Start;\n"
+            "            NElements=1\n            SubArrayId=1\n            SubArrayName=PV Array\n"
+            "            Children=Start\n              MPPTNode Start;\n                NElements=1\n"
+            "                SubArrayId=1\n                SubArrayName=PV Array\n"
+            "                Children=Start\n                  StringNode Start;\n"
+            "                    NElements=2\n                    SubArrayId=1\n"
+            "                    SubArrayName=PV Array\n                  StringNode End;\n"
+            "                Children=End\n              MPPTNode End;\n            Children=End\n"
+            "          InverterNode End;\n        Children=End\n      InjectionPointNode End;\n"
+            "    End of PVObject pvCircuit\n"
+        )
+        shaded = (
+            "PVObject_=pvVCalcul\n  Comment=Fixture\n  Version=8.1.6\n  Flags=$00100001\n"
+            "  PVObject_PVMainArray=pvMainArray\n    Flags=$01900400\n    Flags2=$082A\n"
+            + circuit
+            + "    PVObject_=pvSubArray\n      Comment=PV Array\n      Version=8.1.6\n      Flags=$019E1002\n"
+            "      SubArrayId=1\n      NModSerie=10\n      NStringCh=2\n      NInverter=1\n"
+            "      NInvMPPT=1\n      NoOrientation=1\n      NStrOrient1=2\n"
+            "      PowerSharingInverterId=-1\n      PNomAC_InMPPT=5.00\n"
+            "    End of PVObject pvSubArray\n  End of PVObject pvMainArray\n"
+            "  PVObject_=pvOrient\n    Version=8.1.6\n    Flags=$00\n    NoOrient=1\n"
+            "    FieldType=FixedPlane\n    FieldTilt=20.0\n    FieldAzim=0.0\n"
+            "    BaseSlope=0.0\n    UsesTiltAver=False\n    UsesAzimAver=False\n"
+            "    UsesSlopeAver=False\n  End of TOrientGroup\n"
+            "  PVObject_Ombrage=pvShading\n    Flags=$00\n  End of PVObject pvShading\n"
+            "  PVObject_System=pvSystem\n    Flags=$00\n    SystemType=Grid\n  End of PVObject pvSystem\n"
+            "  SimulPlots=Start\n  End of List SimulPlots\n"
+            "  VarList, list of=1 TVarSimul\n    VarSimul_1=E_Grid\n  End of the List VarList\n"
+            "End of PVObject pvVCalcul\n"
+        )
+        self.source(shaded)
+        loaded = create_native_load_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+            load={"mode": "constant", "constant_kw": 2.5}, dry_run=False,
+        )
+        vc1_text = self.created(loaded)
+        self.assertIn("Flags=$00180000\r\n", vc1_text)
+        self.assertIn("PVObject_Ombrage=pvShading\r\n", vc1_text)
+        self.assertNotIn("VarList, list of=", vc1_text)
+
+        peak_src = (
+            ROOT.format(root_flags="$00180000")
+            + "  PVObject_PVMainArray=pvMainArray\n    Flags=$01900400\n    Flags2=$082A\n"
+            + circuit
+            + "    PVObject_=pvSubArray\n      Comment=PV Array\n      Version=8.1.6\n      Flags=$019E1002\n      Flags2=$20\n"
+            + "      SubArrayId=1\n      NModSerie=10\n      NStringCh=2\n      NInverter=1\n"
+            + "      NInvMPPT=1\n      NoOrientation=1\n      NStrOrient1=2\n"
+            + "      PowerSharingInverterId=-1\n      PNomAC_InMPPT=5.00\n"
+            + "    End of PVObject pvSubArray\n  End of PVObject pvMainArray\n"
+            + "  Orientations, list of=1 TOrientGroup\n"
+            + "    PVObject_=pvOrient\n      Version=8.1.6\n      Flags=$00\n      NoOrient=1\n"
+            + "      FieldType=FixedPlane\n      FieldTilt=20.0\n      FieldAzim=0.0\n"
+            + "      BaseSlope=0.0\n      UsesTiltAver=False\n      UsesAzimAver=False\n"
+            + "      UsesSlopeAver=False\n    End of TOrientGroup\n  End of Orientations\n"
+            + "  PVObject_Ombrage=pvShading\n    Flags=$00\n  End of PVObject pvShading\n"
+            + "  PVObject_System=pvSystem\n    Flags=$17000040\n    SystemType=Grid\n"
+            + "    BatteryFile=Universal_Adjustable_LI.BTR\n    LimGrSeparLoss=False\n"
+            + "    TypeTempBatt=1\n    NBattSerie=15\n    NBattParall=10\n"
+            + "    PLimGrid=200.000\n    SOHBattBeg=1.000\n    BattVoltage_Syst=768.000\n"
+            + "    BattCapacity_Syst=1000.000\n    TempBattRef=20.000\n"
+            + "    TempBattMois=" + "20.000," * 12 + "\n  End of PVObject pvSystem\n"
+            + "  PVObject_GridStorage=pvGridStorage\n    Flags=$00\n    Strategy=PeakShaving\n"
+            + "    ChargingStrategy=PVToGridMin\n    DischStrategy=AfterSunset\n"
+            + "    BattSoCInit=0.600\n    SOCChDecl=0.950\n    SOCDischDecl=0.200\n    SOCDischSelf=0.500\n"
+            + "    PMaxCharge=380.000\n    PMaxDisch=170.000\n    BattRectMaxEffic=97.000\n"
+            + "    BattRectEuroEffic=95.000\n    BattInvMaxEffic=97.000\n    BattInvEuroEffic=95.000\n"
+            + "  End of PVObject pvGridStorage\n"
+            + CLOSE
+        )
+        self.source(peak_src)
+        (self.root / "Projects/Fixture.VC1").unlink()
+        peaked = create_peak_shaving_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+            discharge={"mode": "hour_window", "start_hour": 18, "end_hour": 22}, dry_run=False,
+        )
+        vc1_peak = self.created(peaked)
+        self.assertIn("DischStrategy=MinMaxHour\r\n", vc1_peak)
+        self.assertIn("PVObject_Ombrage=pvShading\r\n", vc1_peak)
+
+        # update_parameters system_unavailability_updates works with active pvShading + VarList
+        self.source(shaded)
+        digest = self.store.inspect("Fixture.PRJ", "VC0")["sha256"]
+        upd = self.store.update_parameters(
+            "Fixture.PRJ", "VC0", digest,
+            system_unavailability_updates={"mode": "periods", "periods": [
+                {"date_beg": "10/01/23 08:00", "duration_hours": 10},
+            ]},
+        )
+        self.assertTrue(upd["changed"])
+        self.assertEqual(upd["system_unavailability"]["after"]["period_count"], 1)
+        vc0_after = (self.root / "Projects/Fixture.VC0").read_text(encoding="utf-8")
+        self.assertIn("PVObject_Ombrage=pvShading", vc0_after)
+        self.assertNotIn("VarList, list of=", vc0_after)
+        self.assertIn("Flags=$00100000", vc0_after)
+
 
 if __name__ == "__main__":
     unittest.main()

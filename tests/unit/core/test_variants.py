@@ -477,8 +477,20 @@ class VariantTests(unittest.TestCase):
             guards = [(raw.replace(field + b"\r\n", b""), f"{field_name} must occur"),
                 (raw.replace(field, field + f"\r\n        {field_name}=1".encode()), f"{field_name} must occur"),
                 (raw.replace(("Version=" + version).encode(), b"Version=8.1.5"), "verified"),
-                (raw.replace(b"SystemType=Grid", b"SystemType=Battery"), "verified"),
-                (raw.replace(b"PVObject_PVMainArray", b"PVObject_ModuleLayout=1\r\n  PVObject_PVMainArray"), "module layout")]
+                (raw.replace(b"SystemType=Grid", b"SystemType=Battery"), "verified")]
+            with_scene = raw.replace(
+                b"PVObject_PVMainArray",
+                b"PVObject_ModuleLayout=1\r\n  PVObject_Ombrage=pvShading\r\n    Flags=$20\r\n  End of PVObject pvShading\r\n  PVObject_PVMainArray",
+            )
+            self.original.write_bytes(with_scene)
+            scene_state = self.store.inspect("Example.PRJ", "VC0")
+            scene_edit = self.store.update_parameters("Example.PRJ", "VC0", scene_state["sha256"], 1, 1, **updates)
+            self.assertIn(b"PVObject_ModuleLayout=1", self.original.read_bytes())
+            self.assertIn(b"PVObject_Ombrage=pvShading", self.original.read_bytes())
+            self.store.restore("Example.PRJ", "VC0", scene_edit["backup_name"], scene_edit["sha256"], True)
+            self.assertEqual(self.original.read_bytes(), with_scene)
+            self.original.write_bytes(raw)
+            backups = list((self.workspace / "Projects" / ".mcp-variant-backups").iterdir())
             if main:
                 guards += [(raw.replace(b"Flags=$00100400\r\n", b""), "verified main-array Flags"),
                     (raw.replace(b"Flags=$00100400", b"Flags=$00100400\r\n    Flags=$00"), "verified main-array Flags"),

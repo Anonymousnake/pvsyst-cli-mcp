@@ -34,19 +34,25 @@
 
 **底层单位差异注意**：在 `.VCx` 文件的 `pvSystem` 块里，`AuxPower_Const` 和 `AuxPower_Night` 是按 **瓦（W）** 存储的，而阈值 `AuxPower_CThresh` / `AuxPower_PThresh` 是按 **千瓦（kW）** 存储的，比例系数 `AuxPower_Pout` 则是 **W/kW**。工具内部会按各自字段的原生单位分别转换，不会一刀切地全部乘 1000。
 
-## 清除 PV 系统停运配置
+## 创建、编辑或清除 PV 系统停运配置
 
-`pvsyst_get_variant_parameters.system_unavailability` 读取 PV 系统自身已保存的停运配置。要移除已有配置，在 `pvsyst_update_variant_parameters` 的通用请求中传入以下专用字段，`project`、`variant` 和当前 `expected_sha256` 仍按普通变体事务提供：
+`pvsyst_get_variant_parameters.system_unavailability` 读取 PV 系统自身已保存的停运配置。在 `pvsyst_update_variant_parameters` 中传入 `system_unavailability_updates` 可写入显式停运时段或移除已有配置：
 
 ```json
-{"system_unavailability_updates": {"mode": "none"}, "dry_run": true}
+{
+  "system_unavailability_updates": {
+    "mode": "periods",
+    "periods": [{"date_beg": "03/01/90 00:00", "duration_hours": 48.0}]
+  },
+  "dry_run": true
+}
 ```
 
-确认预览后用 `dry_run=false` 执行。该操作移除所属 `pvSystem` 的整个 `SystemUnavail=TUnavailability` 子对象，并清理其存在标记；只清标记而保留子对象并不会可靠地关闭停运。返回的 `system_unavailability.before/after` 描述保存状态，执行后读取的 `configured` 为 `false`。已经没有停运配置时是无操作，不创建备份。
+- `mode="periods"`：传入 1..1000 条 `{date_beg, duration_hours}`（`date_beg` 为 `DD/MM/YY HH:MM`，`duration_hours` 为 `(0, 8784]` 小时），生成或替换 `SystemUnavail=TUnavailability`（`DefMode=Periods`）并置位 `pvSystem.Flags` 的 `0x00010000`。
+- `mode="none"`：移除所属 `pvSystem` 的 `SystemUnavail=TUnavailability` 子对象并清零 `0x00010000` 标志位。
+- 该操作支持单面或多面并网变体（可与 3D 阴影场景、DC/AC 线缆、负荷及详细损失叠加组合），已缓存的 `VarList` 会在写入时自动清理。
 
-执行返回 `backup_name`，其中保留完整原文件、原生时段及随机生成设置。恢复时使用 `pvsyst_restore_variant`，传入该备份名、最新读取的 `expected_sha256` 和 `confirm=true`。配置更新返回的 `native_consumption_verified=false` 不是运行结果，实际仿真仍通过 `pvsyst_run_simulation` 执行。
-
-此事务只适用于已识别的 PVsyst 8.1.6 `Periods` 模板：单子阵、普通固定平面、自由地平线、完整电路计数，无负荷、储能、P50/P90 或活动阴影。只接受 `mode=none`，可附带 `variant_name`，其他物理更新分开提交。它不生成新时段、不重新随机抽样，也不修改 WeakGrid 的电网可用性。
+配置更新返回的 `native_consumption_verified=false` 不是运行结果，实际仿真仍通过 `pvsyst_run_simulation` 执行；写入 `Periods` 后在 PVsystCLI 8.1.7 中已实测产生相应的发电中断与 `E_Grid` 下降。
 
 ## 其他详细损失项入口索引
 

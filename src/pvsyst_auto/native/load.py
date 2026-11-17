@@ -5,10 +5,11 @@ import re
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import objects, replace_value, root_block
-from pvsyst_auto.components.generator import finite
+from pvsyst_auto.components.generator import direct_fields, finite, one
+from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
-from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 START = "PVObject_UserNeeds=pvLoad"
 END = "End of PVObject pvLoad"
@@ -182,56 +183,54 @@ def flat_load(lines):
     return begin, end, mode, fields
 
 
+def _root_header(lines):
+    root_block(lines)
+    header_end = next((i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_")), len(lines))
+    return direct_fields(lines, (0, header_end))
+
+
 def _require_scope(store, lines, arrays, system):
-    """Verified native 8.1.6 PV-only single-subarray Grid variant; no storage, scene or P50."""
-    root = root_block(lines)
-    if root.one("Version")[1] not in NATIVE_TEXT:
-        raise ValueError(f"Requires a native {TEXT_LABEL} variant")
-    flags = root.one("Flags")[1]
-    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) or int(flags[1:], 16) not in (0, 0x00080000):
-        raise ValueError("Root Flags must be 0 or 0x80000")
-    if system is None or len(arrays) != 1:
-        raise ValueError("Requires one pvSystem and one subarray")
+    """Verified PV-only Grid variant (with or without 3D scene); no storage or P50."""
+    header = _root_header(lines)
+    if one(header, "Version")[1] not in NATIVE_TEXT_OR_SEED:
+        raise ValueError(f"Requires a {SEED_LABEL} variant")
+    flags = one(header, "Flags")[1]
+    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
+        raise ValueError("Root Flags must be hexadecimal")
+    if system is None or not arrays:
+        raise ValueError("Requires one pvSystem and at least one subarray")
     system_root = root_block(lines, system)
-    if set(system_root.fields) != {"Flags", "SystemType"}:
-        raise ValueError("pvSystem must declare only Flags and SystemType for this batch")
+    if not {"Flags", "SystemType"} <= set(system_root.fields):
+        raise ValueError("pvSystem must declare Flags and SystemType")
     if system_root.one("SystemType")[1] != "Grid":
         raise ValueError("SystemType must be Grid")
-    if system_root.one("Flags")[1] != "$06000000":
-        raise ValueError("This batch requires pvSystem Flags=$06000000")
+    sys_flags = system_root.one("Flags")[1]
+    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", sys_flags) or (int(sys_flags[1:], 16) & ~0x00010000) not in (0, 0x06000000):
+        raise ValueError("Native load editing requires plain or standard Grid pvSystem Flags")
     main = store._main_array(lines)
     if main is None:
         raise ValueError("A pvMainArray section is required")
     main_root = root_block(lines, main)
-    if main_root.one("Flags")[1] != "$01900400" or main_root.one("Flags2")[1] != "$082A":
-        raise ValueError("Main array requires the verified Flags=$01900400 and Flags2=$082A")
-    sub_root = root_block(lines, next(iter(arrays.values())))
-    if sub_root.one("Version")[1] not in NATIVE_TEXT:
-        raise ValueError(f"Subarray requires the verified {TEXT_LABEL} declaration")
-    if sub_root.one("Flags")[1] != "$019E1002":
-        raise ValueError("Subarray requires the verified 019E1002 flag family")
-    strings = sub_root.one("NStringCh")[1]
-    if (sub_root.one("NoOrientation")[1] != "1" or not strings.isdigit() or int(strings) < 1
-            or sub_root.one("NStrOrient1")[1] != strings):
-        raise ValueError("Requires all strings on orientation 1 with NStrOrient1 equal to NStringCh")
-    if any(key.startswith("NStrOrient") and key != "NStrOrient1" and sub_root.one(key)[1] != "0"
-           for key in sub_root.fields):
-        raise ValueError("Every other NStrOrient* must be zero")
-    store._require_no_geometry(lines)
+    if main_root.one("Flags")[1] not in ("$00100400", "$01900400") or main_root.one("Flags2")[1] != "$082A":
+        raise ValueError("Main array requires verified Flags and Flags2=$082A")
+    for bounds in arrays.values():
+        sub_root = root_block(lines, bounds)
+        if sub_root.one("Version")[1] not in NATIVE_TEXT_OR_SEED:
+            raise ValueError(f"Subarray requires a verified {SEED_LABEL} declaration")
+        sflags = sub_root.one("Flags")[1]
+        if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", sflags):
+            raise ValueError("Subarray Flags must be hexadecimal")
     if any(block.object_type == "pvGridStorage" for block in objects("".join(lines))):
         raise ValueError("Grid storage objects are outside this batch")
-    if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
-        raise ValueError("P50/P90 and saved horizon objects are outside this batch")
-    if sum(line.strip() == "PVObject_=pvOrient" for line in lines) != 1:
-        raise ValueError("Requires exactly one orientation record")
-    store._ordinary_fixed_plane(lines, store._orientation(lines, 1))
+    if any(re.match(r"\s*P50_P90\s*=", line) for line in lines):
+        raise ValueError("P50/P90 objects are outside this batch")
     if grid_inventory(lines, arrays)["counts_valid"] is not True:
         raise ValueError("Requires complete consistent native grid counts")
     return int(flags[1:], 16)
 
 
 def _apply_block(lines, load, newline):
-    """Insert or replace the block, keeping every other byte; one root anchor is always required."""
+    """Insert or replace the block, keeping 3D scenes and clearing stale result cache."""
     found = flat_load(lines)
     anchors = [index for index, line in enumerate(lines) if line.strip() == ANCHOR]
     if len(anchors) != 1:
@@ -242,8 +241,11 @@ def _apply_block(lines, load, newline):
     else:
         block = native_load_block(load, newline).splitlines(keepends=True)
         candidate = lines[:found[0]] + block + lines[found[1] + 1:]
-    index, _ = root_block(candidate).one("Flags")
-    candidate[index] = replace_value(candidate[index], "$00080000")
+    index, raw = one(_root_header(candidate), "Flags")
+    flags_val = int(raw[1:], 16) | 0x00080000
+    candidate[index] = replace_value(candidate[index], f"${flags_val:08X}")
+    if any(line.strip().startswith("VarList, list of=") for line in candidate):
+        candidate, _ = strip_result_cache(candidate)
     return candidate
 
 
@@ -261,7 +263,7 @@ def create_native_load_variant(store, *, project, source_variant, new_variant, l
         def verify(checked, _, res):
             checked_arrays, _ = store._sections(checked)
             verified = flat_load(checked)
-            if verified is None or len(checked_arrays) != 1:
+            if verified is None or not checked_arrays:
                 raise ValueError("Candidate lost its load block or subarray")
             res["load_mode"] = verified[2]
 

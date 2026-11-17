@@ -134,11 +134,10 @@ def _apply_core_edits(store, lines, arrays, system, *, subarray_id, orientation_
                 or any(len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT_OR_SEED
                        for indices in versions)):
             raise ValueError(f"Thermal editing requires a verified {SEED_LABEL} grid main array")
-        for key, expected in (("Flags", "$00100400"), ("Flags2", "$082A")):
+        for key, accepted in (("Flags", ("$00100400", "$01900400")), ("Flags2", ("$082A",))):
             indices = store._field_indices(lines, main_array, key)
-            if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] != expected:
+            if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in accepted:
                 raise ValueError("Thermal editing requires verified main-array Flags/Flags2")
-        store._require_no_geometry(lines)
     elif uv_only:
         store._uv_edit_gate(lines, system, arrays, main_array)
 
@@ -152,7 +151,7 @@ def _apply_core_edits(store, lines, arrays, system, *, subarray_id, orientation_
         if (len(versions) != 1 or FIELD.fullmatch(lines[versions[0]].rstrip("\r\n"))[2] not in supported
                 or len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"):
             raise ValueError(f"{loss} editing requires a verified {SEED_LABEL} grid subarray")
-    if set(subarray_updates or {}) & {"NModSerie", "LIDLoss", "PMismMPP", "ModuleQualityLoss"}:
+    if "NModSerie" in (subarray_updates or {}):
         store._require_no_geometry(lines)
 
     loss_modes = {}
@@ -292,12 +291,19 @@ def _apply_single_control(store, lines, arrays, system, *, subarray_id, orientat
     header_end = next(i for i in range(1, len(lines)) if lines[i].strip().startswith("PVObject_"))
     root_versions = store._field_indices(lines, (0, header_end), "Version")
     kinds = store._field_indices(lines, system, "SystemType") if system is not None else []
-    if (len(root_versions) != 1 or FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT
-            or main is None or len(arrays) != 1 or len(kinds) != 1
+    whole_system_control = param_key in (
+        "soiling_updates", "grid_limit_updates", "auxiliary_updates",
+        "inverter_temperature_updates", "power_factor_updates", "p50_p90_updates",
+        "power_controls_updates", "ageing_updates", "ageing_enabled", "system_unavailability_updates",
+    )
+    accepted_versions = NATIVE_TEXT_OR_SEED if param_key == "system_unavailability_updates" else NATIVE_TEXT
+    version_label = SEED_LABEL if param_key == "system_unavailability_updates" else TEXT_LABEL
+    if (len(root_versions) != 1 or FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2] not in accepted_versions
+            or main is None or (not whole_system_control and len(arrays) != 1) or len(kinds) != 1
             or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
-            or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT for v in versions)
-            or has_object(lines, "pvGridStorage")):
-        raise ValueError(f"{control} editing requires a native {TEXT_LABEL} PV-only single-subarray Grid variant")
+            or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] not in accepted_versions for v in versions)
+            or (param_key != "system_unavailability_updates" and has_object(lines, "pvGridStorage"))):
+        raise ValueError(f"{control} editing requires a native {version_label} PV-only single-subarray Grid variant")
 
     for key, accepted in (("Flags", ("$00100400", "$01900400")), ("Flags2", ("$082A",))):
         if key == "Flags2" and ageing_tx:
@@ -305,11 +311,13 @@ def _apply_single_control(store, lines, arrays, system, *, subarray_id, orientat
         indices = store._field_indices(lines, main, key)
         if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in accepted:
             raise ValueError(f"{control} editing requires verified main-array Flags/Flags2")
-    store._require_no_geometry(lines)
-    if sum(line.strip() == "PVObject_=pvOrient" for line in lines) != 1:
-        raise ValueError(f"{control} editing currently verifies one fixed plane")
-    if param_key != "seasonal_updates":
-        store._ordinary_fixed_plane(lines, store._orientation(lines, 1))
+    if param_key == "seasonal_updates":
+        store._require_no_geometry(lines)
+    if not whole_system_control:
+        if sum(line.strip() == "PVObject_=pvOrient" for line in lines) != 1:
+            raise ValueError(f"{control} editing currently verifies one fixed plane")
+        if param_key != "seasonal_updates":
+            store._ordinary_fixed_plane(lines, store._orientation(lines, 1))
 
     if param_key == "soiling_updates":
         return {result_key: replace_soiling(lines, main, payload)}
@@ -318,49 +326,51 @@ def _apply_single_control(store, lines, arrays, system, *, subarray_id, orientat
     if param_key == "auxiliary_updates" and payload.get("mode") != "profile":
         return {result_key: replace_auxiliaries(lines, system, payload)}
 
+    if param_key == "system_unavailability_updates":
+        root_flags = store._field_indices(lines, (0, header_end), "Flags")
+        if len(root_flags) != 1 or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", FIELD.fullmatch(lines[root_flags[0]].rstrip("\r\n"))[2]):
+            raise ValueError("System unavailability requires hexadecimal root Flags")
+        return {result_key: replace_system_unavailability(lines, system, payload)}
+
     horizon_sensitive = param_key in (
         "seasonal_updates", "inverter_temperature_updates", "power_factor_updates",
         "p50_p90_updates", "power_controls_updates", "string_mismatch_updates",
-        "ageing_updates", "ageing_enabled", "iam_updates", "system_unavailability_updates",
+        "ageing_updates", "ageing_enabled", "iam_updates",
     ) or (param_key == "auxiliary_updates" and payload.get("mode") == "profile")
-    if (orientation_id != 1 or [g[2] for g in store._orientation_list(lines)[1]] != [1]
-            or has_object(lines, "pvLoad")
+    if (not whole_system_control and orientation_id != 1
+            or (not whole_system_control and [g[2] for g in store._orientation_list(lines)[1]] != [1])
+            or (param_key not in ("inverter_temperature_updates", "power_factor_updates", "power_controls_updates", "p50_p90_updates", "auxiliary_updates")
+                and has_object(lines, "pvLoad"))
             or (horizon_sensitive and any("PVObject_Horizon=" in line for line in lines))):
         raise ValueError(f"{control} editing requires one orientation, no loads and a supported horizon state")
 
     if param_key not in ("inverter_temperature_updates", "power_factor_updates",
-                         "power_controls_updates", "system_unavailability_updates", "auxiliary_updates"):
+                         "power_controls_updates", "auxiliary_updates"):
         flags = store._field_indices(lines, system, "Flags")
         if len(flags) != 1 or not re.fullmatch(r"\$0{1,8}", FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2]):
             raise ValueError(f"{control} editing requires plain Grid system Flags=$00")
 
-    bounds = next(iter(arrays.values()))
-    root = next(block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path)
-    strings = root.one("NStringCh")[1]
-    if (root.one("NoOrientation")[1] != "1" or not strings.isdigit() or int(strings) < 1
-            or root.one("NStrOrient1")[1] != strings
-            or any(key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0"
-                   for key in root.fields) or grid_inventory(lines, arrays)["counts_valid"] is not True):
-        raise ValueError(f"{control} editing requires complete circuit counts and every string in orientation 1")
+    if not whole_system_control:
+        bounds = next(iter(arrays.values()))
+        root = next(block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path)
+        strings = root.one("NStringCh")[1]
+        if (root.one("NoOrientation")[1] != "1" or not strings.isdigit() or int(strings) < 1
+                or root.one("NStrOrient1")[1] != strings
+                or any(key.startswith("NStrOrient") and key != "NStrOrient1" and root.one(key)[1] != "0"
+                       for key in root.fields) or grid_inventory(lines, arrays)["counts_valid"] is not True):
+            raise ValueError(f"{control} editing requires complete circuit counts and every string in orientation 1")
 
-    if ageing_tx or param_key in ("iam_updates", "system_unavailability_updates"):
-        sflags = store._field_indices(lines, bounds, "Flags")
-        if (len(sflags) != 1 or FIELD.fullmatch(lines[sflags[0]].rstrip("\r\n"))[2] != "$019E1002"
-                or any(re.match(r"\s*P50_P90\s*=", line) for line in lines)):
-            raise ValueError(f"{control} editing requires the verified 019E1002 subarray Flags and no P50/P90 assignment")
-    if param_key == "string_mismatch_updates":
-        sflags = store._field_indices(lines, bounds, "Flags")
-        if (len(sflags) != 1
-                or int(FIELD.fullmatch(lines[sflags[0]].rstrip("\r\n"))[2].lstrip("$"), 16) & ~0x00020000 != 0x019C1002
-                or any("P50_P90=TP50_P90" in line for line in lines)):
-            raise ValueError(f"{control} editing requires the verified 0x019C1002 subarray flag family and no P50/P90 block")
-
-    if param_key == "system_unavailability_updates":
-        root_flags = store._field_indices(lines, (0, header_end), "Flags")
-        if (subarray_id != 1 or len(root_flags) != 1
-                or not re.fullmatch(r"\$0{1,8}", FIELD.fullmatch(lines[root_flags[0]].rstrip("\r\n"))[2])):
-            raise ValueError("System-unavailability removal requires the ordinary PV-only root and subarray 1")
-        return {result_key: replace_system_unavailability(lines, system, payload)}
+        if ageing_tx or param_key == "iam_updates":
+            sflags = store._field_indices(lines, bounds, "Flags")
+            if (len(sflags) != 1 or FIELD.fullmatch(lines[sflags[0]].rstrip("\r\n"))[2] != "$019E1002"
+                    or any(re.match(r"\s*P50_P90\s*=", line) for line in lines)):
+                raise ValueError(f"{control} editing requires the verified 019E1002 subarray Flags and no P50/P90 assignment")
+        if param_key == "string_mismatch_updates":
+            sflags = store._field_indices(lines, bounds, "Flags")
+            if (len(sflags) != 1
+                    or int(FIELD.fullmatch(lines[sflags[0]].rstrip("\r\n"))[2].lstrip("$"), 16) & ~0x00020000 != 0x019C1002
+                    or any("P50_P90=TP50_P90" in line for line in lines)):
+                raise ValueError(f"{control} editing requires the verified 0x019C1002 subarray flag family and no P50/P90 block")
 
     dispatch = {
         "inverter_temperature_updates": lambda: replace_inverter_temperature(lines, system, payload),
@@ -445,7 +455,12 @@ def update_parameters(store, project: str, variant: str, expected_sha256: str | 
         )
 
         cache_clear = None
-        if uv_changed:
+        non_title_changed = bool(
+            subarray_updates or orientation_updates or main_array_updates or generator_updates
+            or power_sharing_enabled is not None or independent_mppt_enabled is not None
+            or control_params
+        ) and "".join(lines).encode("utf-8") != (data[3:] if data.startswith(b"\xef\xbb\xbf") else data)
+        if uv_changed or (non_title_changed and any(line.strip().startswith("VarList, list of=") for line in lines)):
             from pvsyst_auto.native.headless import strip_result_cache
             lines, cache_clear = strip_result_cache(lines)
 
