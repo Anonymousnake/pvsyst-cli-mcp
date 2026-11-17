@@ -78,8 +78,10 @@ class PackageEntrypointTests(unittest.TestCase):
 
     def test_checkout_module_and_legacy_launch(self):
         async def check():
-            module = await self._capture([sys.executable, "-m", "pvsyst_auto"], True)
-            legacy = await self._capture([sys.executable, str(REPO / "pvsyst_mcp_server.py")])
+            module, legacy = await asyncio.gather(
+                self._capture([sys.executable, "-m", "pvsyst_auto"], True),
+                self._capture([sys.executable, str(REPO / "pvsyst_mcp_server.py")]),
+            )
             self.assertEqual(module, legacy)
         asyncio.run(check())
 
@@ -92,9 +94,11 @@ class PackageEntrypointTests(unittest.TestCase):
         self.assertTrue(Path(console).is_file())
 
         async def check():
-            module = await self._capture([python, "-m", "pvsyst_auto"])
-            entry = await self._capture([console])
-            source = await self._capture([sys.executable, "-m", "pvsyst_auto"], True)
+            module, entry, source = await asyncio.gather(
+                self._capture([python, "-m", "pvsyst_auto"]),
+                self._capture([console]),
+                self._capture([sys.executable, "-m", "pvsyst_auto"], True),
+            )
             self.assertEqual(module, entry)
             self.assertEqual(source, entry)
         asyncio.run(check())
@@ -139,17 +143,30 @@ class ToolGroupsTests(unittest.TestCase):
                                           "\n".join(i.text for i in reply.content if hasattr(i, "text")))
                 return tools
 
-            full = await capture(None)
+            full, selected = await asyncio.gather(
+                capture(None),
+                capture("setup, engineering,results", module=True),
+            )
             self.assertIn("pvsyst_clone_project", {item["name"] for item in full})
-            selected = await capture("setup, engineering,results", module=True)
             expected = [item for item in full if item["description"].split("]", 1)[0][1:]
                         in {"Setup & License", "Engineering", "Results"}]
             self.assertEqual(selected, expected)
             self.assertEqual(list(workspace.iterdir()), [])
-            for index, invalid in enumerate(("", "engineering,", "unknown", "results,results")):
-                process = subprocess.run([sys.executable, "-m", "pvsyst_auto"], cwd=directory,
-                                         env={**env, "PVSYST_TOOL_GROUPS": invalid},
-                                         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+            invalid_values = ("", "engineering,", "unknown", "results,results")
+            processes = await asyncio.gather(*(
+                asyncio.to_thread(
+                    subprocess.run,
+                    [sys.executable, "-m", "pvsyst_auto"],
+                    cwd=directory,
+                    env={**env, "PVSYST_TOOL_GROUPS": invalid},
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                for invalid in invalid_values
+            ))
+            for index, process in enumerate(processes):
                 self.assertNotEqual(process.returncode, 0, index)
                 self.assertIn("PVSYST_TOOL_GROUPS requires", process.stdout + process.stderr)
         finally:

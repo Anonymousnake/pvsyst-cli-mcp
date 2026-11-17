@@ -1,0 +1,269 @@
+"""Tests for energy loss blocks, hourly load snapshots, and grid storage builders."""
+import calendar
+import functools
+import shutil
+import tempfile
+import threading
+import unittest
+from datetime import datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+
+from pvsyst_auto.components.store import ComponentStore
+from pvsyst_auto.energy import auxiliaries, iam, inverter_temperature, soiling
+from pvsyst_auto.energy.load import create_load_variant
+from pvsyst_auto.energy.peak import peak_shaving_state
+from pvsyst_auto.energy.profiles import prepare_load_profile
+from pvsyst_auto.energy.storage import create_grid_storage_variant
+from pvsyst_auto.energy.system import create_grid_storage_system
+from pvsyst_auto.energy.unavailability import system_unavail_state
+from pvsyst_auto.project.variants import VariantStore
+
+
+def crlf(text):
+    return text.replace("\n", "\r\n").splitlines(keepends=True)
+
+
+MAIN = """PVObject_PVMainArray=pvMainArray
+  Flags=$00100400
+{soiling}PVObject_SystemCircuit=pvCircuit
+End of PVObject pvCircuit
+End of PVObject pvMainArray
+"""
+NONE_SOILING = ("Soiling=Soiling\n  IsYearly=False\n  IsMonthly=False\n  IsFromFile=False\n"
+                "  YearlyValue=0.020\nEndTags\n")
+CACHED_SOILING = ("Soiling=Soiling\n  IsYearly=True\n  IsMonthly=False\n  IsFromFile=False\n"
+                  "  YearlyValue=0.025\n  MonthlyValue=" + "0.010," * 12 + "\nEndTags\n")
+SYSTEM = """PVObject_=pvVCalcul
+  Version=8.1.6
+  PVObject_System=pvSystem
+    Flags=$00
+    SystemType=Grid
+  End of PVObject pvSystem
+End of PVObject pvVCalcul
+"""
+SUBARRAY = """PVObject_=pvSubArray
+  Version=8.1.6
+  Flags2={flags2}
+{iam}End of PVObject pvSubArray
+"""
+ASHRAE = ("  PVObject_IAM=pvIAM\n    Flags=$00\n    IAMMode=Ashrae\n    B0_IAM=0.050\n"
+          "  End of PVObject pvIAM\n")
+ROOT = "PVObject_=pvVCalcul\n  Comment=Fixture\n  Version=8.1.6\n  Flags={root_flags}\n"
+ARRAY = "  PVObject_=pvSubArray\n    SubArrayId=1\n    NModSerie=10\n  End of PVObject pvSubArray\n"
+PV_SYSTEM = "  PVObject_System=pvSystem\n    Flags=$00\n    SystemType=Grid\n  End of PVObject pvSystem\n"
+STORAGE_SYSTEM = ("  PVObject_System=pvSystem\n    Flags=$10010040\n    SystemType=Grid\n"
+                  "    BatteryFile=Fixture.BTR\n    NBattSerie=1\n    NBattParall=2\n  End of PVObject pvSystem\n")
+OLD_LOAD = ("  PVObject_UserNeeds=pvLoad\n    Flags=$4000\n    LoadType=HourlyFile\n"
+            "    Day_0101=+oldcache\n  End of PVObject pvLoad\n")
+SNAPSHOT_LOAD = ("  PVObject_UserNeeds=pvLoad\n    Flags=$4000\n    DateBeg=01/01/23 00:00\n"
+                 "    DateEnd=31/12/23 23:00\n  End of PVObject pvLoad\n")
+GRID_STORAGE = ("  PVObject_GridStorage=pvGridStorage\n    Flags=$00\n    Strategy={strategy}\n"
+                "    ChargingStrategy=PVAvailable\n    DischStrategy=Immediate\n    BattSoCInit=0.6\n"
+                "    SOCChDecl=0.95\n    SOCDischDecl=0.2\n    SOCDischSelf=0.5\n    PMaxCharge=380\n"
+                "    PMaxDisch=170\n    BattRectMaxEffic=97\n    BattRectEuroEffic=95\n    BattInvMaxEffic=97\n"
+                "    BattInvEuroEffic=95\n{unavail}  End of PVObject pvGridStorage\n")
+OLD_UNAVAIL = "    PVObject_GridUnavail=pvUnavail\n      Comment=old\n      Flags=$00\n    End of PVObject pvUnavail\n"
+CLOSE = "End of PVObject pvVCalcul\n"
+BTR = ("PVObject_=pvBattery\n  Version=8.1.6\n  Flags=$00\n  BattTechnol=Pb_Sealed_AGM\n  CapNomC10=160\n"
+       "  AlphaSOC=0.2\n  PVObject_Commercial=pvCommercial\n    Manufacturer=Fixture\n    Model=12V160Ah\n"
+       "  End of PVObject pvCommercial\nEnd of PVObject pvBattery\n")
+BATTERY = {"file_name": "Fixture.BTR", "series_count": 4, "parallel_count": 4,
+           "monthly_temperature_c": [20] * 12, "cycle_sow": 1, "static_sow": 1}
+STORAGE = {"strategy": "self_consumption", "soc_min": 0.2, "soc_max": 0.9, "initial_soc": 0.5, "reserve_soc": 0.2,
+           "max_charge_ac_kw": 3, "max_discharge_ac_kw": 5, "charger_max_efficiency_pct": 97,
+           "charger_euro_efficiency_pct": 95, "battery_inverter_max_efficiency_pct": 97,
+           "battery_inverter_euro_efficiency_pct": 95}
+
+
+@functools.lru_cache(maxsize=8)
+def hourly(header, unit, value, year=2023, first=None):
+    start = datetime(year, 1, 1)
+    hours = 24 * (366 if calendar.isleap(year) else 365)
+    return "".join([header + "\n", ";" + unit + "\n"] + [
+        (start + timedelta(hours=h)).strftime("%Y-%m-%d %H:%M") + ";" + (first if first and h < 24 else value) + "\n"
+        for h in range(hours)])
+
+
+class EnergyBlockTests(unittest.TestCase):
+    def test_soiling_noop_and_edit(self):
+        for block, updates in ((NONE_SOILING, {"mode": "none"}),
+                               (CACHED_SOILING, {"mode": "constant", "yearly_loss_pct": 2.5})):
+            lines = crlf(MAIN.format(soiling=block))
+            original = list(lines)
+            change = soiling.replace_soiling(lines, (0, len(lines) - 1), updates)
+            self.assertEqual(lines, original)
+            self.assertEqual(change["before"], change["after"])
+        lines = crlf(MAIN.format(soiling=""))
+        change = soiling.replace_soiling(lines, (0, len(lines) - 1), {"mode": "constant", "yearly_loss_pct": 2.5})
+        self.assertEqual(change["after"], {"mode": "constant", "yearly_loss_pct": 2.5})
+        self.assertEqual(lines[2:8], crlf("Soiling=Soiling\n  IsYearly=True\n  IsMonthly=False\n"
+                                          "  IsFromFile=False\n  YearlyValue=0.025\nEndTags\n"))
+
+    def test_auxiliaries_and_inverter_temperature_edits(self):
+        cases = (
+            (auxiliaries.replace_auxiliaries, {"mode": "constant", "operating_kw": 5, "night_kw": 2},
+             ["    AuxPower_Const=5000.000\r\n", "    AuxPower_Night=2000.000\r\n"], "$00040000"),
+            (inverter_temperature.replace_inverter_temperature, {"mode": "offset", "offset_c": 2.5, "fixed_c": 30},
+             ["    TempShift=2.5\r\n", "    TempFixed=30.0\r\n"], "$4000"),
+        )
+        for replace, updates, written, flags in cases:
+            lines = crlf(SYSTEM)
+            change = replace(lines, (2, 5), updates)
+            self.assertEqual(lines[3], "    Flags=" + flags + "\r\n")
+            self.assertEqual(lines[5:7], written)
+            self.assertEqual(change["after"]["mode"], updates["mode"])
+
+    def test_iam_switch_edit_and_missing_anchor_guard(self):
+        lines = crlf(SUBARRAY.format(flags2="$00", iam=ASHRAE))
+        change = iam.replace_iam_model(lines, (0, len(lines) - 1), {"mode": "component"})
+        self.assertEqual(change["after"], {"effective": "component", "stored_model": "Ashrae", "stored_ashrae_b0": 0.05})
+        self.assertEqual(lines[2], "  Flags2=$20\r\n")
+        self.assertEqual(lines[3:8], crlf(ASHRAE))
+
+        lines = crlf(SUBARRAY.format(flags2="$00", iam=ASHRAE))
+        change = iam.replace_iam_model(lines, (0, len(lines) - 1), {"mode": "ashrae", "ashrae_b0": 0.06})
+        self.assertEqual(change["after"]["stored_ashrae_b0"], 0.06)
+        self.assertEqual(lines[6], "    B0_IAM=0.060\r\n")
+
+        lines = crlf(SUBARRAY.format(flags2="$20", iam=""))
+        original = list(lines)
+        with self.assertRaisesRegex(ValueError, "WiringResistance"):
+            iam.replace_iam_model(lines, (0, len(lines) - 1), {"mode": "ashrae", "ashrae_b0": 0.05})
+        self.assertEqual(lines, original)
+
+    def test_unavailability_and_peak_shaving_state_parsing(self):
+        def unavail_state(period_lines, count, header="  SystemUnavail=TUnavailability\n"):
+            lines = crlf(f"PVObject_System=pvSystem\n{header}    DefMode=Random\n"
+                         f"    NbPeriods={count}\n{period_lines}  End of PVObject pvUnavail\nEnd of PVObject pvSystem\n")
+            return system_unavail_state(lines, (0, len(lines) - 1))
+
+        self.assertIn("NbPeriods does not match the stored period list",
+                      unavail_state("    DateBeg=01/01/90 00:00\n    Duration=24\n", "\u00b2")["issues"])
+        self.assertNotIn("issues", unavail_state("    DateBeg=01/01/90 00:00\n    Duration=24\n", 1))
+        missing_dur = unavail_state("    DateBeg=01/01/90 00:00\n    DateBeg=02/01/90 00:00\n    Duration=24\n", 2)
+        self.assertEqual(missing_dur["issues"], ["1 SystemUnavail period(s) lack a Duration within three lines of DateBeg"])
+        spaced = unavail_state("", 0, header="  SystemUnavail = TUnavailability\n")
+        self.assertEqual((spaced["configured"], spaced["mode"], spaced["period_count"]), (True, "Random", 0))
+
+        record = (GRID_STORAGE.format(strategy="PeakShaving", unavail="")
+                  .replace("PVAvailable", "PVToGridMin").replace("DischStrategy=Immediate", "DischStrategy=AfterSunset"))
+        for owner in ("PVObject_GridStorage=pvGridStorage", "PVObject_GridStorage = pvGridStorage"):
+            state = peak_shaving_state(crlf(record.replace("PVObject_GridStorage=pvGridStorage", owner)))
+            self.assertEqual((state.get("mode"), state["discharge"]), ("configured", {"mode": "after_sunset"}))
+
+
+class WorkspaceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._seed_dir = tempfile.TemporaryDirectory()
+        seed = Path(cls._seed_dir.name)
+        for folder in ("Projects", "UserData", "ComposPV/Batteries"):
+            (seed / folder).mkdir(parents=True)
+        (seed / "Projects/Fixture.PRJ").write_text(
+            "PVObject_=pvProject\n  Comment=Fixture\nEnd of PVObject pvProject\n", encoding="utf-8")
+        (seed / "ComposPV/Batteries/Fixture.BTR").write_text(BTR, encoding="utf-8", newline="")
+        (seed / "UserData/raw.csv").write_text(hourly("Date;P Load", "W", "2500"), encoding="utf-8", newline="")
+        cli = SimpleNamespace(_lock=threading.RLock(), workspace=seed)
+        prepared = prepare_load_profile(cli, csv_name="raw.csv", year=2023, output_name="load.csv",
+                                        utc_offset_hours=8, time_basis="local_standard_interval_start",
+                                        dry_run=False)
+        assert prepared["status"] == "prepared", prepared
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._seed_dir.cleanup()
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / "ws"
+        shutil.copytree(self._seed_dir.name, self.root)
+        self.store = VariantStore(self.root, ComponentStore(self.root))
+
+    def source(self, text):
+        (self.root / "Projects/Fixture.VC0").write_bytes(text.replace("\n", "\r\n").encode())
+
+    def created(self, result):
+        self.assertEqual(result["status"], "created", result)
+        text = (self.root / "Projects/Fixture.VC1").read_bytes().decode("utf-8")
+        self.assertEqual(text.count("\n"), text.count("\r\n"), "no bare LF line in a CRLF variant")
+        return text
+
+    def bind_load(self):
+        return create_load_variant(self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                                   load_manifest_name="load_load.json", dry_run=False)
+
+    def build_storage(self, **changes):
+        return create_grid_storage_system(self.store, project="Fixture.PRJ", source_variant="VC0",
+                                          new_variant="VC1", load_manifest_name="load_load.json",
+                                          dry_run=False, **{"battery": BATTERY, "storage": STORAGE, **changes})
+
+    def test_storage_scalars_never_use_exponent_notation(self):
+        self.source(ROOT.format(root_flags="$00") + ARRAY + STORAGE_SYSTEM
+                    + GRID_STORAGE.format(strategy="SelfConsumption", unavail="") + CLOSE)
+        result = create_grid_storage_variant(self.store, project="Fixture.PRJ", source_variant="VC0",
+                                             new_variant="VC1", dry_run=False,
+                                             updates={"soc_min": 0.00001, "max_charge_ac_kw": 1e16,
+                                                      "max_discharge_ac_kw": 1, "initial_soc": 0.4})
+        text = self.created(result)
+        for line in ("SOCDischDecl=0.00001", "PMaxCharge=10000000000000000", "PMaxDisch=1.0", "BattSoCInit=0.4"):
+            self.assertIn("    " + line + "\r\n", text)
+        self.assertEqual(result["after"]["soc_min"], 0.00001)
+
+    def test_weak_grid_rebinding_replaces_only_the_availability_lines(self):
+        source = (ROOT.format(root_flags="$00080000") + ARRAY + STORAGE_SYSTEM + SNAPSHOT_LOAD
+                  + GRID_STORAGE.format(strategy="WeakGrid", unavail=OLD_UNAVAIL) + CLOSE)
+        self.source(source)
+        (self.root / "UserData/grid.csv").write_text(hourly("Date;Grid Available", "ratio", "1", first="0"),
+                                                    encoding="ascii", newline="")
+        result = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1", dry_run=False,
+            updates={"strategy": "weak_grid"}, availability={"csv_name": "grid.csv", "year": 2023,
+                                                             "utc_offset_hours": 8,
+                                                             "time_basis": "local_standard_interval_start"})
+        text = self.created(result)
+        self.assertNotIn("Comment=old", text)
+        self.assertTrue(text.endswith("    End of PVObject pvUnavail\r\n  End of PVObject pvGridStorage\r\n" + CLOSE.replace("\n", "\r\n")))
+
+    def test_storage_system_load_insertion_and_replacement(self):
+        self.source(ROOT.format(root_flags="$00100001") + ARRAY + PV_SYSTEM + "  " + CLOSE)
+        battery = {**BATTERY, "monthly_temperature_c": [0.00001] + [20] * 11, "cycle_sow": 0.00001}
+        text = self.created(self.build_storage(battery=battery, storage={**STORAGE, "soc_min": 0.00001}))
+        for line in ("CycleSOWBeg=0.00001", "StaticSOWBeg=1.0", "TempBattRef=0.00001",
+                     "TempBattMois=0.00001" + ",20.0" * 11 + ",", "SOCDischDecl=0.00001", "PMaxCharge=3.0"):
+            self.assertIn("    " + line + "\r\n", text)
+        self.assertIn("  End of PVObject pvSystem\r\n  PVObject_UserNeeds=pvLoad\r\n", text)
+        self.assertTrue(text.endswith("  End of PVObject pvGridStorage\r\n  End of PVObject pvVCalcul\r\n"))
+
+        (self.root / "Projects/Fixture.VC1").unlink()
+        self.source(ROOT.format(root_flags="$00100001") + ARRAY + PV_SYSTEM + OLD_LOAD + CLOSE)
+        replaced = self.created(self.build_storage())
+        self.assertNotIn("+oldcache", replaced)
+        self.assertIn("  End of PVObject pvLoad\r\n  PVObject_GridStorage=pvGridStorage\r\n", replaced)
+
+    def test_load_rebinding_new_insertion_and_blank_row_block(self):
+        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + "\n" + OLD_LOAD + CLOSE)
+        text = self.created(self.bind_load())
+        self.assertNotIn("+oldcache", text)
+        self.assertIn("  End of PVObject pvSystem\r\n\r\n  PVObject_UserNeeds=pvLoad\r\n", text)
+        self.assertTrue(text.endswith("  End of PVObject pvLoad\r\nEnd of PVObject pvVCalcul\r\n"))
+
+        (self.root / "Projects/Fixture.VC1").unlink()
+        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + "  " + CLOSE)
+        inserted = self.created(self.bind_load())
+        self.assertIn("  End of PVObject pvSystem\r\n  PVObject_UserNeeds=pvLoad\r\n", inserted)
+        self.assertTrue(inserted.endswith("  End of PVObject pvLoad\r\n  End of PVObject pvVCalcul\r\n"))
+
+        (self.root / "Projects/Fixture.VC1").unlink()
+        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + CLOSE)
+        prepared = self.root / "UserHourlyParams/load.csv"
+        prepared.write_bytes(prepared.read_bytes() + b"\r\n")
+        blocked = self.bind_load()
+        self.assertEqual(blocked["status"], "blocked", blocked)
+        self.assertEqual(blocked["issues"], ["Every prepared load row must be one Date;P Load pair"])
+        self.assertFalse((self.root / "Projects/Fixture.VC1").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

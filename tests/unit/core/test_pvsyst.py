@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
@@ -11,9 +12,10 @@ import unittest
 from threading import Barrier
 from time import sleep
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pvsyst_auto.native.cli import PVsystCLI, PVsystError, build_monthly_weather_csv, build_sfi, parse_batch_results, parse_result_csv, result_units, summarize
+from pvsyst_auto.native import load as native_load, scene as native_scene
 from pvsyst_auto.api import app as _registered_app, context as server
 import pvsyst_auto.api.projects as api_projects
 import pvsyst_auto.api.results as api_results
@@ -457,6 +459,101 @@ class PVsystTests(unittest.TestCase):
         self.assertEqual(page["total"], 2)
         with self.assertRaises(ValueError):
             api_results.pvsyst_read_rows("result.csv", limit=501)
+
+    def test_timeout_redaction_empty_version_and_case_insensitive_variants(self):
+        self.client._help_cache["run-simulation"] += "\n --batch-params-file|-bpf:"
+        timeout = subprocess.TimeoutExpired(
+            ["PVsystCLI", "-w:C:/secret-workspace", "-k:private-key"], 5,
+            output="partial line\nHost ID: fixture-secret")
+        target = self.workspace / "Results" / "new.csv"
+        with patch.object(self.client, "_run", side_effect=timeout):
+            with self.assertRaises(PVsystError) as caught:
+                self.client.run_simulation("Example.PRJ", "VC0", sfi=self.sfi, out_csv=target)
+        text = str(caught.exception) + caught.exception.diagnostics
+        for secret in ("private-key", "secret-workspace", "fixture-secret"):
+            self.assertNotIn(secret, text)
+        self.assertIn("partial line", caught.exception.diagnostics)
+
+        with patch.object(self.client, "_run", return_value=subprocess.CompletedProcess([], 0, "", "")):
+            with self.assertRaisesRegex(PVsystError, "no output"):
+                self.client.version()
+            with self.assertRaisesRegex(native_scene.NativeBridgeError, "version query"):
+                native_scene._check_cli(self.client)
+
+        def run(*args):
+            self.assertIn("-v:VC0", args)
+            target.write_text(CSV_TEXT, encoding="utf-8")
+            return subprocess.CompletedProcess([], 0, "Simulation done in 0min 1sec", "")
+
+        for disk, req in (("VC0", "vc0"), ("vc0", "VC0")):
+            for old in (self.workspace / "Projects").glob("Example.[Vv][Cc]0"):
+                old.unlink()
+            (self.workspace / "Projects" / f"Example.{disk}").write_text("variant", encoding="utf-8")
+            target.unlink(missing_ok=True)
+            self.assertEqual(self.client.list_variants("Example.PRJ"), ["VC0"])
+            with patch.object(self.client, "_run", side_effect=run):
+                self.client.run_simulation("Example.PRJ", req, sfi=self.sfi, out_csv=target)
+
+    def test_batch_summary_matching_and_symlink_guards(self):
+        self.client._help_cache["run-simulation"] += "\n --batch-params-file|-bpf:"
+        batch_dir, hourly_dir = self.workspace / "UserBatch", self.workspace / "UserHourly"
+        batch_dir.mkdir()
+        hourly_dir.mkdir()
+        batch = batch_dir / "batch_params.CSV"
+        batch.write_text("Ident;Create hourly\nSIM_1;one.CSV\n", encoding="utf-8")
+
+        def writes(summary):
+            def run(*args):
+                (batch_dir / summary).write_text("Ident;Create hourly;Error;E_Grid;PR\nSIM_1;one.CSV;;12;0.7\n", encoding="utf-8")
+                (hourly_dir / "one.CSV").write_text(CSV_TEXT, encoding="utf-8")
+                return subprocess.CompletedProcess([], 0, "Simulation done in 0min 1sec", "")
+            return run
+
+        with patch.object(self.client, "_run", side_effect=writes("other_Results.CSV")):
+            with self.assertRaisesRegex(PVsystError, "batch_Results.CSV"):
+                self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
+        (hourly_dir / "one.CSV").unlink()
+        with patch.object(self.client, "_run", side_effect=writes("batch_Results.CSV")):
+            result = self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
+        self.assertEqual(Path(result["batch_summary"]).name, "batch_Results.CSV")
+
+        external = self.workspace.parent / "external"
+        external.mkdir()
+        link = hourly_dir / "escape.csv"
+        try:
+            link.symlink_to(external / "escape.csv")
+        except OSError:
+            return
+        (self.workspace / "Models" / "DemoParams.CSV").write_text("SIM_1;escape.csv\n", encoding="utf-8")
+        with patch.object(self.client, "_run") as cmd:
+            with self.assertRaisesRegex(ValueError, "outside"):
+                self.client.run_simulation("Example.PRJ", "VC0", batch_params=self.workspace / "Models" / "DemoParams.CSV")
+            cmd.assert_not_called()
+
+    def test_native_load_missing_root_and_winlaunch_stdio_guard(self):
+        from threading import RLock
+        from types import SimpleNamespace
+        fake_store = SimpleNamespace(
+            lock=RLock(), _check_project=lambda p: None,
+            _path=lambda p, v=None: self.workspace / (f"Example.{v}" if v else p),
+            _read=lambda p: b"  Comment=no root object\r\n",
+            _text=lambda d: (d.decode(), d.decode().splitlines(keepends=True)),
+            _sections=lambda l: ({}, None),
+        )
+        blocked = native_load.create_native_load_variant(
+            fake_store, project="Example.PRJ", source_variant="VC0", new_variant="VC1",
+            load={"mode": "constant", "constant_kw": 1.0})
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["issues"], ["Project file has no root PVObject block"])
+        if os.name == "nt":
+            from pvsyst_auto.native import _winlaunch
+            invalid = _winlaunch.ctypes.c_void_p(-1).value
+            create = Mock(return_value=0)
+            with patch.object(_winlaunch, "_CreateFileW", return_value=invalid), \
+                    patch.object(_winlaunch, "_CreateProcessW", create):
+                with self.assertRaisesRegex(OSError, r"CreateFileW\(stdout\) failed"):
+                    _winlaunch.run([sys.executable, "-c", "pass"], Path.cwd(), 5)
+            create.assert_not_called()
 
 
 if __name__ == "__main__":

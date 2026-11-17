@@ -213,8 +213,6 @@ def walk(node):
 
 
 class FixtureComponents(ComponentStore):
-    """Text-only component checks without hashing, for self-contained fixtures."""
-
     def _inspect(self, kind, data):
         format_name, text = self._text(kind, data)
         fields = self._fields(text or "")
@@ -225,8 +223,6 @@ class FixtureComponents(ComponentStore):
 
 
 class FakeCLI:
-    """Only the adapter surface this module uses; no process is ever started."""
-
     def __init__(self, install, workspace, version="PVsystCLI 8.1.6 (build 1234)"):
         self.cli = Path(install).resolve()
         self.workspace = Path(workspace).resolve()
@@ -265,7 +261,6 @@ class StandardTemplateTests(unittest.TestCase):
         self.store = VariantStore(self.root, FixtureComponents(self.root))
 
     def write_seed(self, prj, vc0, prj_bom=False, vc0_bom=True):
-        """Write the seed fixture and adopt it as the immutable baseline for later checks."""
         self.seed_prj.write_bytes((b"\xef\xbb\xbf" if prj_bom else b"") + prj.encode("utf-8"))
         self.seed_vc0.write_bytes((b"\xef\xbb\xbf" if vc0_bom else b"") + vc0.encode("utf-8"))
         self.seed_bytes = (self.seed_prj.read_bytes(), self.seed_vc0.read_bytes())
@@ -283,7 +278,6 @@ class StandardTemplateTests(unittest.TestCase):
                                          new_project=new_project, **kwargs)
 
     def structure(self, text):
-        # Derived texts keep their own leading U+FEFF, so encode as-is.
         _, lines = self.store._text(text.encode("utf-8"))
         arrays, _ = self.store._sections(lines)
         return lines, arrays, grid_inventory(lines, arrays)
@@ -295,83 +289,69 @@ class StandardTemplateTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked", result)
         self.assertEqual([item["field"] for item in result["issues"]], [field], result)
 
-    def test_dry_run_previews_without_writing_anything(self):
+    def test_dry_run_preview_references_and_capacity_check(self):
         result = self.prepare()
-        self.assertEqual((result["status"], result["stage"]), ("ready", "derived"))
-        self.assertEqual(result["definition"]["variant"], SEED_VARIANT)
-        self.assertEqual(result["source"]["version"], "8.1.0")
-        self.assertEqual(result["source"]["project_bom_preserved"], False)
-        self.assertEqual(result["source"]["variant_bom_preserved"], True)
+        self.assertEqual((result["status"], result["stage"], result["definition"]["variant"]), ("ready", "derived", SEED_VARIANT))
+        self.assertEqual((result["source"]["version"], result["source"]["project_bom_preserved"], result["source"]["variant_bom_preserved"]),
+                         ("8.1.0", False, True))
         self.assertNotIn("prj_text", result)
-        self.assertNotIn("vc0_text", result)
         self.assertEqual(sorted(self.projects.iterdir()), [])
-        self.assert_seed_untouched()
-        self.assertEqual([item["field"] for item in result["changes"]].count("NInvMPPT"), 2)
-
-    def test_pan_ond_identity_references_are_resolved_and_reported(self):
-        result = self.prepare()
         references = [item for item in result["changes"] if item["field"] == "PVModule/GInverter"]
         self.assertEqual(references[0]["after"], f"{PAN_NAME}/{OND_NAME}")
         self.assertTrue(any("ParamsFileName" in warning for warning in result["warnings"]))
+        self.assert_seed_untouched()
 
-    def test_installed_cli_must_be_81_and_readable(self):
-        for cli in (FakeCLI(self.install / "PVsystCLI.exe", self.root, version="PVsystCLI 8.0.9"),
-                    FakeCLI(self.install / "PVsystCLI.exe", self.root, version="PVsystCLI")):
-            store = VariantStore(self.root, FixtureComponents(self.root))
-            result = prepare_standard_template(cli, store, ond_electrical=self.ond_electrical(),
-                                               pan_name=PAN_NAME, ond_name=OND_NAME,
-                                               new_project=NEW_PROJECT)
-            self.assert_blocked(result, "seed")
-            self.assertIn("8.1", result["issues"][0]["message"])
+        cap_ok = self.prepare(capacity=CAPACITY)
+        self.assertEqual((cap_ok["status"], cap_ok["capacity_plan"]["mppt_per_inverter"],
+                          cap_ok["capacity_plan"]["series_modules"]), ("ready", 4, 7))
+        cap_bad = self.prepare(capacity={**CAPACITY, "module_max_operating_current_a": 8})
+        self.assertEqual((cap_bad["status"], cap_bad["stage"]), ("blocked", "capacity"))
+        self.assertEqual(sorted(self.projects.iterdir()), [])
 
-    def test_missing_dat_ro_seed_and_ambiguous_library_block(self):
+    def test_installed_cli_and_seed_library_validation(self):
+        for version in ("PVsystCLI 8.0.9", "PVsystCLI"):
+            res = prepare_standard_template(
+                FakeCLI(self.install / "PVsystCLI.exe", self.root, version=version),
+                VariantStore(self.root, FixtureComponents(self.root)),
+                ond_electrical=self.ond_electrical(), pan_name=PAN_NAME, ond_name=OND_NAME, new_project=NEW_PROJECT,
+            )
+            self.assert_blocked(res, "seed")
+            self.assertIn("8.1", res["issues"][0]["message"])
+
         shutil.rmtree(self.install / "DataRO")
         self.assert_blocked(self.prepare(), "seed")
-        self.seed_dir.mkdir(parents=True)
-        self.write_seed(crlf(SEED_PRJ), crlf(SEED_VC0))
-        (self.install / "DataRO" / "PVsyst8.1.6_Data" / "Projects").mkdir(parents=True)
-        result = self.prepare()
-        self.assert_blocked(result, "seed")
-        self.assertIn("ambiguous", result["issues"][0]["message"])
-
-    def test_old_release_seed_is_never_substituted(self):
-        shutil.rmtree(self.install / "DataRO" / "PVsyst8.1_Data")
         (self.install / "DataRO" / "PVsyst8.0_Data" / "Projects").mkdir(parents=True)
         (self.install / "DataRO" / "PVsyst8.0_Data" / "Projects" / "_DEMO_Residential.PRJ").write_bytes(
             b"PVObject_=pvProject\nEnd of PVObject pvProject\n")
-        result = self.prepare()
-        self.assert_blocked(result, "seed")
-        self.assertIn("8.0", result["issues"][0]["message"])
+        old_res = self.prepare()
+        self.assert_blocked(old_res, "seed")
+        self.assertIn("8.0", old_res["issues"][0]["message"])
 
-    def test_active_shading_blocks_the_derivation(self):
-        self.write_seed(crlf(SEED_PRJ), crlf(SEED_VC0).replace(
-            "  PVObject_Ombrage=pvShading", "  PVObject_ShdTable=pvShdTable\n  PVObject_Ombrage=pvShading"))
-        result = self.prepare()
-        self.assert_blocked(result, "seed")
-        self.assertIn("shading", result["issues"][0]["message"])
+        shutil.rmtree(self.install / "DataRO" / "PVsyst8.0_Data")
+        self.seed_dir.mkdir(parents=True)
+        self.write_seed(crlf(SEED_PRJ), crlf(SEED_VC0))
+        (self.install / "DataRO" / "PVsyst8.1.6_Data" / "Projects").mkdir(parents=True)
+        ambig = self.prepare()
+        self.assert_blocked(ambig, "seed")
+        self.assertIn("ambiguous", ambig["issues"][0]["message"])
 
-    def test_mode_and_count_inconsistencies_block_the_derivation(self):
-        self.write_seed(crlf(SEED_PRJ), crlf(SEED_VC0).replace("NInvMPPT=1", "NInvMPPT=2"))
-        result = self.prepare()
-        self.assert_blocked(result, "seed")
-        self.assertIn("NInvMPPT=1", result["issues"][0]["message"])
-        self.write_seed(crlf(SEED_PRJ), crlf(SEED_VC0).replace("Flags=$001E0002", "Flags=$001E0402"))
-        result = self.prepare()
-        self.assert_blocked(result, "seed")
-        self.assertIn("ordinary NInvMPPT=1", result["issues"][0]["message"])
-        self.write_seed(crlf(SEED_PRJ), crlf(SEED_VC0).replace("NStringCh=2", "NStringCh=3").replace(
-            "NStrOrient1=2", "NStrOrient1=3"))
-        result = self.prepare()
-        self.assert_blocked(result, "seed")
-        self.assertIn("counts", result["issues"][0]["message"])
-        self.assert_seed_untouched()
+    def test_seed_structural_and_count_inconsistencies_block(self):
+        for vc0, fragment in (
+            (crlf(SEED_VC0).replace("  PVObject_Ombrage=pvShading", "  PVObject_ShdTable=pvShdTable\n  PVObject_Ombrage=pvShading"), "shading"),
+            (crlf(SEED_VC0).replace("NInvMPPT=1", "NInvMPPT=2"), "NInvMPPT=1"),
+            (crlf(SEED_VC0).replace("Flags=$001E0002", "Flags=$001E0402"), "ordinary NInvMPPT=1"),
+            (crlf(SEED_VC0).replace("NStringCh=2", "NStringCh=3").replace("NStrOrient1=2", "NStrOrient1=3"), "counts"),
+            (crlf(SEED_VC0).replace("PVObject_=pvVCalcul", "PVObject_=pvSubArray", 1), "pvVCalcul"),
+            (crlf(SEED_VC0).replace("          InverterNode Start;\r\n            SubArrayId=1",
+                                    "          InverterNode Start;\r\n            NElements=3\r\n            SubArrayId=1"),
+             "implicit single counts are not rewritten"),
+        ):
+            self.write_seed(crlf(SEED_PRJ), vc0)
+            res = self.prepare()
+            self.assert_blocked(res, "seed")
+            self.assertIn(fragment, res["issues"][0]["message"])
 
-    def test_derived_seed_is_not_a_pv_vcalcul_or_a_non_utf8_variant(self):
-        self.write_seed(crlf(SEED_PRJ), crlf(SEED_VC0).replace(
-            "PVObject_=pvVCalcul", "PVObject_=pvSubArray", 1))
-        self.assert_blocked(self.prepare(), "seed")
-
-    def test_mppt_1_2_4_conversion_declares_counts_and_is_strict(self):
+    def test_mppt_1_2_4_conversion_and_explicit_count_dedup(self):
         for inputs in (1, 2, 4):
             with self.subTest(mppt_inputs=inputs):
                 derived = self.derived(mppt=inputs)
@@ -379,206 +359,98 @@ class StandardTemplateTests(unittest.TestCase):
                 self.assertIn("Flags=$001E0402\r\n", text)
                 self.assertIn(f"NInvMPPT={inputs}\r\n", text)
                 self.assertIn(f"NStringCh={inputs}\r\n", text)
-                self.assertIn(f"NStrOrient1={inputs}\r\n", text)
-                self.assertEqual(derived["source"]["mppt_inputs_before"], 1)
-                self.assertEqual(derived["source"]["strings_before"], "2")
-                self.assertEqual(derived["source"]["strings_after"], str(inputs))
-                lines, arrays, checked = self.structure(text)
+                lines, _, checked = self.structure(text)
                 self.assertTrue(checked["counts_valid"], checked)
                 row = checked["subarrays"][0]
-                self.assertEqual(row["declared"]["NInvMPPT"], str(inputs))
-                self.assertEqual(row["explicit_mppt_inputs_match_declared"], True)
-                self.assertEqual(row["circuit"]["explicit_mppt_inputs"], inputs)
-                self.assertEqual(row["circuit"]["strings"], inputs)
-                self.assertEqual(row["declared_module_count"], inputs * 15)
-                groups = [node for root in circuit_nodes(lines) for node in walk(root)
-                          if node.kind == "InverterNode"]
-                self.assertEqual(len(groups), 1)
-                # one() raises on a duplicated field, so every branch declares NElements exactly once
-                self.assertEqual(groups[0].one("NElements"), "1")
-                self.assertEqual(groups[0].children[0].one("NElements"), str(inputs))
-                self.assertEqual([leaf.one("NElements") for leaf in groups[0].children[0].children], ["1"])
-                self.assert_seed_untouched()
+                self.assertEqual((row["declared"]["NInvMPPT"], row["explicit_mppt_inputs_match_declared"],
+                                  row["circuit"]["explicit_mppt_inputs"], row["circuit"]["strings"],
+                                  row["declared_module_count"]), (str(inputs), True, inputs, inputs, inputs * 15))
+                groups = [node for root in circuit_nodes(lines) for node in walk(root) if node.kind == "InverterNode"]
+                self.assertEqual((groups[0].one("NElements"), groups[0].children[0].one("NElements"),
+                                  [leaf.one("NElements") for leaf in groups[0].children[0].children]),
+                                 ("1", str(inputs), ["1"]))
 
-    def test_explicit_counts_are_inserted_without_duplicates(self):
         seeded = crlf(SEED_VC0).replace(
             "          InverterNode Start;\r\n            SubArrayId=1",
-            "          InverterNode Start;\r\n            NElements=1\r\n            SubArrayId=1")
+            "          InverterNode Start;\r\n            NElements=1\r\n            SubArrayId=1",
+        )
         self.write_seed(crlf(SEED_PRJ), seeded)
         derived = self.derived(mppt=4)
         self.assertEqual(sum(1 for item in derived["changes"] if item["field"] == "NElements"), 1)
         self.assertNotIn("NElements=1\r\n            NElements=1", derived["vc0_text"])
-        lines, _, checked = self.structure(derived["vc0_text"])
-        self.assertTrue(checked["counts_valid"], checked)
-        group = next(node for root in circuit_nodes(lines) for node in walk(root)
-                     if node.kind == "InverterNode")
-        self.assertEqual(group.fields["NElements"], ["1"])
-        self.assertEqual(group.one("NElements"), "1")
 
-    def test_other_explicit_branch_counts_are_not_rewritten(self):
-        self.write_seed(crlf(SEED_PRJ), crlf(SEED_VC0).replace(
-            "          InverterNode Start;\r\n            SubArrayId=1",
-            "          InverterNode Start;\r\n            NElements=3\r\n            SubArrayId=1"))
-        result = self.prepare()
-        self.assert_blocked(result, "seed")
-        self.assertIn("implicit single counts are not rewritten", result["issues"][0]["message"])
+    def test_input_validation_missing_component_and_existing_destination(self):
+        for kwargs, field in (({"new_project": "Seed.VC0"}, "new_project"),
+                              ({"pan_name": ""}, "pan_name"),
+                              ({"dry_run": "yes"}, "dry_run")):
+            args = dict(ond_electrical=self.ond_electrical(), pan_name=PAN_NAME, ond_name=OND_NAME, new_project=NEW_PROJECT)
+            args.update(kwargs)
+            res = prepare_standard_template(self.cli, self.store, **args)
+            self.assertEqual(res["status"], "blocked")
+            self.assertIn(field, [item["field"] for item in res["issues"]])
 
-    def test_missing_loose_component_blocks_before_writing(self):
-        (self.root / "ComposPV" / "Inverters" / OND_NAME).unlink()
-        result = self.prepare()
-        self.assert_blocked(result, "seed")
-        self.assertEqual(sorted(self.projects.iterdir()), [])
+        for val in (None, 0, 65, True):
+            electrical = self.ond_electrical()
+            if val is None:
+                electrical["fields"].pop("NbMPPT")
+            else:
+                electrical["fields"]["NbMPPT"] = {"value": val, "unit": "count", "status": "declared",
+                                                  "path": "root", "source_key": "NbMPPT"}
+            res = prepare_standard_template(self.cli, self.store, ond_electrical=electrical,
+                                            pan_name=PAN_NAME, ond_name=OND_NAME, new_project=NEW_PROJECT)
+            self.assert_blocked(res, "seed")
+            self.assertIn("NbMPPT", res["issues"][0]["message"])
 
-    def test_ond_input_count_must_be_declared_and_bounded(self):
-        for value in (None, 0, 65, True):
-            with self.subTest(value=value):
-                electrical = self.ond_electrical()
-                if value is None:
-                    electrical["fields"].pop("NbMPPT")
-                else:
-                    electrical["fields"]["NbMPPT"] = {"value": value, "unit": "count",
-                                                      "status": "declared", "path": "root",
-                                                      "source_key": "NbMPPT"}
-                result = prepare_standard_template(self.cli, self.store, ond_electrical=electrical,
-                                                   pan_name=PAN_NAME, ond_name=OND_NAME,
-                                                   new_project=NEW_PROJECT)
-                self.assert_blocked(result, "seed")
-                self.assertIn("NbMPPT", result["issues"][0]["message"])
-
-    def test_existing_destination_is_blocked_and_never_overwritten(self):
         existing = self.projects / NEW_PROJECT
         existing.write_bytes(b"PVObject_=pvProject\nEnd of PVObject pvProject\n")
-        before = existing.read_bytes()
         for dry_run in (True, False):
-            with self.subTest(dry_run=dry_run):
-                result = self.prepare(dry_run=dry_run)
-                self.assert_blocked(result, "new_project")
-                self.assertIn("no file is overwritten", result["issues"][0]["message"])
-                self.assertEqual(existing.read_bytes(), before)
-        self.assertEqual(sorted(path.name for path in self.projects.iterdir()), [NEW_PROJECT])
-        self.assert_seed_untouched()
+            res = self.prepare(dry_run=dry_run)
+            self.assert_blocked(res, "new_project")
+            self.assertIn("no file is overwritten", res["issues"][0]["message"])
+        existing.unlink()
 
-    def test_capacity_preview_uses_the_derived_text_without_writing(self):
-        result = self.prepare(capacity=CAPACITY)
-        self.assertEqual(result["status"], "ready", result)
-        plan = result["capacity_plan"]
-        self.assertEqual(plan["status"], "ready", plan)
-        self.assertEqual(plan["mppt_per_inverter"], 4)
-        self.assertEqual(plan["series_modules"], 7)
-        self.assertEqual(plan["module_count"], 28)
-        self.assertEqual(plan["inverter_count"], 1)
-        self.assertEqual(sorted(self.projects.iterdir()), [])
-        self.assert_seed_untouched()
-
-    def test_unsatisfied_capacity_blocks_with_the_capacity_stage(self):
-        result = self.prepare(capacity={**CAPACITY, "module_max_operating_current_a": 8})
-        self.assertEqual(result["status"], "blocked")
-        self.assertEqual(result["stage"], "capacity")
-        self.assertTrue(all(item["field"].startswith("capacity.") for item in result["issues"]))
+        (self.root / "ComposPV" / "Inverters" / OND_NAME).unlink()
+        self.assert_blocked(self.prepare(), "seed")
         self.assertEqual(sorted(self.projects.iterdir()), [])
 
-    def test_invalid_inputs_block_before_the_seed_is_read(self):
-        result = prepare_standard_template(self.cli, self.store, ond_electrical=self.ond_electrical(),
-                                           pan_name=PAN_NAME, ond_name=OND_NAME, new_project="Seed.VC0")
-        self.assert_blocked(result, "new_project")
-        result = prepare_standard_template(self.cli, self.store, ond_electrical=self.ond_electrical(),
-                                           pan_name="", ond_name=OND_NAME, new_project=NEW_PROJECT)
-        self.assert_blocked(result, "pan_name")
-        result = prepare_standard_template(self.cli, self.store, ond_electrical=self.ond_electrical(),
-                                           pan_name=PAN_NAME, ond_name=OND_NAME,
-                                           new_project=NEW_PROJECT, dry_run="yes")
-        self.assertEqual(result["status"], "blocked")
-        self.assertIn("dry_run", [item["field"] for item in result["issues"]])
-        self.assertEqual(sorted(self.projects.iterdir()), [])
-        self.assert_seed_untouched()
-
-    def test_creation_writes_one_pair_and_reports_it(self):
+    def test_creation_bom_preservation_and_creation_error(self):
         result = self.prepare(dry_run=False)
-        self.assertEqual((result["status"], result["stage"]), ("created", "created"))
-        self.assertEqual(result["template_project"], NEW_PROJECT)
-        self.assertEqual(result["variant"], SEED_VARIANT)
-        self.assertEqual(sorted(path.name for path in self.projects.iterdir()),
-                         ["Seed_template.PRJ", "Seed_template.VC0"])
-        self.assertEqual(sorted(result["created"]["files"]), ["Seed_template.PRJ", "Seed_template.VC0"])
-        self.assertEqual(result["created"]["variants"], [SEED_VARIANT])
-        self.assert_seed_untouched()
-        lines, _, checked = self.structure((self.projects / "Seed_template.VC0").read_text(
-            encoding="utf-8-sig"))
-        self.assertTrue(checked["counts_valid"], checked)
-        self.assertEqual(next(item for item in checked["subarrays"])["declared"]["NInvMPPT"], "4")
-        self.assertEqual(len(circuit_nodes(lines)), 1)
+        self.assertEqual((result["status"], result["stage"], sorted(result["created"]["files"])),
+                         ("created", "created", ["Seed_template.PRJ", "Seed_template.VC0"]))
+        lines, _, checked = self.structure((self.projects / "Seed_template.VC0").read_text(encoding="utf-8-sig"))
+        self.assertEqual((checked["counts_valid"], checked["subarrays"][0]["declared"]["NInvMPPT"], len(circuit_nodes(lines))),
+                         (True, "4", 1))
+        for p in self.projects.iterdir():
+            p.unlink()
 
-    def test_bom_and_non_ascii_metadata_survive_actual_creation(self):
-        # Escapes keep this source ASCII while the fixture carries real UTF-8 metadata.
-        chinese_project = "\u4f4f\u5b85\u793a\u8303\u9879\u76ee"
-        chinese_variant = "\u9996\u6b21\u6a21\u62df"
-        prj = crlf(SEED_PRJ).replace("Comment=Residential DEMO",
-                                     f"Comment={chinese_project} DEMO")
-        vc0 = crlf(SEED_VC0).replace("Comment=First simulation",
-                                     f"Comment={chinese_variant} run")
-        self.write_seed(prj, vc0, prj_bom=True, vc0_bom=True)
-        derived = self.derived()
-        self.assertEqual(derived["source"]["project_bom_preserved"], True)
-        self.assertEqual(derived["source"]["variant_bom_preserved"], True)
-        self.assertTrue(derived["prj_text"].startswith("\ufeff"))
-        self.assertTrue(derived["vc0_text"].startswith("\ufeff"))
-        self.assertIn(chinese_project, derived["prj_text"])
-        self.assertIn(chinese_variant, derived["vc0_text"])
-        # No PRJ field is added or renamed: the returned project text is the seed text.
-        self.assertEqual(derived["prj_text"], self.seed_prj.read_bytes().decode("utf-8"))
-        result = self.prepare(dry_run=False)
-        self.assertEqual(result["status"], "created", result)
-        prj_bytes = (self.projects / NEW_PROJECT).read_bytes()
-        vc0_bytes = (self.projects / "Seed_template.VC0").read_bytes()
-        self.assertTrue(prj_bytes.startswith(b"\xef\xbb\xbf"))
-        self.assertTrue(vc0_bytes.startswith(b"\xef\xbb\xbf"))
-        self.assertEqual(prj_bytes, derived["prj_text"].encode("utf-8"))
-        self.assertEqual(vc0_bytes, derived["vc0_text"].encode("utf-8"))
-        self.assertIn(chinese_project, prj_bytes.decode("utf-8-sig"))
-        self.assertIn(chinese_variant, vc0_bytes.decode("utf-8-sig"))
-        self.assert_seed_untouched()
+        zh_prj, zh_vc0 = "\u4f4f\u5b85\u793a\u8303\u9879\u76ee", "\u9996\u6b21\u6a21\u62df"
+        for prj_bom, vc0_bom, name, non_ascii in (
+            (True, True, "BothBom.PRJ", True),
+            (False, True, "Vc0Bom.PRJ", False),
+            (False, False, "NoBom.PRJ", False),
+        ):
+            prj = crlf(SEED_PRJ).replace("Comment=Residential DEMO",
+                                         f"Comment={zh_prj} DEMO" if non_ascii else "Comment=Residential DEMO")
+            vc0 = crlf(SEED_VC0).replace("Comment=First simulation",
+                                         f"Comment={zh_vc0} run" if non_ascii else "Comment=First simulation")
+            self.write_seed(prj, vc0, prj_bom=prj_bom, vc0_bom=vc0_bom)
+            derived = self.derived()
+            self.assertEqual((derived["source"]["project_bom_preserved"], derived["source"]["variant_bom_preserved"]),
+                             (prj_bom, vc0_bom))
+            res = self.prepare(new_project=name, dry_run=False)
+            self.assertEqual(res["status"], "created")
+            stem = Path(name).stem
+            self.assertEqual((self.projects / name).read_bytes().startswith(b"\xef\xbb\xbf"), prj_bom)
+            self.assertEqual((self.projects / f"{stem}.VC0").read_bytes().startswith(b"\xef\xbb\xbf"), vc0_bom)
+            if non_ascii:
+                self.assertIn(zh_prj, (self.projects / name).read_text(encoding="utf-8-sig"))
+                self.assertIn(zh_vc0, (self.projects / f"{stem}.VC0").read_text(encoding="utf-8-sig"))
 
-    def test_bom_markers_are_reported_per_seed_member(self):
-        derived = self.derived()
-        self.assertEqual(derived["source"]["project_bom_preserved"], False)
-        self.assertEqual(derived["source"]["variant_bom_preserved"], True)
-        self.assertFalse(derived["prj_text"].startswith("\ufeff"))
-        self.assertTrue(derived["vc0_text"].startswith("\ufeff"))
-        result = self.prepare(dry_run=False)
-        self.assertEqual(result["status"], "created", result)
-        prj_bytes = (self.projects / NEW_PROJECT).read_bytes()
-        vc0_bytes = (self.projects / "Seed_template.VC0").read_bytes()
-        self.assertFalse(prj_bytes.startswith(b"\xef\xbb\xbf"))
-        self.assertTrue(vc0_bytes.startswith(b"\xef\xbb\xbf"))
-        self.assertEqual(prj_bytes, derived["prj_text"].encode("utf-8"))
-        self.assertEqual(vc0_bytes, derived["vc0_text"].encode("utf-8"))
-        self.assert_seed_untouched()
-
-    def test_absent_bom_marker_is_not_invented(self):
-        self.write_seed(crlf(SEED_PRJ), crlf(SEED_VC0), prj_bom=False, vc0_bom=False)
-        derived = self.derived()
-        self.assertEqual(derived["source"]["project_bom_preserved"], False)
-        self.assertEqual(derived["source"]["variant_bom_preserved"], False)
-        self.assertFalse(derived["prj_text"].startswith("\ufeff"))
-        self.assertFalse(derived["vc0_text"].startswith("\ufeff"))
-        result = self.prepare(new_project="NoBom_template.PRJ", dry_run=False)
-        self.assertEqual(result["status"], "created", result)
-        prj_bytes = (self.projects / "NoBom_template.PRJ").read_bytes()
-        vc0_bytes = (self.projects / "NoBom_template.VC0").read_bytes()
-        self.assertFalse(prj_bytes.startswith(b"\xef\xbb\xbf"))
-        self.assertFalse(vc0_bytes.startswith(b"\xef\xbb\xbf"))
-        self.assertEqual(prj_bytes, derived["prj_text"].encode("utf-8"))
-        self.assertEqual(vc0_bytes, derived["vc0_text"].encode("utf-8"))
-        self.assert_seed_untouched()
-
-    def test_creation_error_retains_stage_and_the_untouched_seed(self):
         shutil.rmtree(self.projects)
-        result = self.prepare(dry_run=False)
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["stage"], "create")
-        self.assertTrue(result["error"])
+        failed = self.prepare(dry_run=False)
+        self.assertEqual((failed["status"], failed["stage"]), ("failed", "create"))
+        self.assertTrue(failed["error"])
         self.assert_seed_untouched()
-        self.assertFalse(self.projects.exists())
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 """Offline component fixtures; no installed PVsyst or simulation quota required."""
+import json
 import os
 import sys
 import tempfile
@@ -6,6 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from pvsyst_auto.components import commercial
+from pvsyst_auto.components.builder import build_sourced_component
+from pvsyst_auto.components.editor import has_object, objects, replace_key, replace_value, root_block
+from pvsyst_auto.components.identity import sourced_component
 from pvsyst_auto.components.store import ComponentStore, MAX_PROJECT_BYTES
 from pvsyst_auto.native.cli import PVsystCLI
 from pvsyst_auto.api import app as _registered_app, context as server
@@ -407,3 +412,146 @@ class ComponentTests(unittest.TestCase):
                 server.components()
         with patch.dict(os.environ, {"PVSYST_BUILTIN_COMPONENTS": str(official.parent)}):
             self.assertEqual(api_components.pvsyst_list_components("OND", "builtin")["total"], 1)
+
+    def test_native_closing_tags_root_block_and_object_starts(self):
+        oriented = ("PVObject_=pvVCalcul\r\n  Version=8.1.6\r\n  Orientations, list of=1 TOrientGroup\r\n"
+                    "    PVObject_=pvOrient\r\n      Comment=End of TOrientGroup\r\n      NoOrient=1\r\n"
+                    "    End of TOrientGroup  \r\n  End of Orientations\r\nEnd of PVObject pvVCalcul\r\n")
+        dome = ("PVObject_=pvVCalcul\n  Orientations, list of=1 TOrientGroup\n    PVObject_=pvDomeOrient\n"
+                "      NoOrient=1\n    End of TDomeOrientGroup\n  End of Orientations\nEnd of PVObject pvVCalcul\n")
+        self.assertEqual([b.object_type for b in objects(oriented)], ["pvVCalcul", "pvOrient"])
+        self.assertEqual(objects(oriented)[1].fields["Comment"], [(4, "End of TOrientGroup")])
+        self.assertEqual([b.object_type for b in objects(dome)], ["pvVCalcul", "pvDomeOrient"])
+        with self.assertRaisesRegex(ValueError, "Unmatched object closing tag"):
+            objects("PVObject_=pvVCalcul\n  PVObject_=pvOrient\n  End of TDomeOrientGroup\nEnd of PVObject pvVCalcul\n")
+        self.assertEqual(root_block(["Comment=outside\n", *oriented.splitlines(keepends=True)]).object_type, "pvVCalcul")
+        self.assertTrue(has_object(["  PVObject_UserNeeds = pvLoad\n"], "pvLoad"))
+        self.assertFalse(has_object(["  PVObject_GridStorage=pvGridStorage"], "pvLoad"))
+
+    def test_replace_value_and_key_reject_line_breaks(self):
+        for brk in ("\n", "\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.assertRaises(ValueError):
+                replace_value("  Comment=Old\r\n", f"New{brk}Injected=1")
+            with self.assertRaises(ValueError):
+                replace_key("A=1\r\n", f"B{brk}C")
+        self.assertEqual(replace_value("  Comment=Old \t\r\n", "New\tName"), "  Comment=New\tName \t\r\n")
+        self.assertEqual(replace_value("A=1", "2"), "A=2")
+
+    def test_ageing_nesting_and_commercial_identity_precedence(self):
+        ageing = "  PVObject_Ageing=pvAgeing\n    Flags=$00\n  End of TAgeing\n"
+        decoy = "  PVObject_Meta=pvMeta\n    Manufacturer=Decoy\n    Model=Decoy\n  End of PVObject pvMeta\n"
+        for kind, text, closer in (("PAN", PAN, "End of PVObject pvModule"),
+                                   ("OND", OND, "End of PVObject pvGInverter"),
+                                   ("BTR", BTR, "End of PVObject pvBattery"),
+                                   ("GEN", GEN, "End of PVObject pvGenerator")):
+            self.store.create(kind, f"aged.{kind}", text.replace(closer, ageing + closer))
+            self.assertEqual(self.store.validate(kind, f"aged.{kind}")["structural_errors"], [])
+        with self.assertRaisesRegex(ValueError, "Unmatched closing tag: End of TAgeing"):
+            self.store.create("GEN", "bad.GEN", GEN.replace("  TypeGen=", "  PVObject_Meta=pvMeta\n  End of TAgeing\n  TypeGen="))
+        self.store.create("OND", "owned.OND", OND.replace("  PVObject_Commercial=", decoy + "  PVObject_Commercial="))
+        info = self.store.inspect("OND", "owned.OND")
+        self.assertEqual((info["manufacturer"], info["model"]), ("Lab", "50kW"))
+        self.assertEqual(self.store.list("OND", query="Decoy")["total"], 0)
+        missing_text = OND.replace("    Manufacturer=Lab\n", "").replace("  PVObject_Commercial=", decoy + "  PVObject_Commercial=")
+        self.files["OND"].write_text(missing_text, encoding="utf-8")
+        field, _, payload = sourced_component(self.store, "OND", self.files["OND"].name)
+        self.assertEqual((field, payload), ("OND.manufacturer", None))
+
+    def test_sourced_component_lookup_ascii_numbers_and_reference_bounds(self):
+        field, message, payload = sourced_component(self.store, "OND", "absent.OND")
+        self.assertEqual((field, payload), ("OND.name", None))
+        self.assertIn("absent.OND is not a loose OND file", message)
+        broken = self.store._path("OND", "broken.OND")
+        broken.write_text(OND.replace("    End of TCubicProfile\n", ""), encoding="utf-8")
+        field, message, _ = sourced_component(self.store, "OND", "broken.OND")
+        self.assertIn("closing tag", message)
+        from tests.unit.core.test_pan_gui_format import GUI_PAN
+        for bad_pan, err in ((PAN.replace("Vmp=42.1", "Vmp=49.6"), "Voc must be greater than Vmp"),
+                             (PAN.replace("Imp=10.45", "Imp=11.05"), "ISC must be greater than Imp"),
+                             (GUI_PAN.replace("Imp=10.45", "Imp=11.05"), "ISC must be greater than Imp")):
+            with self.assertRaisesRegex(ValueError, err):
+                self.store.create("PAN", "bad_ref.PAN", bad_pan)
+        for val in ("\uff14\uff14\uff10", "4_40", " 440"):
+            with self.assertRaisesRegex(ValueError, "PNom must be a finite number"):
+                self.store.update("PAN", "sample.PAN", {"PNom": val})
+        with self.assertRaisesRegex(ValueError, "YearBeg must be a"):
+            commercial._value("YearBeg", "\uff12\uff10\uff12\uff14")
+
+    def test_sourced_builder_failure_race_and_nested_converter(self):
+        def build(kind="PAN", fields=(("PNom", 440, "W", "440", "Wp"),), **options):
+            text = "Mono 440W\n" + "\n".join(n + u for _, _, _, n, u in fields)
+            return build_sourced_component(
+                self.store, component_type=kind, template_name=f"sample.{kind}", new_name=f"Built.{kind}",
+                manufacturer="Fixture", model="Mono 440W",
+                sources={"doc": {"kind": "assumption", "title": "Fixture", "locator": "fixture://c", "model": "Mono 440W", "text": text}},
+                declarations=[{"field": f, "value": v, "unit": u, "source_id": "doc",
+                               "excerpt": n + q, "source_value_text": n, "source_unit_text": q}
+                              for f, v, u, n, q in fields],
+                **options,
+            )
+
+        self.assertEqual(build(fields=(("Vmp", 49.6, "V", "49.6", "V"),))["status"], "blocked")
+        manifest = self.workspace / "Results" / "Built.PAN.sources.json"
+        target = self.store._path("PAN", "Built.PAN")
+        with patch.object(self.store, "_new", side_effect=OSError("simulated create failure")):
+            failed = build(dry_run=False, acknowledge_inherited_model=True)
+        self.assertEqual(failed["status"], "failed")
+        self.assertFalse(manifest.exists())
+        self.assertFalse(target.exists())
+
+        real_read, calls = self.store._read, []
+
+        def racing_read(path):
+            data = real_read(path)
+            calls.append(path)
+            if len(calls) == 2:
+                manifest.parent.mkdir(parents=True, exist_ok=True)
+                manifest.write_text("foreign", encoding="utf-8")
+            return data
+
+        with patch.object(self.store, "_read", side_effect=racing_read):
+            raced = build(dry_run=False, acknowledge_inherited_model=True)
+        self.assertEqual(raced["status"], "failed")
+        self.assertEqual(manifest.read_text(encoding="utf-8"), "foreign")
+        self.assertFalse(target.exists())
+
+        self.files["OND"].write_text(
+            OND.replace("  Converter=TConverter", "  PVObject_Meta=pvMeta\n  Converter=TConverter")
+               .replace("  End of TConverter\n", "  End of TConverter\n  End of PVObject pvMeta\n"),
+            encoding="utf-8",
+        )
+        blocked = build(kind="OND", fields=(("PNomConv", 50, "kW", "50", "kW"),))
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertIn("electrical fields are unreadable", blocked["issues"][-1]["message"])
+
+    def test_component_archive_repair_and_snapshot_tampering(self):
+        path = self.files["GEN"]
+        incomplete = GEN.replace("  Flags=$00\n", "").encode()
+        path.write_bytes(incomplete)
+        archived = self.store.archive("GEN", path.name, True)
+        restored = ComponentStore(self.workspace).restore_archive("GEN", path.name, archived["archive_name"], True)
+        self.assertEqual(path.read_bytes(), incomplete)
+        self.assertTrue(restored["integrity_verified"])
+
+        invalid_orig = GEN.replace("CFuelHor=0.25", "CFuelHor=0").encode()
+        path.write_bytes(invalid_orig)
+        repaired = self.store.update("GEN", path.name, {"CFuelHor": "0.25"})
+        self.store.restore("GEN", path.name, repaired["backup_name"], True)
+        self.assertEqual(path.read_bytes(), invalid_orig)
+
+        path.write_bytes(GEN.encode())
+        saved = self.store.backup("GEN", path.name)
+        meta = self.workspace / "ComposPV" / ".mcp-backups" / "GEN" / (saved["backup_name"] + ".json")
+        info = json.loads(meta.read_text())
+        info["name"] = "another.GEN"
+        meta.write_text(json.dumps(info))
+        with self.assertRaises(ValueError):
+            self.store.restore("GEN", path.name, saved["backup_name"], True)
+        meta.unlink()
+        with self.assertRaises(ValueError):
+            self.store.restore("GEN", path.name, saved["backup_name"], True)
+
+        legacy = self.store._backup_folder("GEN") / (path.name + "." + "a" * 32 + ".bak")
+        legacy.write_bytes(GEN.encode())
+        res = self.store.restore("GEN", path.name, legacy.name, True)
+        self.assertFalse(res["integrity_verified"])

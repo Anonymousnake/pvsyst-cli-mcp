@@ -167,7 +167,6 @@ def declarations_fixture():
 
 
 def coefficient_declarations():
-    """Replace the direct voltage envelope with cited temperature coefficients."""
     records = [record for record in declarations_fixture() if not record["field"].startswith("envelope.")]
     records.extend([
         declaration("coefficients.beta_voc", -0.25, "pct_per_degC", "S5",
@@ -227,11 +226,30 @@ class SourceInputTests(unittest.TestCase):
                     "mppt_max_short_circuit_current_a"):
             self.assertEqual(result["capacity"][key], plain["capacity"][key])
 
-    def test_cited_coefficients_follow_the_same_envelope(self):
-        result = self.call(declarations=coefficient_declarations())
-        self.assertEqual(result["status"], "ready", result["issues"])
-        self.assertEqual(result["electrical_design"]["coefficients"]["beta_voc"]["unit"], "pct_per_degC")
-        self.assertAlmostEqual(result["capacity"]["cold_voc_v"], 49.6 * (1 + 0.0025 * 35), places=9)
+    def test_cited_coefficients_and_compact_quote_formats_are_accepted(self):
+        base = self.call(declarations=coefficient_declarations())
+        self.assertEqual(base["status"], "ready", base["issues"])
+        self.assertEqual(base["electrical_design"]["coefficients"]["beta_voc"]["unit"], "pct_per_degC")
+        self.assertAlmostEqual(base["capacity"]["cold_voc_v"], 49.6 * (1 + 0.0025 * 35), places=9)
+
+        for label, leading_only in (("no_space_quote", False), ("quote_starts_at_number", True)):
+            with self.subTest(case=label):
+                records = coefficient_declarations()
+                records.append(declaration("coefficients.alpha_isc", 0.046, "pct_per_degC", "S5",
+                                           "Temperature Coefficients of Isc: 0.046%/℃", "0.046", "%/℃"))
+                if leading_only:
+                    for record in records:
+                        if record["field"].startswith("coefficients."):
+                            record["excerpt"] = record["excerpt"].split(": ")[-1]
+                result = self.call(declarations=records)
+                self.assertEqual(result["status"], "ready", result["issues"])
+                coefficients = result["electrical_design"]["coefficients"]
+                self.assertEqual((coefficients["beta_voc"]["value"], coefficients["beta_voc"]["unit"],
+                                  coefficients["alpha_isc"]["value"]), (-0.25, "pct_per_degC", 0.046))
+                self.assertEqual(result["electrical_design"]["mppt_limits"]["max_operating_current_a"]["unit"], "A")
+                quoted = [item for item in result["provenance"] if item["field"].startswith("coefficients.")]
+                self.assertEqual(len(quoted), 3)
+                self.assertTrue(all(item["reference_match"] for item in quoted))
 
     def test_provenance_records_shape_and_normalized_excerpt(self):
         result = self.call()
@@ -246,10 +264,8 @@ class SourceInputTests(unittest.TestCase):
         self.assertIn(4, pages)
 
     def test_excerpt_must_be_a_contiguous_fragment(self):
-        cases = {
-            "absent": "Cold Voc envelope published elsewhere: 56.0 V",
-            "split": "56.0 V Cold Voc envelope at minimum temperature",
-        }
+        cases = {"absent": "Cold Voc envelope published elsewhere: 56.0 V",
+                 "split": "56.0 V Cold Voc envelope at minimum temperature"}
         for label, excerpt in cases.items():
             records = declarations_fixture()
             records[3]["excerpt"] = excerpt
@@ -282,35 +298,32 @@ class SourceInputTests(unittest.TestCase):
              "Cold Voc envelope identifier form: x16 A", "16", "A"),
             ("token_after_typographic_minus", "envelope.cold_voc_v", 16.0, "V",
              "Cold Voc envelope typographic minus form: \u221216 A", "16", "A"),
+            ("empty_ratio_unit_token", "effective_irradiance.rear_gain_factor", 1.0, "ratio",
+             "Rear gain factor: 1 ratio", "1", ""),
         )
         for label, field, value, declared_unit, excerpt, value_token, unit_token in cases:
             records = declarations_fixture()
             target = [record for record in records if record["field"] == field][0]
-            target["value"] = value
-            target["unit"] = declared_unit
-            target["excerpt"] = excerpt
-            target["source_value_text"] = value_token
-            target["source_unit_text"] = unit_token
+            target.update(value=value, unit=declared_unit, excerpt=excerpt,
+                          source_value_text=value_token, source_unit_text=unit_token)
             result = self.call(declarations=records)
             with self.subTest(case=label):
                 self.assertEqual(result["status"], "blocked")
                 self.assertIn(field, issues_of(result))
 
     def test_unit_alias_is_explicit_and_never_rescaled(self):
-        for label, unit_token, declared_unit, field in (
-                ("percent_per_degree", "%/℃", "pct_per_degC", "coefficients.beta_voc"),
-                ("milliamp_not_amp", "mA", "A", "mppt_limits.max_operating_current_a"),
-                ("kilovolt_not_volt", "kV", "V", "envelope.cold_voc_v"),
-                ("percent_not_ratio", "%", "ratio", "effective_irradiance.rear_gain_factor")):
+        cases = (
+            ("percent_per_degree", "%/℃", "pct_per_degC", "coefficients.beta_voc", None),
+            ("milliamp_not_amp", "mA", "A", "mppt_limits.max_operating_current_a", "Max. input current per MPPT: 40 mA"),
+            ("kilovolt_not_volt", "kV", "V", "envelope.cold_voc_v", "Cold Voc envelope in kV units: 56.0 kV"),
+            ("percent_not_ratio", "%", "ratio", "effective_irradiance.rear_gain_factor", "Rear gain factor note: 1 %"),
+        )
+        for label, unit_token, declared_unit, field, excerpt in cases:
             records = coefficient_declarations() if field == "coefficients.beta_voc" else declarations_fixture()
             target = [record for record in records if record["field"] == field][0]
             target["source_unit_text"] = unit_token
-            if field == "mppt_limits.max_operating_current_a":
-                target["excerpt"] = "Max. input current per MPPT: 40 mA"
-            if field == "envelope.cold_voc_v":
-                target["excerpt"] = "Cold Voc envelope in kV units: 56.0 kV"
-            if field == "effective_irradiance.rear_gain_factor":
-                target["excerpt"] = "Rear gain factor note: 1 %"
+            if excerpt is not None:
+                target["excerpt"] = excerpt
             result = self.call(declarations=records)
             with self.subTest(case=label):
                 if label == "percent_per_degree":
@@ -326,24 +339,24 @@ class SourceInputTests(unittest.TestCase):
         missing[3]["source_id"] = "S9"
         unknown = declarations_fixture()
         unknown[3]["field"] = "envelope.cold_voc"
-        for label, records in (("duplicate", duplicate), ("missing_source", missing),
-                               ("unknown_field", unknown)):
+        for label, records in (("duplicate", duplicate), ("missing_source", missing), ("unknown_field", unknown)):
             result = self.call(declarations=records)
             with self.subTest(case=label):
                 self.assertEqual(result["status"], "blocked")
                 self.assertTrue(result["issues"])
 
     def test_malformed_backend_inputs_block_without_raising(self):
-        cases = {}
-        cases["design_string"] = {"design": dict(design_fixture(), target_dc_kw="bad")}
-        cases["design_null"] = {"design": dict(design_fixture(), target_dc_kw=None)}
-        cases["design_huge_int"] = {"design": dict(design_fixture(), target_dc_kw=10 ** 400)}
         mixed = dict(design_fixture())
         mixed[1] = "x"
-        cases["design_mixed_keys"] = {"design": mixed}
-        cases["authority_text_list"] = {"override_text": ["not", "text"]}
-        cases["identity_none"] = {"identity": None}
-        cases["identity_huge"] = {"identity": "M" * 201}
+        cases = {
+            "design_string": {"design": dict(design_fixture(), target_dc_kw="bad")},
+            "design_null": {"design": dict(design_fixture(), target_dc_kw=None)},
+            "design_huge_int": {"design": dict(design_fixture(), target_dc_kw=10 ** 400)},
+            "design_mixed_keys": {"design": mixed},
+            "authority_text_list": {"override_text": ["not", "text"]},
+            "identity_none": {"identity": None},
+            "identity_huge": {"identity": "M" * 201},
+        }
         for label, kwargs in cases.items():
             with self.subTest(case=label):
                 if "override_text" in kwargs:
@@ -359,57 +372,57 @@ class SourceInputTests(unittest.TestCase):
                 if "design" in kwargs and isinstance(kwargs["design"], dict):
                     self.assertNotEqual(result["electrical_design"].get("target_dc_kw"), "bad")
 
-    def test_source_text_budget_returns_early_without_raising(self):
-        sources = sources_fixture()
-        sources["S1"]["text"] = MODULE_DOC + "x" * (2 * 1024 * 1024)
-        result = self.call(sources=sources)
-        self.assertEqual(result["status"], "blocked")
-        self.assertTrue(any("exceeds" in issue["message"] for issue in result["issues"]))
-
-    def test_schema_and_value_types_are_rejected(self):
+    def test_schema_value_types_ids_and_control_chars_are_rejected(self):
         cases = {}
-        records = declarations_fixture()
-        records[3]["extra"] = 1
-        cases["declaration_unknown_key"] = {"declarations": records}
-        records = declarations_fixture()
-        records[3]["page"] = 0
-        cases["non_positive_page"] = {"declarations": records}
-        records = declarations_fixture()
-        records[3]["value"] = True
-        cases["boolean_value"] = {"declarations": records}
-        records = declarations_fixture()
-        records[3]["value"] = float("inf")
-        cases["non_finite_value"] = {"declarations": records}
-        sources = sources_fixture()
-        sources["S1"]["note"] = "x"
-        cases["unknown_source_key"] = {"sources": sources}
-        sources = sources_fixture()
-        sources["S1"]["kind"] = "vendor"
-        cases["unknown_source_kind"] = {"sources": sources}
-        sources = sources_fixture()
-        sources["S2"]["locator"] = "L" * 2001
-        cases["locator_too_long"] = {"sources": sources}
-        cases["design_injection"] = {"design": dict(design_fixture(), envelope={"cold_voc_v": 56.0})}
-        for label, kwargs in cases.items():
+        for label, idx, key, val in (("declaration_unknown_key", 3, "extra", 1),
+                                     ("non_positive_page", 3, "page", 0),
+                                     ("boolean_value", 3, "value", True),
+                                     ("non_finite_value", 3, "value", float("inf"))):
+            records = declarations_fixture()
+            records[idx][key] = val
+            cases[label] = ({"declarations": records}, "")
+        for label, sid, key, val, msg in (
+                ("unknown_source_key", "S1", "note", "x", ""),
+                ("unknown_source_kind", "S1", "kind", "vendor", ""),
+                ("locator_too_long", "S2", "locator", "L" * 2001, ""),
+                ("control_chars", "S1", "text", MODULE_DOC.replace("Maximum operating", "Maximum\x00operating"),
+                 "control characters")):
+            sources = sources_fixture()
+            sources[sid][key] = val
+            cases[label] = ({"sources": sources}, msg)
+        for bad in ("bad id", "A" * 81, "id\nnewline"):
+            sources = sources_fixture()
+            sources[bad] = dict(sources["S1"])
+            cases[f"bad_id_{repr(bad)[:10]}"] = ({"sources": sources}, "short id")
+        cases["design_injection"] = ({"design": dict(design_fixture(), envelope={"cold_voc_v": 56.0})}, "")
+        for label, (kwargs, needle) in cases.items():
             result = self.call(**kwargs)
             with self.subTest(case=label):
                 self.assertEqual(result["status"], "blocked")
                 self.assertTrue(result["issues"])
+                if needle:
+                    self.assertTrue(any(needle in issue["message"] for issue in result["issues"]))
 
-    def test_size_bounds_are_enforced(self):
-        sources = sources_fixture()
+    def test_size_and_text_budgets_are_enforced(self):
+        big_text = sources_fixture()
+        big_text["S1"]["text"] = MODULE_DOC + "x" * (2 * 1024 * 1024)
+        many_sources = sources_fixture()
         for index in range(12):
-            sources["X" + str(index)] = dict(sources["S1"])
-        result = self.call(sources=sources)
-        self.assertEqual(result["status"], "blocked")
-        self.assertIn("sources", issues_of(result))
-
+            many_sources["X" + str(index)] = dict(many_sources["S1"])
         long_excerpt = declarations_fixture()
         long_excerpt[3]["excerpt"] = "L" * 4001
-        self.assertEqual(self.call(declarations=long_excerpt)["status"], "blocked")
-
-        too_many = declarations_fixture() * 3
-        self.assertEqual(self.call(declarations=too_many)["status"], "blocked")
+        for label, kwargs, needle in (
+                ("text_budget", {"sources": big_text}, "exceeds"),
+                ("too_many_sources", {"sources": many_sources}, None),
+                ("long_excerpt", {"declarations": long_excerpt}, None),
+                ("too_many_declarations", {"declarations": declarations_fixture() * 3}, None)):
+            with self.subTest(case=label):
+                result = self.call(**kwargs)
+                self.assertEqual(result["status"], "blocked")
+                if needle:
+                    self.assertTrue(any(needle in issue["message"] for issue in result["issues"]))
+                elif label == "too_many_sources":
+                    self.assertIn("sources", issues_of(result))
 
     def test_missing_inputs_return_a_draft_instead_of_raising(self):
         records = [record for record in declarations_fixture()
@@ -421,149 +434,77 @@ class SourceInputTests(unittest.TestCase):
         self.assertIn("temperatures.min_ambient_c", result["missing_fields"])
         self.assertIn("coefficients.beta_vmp", result["missing_fields"])
 
-    def test_assumption_source_requests_review_instead_of_ready(self):
-        sources = sources_fixture()
-        sources["S2"]["kind"] = "assumption"
-        result = self.call(sources=sources)
-        self.assertEqual(result["status"], "needs_review", result["issues"])
-        self.assertTrue(result["needs_review"])
-        recorded = [record for record in result["provenance"]
-                    if record["field"] == "temperatures.min_ambient_c"][0]
-        self.assertEqual(recorded["kind"], "assumption")
+    def test_review_conditions_set_needs_review(self):
+        assumption_sources = sources_fixture()
+        assumption_sources["S2"]["kind"] = "assumption"
+        unscoped_sources = sources_fixture()
+        del unscoped_sources["S3"]["model"]
+        mfg_ambient = declarations_fixture()
+        target = [record for record in mfg_ambient if record["field"] == "temperatures.min_ambient_c"][0]
+        target.update(source_id="S1", excerpt="Module operating temperature range: -40 °C",
+                      source_value_text="-40", source_unit_text="°C", value=-40.0)
 
-    def test_model_applicability_is_bound_to_identity_and_text(self):
-        sources = sources_fixture()
-        sources["S3"]["model"] = "Generic Mono 450W half-cell"
-        result = self.call(sources=sources)
-        self.assertEqual(result["status"], "blocked")
-        self.assertIn("envelope.cold_voc_v", issues_of(result))
+        r1 = self.call(sources=assumption_sources)
+        self.assertEqual(r1["status"], "needs_review", r1["issues"])
+        self.assertTrue(r1["needs_review"])
+        self.assertEqual([r for r in r1["provenance"] if r["field"] == "temperatures.min_ambient_c"][0]["kind"],
+                         "assumption")
 
-        result = self.call()
-        self.assertEqual(result["status"], "ready", result["issues"])
+        r2 = self.call(sources=unscoped_sources)
+        self.assertEqual(r2["status"], "needs_review", r2["issues"])
+        self.assertTrue(r2["needs_review"])
+        self.assertIsNotNone(r2["electrical_design"])
+        self.assertTrue(any("applicability" in warning["message"] for warning in r2["warnings"]))
 
-    def test_model_mismatch_blocks_module_and_inverter_sides(self):
-        module_side = sources_fixture()
-        module_side["S3"]["text"] = ENVELOPE_DOC.replace("Generic Mono 440W half-cell module envelope",
-                                                         "Generic Mono 450W half-cell module envelope")
-        module_side["S3"]["model"] = "Generic Mono 450W half-cell"
-        result = self.call(sources=module_side)
-        self.assertEqual(result["status"], "blocked")
-        self.assertTrue(any("selected identity" in issue["message"] for issue in result["issues"]))
+        r3 = self.call(declarations=mfg_ambient)
+        self.assertEqual(r3["status"], "needs_review", r3["issues"])
+        self.assertTrue(r3["needs_review"])
+        self.assertEqual(r3["electrical_design"]["temperatures"]["min_ambient_c"], -40.0)
+        self.assertTrue([w for w in r3["warnings"] if w["field"] == "temperatures.min_ambient_c"])
+        self.assertIn("S1 Generic module datasheet", r3["electrical_design"]["temperatures"]["min_ambient_basis"])
 
-        inverter_side = sources_fixture()
-        inverter_side["S4"]["text"] = INVERTER_DOC.replace("S6-EH3P50K-H", "S6-EH3P60K-H")
-        inverter_side["S4"]["model"] = "S6-EH3P60K-H"
-        result = self.call(sources=inverter_side)
-        self.assertEqual(result["status"], "blocked")
-        self.assertTrue(any("selected identity" in issue["message"] for issue in result["issues"]))
-        self.assertIn("mppt_limits.max_operating_current_a", issues_of(result))
-
-    def test_model_matching_uses_token_boundaries(self):
-        for model in ("50K-H", "S6"):
-            sources = sources_fixture()
-            sources["S4"]["model"] = model
-            result = self.call(sources=sources)
-            with self.subTest(case=model):
+    def test_model_applicability_mismatch_and_token_boundaries(self):
+        self.assertEqual(self.call()["status"], "ready")
+        cases = (
+            ("unmatched_declared_model", "S3", {"model": "Generic Mono 450W half-cell"},
+             "envelope.cold_voc_v", None),
+            ("module_side_mismatch", "S3", {
+                "model": "Generic Mono 450W half-cell",
+                "text": ENVELOPE_DOC.replace("Generic Mono 440W half-cell module envelope",
+                                             "Generic Mono 450W half-cell module envelope")},
+             None, "selected identity"),
+            ("inverter_side_mismatch", "S4", {
+                "model": "S6-EH3P60K-H",
+                "text": INVERTER_DOC.replace("S6-EH3P50K-H", "S6-EH3P60K-H")},
+             "mppt_limits.max_operating_current_a", "selected identity"),
+            ("partial_token_50K-H", "S4", {"model": "50K-H"}, None, "exact model token"),
+            ("partial_token_S6", "S4", {"model": "S6"}, None, "exact model token"),
+        )
+        for label, sid, updates, expected_field, expected_msg in cases:
+            with self.subTest(case=label):
+                sources = sources_fixture()
+                sources[sid].update(updates)
+                result = self.call(sources=sources)
                 self.assertEqual(result["status"], "blocked")
-                self.assertTrue(any("exact model token" in issue["message"]
-                                    or "selected identity" in issue["message"] for issue in result["issues"]))
-
-    def test_official_quote_without_space_between_number_and_unit_is_accepted(self):
-        records = coefficient_declarations()
-        records.append(declaration("coefficients.alpha_isc", 0.046, "pct_per_degC", "S5",
-                                   "Temperature Coefficients of Isc: 0.046%/℃", "0.046", "%/℃"))
-        target = [record for record in records if record["field"] == "coefficients.beta_voc"][0]
-        self.assertEqual(target["source_value_text"], "-0.25")
-        self.assertEqual(target["source_unit_text"], "%/℃")
-        result = self.call(declarations=records)
-        self.assertEqual(result["status"], "ready", result["issues"])
-        coefficients = result["electrical_design"]["coefficients"]
-        self.assertEqual(coefficients["beta_voc"]["unit"], "pct_per_degC")
-        self.assertEqual(coefficients["beta_voc"]["value"], -0.25)
-        self.assertEqual(coefficients["alpha_isc"]["value"], 0.046)
-        self.assertEqual(result["electrical_design"]["mppt_limits"]["max_operating_current_a"]["unit"], "A")
-
-    def test_numeric_excerpts_can_begin_at_the_start_of_the_quote(self):
-        records = coefficient_declarations()
-        records.append(declaration("coefficients.alpha_isc", 0.046, "pct_per_degC", "S5",
-                                   "0.046%/℃", "0.046", "%/℃"))
-        for record in records:
-            if record["field"].startswith("coefficients."):
-                record["excerpt"] = record["excerpt"].split(": ")[-1]
-        result = self.call(declarations=records)
-        self.assertEqual(result["status"], "ready", result["issues"])
-        quoted = [item for item in result["provenance"]
-                  if item["field"].startswith("coefficients.")]
-        self.assertEqual(len(quoted), 3)
-        self.assertTrue(all(item["reference_match"] for item in quoted))
-        self.assertEqual(result["electrical_design"]["coefficients"]["beta_voc"]["value"], -0.25)
-        self.assertEqual(result["electrical_design"]["coefficients"]["alpha_isc"]["value"], 0.046)
-
-    def test_source_without_applicable_model_needs_review(self):
-        sources = sources_fixture()
-        del sources["S3"]["model"]
-        result = self.call(sources=sources)
-        self.assertEqual(result["status"], "needs_review", result["issues"])
-        self.assertTrue(result["needs_review"])
-        self.assertIsNotNone(result["electrical_design"])
-        self.assertTrue(any("applicability" in warning["message"] for warning in result["warnings"]))
-
-    def test_empty_ratio_unit_token_is_rejected(self):
-        records = declarations_fixture()
-        target = [record for record in records
-                  if record["field"] == "effective_irradiance.rear_gain_factor"][0]
-        target["source_unit_text"] = ""
-        result = self.call(declarations=records)
-        self.assertEqual(result["status"], "blocked")
-        self.assertIn("effective_irradiance.rear_gain_factor", issues_of(result))
-
-    def test_source_id_shape_is_enforced(self):
-        for bad in ("bad id", "A" * 81, "id\nnewline"):
-            sources = sources_fixture()
-            sources[bad] = dict(sources["S1"])
-            result = self.call(sources=sources)
-            with self.subTest(case=repr(bad)[:12]):
-                self.assertEqual(result["status"], "blocked")
-                self.assertTrue(any("short id" in issue["message"] for issue in result["issues"]))
-
-    def test_control_characters_in_source_text_are_rejected(self):
-        sources = sources_fixture()
-        sources["S1"]["text"] = MODULE_DOC.replace("Maximum operating current",
-                                                   "Maximum\x00operating current")
-        result = self.call(sources=sources)
-        self.assertEqual(result["status"], "blocked")
-        self.assertTrue(any("control characters" in issue["message"] for issue in result["issues"]))
-
-    def test_min_ambient_from_a_manufacturer_document_needs_review(self):
-        records = declarations_fixture()
-        target = [record for record in records if record["field"] == "temperatures.min_ambient_c"][0]
-        target["source_id"] = "S1"
-        target["excerpt"] = "Module operating temperature range: -40 °C"
-        target["source_value_text"] = "-40"
-        target["source_unit_text"] = "°C"
-        target["value"] = -40.0
-        result = self.call(declarations=records)
-        self.assertEqual(result["electrical_design"]["temperatures"]["min_ambient_c"], -40.0)
-        self.assertEqual(result["status"], "needs_review", result["issues"])
-        self.assertTrue(result["needs_review"])
-        self.assertTrue([warning for warning in result["warnings"]
-                         if warning["field"] == "temperatures.min_ambient_c"])
-        self.assertIn("S1 Generic module datasheet",
-                      result["electrical_design"]["temperatures"]["min_ambient_basis"])
+                if expected_field:
+                    self.assertIn(expected_field, issues_of(result))
+                if expected_msg:
+                    self.assertTrue(any(expected_msg in issue["message"] or "selected identity" in issue["message"]
+                                        for issue in result["issues"]))
 
     def test_cited_engineering_goal_and_conflict_with_design(self):
         records = declarations_fixture()
         records.append(declaration("target_dc_kw", 21.6, "kW", "S2",
                                    "Target DC power: 21.6 kW", "21.6", "kW"))
-        result = self.call(declarations=records)
-        self.assertEqual(result["status"], "blocked")
-        self.assertIn("target_dc_kw", issues_of(result))
+        conflict = self.call(declarations=records)
+        self.assertEqual(conflict["status"], "blocked")
+        self.assertIn("target_dc_kw", issues_of(conflict))
 
         design = design_fixture()
         del design["target_dc_kw"]
-        result = self.call(declarations=records, design=design)
-        self.assertEqual(result["status"], "ready", result["issues"])
-        self.assertEqual(result["electrical_design"]["target_dc_kw"], 21.6)
+        ready = self.call(declarations=records, design=design)
+        self.assertEqual(ready["status"], "ready", ready["issues"])
+        self.assertEqual(ready["electrical_design"]["target_dc_kw"], 21.6)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 
 from pvsyst_auto.components.store import ComponentStore
+from pvsyst_auto.project.circuit import inventory, set_independent_mppt, set_power_sharing
+from pvsyst_auto.project.template import _declare_explicit_counts
 from pvsyst_auto.project.variants import VariantStore
 
 
@@ -732,6 +734,43 @@ class GridTests(unittest.TestCase):
             root_block(["no objects here"], (0, 0))
         with self.assertRaisesRegex(ValueError, "no root PVObject block"):
             tracking._require_scope(None, ["no objects here"], {}, None)
+
+    def test_explicit_counts_and_flag_spelling_are_preserved(self):
+        port = ("MPPTNode Start;\nNElements=1\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n"
+                "StringNode Start;\nSubArrayId=1\nSubArrayName=Array A\nStringNode End;\nChildren=End\nMPPTNode End;\n")
+        group = "InverterNode Start;\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n" + port * 2 + "Children=End\nInverterNode End;\n"
+        base_lines = grid_text(group).splitlines(keepends=True)
+        added = _declare_explicit_counts(base_lines, 1)
+        self.assertEqual(sorted(item["node"] for item in added), ["InverterNode", "StringNode", "StringNode"])
+        for item in added:
+            self.assertEqual(base_lines[item["line"] - 1].strip(), "NElements=1")
+            self.assertEqual(base_lines[item["line"] - 2].strip(), f"{item['node']} Start;")
+
+        exclusive = ("InverterNode Start;\nNElements=2\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n"
+                     + port.replace("NElements=1", "NElements=3") + "Children=End\nInverterNode End;\n")
+        for before, after in (("$019e1002", "$019e1402"), ("$0000080a", "$00000c0a"), ("$019E1002", "$019E1402")):
+            lines = grid_text(exclusive, ARRAY.replace("NInvMPPT=1", f"Version=8.1.6\n  NInvMPPT=1\n  PowerSharingInverterId=-1\n  Flags={before}")).splitlines(keepends=True)
+            arrays, _ = VariantStore._sections(lines)
+            orig = list(lines)
+            set_independent_mppt(lines, arrays, 1, True)
+            self.assertIn(f"  Flags={after}\n", lines)
+            set_independent_mppt(lines, arrays, 1, False)
+            self.assertEqual(lines, orig)
+
+        shared = ("InverterNode Start;\nNElements=2\nSubArrayName=Array A; Array B\nChildren=Start\n"
+                  + port.replace("StringNode Start;", "StringNode Start;\nNElements=3")
+                  + port.replace("SubArrayId=1", "SubArrayId=2").replace("Array A", "Array B").replace("StringNode Start;", "StringNode Start;\nNElements=3")
+                  + "Children=End\nInverterNode End;\n")
+        members = "".join(ARRAY.replace("SubArrayId=1", f"SubArrayId={i}").replace("Array A", f"Array {n}")
+                          .replace("NInvMPPT=1", "Version=8.1.6\n  NInvMPPT=2\n  PowerSharingInverterId=-1\n  Flags=$001e0402\n  GInverter=Shared.OND")
+                          for i, n in ((1, "A"), (2, "B")))
+        lines = grid_text(shared, members).splitlines(keepends=True)
+        arrays, _ = VariantStore._sections(lines)
+        orig = list(lines)
+        set_power_sharing(lines, arrays, 1, True)
+        self.assertEqual([l.strip() for l in lines if l.strip().startswith("Flags=")], ["Flags=$001e0502"] * 2)
+        set_power_sharing(lines, arrays, 1, False)
+        self.assertEqual(lines, orig)
 
 
 if __name__ == "__main__":

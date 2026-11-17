@@ -9,7 +9,7 @@ from unittest.mock import patch
 from pvsyst_auto.api import app as _registered_app, context as server
 import pvsyst_auto.api.results as api_results
 import pvsyst_auto.results as results
-from pvsyst_auto.native.cli import PVsystCLI
+from pvsyst_auto.native.cli import PVsystCLI, summarize
 
 
 class ResultComparisonTests(unittest.TestCase):
@@ -148,3 +148,30 @@ class ResultComparisonTests(unittest.TestCase):
                            {"compare_folder": "UserHourly"}):
                 with self.assertRaises((ValueError, server.ToolError)):
                     api_results.pvsyst_read_results("target.csv", "E_Grid", **kwargs)
+
+    def test_compare_rejects_bare_string_columns_and_reports_missing_coverage(self):
+        self.write(self.a, ["1;2", "3;4"], unit="kW;kW", header="P;R")
+        self.write(self.b, ["1;2", "3;4"], unit="kW;kW", header="P;R")
+        with self.assertRaisesRegex(ValueError, "distinct numeric columns"):
+            results.compare_results(self.a, self.b, "PR")
+        self.assertEqual(results.compare_results(self.a, self.b, ("P", "R"))["columns"], ["P", "R"])
+
+        (self.root / "Results").mkdir(exist_ok=True)
+        path = self.root / "Results" / "missing.csv"
+        with patch.object(server, "_cli", PVsystCLI(sys.executable, self.root)):
+            for missing in ("", "NaN", "inf", "text"):
+                path.write_text(f"date;E_Grid\n;kW\n01/01/90 00:00;10\n01/01/90 01:00;{missing}\n01/01/90 02:00;10\n",
+                                encoding="utf-8")
+                direct = summarize(path)
+                report = api_results.pvsyst_read_results(path.name, "E_Grid")
+                self.assertEqual(direct, {"column": "E_Grid", "rows": report["rows"],
+                                          "step_minutes": report["step_minutes"], **report["summary"]["E_Grid"]})
+                self.assertAlmostEqual(direct["coverage"], 2 / 3)
+                self.assertIsNone(direct["energy_kwh"])
+            for body, complete, step in (("00:00;\n01:00;NaN\n02:00;inf", False, 60),
+                                         ("00:00;10\n01:00;10\n03:00;10", True, None),
+                                         ("00:00;10", True, None)):
+                path.write_text("date;E_Grid\n;kW\n" + "\n".join("01/01/90 " + r for r in body.splitlines()) + "\n",
+                                encoding="utf-8")
+                direct = summarize(path)
+                self.assertEqual((direct["complete"], direct["step_minutes"], direct["energy_kwh"]), (complete, step, None))

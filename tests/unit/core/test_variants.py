@@ -1,11 +1,18 @@
 """Offline variant cloning, scoped reference replacement and rollback tests."""
+import hashlib
+import json
 import os
+import re
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from pvsyst_auto.components.editor import ObjectBlock
 from pvsyst_auto.components.store import ComponentStore
+from pvsyst_auto.project import seasonal
+from pvsyst_auto.project.tracking import tracking_values
 from pvsyst_auto.project.variants import VariantStore
 from tests.unit.core.test_components import PAN, OND, BTR, GEN
 
@@ -45,21 +52,32 @@ End of PVObject pvVCalcul
 
 
 class VariantTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._seed_dir = tempfile.TemporaryDirectory()
+        seed = Path(cls._seed_dir.name) / "work"
+        (seed / "Projects").mkdir(parents=True)
+        (seed / "Projects" / "Example.PRJ").write_text(
+            "PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
+        (seed / "Projects" / "Example.VC0").write_bytes(
+            b"\xef\xbb\xbf" + VARIANT.replace("\n", "\r\n").encode("utf-8"))
+        for kind, folder, text in (("PAN", "PVmodules", PAN), ("OND", "Inverters", OND),
+                                   ("BTR", "Batteries", BTR), ("GEN", "Gensets", GEN)):
+            directory = seed / "ComposPV" / folder
+            directory.mkdir(parents=True)
+            for name in ("original", "new"):
+                (directory / f"{name}.{kind}").write_text(text, encoding="utf-8")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._seed_dir.cleanup()
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.workspace = Path(tmp.name) / "work"
-        (self.workspace / "Projects").mkdir(parents=True)
-        (self.workspace / "Projects" / "Example.PRJ").write_text(
-            "PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
+        shutil.copytree(Path(self._seed_dir.name) / "work", self.workspace)
         self.original = self.workspace / "Projects" / "Example.VC0"
-        self.original.write_bytes(b"\xef\xbb\xbf" + VARIANT.replace("\n", "\r\n").encode("utf-8"))
-        for kind, folder, text in (("PAN", "PVmodules", PAN), ("OND", "Inverters", OND),
-                                   ("BTR", "Batteries", BTR), ("GEN", "Gensets", GEN)):
-            directory = self.workspace / "ComposPV" / folder
-            directory.mkdir(parents=True)
-            for name in ("original", "new"):
-                (directory / f"{name}.{kind}").write_text(text, encoding="utf-8")
         self.components = ComponentStore(self.workspace)
         self.store = VariantStore(self.workspace, self.components)
 
@@ -846,6 +864,66 @@ class VariantTests(unittest.TestCase):
         self.store.restore_archive("Example.PRJ", archived_vc["archive_name"], confirm=True)
         archived_prj = self.store.archive_project("Example.PRJ", confirm=True)
         self.store.restore_archive("Example.PRJ", archived_prj["archive_name"], confirm=True)
+
+    def test_size_archive_limit_dotted_projects_and_system_validation(self):
+        before = self.original.read_bytes()
+        with patch("pvsyst_auto.project.variants.MAX_PROJECT_BYTES", len(before)):
+            with self.assertRaisesRegex(ValueError, "exceeds 32 MB"):
+                self.store.update_parameters("Example.PRJ", "VC0", None, 1, 1, orientation_updates={"FieldTilt": 25})
+        self.store.clone("Example.PRJ", "VC0", "VC1")
+        with patch("pvsyst_auto.project.variants.MAX_ARCHIVE_MEMBERS", 2):
+            with self.assertRaisesRegex(ValueError, "exceeds 2 members"):
+                self.store.archive_project("Example.PRJ", confirm=True)
+        self.store.clone_project("Example.PRJ", "Example.East.PRJ")
+        self.assertEqual(self.store.inspect_project("Example.PRJ")["variants"], ["VC0", "VC1"])
+        self.store.clone_project("Example.PRJ", "\u5149\u4f0f.PRJ")
+        self.assertEqual(self.components.dependencies("\u5149\u4f0f", "vc0")["project"], "\u5149\u4f0f.PRJ")
+        for bad in ("../\u5149\u4f0f.PRJ", "CON.PRJ", "x.PRJ "):
+            with self.assertRaises(ValueError):
+                self.store.inspect(bad, "VC0")
+        base = VARIANT.replace("GInverter=original.OND\n", "GInverter=original.OND\n        NoOrientation=1\n")
+        missing_sys = re.sub(r"(?ms)^  PVObject_System=pvSystem\n.*?^  End of PVObject pvSystem\n", "", base)
+        self.original.write_bytes(missing_sys.encode())
+        self.assertIs(self.store.validate_structure("Example.PRJ", "VC0")["valid"], False)
+
+    def test_archive_manifest_rollback_and_mixed_source_transaction_guards(self):
+        before, _ = self._prepare_project_sources()
+        changed = self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", before["files"])
+        folder = self.workspace / "Projects" / ".mcp-variant-backups"
+        manifest_path = folder / changed["transaction_manifest"]
+        snapshot = folder / changed["backups"]["Example.PRJ"]
+        genuine = snapshot.read_bytes()
+        snapshot.write_bytes(b"\xff" + genuine)
+        with self.assertRaises(ValueError):
+            self.store.restore_project_sources("Example.PRJ", changed["backups"], changed["files"], True)
+        snapshot.write_bytes(genuine)
+        manifest_path.unlink()
+        with self.assertRaisesRegex(ValueError, "transaction manifest"):
+            self.store.restore_project_sources("Example.PRJ", changed["backups"], changed["files"], True)
+
+        archived = self.store.archive_project("Example.PRJ", confirm=True)
+        archive_manifest = self.workspace / "Projects" / ".mcp-project-archive" / archived["archive_name"] / "manifest.json"
+        raw_manifest = archive_manifest.read_bytes()
+        archive_manifest.write_bytes(b"{broken")
+        with self.assertRaisesRegex(ValueError, "Invalid archive manifest"):
+            self.store.restore_archive("Example.PRJ", archived["archive_name"], True)
+        archive_manifest.write_bytes(raw_manifest)
+        self.store.restore_archive("Example.PRJ", archived["archive_name"], True)
+
+    def test_tracking_pair_tokens_and_seasonal_tilt_edit(self):
+        block = ObjectBlock("PVObject_", 1, "pvOrient", fields={"MinPhi": [(5, "NaN")], "MaxPhi": [(6, "55.0")]})
+        with self.assertRaisesRegex(ValueError, "MinPhi"):
+            tracking_values({"max_rotation_deg": 50}, "UnlimTracking", block)
+        orient = ["  PVObject_=pvOrient\r\n", "    Comment=TSouth_roof\r\n", "    Version=8.1.6\r\n",
+                  "    Flags=$00\r\n", "    NoOrient=1\r\n", "    FieldType=FixedPlane\r\n",
+                  "    FieldTilt=20.0\r\n", "    FieldAzim=0.0\r\n", "    BaseSlope=0.0\r\n",
+                  "    UsesTiltAver=False\r\n", "    UsesAzimAver=False\r\n", "    UsesSlopeAver=False\r\n",
+                  "  End of TOrientGroup\r\n"]
+        change = seasonal.replace_seasonal(orient, (0, len(orient) - 1),
+                                           {"summer_tilt": 10.0, "winter_tilt": 50.0, "winter_months": [1, 2, 12]})
+        self.assertEqual(change["before"]["orientation_name"], "TSouth_roof")
+        self.assertIn("    FieldType=SeasonalTilt\r\n", orient)
+        self.assertIn("    WinterMonths=$0803\r\n", orient)
 
 
 if __name__ == "__main__":
