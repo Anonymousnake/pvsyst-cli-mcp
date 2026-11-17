@@ -82,8 +82,8 @@
 |---|---|---|
 | 全年逐时负荷 CSV 准备与绑定 | MCP 已封装 | `pvsyst_prepare_load_profile` 校验 8760/8784 小时负荷；`pvsyst_create_load_variant` 将逐时数据编码写入 `pvLoad` 的 `Energy/MJ` base62 缓存，见[逐时负荷与原生绑定](storage-loads.md) |
 | 常数 / 月度 / 24 小时日曲线负荷 | MCP 已封装 | `pvsyst_create_native_load_variant` 在纯光伏变体上配置常数（`kW`）、月度（12 个月 `kWh`）或日曲线（24 小时 `kW`）自发自用负荷，见[逐时负荷与原生绑定](storage-loads.md) |
-| 集中式 AC 耦合光储系统构建 | MCP 已封装 | `pvsyst_create_grid_storage_system` 在纯光伏变体上挂载电池包、充放电功率、SOC 阈值、月度电池温度与逐时负荷，支持 `SelfConsumption` 与 `WeakGrid`（含电网可用性 0/1 序列绑定），见[光储系统与参数](grid-storage-parameters.md) |
-| 既有光储系统参数修改 | MCP 已封装 | `pvsyst_create_grid_storage_variant` 在保留原有储能策略（含 `PeakShaving`）的前提下修改 SOC、充放电功率、效率与 `allow_grid_export`（系统 bit 27 防逆流位） |
-| 削峰（Peak Shaving）放电窗口 | MCP 已封装 | `pvsyst_create_peak_shaving_variant` 修改现有削峰模板的放电时序（`AfterSunset` 或起止小时窗口），见[削峰放电控制](native-peak-shaving.md) |
+| 集中式 AC 耦合光储系统构建 | MCP 已封装 | `pvsyst_create_grid_storage_system` 在纯光伏变体（兼容 3D 阴影/多朝向）上挂载工作区或内置 `.BTR` 锂电/铅酸电池，支持 `SelfConsumption`、`WeakGrid`、`PeakShaving`（无需手动负荷，写入 `PLimGrid`）与 `PowerShift`（`PVProdFraction` / `SpecChargPower` / `PVToGridMin` + `SpecifiedHours` / `Night` / `MinMaxHour` 的 48 槽 `TParSimulSeries`），见[光储系统与参数](grid-storage-parameters.md) |
+| 既有光储系统参数修改 | MCP 已封装 | `pvsyst_create_grid_storage_variant` 修改 SOC、充放电功率、效率、`PowerShift` 48 槽充放电曲线、`PeakShaving` `grid_limit_kw` 与 `allow_grid_export`（系统 bit 27 防逆流位），保留 `pvShading`/`pvModuleLayout` 并自动清理 `VarList` |
+| 削峰（Peak Shaving）放电窗口 | MCP 已封装 | `pvsyst_create_peak_shaving_variant` 修改现有削峰变体（支持内置/工作区锂电 `.BTR` 与 3D 场景）的放电时序（`AfterSunset` 或起止小时窗口），见[削峰放电控制](native-peak-shaving.md) |
 | 完整 AC 光储能量流导出 | MCP 已封装 | `pvsyst_build_sfi(variables="grid_storage")` 自动包含 `CL_Over`（变流器限幅损失）等完整能量平衡列 |
 | 概率/家用电器负荷、随机停电、DC 耦合混储 | 仅分析记录，未开放写入 | 底层字段调查见[负荷与储能模式笔记](native-load-storage-controls.md) |

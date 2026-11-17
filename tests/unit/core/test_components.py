@@ -251,6 +251,20 @@ class ComponentTests(unittest.TestCase):
         self.store.update("GEN", "sample.GEN", {"TypeGen": "CustomFuel"})
         self.assertEqual(self.store.validate("GEN", "sample.GEN")["known_value_errors"], [])
 
+        li_btr = (
+            "PVObject_=pvBattery\n  Version=8.1.7\n  Flags=$00\n"
+            "  PVObject_Commercial=pvCommercial\n    Manufacturer=Lab\n    Model=LFP180\n"
+            "  End of PVObject pvCommercial\n  BattTechnol=Li_LFP\n  CapaRef=180\n"
+            "End of PVObject pvBattery\n"
+        )
+        self.store.create("BTR", "li_sample.BTR", li_btr)
+        li_info = self.store.validate("BTR", "li_sample.BTR")
+        self.assertEqual(li_info["warnings"], [])
+        self.assertEqual(li_info["known_value_errors"], [])
+        no_cap_btr = BTR.replace("  CapNomC10=160\n", "")
+        with self.assertRaisesRegex(ValueError, "CapNomC10"):
+            self.store.create("BTR", "pb_missing.BTR", no_cap_btr)
+
     def test_paths_and_backup_restrictions(self):
         for bad in ("../sample.GEN", "..\\sample.GEN", "C:\\sample.GEN",
                     "sample.OND", "sample.GEN.", "CON/GEN"):

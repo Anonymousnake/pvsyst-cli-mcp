@@ -32,10 +32,9 @@
 
 ## 适用模板条件与结果核对
 
-源变体需为 PVsyst 8.1.6 的集中式 AC 削峰模板：
-- 根部 `pvVCalcul.Flags=$00080000` 且不含 `pvLoad` 对象（这是 PVsyst 保存削峰变体时的原生状态）。
-- `pvSystem` 为并网系统（`Flags=$17000040`、`PLimGrid=200`、`LimGrSeparLoss=False`，挂载 `Universal_Adjustable_LI.BTR` 15 串 10 并、12 个月 20 °C 电池温度）。
-- `pvGridStorage` 的 `Flags=$00`、`Strategy=PeakShaving`、`ChargingStrategy=PVToGridMin`。
-- 单子阵列、单固定平面（朝向 1），无 3D 阴影场景、远方地平线或 P50。
+源变体需为 PVsyst 8.1.0 / 8.1.6 / 8.1.7 的集中式 AC 削峰变体（可由 [`pvsyst_create_grid_storage_system`](grid-storage-parameters.md) 从纯光伏变体直接创建，或复用原生模板）：
+- `pvSystem` 为并网系统（包含储能及 `PLimGrid > 0` 使能，支持工作区或内置 `.BTR` 锂电/铅酸电池如 `Universal_Adjustable_LI.BTR`、`Generic_LI_Module_180Ah.BTR`）。
+- `pvGridStorage` 的 `Flags=$00`、`Strategy=PeakShaving`、`ChargingStrategy` 为 `PVToGridMin` 或 `PVaboveThresh`。
+- 兼容单面或多面固定朝向、3D `pvShading`/`pvModuleLayout`（写入时自动清理过期 `VarList`）以及与系统停运 `SystemUnavail` 组合，不含 `P50_P90`。
 
 查看削峰仿真结果时，注意该模板下 `pvSystem.Flags=$17000040` 将并网限值 `PLimGrid=200` 定义为**视在功率（Apparent power, kVA）**（尽管 CSV 里 `PGridLim` 列头仍标为 `kW`）；使用 `pvsyst_build_sfi(variables="grid_storage")` 导出完整列（含 `CL_Chrg`、`CL_InvB`、`CL_Over`、`EUnused`）即可完整闭合全年的 AC 能量平衡。

@@ -1,8 +1,10 @@
 # 集中式 AC 耦合光储系统构建与参数配置
 
-本模块提供两个工具来管理 PVsyst 8.1.0 / 8.1.6 并网光储（Grid Storage）变体：
-- `pvsyst_create_grid_storage_variant`：在**已经激活储能**的变体上修改 SOC 阈值、AC 充放电功率上限、变流器效率或防逆流开关，并另存为新 `.VCx`。
-- `pvsyst_create_grid_storage_system`：在**纯光伏并网（PV-only Grid）**变体上挂载电池包（`.BTR`）、串并联数量、12 个月电池温度、初始 SOW、储能控制策略（`SelfConsumption` 或 `WeakGrid`）以及已准备好的全年逐时负荷缓存，一步生成完整的 AC 耦合光储新 `.VCx`。
+本模块提供两个工具来管理 PVsyst 8.1.0 / 8.1.6 / 8.1.7 并网光储（Grid Storage）变体：
+- `pvsyst_create_grid_storage_variant`：在**已经激活储能**的变体上修改 SOC 阈值、AC 充放电功率上限、变流器效率、策略三元组、`PowerShift` 48 槽半小时时间表、`PLimGrid` 并网限值或防逆流开关，并另存为新 `.VCx`（兼容保留 3D `pvShading` / `pvModuleLayout` 并自动清理过期 `VarList`）。
+- `pvsyst_create_grid_storage_system`：在**纯光伏并网（PV-only Grid，可含 3D 阴影/多朝向）**变体上挂载工作区或内置电池包（`library="workspace" | "builtin"`，支持 `Generic_LI_Module_180Ah.BTR`、`Universal_Adjustable_LI.BTR` 与工作区锂电 `.BTR`）、串并联数量、12 个月电池温度、初始 SOW 与储能控制策略（`self_consumption`、`weak_grid`、`peak_shaving`、`power_shift`）。
+
+> **实测验证边界（PVsyst 8.1.7 RTTI + CLI）**：PVsyst 8.1.7 并网光储统一采用公共交流母线（Common AC Bus）结构，`SelfConsumption`、`PeakShaving` 与 `PowerShift` 均**不包含从电网向电池主动充电的分时电价充电开关**（`PowerShift` 的 `SpecChargPower` 仅限从可用 PV 功率中按设定上限充电，不从电网取电）；`WeakGrid` 仅在含完整 `PVObject_UserNeeds` 负荷的弱网孤岛场景中配合 `availability` 使用。
 
 ## 1. 修改现有光储系统的标量参数（`pvsyst_create_grid_storage_variant`）
 
@@ -98,3 +100,9 @@
 - **使用 `grid_storage` SFI 预设核对 AC 能量平衡**：
   调用 `pvsyst_build_sfi(variables="grid_storage")` 会导出完整的光储能量流列，包括 `E_User`、`E_Miss`、`EFrGrid`、`E_Grid`、`EUnused`、`EBatCh`、`EBatDis`、`CL_Chrg`（充电整流器损耗）、`CL_InvB`（放电逆变器损耗）以及 **`CL_Over`（变流器限幅损耗）**。
   注意：`EBatCh` 和 `EBatDis` 是**电池直流侧（DC）**的能量，核对交流侧充放电功率是否超限时，应使用 `EBatCh + CL_Chrg`（交流充电输入）和 `EBatDis - CL_InvB`（交流放电输出），并把 `CL_Over` 纳入全站 AC 能量平衡，这样全年的逐时 AC 平衡残差可以完全收敛在 CSV 导出舍入精度（`< 0.01 kW`）以内。
+
+## 5. `PowerShift`（分时移峰）与 `PeakShaving`（削峰）从零构建
+
+当 `strategy="power_shift"` 或 `strategy="peak_shaving"` 时，`pvsyst_create_grid_storage_system` **不强制** `load_manifest_name`（仅在需要同时自发自用时传入），并支持 `battery.library="builtin"` 直接引用 PVsyst 内置加密锂电模型（如 `Generic_LI_Module_180Ah.BTR`）：
+- **`peak_shaving`**：需提供正数 `grid_limit_kw`（或源变体已配置 `PLimGrid`），支持 `charging_strategy="pv_above_thresh" | "pv_to_grid_min"` 与 `discharging_strategy="immediate" | "after_sunset" | "hour_window"`（`hour_window` 需配合 `discharge_start_hour` / `discharge_end_hour`）。
+- **`power_shift`**：支持 `charging_strategy` 为 `pv_prod_fraction`（`charging_pv_fraction` 0..1 与可选 48 槽 `charging_schedule_48`，写入 `TParSimulSeries` `FPVChMx`）、`spec_charg_power`（`charging_power_kw` 与可选 48 槽 `EChgMax`）或 `pv_to_grid_min`（固定上网阈值 `charging_power_kw` 与可选 48 槽 `EChgMax`）；放电支持 `specified_hours`（`discharging_power_kw` 与可选 48 槽 `EDisMax`）、`night`（标量 `discharging_power_kw`）或 `hour_window`。注意 PVsyst 8.1.7 不支持在 `PowerShift` 下使用 `after_sunset`。

@@ -6,24 +6,20 @@ from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, require_flat, root_block
 from pvsyst_auto.components.generator import direct_fields, one
+from pvsyst_auto.energy.storage import storage_state, validate_storage
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import inventory as grid_inventory
-from pvsyst_auto.energy.storage import storage_state, validate_storage
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 EDITABLE = ("DischStrategy", "HourBegDisch", "HourEndDisch")
 HOUR_LIMIT = 23
-SYSTEM_TEXT = {"Flags": "$17000040", "SystemType": "Grid",
-               "BatteryFile": "Universal_Adjustable_LI.BTR", "LimGrSeparLoss": "False",
-               "TypeTempBatt": "1", "NBattSerie": "15", "NBattParall": "10"}
-SYSTEM_NUMBER = {"PLimGrid": Decimal("200"), "SOHBattBeg": Decimal("1"),
-                 "BattVoltage_Syst": Decimal("768"), "BattCapacity_Syst": Decimal("1000"),
-                 "TempBattRef": Decimal("20")}
-SYSTEM_MONTHS = "TempBattMois"
-STORAGE_TEXT = {"Flags": "$00", "Strategy": "PeakShaving", "ChargingStrategy": "PVToGridMin"}
-STORAGE_NUMBER = ("BattSoCInit", "SOCChDecl", "SOCDischDecl", "SOCDischSelf", "PMaxCharge", "PMaxDisch",
-                  "BattRectMaxEffic", "BattRectEuroEffic", "BattInvMaxEffic", "BattInvEuroEffic")
+STORAGE_CHARGING = frozenset({"PVToGridMin", "PVaboveThresh"})
+STORAGE_NUMBER = (
+    "BattSoCInit", "SOCChDecl", "SOCDischDecl", "SOCDischSelf",
+    "PMaxCharge", "PMaxDisch",
+    "BattRectMaxEffic", "BattRectEuroEffic", "BattInvMaxEffic", "BattInvEuroEffic",
+)
 WINDOW = "MinMaxHour"
 
 
@@ -73,24 +69,6 @@ def _hours(block, name):
     return value
 
 
-def _require_profile(system_root):
-    """Every owning pvSystem field must match the verified native storage profile exactly."""
-    if set(system_root.fields) != set(SYSTEM_TEXT) | set(SYSTEM_NUMBER) | {SYSTEM_MONTHS}:
-        raise ValueError("Unknown or missing fields in the pvSystem record")
-    for name in SYSTEM_TEXT:
-        if system_root.one(name)[1] != SYSTEM_TEXT[name]:
-            raise ValueError(f"{name} must stay at its verified native value")
-    for name, expected in SYSTEM_NUMBER.items():
-        if _decimal(system_root.one(name)[1], name) != expected:
-            raise ValueError(f"{name} must stay at its verified native value")
-    months = system_root.one(SYSTEM_MONTHS)[1]
-    if not months.endswith(","):
-        raise ValueError(f"{SYSTEM_MONTHS} must keep its trailing comma")
-    parts = months.split(",")[:-1]
-    if len(parts) != 12 or any(_decimal(part, SYSTEM_MONTHS) != Decimal("20") for part in parts):
-        raise ValueError(f"{SYSTEM_MONTHS} must stay twelve 20 values")
-
-
 def peak_block(lines):
     """Return the one directly owned PeakShaving record, or stop on any unknown shape."""
     blocks = objects("".join(lines))
@@ -105,12 +83,17 @@ def peak_block(lines):
             continue
         if set(other.fields) & set(EDITABLE):
             raise ValueError("Discharge controls must exist only in the owning pvGridStorage record")
+    if block.one("Flags")[1] != "$00" or block.one("Strategy")[1] != "PeakShaving":
+        raise ValueError("Source pvGridStorage must declare Strategy=PeakShaving and Flags=$00")
+    charging = block.one("ChargingStrategy")[1]
+    if charging not in STORAGE_CHARGING:
+        raise ValueError(f"Unsupported PeakShaving ChargingStrategy {charging!r}")
     strategy = block.one("DischStrategy")[1]
     require_flat(block, lines)
-    if strategy == "AfterSunset":
-        expected = set(STORAGE_TEXT) | set(STORAGE_NUMBER) | {"DischStrategy"}
+    if strategy in ("AfterSunset", "Immediate"):
+        expected = {"Flags", "Strategy", "ChargingStrategy", "DischStrategy"} | set(STORAGE_NUMBER)
     elif strategy == WINDOW:
-        expected = set(STORAGE_TEXT) | set(STORAGE_NUMBER) | set(EDITABLE)
+        expected = {"Flags", "Strategy", "ChargingStrategy", *STORAGE_NUMBER, *EDITABLE}
         start, end = _hours(block, "HourBegDisch"), _hours(block, "HourEndDisch")
         if start == end:
             raise ValueError("The saved hour window endpoints must differ")
@@ -118,9 +101,6 @@ def peak_block(lines):
         raise ValueError(f"Only an existing PeakShaving discharge strategy is supported, not {strategy!r}")
     if set(block.fields) != expected:
         raise ValueError("Unknown or missing fields in the pvGridStorage record")
-    for name in STORAGE_TEXT:
-        if block.one(name)[1] != STORAGE_TEXT[name]:
-            raise ValueError(f"{name} must stay at its verified native value")
     systems = [record for record in blocks if record.object_type == "pvSystem"]
     if len(systems) != 1 or not systems[0].end_line:
         raise ValueError("Requires one complete owning storage system")
@@ -130,113 +110,56 @@ def peak_block(lines):
 
 
 def _require_scope(store, lines, arrays, system):
-    """Verified native PeakShaving profile: root bit19 without a load, storage system flags."""
+    """Verified native PeakShaving profile: storage system + PLimGrid + valid grid counts."""
     root_block(lines)
     header_end = next((i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_")), len(lines))
     header = direct_fields(lines, (0, header_end))
     if one(header, "Version")[1] not in NATIVE_TEXT_OR_SEED:
         raise ValueError(f"Requires a {SEED_LABEL} variant")
-    flags = one(header, "Flags")[1]
-    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) or not (int(flags[1:], 16) & 0x00080000):
-        raise ValueError("This PeakShaving profile requires root user-load bit19 (0x00080000)")
-    if system is None or len(arrays) != 1:
-        raise ValueError("Requires one pvSystem and one subarray")
-    if any(block.object_type == "pvLoad" for block in objects("".join(lines))):
-        raise ValueError("This PeakShaving profile has no load and does not add one")
+    if system is None or not arrays:
+        raise ValueError("Requires one pvSystem and at least one subarray")
     system_root = root_block(lines, system)
-    _require_profile(system_root)
-    require_flat(system_root, lines[system[0]:system[1] + 1])
+    sys_flags = system_root.one("Flags")[1]
+    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", sys_flags) or (int(sys_flags[1:], 16) & 0x10000040) != 0x10000040:
+        raise ValueError("PeakShaving pvSystem requires storage enabling flags")
+    plim = _decimal(system_root.one("PLimGrid")[1], "PLimGrid")
+    if plim <= 0:
+        raise ValueError("PLimGrid must be positive")
     main = store._main_array(lines)
     if main is None:
         raise ValueError("A pvMainArray section is required")
-    main_root = root_block(lines, main)
-    if main_root.one("Flags")[1] != "$01900400" or main_root.one("Flags2")[1] != "$082A":
-        raise ValueError("Main array requires the verified Flags=$01900400 and Flags2=$082A")
-    sub_root = root_block(lines, next(iter(arrays.values())))
-    if sub_root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or sub_root.one("Flags")[1] != "$019E1002":
-        raise ValueError(f"Subarray requires the verified {SEED_LABEL} declaration and 019E1002 flags")
-    if sub_root.one("Flags2")[1] != "$20":
-        raise ValueError("Subarray requires the verified Flags2=$20")
-    strings = sub_root.one("NStringCh")[1]
-    if (sub_root.one("NoOrientation")[1] != "1" or not strings.isdigit() or int(strings) < 1
-            or sub_root.one("NStrOrient1")[1] != strings):
-        raise ValueError("Requires all strings on orientation 1 with NStrOrient1 equal to NStringCh")
-    if any(key.startswith("NStrOrient") and key != "NStrOrient1" and sub_root.one(key)[1] != "0"
-           for key in sub_root.fields):
-        raise ValueError("Every other NStrOrient* must be zero")
     store._orientation_list(lines)
-    store._ordinary_fixed_plane(lines, store._orientation(lines, 1))
     if any(re.match(r"\s*P50_P90\s*=", line) for line in lines):
         raise ValueError("P50/P90 objects are outside this batch")
-    if grid_inventory(lines, arrays)["counts_valid"] is not True:
-        raise ValueError("Requires complete consistent native grid counts")
+    if grid_inventory(lines, arrays)["counts_complete"] is not True:
+        raise ValueError("Requires complete native grid counts")
 
 
-def create_peak_shaving_variant(store, *, project, source_variant, new_variant, discharge,
-                                dry_run=True, variant_name=None, add_utf8_bom=False):
-    """Preview or create a NEW VC only; every other field and the source stay untouched."""
-    def build(*, lines, **_):
-        arrays, system = store._sections(lines)
-        _require_scope(store, lines, arrays, system)
-        strategy, window = discharge_values(discharge)
-        block = peak_block(lines)
-        index, _ = block.one("DischStrategy")
-        ending = "\r\n" if lines[index].endswith("\r\n") else "\n"
-        candidate_lines = list(lines)
-        saved = [block.one(name)[0] for name in EDITABLE[1:] if name in block.fields]
-        index -= sum(position < index for position in saved)
-        for position in sorted(saved, reverse=True):
-            del candidate_lines[position]
-        candidate_lines[index] = replace_value(candidate_lines[index], strategy)
-        if window is not None:
-            indent = candidate_lines[index][:len(candidate_lines[index]) - len(candidate_lines[index].lstrip())]
-            start, end = window
-            candidate_lines[index + 1:index + 1] = [f"{indent}HourBegDisch={start}{ending}",
-                                                    f"{indent}HourEndDisch={end}{ending}"]
-        if any(line.strip().startswith("VarList, list of=") for line in candidate_lines):
-            candidate_lines, _ = strip_result_cache(candidate_lines)
-
-        def verify(checked, _, res):
-            checked_arrays, _ = store._sections(checked)
-            verified = peak_block(checked)
-            if len(checked_arrays) != 1 or verified.one("DischStrategy")[1] != strategy:
-                raise ValueError("Candidate did not keep the requested discharge strategy")
-            if window is None and any(name in verified.fields for name in EDITABLE[1:]):
-                raise ValueError("after_sunset must not keep hour fields")
-            if window is not None and (_hours(verified, "HourBegDisch"), _hours(verified, "HourEndDisch")) != window:
-                raise ValueError("Candidate did not keep the requested hour window")
-            res["discharge"] = {"mode": discharge["mode"], "strategy": strategy,
-                                "start_hour": window[0] if window else None,
-                                "end_hour": window[1] if window else None}
-
-        return {"candidate_lines": candidate_lines, "verify": verify}
-
-    return run_new_variant_transaction(
-        store,
-        project=project,
-        source_variant=source_variant,
-        new_variant=new_variant,
-        dry_run=dry_run,
-        add_utf8_bom=add_utf8_bom,
-        variant_name=variant_name,
-        build=build,
-        source_changed_error="Template changed while preparing the peak-shaving variant",
-    )
-
-
-STORAGE_OWN = ("Flags", "Strategy", "ChargingStrategy", "DischStrategy", "HourBegDisch", "HourEndDisch",
-               "BattSoCInit", "SOCChDecl", "SOCDischDecl", "SOCDischSelf", "PMaxCharge",
-               "PMaxDisch", "BattRectMaxEffic", "BattRectEuroEffic", "BattInvMaxEffic",
-               "BattInvEuroEffic")
+def _update_block(lines, block, strategy, hours):
+    """Rewrite only DischStrategy and the optional HourBegDisch/HourEndDisch pair inside block."""
+    newline = "\r\n" if any("\r\n" in line for line in lines) else "\n"
+    disch_index, _ = block.one("DischStrategy")
+    indent = ASSIGNMENT.fullmatch(lines[disch_index].rstrip("\r\n"))[1]
+    updated = [replace_value(lines[disch_index], strategy) if index == disch_index else line
+               for index, line in enumerate(lines)]
+    existing = sorted((block.one(name)[0], name) for name in ("HourBegDisch", "HourEndDisch") if name in block.fields)
+    if hours is None:
+        for index, _ in reversed(existing):
+            del updated[index]
+        return updated
+    values = {"HourBegDisch": str(hours[0]), "HourEndDisch": str(hours[1])}
+    if len(existing) == 2:
+        for index, name in existing:
+            updated[index] = replace_value(updated[index], values[name])
+        return updated
+    if not existing:
+        added = [f"{indent}{name}={values[name]}{newline}" for name in ("HourBegDisch", "HourEndDisch")]
+        return updated[:disch_index + 1] + added + updated[disch_index + 1:]
+    raise ValueError("PeakShaving record has an incomplete hour window")
 
 
 def peak_shaving_state(lines):
-    """Report the stored peak-shaving strategy and its native fields, or why it is absent.
-
-    Values are returned as stored text: endpoint inclusivity, the meaning of AfterSunset
-    beyond the native label, and every efficiency figure are not interpreted here.
-    """
-    # Same assignment grammar as objects()/direct_fields, so spacing around "=" is not "absent".
+    """Inspect the PeakShaving discharge state directly from pvGridStorage without throwing."""
     owner = [i for i, line in enumerate(lines)
              if (match := ASSIGNMENT.fullmatch(line.rstrip("\r\n")))
              and (match[2], match[4]) == ("PVObject_GridStorage", "pvGridStorage")]
@@ -261,17 +184,20 @@ def peak_shaving_state(lines):
     if fields["Strategy"] != "PeakShaving":
         return {"mode": "other", "strategy": fields["Strategy"],
                 "reason": "the stored strategy is not peak shaving"}
-    # The two discharge modes carry different field sets: an AfterSunset save holds no
-    # hour fields at all, matching the writer's own rule.
-    expected = set(STORAGE_OWN)
-    if fields.get("DischStrategy") == "AfterSunset":
-        expected -= {"HourBegDisch", "HourEndDisch"}
+    if fields.get("ChargingStrategy") not in STORAGE_CHARGING:
+        return {"mode": "other", "charging_strategy": fields.get("ChargingStrategy"),
+                "reason": "unsupported peak shaving charging strategy"}
+    expected = {"Flags", "Strategy", "ChargingStrategy", "DischStrategy"} | set(STORAGE_NUMBER)
+    strategy = fields.get("DischStrategy")
+    if strategy == WINDOW:
+        expected |= {"HourBegDisch", "HourEndDisch"}
     if set(fields) != expected:
         return {"mode": None,
                 "issue": "pvGridStorage fields do not match the recorded native shape"}
-    strategy = fields["DischStrategy"]
     if strategy == "AfterSunset":
         discharge = {"mode": "after_sunset"}
+    elif strategy == "Immediate":
+        discharge = {"mode": "immediate"}
     elif strategy == WINDOW:
         discharge = {"mode": "hour_window", "start_hour": fields["HourBegDisch"],
                      "end_hour": fields["HourEndDisch"]}
@@ -281,3 +207,52 @@ def peak_shaving_state(lines):
     return {"mode": "configured", "discharge": discharge,
             "charging_strategy": fields["ChargingStrategy"],
             "values": {key: fields[key] for key in sorted(expected)}}
+
+
+def create_peak_shaving_variant(store, *, project, source_variant, new_variant, discharge, dry_run=True, variant_name=None, add_utf8_bom=False):
+    """Preview or write a NEW PeakShaving variant switching only DischStrategy."""
+    parsed = {}
+
+    def preflight():
+        parsed["strategy"], parsed["hours"] = discharge_values(discharge)
+
+    def build(*, text, lines, result, **_):
+        arrays, system = store._sections(lines)
+        _require_scope(store, lines, arrays, system)
+        block = peak_block(lines)
+        before = peak_shaving_state(lines)
+        if before.get("mode") != "configured":
+            raise ValueError("PeakShaving discharge configuration is unsupported")
+        updated = _update_block(lines, block, parsed["strategy"], parsed["hours"])
+        if any(line.strip().startswith("VarList,") for line in updated):
+            strip_result_cache(updated)
+
+        def verify(checked, _, res):
+            checked_arrays, checked_system = store._sections(checked)
+            _require_scope(store, checked, checked_arrays, checked_system)
+            after = peak_shaving_state(checked)
+            expected = {"mode": "after_sunset"} if parsed["strategy"] == "AfterSunset" else {
+                "mode": "hour_window", "start_hour": str(parsed["hours"][0]), "end_hour": str(parsed["hours"][1])}
+            if after.get("mode") != "configured" or after["discharge"] != expected:
+                raise ValueError("Candidate PeakShaving state did not match request")
+            res["peak_shaving"] = {"before": before["discharge"], "after": after["discharge"]}
+
+        return {"candidate_text": "".join(updated), "verify": verify}
+
+    return run_new_variant_transaction(
+        store,
+        project=project,
+        source_variant=source_variant,
+        new_variant=new_variant,
+        dry_run=dry_run,
+        variant_name=variant_name,
+        add_utf8_bom=add_utf8_bom,
+        bom_display_target=new_variant,
+        preflight=preflight,
+        build=build,
+        initial_fields={"native_consumption_verified": False},
+        exists_prefix="Choose a new PeakShaving variant: ",
+        source_changed_error="Source variant changed before PeakShaving creation",
+        write_failure_warning="Inspect the disclosed new PeakShaving variant before retrying; the source variant remains unchanged.",
+        uppercase_variant=True,
+    )

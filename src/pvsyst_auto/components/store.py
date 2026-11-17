@@ -263,7 +263,20 @@ class ComponentStore:
                                   else self._owned_identity(text, fields))
             except ValueError as exc:
                 errors.append(str(exc))
-        missing = [name for name in REQUIRED[kind] if name not in checked_fields]
+        if kind == "BTR":
+            technol = (checked_fields.get("BattTechnol") or [""])[0].casefold()
+            if technol.startswith("bt"):
+                technol = technol[2:]
+            is_li = technol.startswith("li_")
+            btr_required = ("Version", "Flags", "Manufacturer", "Model", "BattTechnol")
+            missing = [name for name in btr_required if name not in checked_fields]
+            if is_li:
+                if "CapNomC10" not in checked_fields and "CapaRef" not in checked_fields:
+                    missing.append("CapNomC10 or CapaRef")
+            else:
+                missing.extend(name for name in ("CapNomC10", "AlphaSOC") if name not in checked_fields)
+        else:
+            missing = [name for name in REQUIRED[kind] if name not in checked_fields]
         if kind == "PAN":
             missing.extend(f"{root} or PVObject_Commercial/{form}" for form, root in PAN_DIMENSIONS.items()
                            if root not in checked_fields and form not in checked_fields)

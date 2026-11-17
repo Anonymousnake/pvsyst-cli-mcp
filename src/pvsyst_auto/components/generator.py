@@ -21,6 +21,9 @@ def direct_fields(lines, bounds):
         if match and (match[2].startswith("PVObject_") and re.fullmatch(r"pv\w+", match[4])
                       or match[2] != "Comment" and re.fullmatch(r"T[A-Z]\w*", match[4])):
             stack.append(match[4])
+        elif line.startswith("End of VarSimul="):
+            if stack and stack[-1] == "TVarSimul":
+                stack.pop()
         elif line.startswith("End of PVObject ") or line.startswith("End of T"):
             kind = line.removeprefix("End of PVObject ").removeprefix("End of ")
             kind = OBJECT_CLOSE_ALIAS.get(kind, kind)

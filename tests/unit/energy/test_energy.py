@@ -14,7 +14,11 @@ from pvsyst_auto.energy import auxiliaries, iam, inverter_temperature, soiling
 from pvsyst_auto.energy.load import create_load_variant
 from pvsyst_auto.energy.peak import peak_shaving_state
 from pvsyst_auto.energy.profiles import prepare_load_profile
-from pvsyst_auto.energy.storage import create_grid_storage_variant
+from pvsyst_auto.energy.storage import (
+    create_grid_storage_variant,
+    decode_subhour_schedule,
+    encode_subhour_schedule,
+)
 from pvsyst_auto.energy.system import create_grid_storage_system
 from pvsyst_auto.energy.unavailability import system_unavail_state
 from pvsyst_auto.project.variants import VariantStore
@@ -403,6 +407,136 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("PVObject_Ombrage=pvShading", vc0_after)
         self.assertNotIn("VarList, list of=", vc0_after)
         self.assertIn("Flags=$00100000", vc0_after)
+
+    def test_powershift_peakshaving_from_scratch_and_builtin_li_btr(self):
+        from pvsyst_auto.energy.peak import create_peak_shaving_variant
+
+        # Verify exact TParSimulSeries base62 roundtrip matches PVsyst 8.1.7 _DEMO_Utility.VCA encoding
+        chg_slots = [0.0] * 18 + [0.3] * 16 + [0.0] * 14
+        encoded_chg = encode_subhour_schedule(chg_slots, maximum=1.0)
+        self.assertTrue(encoded_chg.startswith("48+300000+0+0+"))
+        self.assertIn("+NPc+NPc+", encoded_chg)
+        self.assertEqual(decode_subhour_schedule(encoded_chg), chg_slots)
+
+        dis_slots = [3000.0] * 14 + [0.0] * 24 + [3000.0] * 10
+        encoded_dis = encode_subhour_schedule(dis_slots)
+        self.assertTrue(encoded_dis.startswith("48+30+NPc+"))
+        self.assertEqual(decode_subhour_schedule(encoded_dis), dis_slots)
+
+        shaded = (
+            "PVObject_=pvVCalcul\n  Comment=Fixture\n  Version=8.1.7\n  Flags=$00100001\n"
+            + "  PVObject_PVMainArray=pvMainArray\n    Flags=$01900400\n    Flags2=$082A\n"
+            + "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.7\n      Flags=$00\n"
+            + "      InjectionPointNode Start;\n        Children=Start\n          InverterNode Start;\n"
+            + "            NElements=1\n            SubArrayId=1\n            SubArrayName=PV Array\n"
+            + "            Children=Start\n              MPPTNode Start;\n                NElements=1\n"
+            + "                SubArrayId=1\n                SubArrayName=PV Array\n"
+            + "                Children=Start\n                  StringNode Start;\n"
+            + "                    NElements=2\n                    SubArrayId=1\n"
+            + "                    SubArrayName=PV Array\n                  StringNode End;\n"
+            + "                Children=End\n              MPPTNode End;\n            Children=End\n"
+            + "          InverterNode End;\n        Children=End\n      InjectionPointNode End;\n"
+            + "    End of PVObject pvCircuit\n"
+            + "    PVObject_=pvSubArray\n      Comment=PV Array\n      Version=8.1.7\n      Flags=$019E1002\n"
+            + "      Flags2=$20\n      SubArrayId=1\n      NModSerie=10\n      NStringCh=2\n"
+            + "      NInverter=1\n      NInvMPPT=1\n      NoOrientation=1\n      NStrOrient1=2\n"
+            + "    End of PVObject pvSubArray\n  End of PVObject pvMainArray\n"
+            + "  Orientations, list of=1 TOrientGroup\n"
+            + "    PVObject_=pvOrient\n      Version=8.1.7\n      Flags=$00\n      NoOrient=1\n"
+            + "      FieldType=FixedPlane\n      FieldTilt=20.0\n      FieldAzim=0.0\n"
+            + "    End of TOrientGroup\n  End of Orientations\n"
+            + "  PVObject_Ombrage=pvShading\n    Flags=$00\n  End of PVObject pvShading\n"
+            + "  PVObject_System=pvSystem\n    Flags=$00\n    SystemType=Grid\n  End of PVObject pvSystem\n"
+            + "  VarList, list of=1 TVarSimul\n    VarSimul_1=E_Grid\n  End of the List VarList\n"
+            + "End of PVObject pvVCalcul\n"
+        )
+        self.source(shaded)
+        builtin_batt = {
+            "file_name": "Generic_LI_Module_180Ah.BTR",
+            "library": "builtin",
+            "series_count": 2,
+            "parallel_count": 4,
+            "monthly_temperature_c": [20] * 12,
+            "cycle_sow": 1,
+            "static_sow": 1,
+        }
+        ps_base = {
+            **STORAGE,
+            "strategy": "power_shift",
+            "charging_strategy": "pv_prod_fraction",
+            "charging_pv_fraction": 0.3,
+            "charging_schedule_48": chg_slots,
+            "discharging_strategy": "specified_hours",
+            "discharging_power_kw": 3.0,
+            "discharging_schedule_48": [3.0] * 12 + [0.0] * 24 + [3.0] * 12,
+        }
+        res_ps = create_grid_storage_system(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+            battery=builtin_batt, storage=ps_base, load_manifest_name=None, dry_run=False,
+        )
+        vc1 = self.created(res_ps)
+        self.assertIn("BatteryFile=Generic_LI_Module_180Ah.BTR\r\n", vc1)
+        self.assertIn("Strategy=PowerShift\r\n", vc1)
+        self.assertIn("Varident=FPVChMx\r\n", vc1)
+        self.assertIn("Varident=EDisMax\r\n", vc1)
+        self.assertIn("PVObject_Ombrage=pvShading\r\n", vc1)
+        self.assertNotIn("VarList, list of=", vc1)
+        self.assertEqual(res_ps["battery_library"], "builtin")
+        params = self.store.inspect_parameters("Fixture.PRJ", "VC1")
+        self.assertEqual(params["grid_storage"]["mode"], "stored")
+        self.assertEqual(params["grid_storage"]["charging_schedule_48"], chg_slots)
+
+        # Switch VC1 -> VC2 (SpecChargPower + Night)
+        res_ps2 = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC1", new_variant="VC2",
+            updates={
+                "charging_strategy": "spec_charg_power",
+                "charging_power_kw": 4.0,
+                "charging_schedule_48": [0.0] * 18 + [4.0] * 16 + [0.0] * 14,
+                "discharging_strategy": "night",
+                "discharging_power_kw": 2.5,
+            },
+            dry_run=False,
+        )
+        self.assertEqual(res_ps2["status"], "created", res_ps2)
+        vc2 = (self.root / "Projects/Fixture.VC2").read_text(encoding="utf-8")
+        self.assertIn("ChargingStrategy=SpecChargPower", vc2)
+        self.assertIn("DischStrategy=Night", vc2)
+        self.assertNotIn("DischargingPowerParSim", vc2)
+
+        # Unsupported PowerShift + AfterSunset fails closed
+        bad_ps = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC1", new_variant="VC3",
+            updates={"discharging_strategy": "after_sunset", "discharging_power_kw": 2.0},
+            dry_run=False,
+        )
+        self.assertEqual(bad_ps["status"], "blocked")
+
+        # Create PeakShaving from scratch on 3D VC0 -> VC4, then switch hour_window -> VC5
+        res_pk = create_grid_storage_system(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC4",
+            battery=builtin_batt,
+            storage={
+                **STORAGE,
+                "strategy": "peak_shaving",
+                "charging_strategy": "pv_above_thresh",
+                "discharging_strategy": "after_sunset",
+                "grid_limit_kw": 4.5,
+            },
+            dry_run=False,
+        )
+        self.assertEqual(res_pk["status"], "created", res_pk)
+        vc4 = (self.root / "Projects/Fixture.VC4").read_text(encoding="utf-8")
+        self.assertIn("PLimGrid=4.5", vc4)
+        self.assertIn("Strategy=PeakShaving", vc4)
+        res_pk2 = create_peak_shaving_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC4", new_variant="VC5",
+            discharge={"mode": "hour_window", "start_hour": 19, "end_hour": 6}, dry_run=False,
+        )
+        self.assertEqual(res_pk2["status"], "created", res_pk2)
+        vc5 = (self.root / "Projects/Fixture.VC5").read_text(encoding="utf-8")
+        self.assertIn("DischStrategy=MinMaxHour", vc5)
+        self.assertIn("HourBegDisch=19", vc5)
 
 
 if __name__ == "__main__":

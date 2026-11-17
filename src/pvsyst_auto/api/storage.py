@@ -43,7 +43,7 @@ def pvsyst_create_peak_shaving_variant(project: StrictStr, source_variant: Stric
                                        variant_name: StrictStr | None = None,
                                        add_utf8_bom: StrictBool = False) -> dict:
     """Create a new variant updating the PeakShaving discharge timing (after_sunset or
-    hour_window with 0..23 start/end hours) on an existing PeakShaving/PVToGridMin template."""
+    hour_window with 0..23 start/end hours) on an existing PeakShaving storage variant."""
     return create_peak_shaving_variant(variant_store(), project=project, source_variant=source_variant,
                                        new_variant=new_variant, discharge=discharge.model_dump(),
                                        dry_run=dry_run, variant_name=variant_name,
@@ -69,7 +69,8 @@ def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: Stric
                                        availability: GridAvailabilityProfile | None = None,
                                        allow_grid_export: StrictBool | None = None) -> dict:
     """Create a new variant updating SOC thresholds, AC charge/discharge power limits,
-    converter efficiencies, strategy, or allow_grid_export on an existing AC storage variant."""
+    converter efficiencies, strategy/schedules (SelfConsumption, WeakGrid, PeakShaving,
+    PowerShift), grid_limit_kw, or allow_grid_export on an existing AC storage variant."""
     return create_grid_storage_variant(variant_store(), project=project, source_variant=source_variant,
                                        new_variant=new_variant,
                                        updates=updates.model_dump(exclude_none=True), dry_run=dry_run,
@@ -79,15 +80,18 @@ def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: Stric
 @categorized_tool()
 def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: StrictStr,
                                      new_variant: StrictStr, battery: BatteryPackDesign,
-                                     storage: GridStorageDesign, load_manifest_name: StrictStr,
+                                     storage: GridStorageDesign,
+                                     load_manifest_name: StrictStr | None = None,
                                      dry_run: StrictBool = True,
                                      availability: GridAvailabilityProfile | None = None,
                                      allow_grid_export: StrictBool | None = None) -> dict:
-    """Create a new centralized AC-coupled storage variant (SelfConsumption or WeakGrid)
-    with battery pack hardware, SOC/power/efficiency parameters, and a bound hourly load."""
+    """Create a new centralized AC-coupled storage variant (SelfConsumption, WeakGrid,
+    PeakShaving, or PowerShift) with workspace or builtin battery pack hardware, SOC/power/
+    efficiency parameters, optional 48-slot schedules or grid limit, and optional hourly load."""
     return create_grid_storage_system(variant_store(), project=project, source_variant=source_variant,
                                       new_variant=new_variant, battery=battery.model_dump(),
-                                      storage=storage.model_dump(), load_manifest_name=load_manifest_name,
+                                      storage=storage.model_dump(exclude_none=True),
+                                      load_manifest_name=load_manifest_name,
                                       dry_run=dry_run,
                                       availability=availability.model_dump() if availability else None,
                                       allow_grid_export=allow_grid_export)
