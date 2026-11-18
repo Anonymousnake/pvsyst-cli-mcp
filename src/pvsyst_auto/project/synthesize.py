@@ -93,3 +93,71 @@ def synthesize_tracker_shading_object(id: int, comment: str, origin: tuple[float
         "        AxisOrig=2",
         "      End of PVObject pvShdArrayTracking",
     ]
+
+
+def synthesize_shed_shading_object(id: int, comment: str, origin: tuple[float, float, float], tilt: float) -> list[str]:
+    """Synthesize a fixed-shed shading array object."""
+    return [
+        f"      PVObject_{id}=pvShdArray",
+        f"        Comment={comment}",
+        f"        Version={SYNTH_VERSION}",
+        "        Flags=$02208064",
+        f"        NoObjCreated={2000 + id}",
+        "        ColorTechn=$00FF0000",
+        "        ColorSurf=$00FF9999",
+        "        ColorBord=$00505050",
+        f"        DOrigine={origin[0]:.6f},{origin[1]:.6f},{origin[2]:.6f}",
+        f"        DInclin={tilt:.6f}",
+        "        BaseSlope=0.000000",
+        "        DAzimut=0.000000",
+        "        Source=osPVsyst",
+        "      NElemChamps=1",
+        "      NoOrient=2",
+        "      PanneauPVName=TemplateModule;1.000;2.000",
+        "      ModSpacingX=0.020",
+        "      ModSpacingY=0.020",
+        "      NModInHeight=2",
+        "      NModInWidth=25",
+        "      ModuleOrient=moPortrait",
+        "      DXModule=2.141",
+        "      DYModule=26.780",
+        "        LongShed=4.282000",
+        "        LargShed=26.780000",
+        "        Cadre=0.000,0.000,0.000,0.000,",
+        "        TypeOrigine=2",
+        "        PitchNS=0.000",
+        "        PitchEW=0.000",
+        "        AxisOrig=2",
+        "      End of PVObject pvShdArray",
+    ]
+
+
+def synthesize_site_block(site_name: str, site_identity: str, lat: float, lon: float, alt: float) -> list[str]:
+    """Synthesize a valid pvSite block."""
+    return [
+        "PVObject_=pvSite",
+        f"  Comment={site_identity};;",
+        f"  Version={SYNTH_VERSION}",
+        "  Flags=$0006083F",
+        f"  NomF={site_name}",
+        f"  Site={site_identity}",
+        f"  Latitude={lat:.4f}",
+        f"  Longitude={lon:.4f}",
+        f"  Altitude={int(alt)}",
+        "  TimeZone=0.0",
+        "  HLeg=False",
+        "  UnitsDisp=kWh_m2_m",
+        "  Albedo=0.20",
+        "End of PVObject pvSite",
+    ]
+
+
+def synthesize_meteo_block(met_name: str, site_identity: str) -> list[str]:
+    """Synthesize a valid pvMeteo block."""
+    return [
+        "PVObject_=pvMeteo",
+        "  Flags=$010084E1",
+        f"  NomF={met_name}",
+        f"  SiteM={site_identity}",
+        "End of PVObject pvMeteo",
+    ]
