@@ -114,6 +114,59 @@ class VariantTests(unittest.TestCase):
             self.store.clone("Other.PRJ", "VC0", "VC8", source_project="../Example.PRJ")
         self.assertFalse((project.parent / "Other.VC8").exists())
 
+    def _seed_saved_results(self):
+        cold = self.original.read_bytes().replace(
+            b"  Version=8.1.6\r\n", b"  Version=8.1.6\r\n  Flags=$001040A0\r\n"
+        ).replace(b"    Flags=$60\r\n", b"    Flags=$61\r\n")
+        cache = (
+            b"  VarList, list of=1 TVarSimul\r\n"
+            b"    VarSimul_1=E_Grid\r\n"
+            b"      ValMonth=1.5,2.25\r\n"
+            b"    End of VarSimul=E_Grid\r\n"
+            b"  End of the List VarList\r\n"
+            b"  Histogram=THistogramme\r\n    Ident=E_Grid\r\n  End of THistogramme\r\n"
+            b"  Histogram=THistogramme\r\n    Ident=GlobInc\r\n  End of THistogramme\r\n"
+        )
+        cached = cold.replace(b"Flags=$001040A0", b"Flags=$001040A1").replace(
+            b"End of PVObject pvVCalcul\r\n", cache + b"End of PVObject pvVCalcul\r\n"
+        )
+        self.original.write_bytes(cached)
+        return cached, cold
+
+    def test_update_components_clears_saved_results(self):
+        cached, cold = self._seed_saved_results()
+        before = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)
+        self.assertTrue(before["saved_results"]["present"])
+        updated = self.store.update("Example.PRJ", "VC0", {"OND": "new.OND"}, before["sha256"])
+        self.assertEqual(self.original.read_bytes(), cold.replace(b"GInverter=original.OND", b"GInverter=new.OND", 1))
+        after = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)
+        self.assertFalse(after["saved_results"]["present"])
+        self.assertEqual(after["sha256"], updated["sha256"])
+        backup = self.original.parent / ".mcp-variant-backups" / updated["backup_name"]
+        self.assertEqual(backup.read_bytes(), cached)
+
+    def test_clone_with_component_change_clears_saved_results(self):
+        cached, cold = self._seed_saved_results()
+        self.store.clone("Example.PRJ", "VC0", "VC1", {"OND": "new.OND"})
+        self.assertEqual(self.original.with_suffix(".VC1").read_bytes(),
+                         cold.replace(b"GInverter=original.OND", b"GInverter=new.OND", 1))
+        self.assertEqual(self.original.read_bytes(), cached)
+
+    def test_clone_without_component_change_preserves_saved_results(self):
+        cached, _ = self._seed_saved_results()
+        for target, updates in (("VC1", None), ("VC2", {"OND": "original.OND"})):
+            with self.subTest(updates=updates):
+                self.store.clone("Example.PRJ", "VC0", target, updates)
+                self.assertEqual(self.original.with_suffix(f".{target}").read_bytes(), cached)
+
+    def test_component_change_with_no_saved_results(self):
+        before = self.original.read_bytes()
+        expected = before.replace(b"GInverter=original.OND", b"GInverter=new.OND", 1)
+        self.store.clone("Example.PRJ", "VC0", "VC1", {"OND": "new.OND"})
+        self.store.update("Example.PRJ", "VC0", {"OND": "new.OND"})
+        self.assertEqual(self.original.with_suffix(".VC1").read_bytes(), expected)
+        self.assertEqual(self.original.read_bytes(), expected)
+
     def test_update_and_restore_with_hash_and_backup(self):
         initial = self.store.inspect("Example.PRJ", "VC0")
         changed = self.store.update("Example.PRJ", "VC0", {"GEN": "new.GEN"},

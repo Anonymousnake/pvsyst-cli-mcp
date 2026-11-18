@@ -229,6 +229,27 @@ class VariantStore:
         self._text(candidate)
         return candidate
 
+    def _replace_and_clear_results(self, data: bytes, updates: dict[str, str], subarray_id: int) -> bytes:
+        candidate = self._replace(data, updates, subarray_id)
+        if candidate == data:
+            return candidate
+
+        _, lines = self._text(candidate)
+        # Cacheless variants can omit root Flags, which strip_result_cache requires.
+        if not any(line.strip().startswith("VarList, list of=")
+                   or line.strip() == "Histogram=THistogramme"
+                   or re.fullmatch(r"  Flags=\$[0-9A-Fa-f]+\s*", line)
+                   for line in lines):
+            return candidate
+
+        from pvsyst_auto.native.headless import strip_result_cache
+
+        lines, _ = strip_result_cache(lines)
+        bom = b"\xef\xbb\xbf" if candidate.startswith(b"\xef\xbb\xbf") else b""
+        candidate = bom + "".join(lines).encode("utf-8")
+        self._text(candidate)
+        return candidate
+
     @staticmethod
     def _orientation(lines: list[str], number: int) -> tuple[int, int]:
         if not isinstance(number, int) or isinstance(number, bool) or number < 1:
@@ -517,7 +538,7 @@ class VariantStore:
             data = self._read(source)
             _, lines = self._text(data)
             self._sections(lines)
-            candidate = self._replace(data, updates, subarray_id) if updates else data
+            candidate = self._replace_and_clear_results(data, updates, subarray_id) if updates else data
             if any(path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
                 raise FileExistsError(target.name)
             fileio.publish_new(target, candidate)
@@ -532,7 +553,7 @@ class VariantStore:
             path = self._path(project, variant)
             data = self._read(path)
             self._check_hash(data, expected_sha256)
-            candidate = self._replace(data, updates, subarray_id)
+            candidate = self._replace_and_clear_results(data, updates, subarray_id)
             backup = self._backup(path, data)
             self._replace_checked(path, data, candidate)
             return {"project": project, "variant": variant.upper(), "backup_name": backup,
