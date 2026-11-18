@@ -65,7 +65,16 @@ class ObjectBlock:
     def one(self, name: str) -> tuple[int, str]:
         values = self.fields.get(name, [])
         if len(values) != 1:
-            raise ValueError(f"{name} must occur exactly once in {self.path}")
+            location = f"{self.object_type} at line {self.line}"
+            if self.path:
+                location += f" ({self.path})"
+            occurrences = f"found {len(values)}"
+            if values:
+                lines = ", ".join(str(index + 1) for index, _ in values)
+                occurrences += f", at lines {lines}"
+            raise ValueError(
+                f"{name} must occur exactly once in {location} ({occurrences})"
+            )
         return values[0]
 
 
