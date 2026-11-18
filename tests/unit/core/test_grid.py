@@ -775,6 +775,123 @@ class GridTests(unittest.TestCase):
         set_power_sharing(lines, arrays, 1, False)
         self.assertEqual(lines, orig)
 
+    def test_grid_limit_load_horizon_and_p50_edge_guards(self):
+        import math
+        from pvsyst_auto.native.grid_limit import grid_limit_state, replace_grid_limit
+        from pvsyst_auto.native.horizon import _number as horizon_number, replace_horizon
+        from pvsyst_auto.native.load import _number as load_number, create_native_load_variant, native_load_block
+        from pvsyst_auto.native.p50 import _step as p50_step, p50_state, replace_p50
+
+        # 1. grid_limit clears full 0x05000000 mask on mode="none" (no orphan 0x04000000)
+        gl_lines = [
+            "PVObject_=pvVCalcul\n",
+            "  Version=8.1.6\n",
+            "  Flags=$00100000\n",
+            "  PVObject_System=pvSystem\n",
+            "    Flags=$04000000\n",
+            "    SystemType=Grid\n",
+            "  End of PVObject pvSystem\n",
+            "End of PVObject pvVCalcul\n",
+        ]
+        sys_bounds = (3, 6)
+        en = replace_grid_limit(gl_lines, sys_bounds, {"mode": "constant", "limit_kw": 12.5})
+        self.assertEqual(en["after"], {"mode": "constant", "limit_kw": 12.5, "point": "injection", "separate_loss": True})
+        self.assertIn("    Flags=$05000000\n", gl_lines)
+        dis = replace_grid_limit(gl_lines, (3, 8), {"mode": "none"})
+        self.assertEqual(dis["after"], {"mode": "none", "limit_kw": None, "point": "inverter", "separate_loss": None})
+        self.assertIn("    Flags=$00\n", gl_lines)
+        self.assertEqual(grid_limit_state(gl_lines, (3, 6))["point"], "inverter")
+
+        # 2. load.py accepts 0x04000000 / 0x05000000 Grid flags, strips cache unconditionally, normalizes -0.0
+        self.assertEqual(math.copysign(1.0, load_number(-0.0, "val")), 1.0)
+        monthly_blk = native_load_block(
+            {"mode": "monthly", "monthly_energy_kwh": [-0.0] * 11 + [10.0]}, "\n"
+        )
+        self.assertNotIn("-0.000", monthly_blk)
+        daily_blk = native_load_block(
+            {"mode": "daily", "daily_power_kw": [-0.0] * 23 + [1.5]}, "\n"
+        )
+        self.assertNotIn("-0.000", daily_blk)
+
+        for sys_flag in ("$04000000", "$05000000", "$05010000"):
+            vc_src = (
+                "PVObject_=pvVCalcul\n  Comment=LoadSrc\n  Version=8.1.6\n  Flags=$00100001\n"
+                "  PVObject_PVMainArray=pvMainArray\n    Flags=$00100400\n    Flags2=$082A\n"
+                "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.6\n      Flags=$00\n"
+                "      InjectionPointNode Start;\n        Children=Start\n"
+                + GROUP
+                + "        Children=End\n      InjectionPointNode End;\n    End of PVObject pvCircuit\n"
+                + ARRAY.replace("NInvMPPT=1", "Version=8.1.6\n  Flags=$001E0002\n  NInvMPPT=1")
+                + "  End of PVObject pvMainArray\n"
+                "  PVObject_System=pvSystem\n    Flags=" + sys_flag + "\n    SystemType=Grid\n  End of PVObject pvSystem\n"
+                "  SimulPlots=Start\n  End of List SimulPlots\n"
+                "  Histogram=THistogramme\n    Ident=Test\n  End of THistogramme\n"
+                "End of PVObject pvVCalcul\n"
+            )
+            self.path.write_bytes(vc_src.replace("\n", "\r\n").encode("utf-8"))
+            target_vc = self.root / "Projects" / "Example.VC1"
+            target_vc.unlink(missing_ok=True)
+            created = create_native_load_variant(
+                self.store, project="Example.PRJ", source_variant="VC0", new_variant="VC1",
+                load={"mode": "constant", "constant_kw": 2.0}, dry_run=False,
+            )
+            self.assertEqual(created["status"], "created", created)
+            out_raw = target_vc.read_bytes()
+            self.assertNotIn(b"THistogramme", out_raw)
+            self.assertIn(b"  Flags=$00180000\r\n", out_raw)
+
+        # 3. horizon.py catches OverflowError, guards empty lines, normalizes -0.0
+        with self.assertRaises(ValueError):
+            horizon_number(10 ** 400, "huge", -180, 180)
+        self.assertEqual(math.copysign(1.0, horizon_number(-0.0, "az", -180, 180, True)), 1.0)
+        pts = [[-60.0, -0.0], [-20.0, 5.0], [-0.0, 8.0], [40.0, -0.0]]
+        with self.assertRaises(ValueError):
+            replace_horizon([], {"mode": "profile", "profile_name": "H1", "points": pts})
+        hz_lines = ["PVObject_=pvVCalcul\n", "  PVObject_PVMainArray=pvMainArray\n", "  End of PVObject pvMainArray\n", "End of PVObject pvVCalcul\n"]
+        hz_res = replace_horizon(hz_lines, {"mode": "profile", "profile_name": "H1", "points": pts})
+        self.assertNotIn("-0.0", "".join(hz_lines))
+        for px, py in hz_res["after"]["points"]:
+            self.assertEqual(math.copysign(1.0, px) if px == 0 else 1.0, 1.0)
+            self.assertEqual(math.copysign(1.0, py) if py == 0 else 1.0, 1.0)
+
+        # 4. p50.py normalizes -0.0 to 0.0
+        self.assertEqual(math.copysign(1.0, p50_step(-0.0, "YearDevFromAver", -100, 100)), 1.0)
+        p50_lines = [
+            "PVObject_=pvVCalcul\n",
+            "  Version=8.1.6\n",
+            "  Flags=$01800001\n",
+            "  P50_P90=TP50_P90\n",
+            "    MeteoKind=TMY\n",
+            "    P90Custom=90\n",
+            "    PxxCustom=95\n",
+            "    PxxReport=True\n",
+            "    PxxMainResults=False\n",
+            "    PlotKind=1\n",
+            "    YearDevFromAver=-0.000\n",
+            "    MeteoAnnualVariab=3.000\n",
+            "    PVModelVariab=1.000\n",
+            "    InverterVariab=0.500\n",
+            "    SoilingVariab=0.000\n",
+            "    DegradVariab=0.000\n",
+            "    CustomVariab=0.000\n",
+            "    CustomVarLabel=Grid\n",
+            "  EndTags\n",
+            "  SimulPlots=Start\n",
+            "End of PVObject pvVCalcul\n",
+        ]
+        st = p50_state(p50_lines)
+        self.assertEqual(math.copysign(1.0, st["values"]["YearDevFromAver"]), 1.0)
+        updates = {
+            **st["values"],
+            "P90Custom": 85,
+            "YearDevFromAver": -0.0,
+            "SoilingVariab": -0.0,
+        }
+        rep = replace_p50(p50_lines, updates)
+        self.assertNotIn("-0.000", "".join(p50_lines))
+        self.assertEqual(math.copysign(1.0, rep["after"]["YearDevFromAver"]), 1.0)
+        self.assertEqual(math.copysign(1.0, rep["after"]["SoilingVariab"]), 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

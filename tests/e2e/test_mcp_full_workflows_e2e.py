@@ -42,7 +42,7 @@ def _decode(reply):
 
 
 def _ini_paths():
-    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
     return [
         local / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini",
         local / "PVsystCLI" / "8.1" / "Admin" / "PVsystCLI.ini",

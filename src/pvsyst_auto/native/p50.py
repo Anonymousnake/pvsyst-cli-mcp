@@ -41,7 +41,7 @@ def _step(value, label, low, high):
     scaled = Decimal(str(number)) * 1000
     if scaled != scaled.to_integral_value():
         raise ValueError(f"{label} must use 0.001 increments")
-    return number
+    return 0.0 if number == 0 else number
 
 
 def _label(value):

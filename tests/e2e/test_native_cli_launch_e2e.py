@@ -27,8 +27,8 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 REPO = Path(__file__).resolve().parents[2]
 _ALLOWED_INPUTS = frozenset({
     "sfi_name", "met_name", "rvt_name", "params_name", "site_name",
-    "start_date", "end_date", "time_step", "report_language",
-    "recompute_shading", "log_level",
+    "synthetic_weather", "start_date", "end_date", "time_step",
+    "report_language", "recompute_shading", "log_level",
 })
 
 

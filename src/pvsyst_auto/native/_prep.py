@@ -169,18 +169,20 @@ def _verify_new(path, source_bytes, expect_parts, expect_tables, expect_modules,
         obs_list = scene_context.get("obstacles") or []
         obs_meshes = [o for o in obs_list if o["kind"] != "tree"]
         obs_trees = [o for o in obs_list if o["kind"] == "tree"]
+        anchor_turn = 360.0 - next(
+            item for item in scene_context["source"]["orientations"] if item["id"] == 1
+        )["azimuth_deg"]
         try:
             hardware = verify_grouped_hardware(parsed(source_bytes), blocks, source_text.splitlines(True),
                                                target_text.splitlines(True), scene_context["source"])
             house_geometry = verify_house_geometry(blocks, target_text.splitlines(True), scene_context["house"],
-                                                    scene_context["source"], extra_meshes=obs_meshes)
+                                                    scene_context["source"], anchor_turn=anchor_turn,
+                                                    extra_meshes=obs_meshes)
             pv_geometry = verify_pv_geometry(blocks, scene_context["tables"], scene_context["modules"],
-                                             scene_context["source"])
+                                             scene_context["source"], anchor_turn=anchor_turn)
             tree_geometry = verify_tree_obstacles(
                 blocks, obs_trees, scene_context["source"],
-                anchor_turn=360.0 - next(
-                    item for item in scene_context["source"]["orientations"] if item["id"] == 1
-                )["azimuth_deg"],
+                anchor_turn=anchor_turn,
             )
         except ValueError as exc:
             raise error_cls(str(exc)) from exc

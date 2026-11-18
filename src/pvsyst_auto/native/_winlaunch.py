@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ctypes
 import locale
+import math
 import os
 import shutil
 import subprocess
@@ -33,6 +34,7 @@ _PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
 _GENERIC_WRITE = 0x40000000
 _GENERIC_READ = 0x80000000
 _FILE_SHARE_RW = 0x00000003
+_FILE_SHARE_DELETE = 0x00000004
 _CREATE_ALWAYS = 2
 _OPEN_EXISTING = 3
 _FILE_ATTRIBUTE_NORMAL = 0x80
@@ -55,9 +57,15 @@ _TOKEN_QUERY = 0x0008
 _TOKEN_USER = 1
 _DACL_SECURITY_INFORMATION = 0x00000004
 
-_u = ctypes.WinDLL("user32", use_last_error=True)
-_k = ctypes.WinDLL("kernel32", use_last_error=True)
-_adv = ctypes.WinDLL("advapi32", use_last_error=True)
+_u = _k = _adv = None
+_CreateDesktopW = _CloseDesktop = _CreateProcessW = _CreateFileW = _CloseHandle = None
+_TerminateProcess = _WaitForSingleObject = _GetExitCodeProcess = _ResumeThread = None
+_CreateJobObjectW = _SetInformationJobObject = _AssignProcessToJobObject = None
+_TerminateJobObject = _InitializeProcThreadAttributeList = _UpdateProcThreadAttribute = None
+_DeleteProcThreadAttributeList = _GetProcessWindowStation = _GetUserObjectInformationW = None
+_SetUserObjectSecurity = _GetCurrentProcess = _LocalFree = _OpenProcessToken = None
+_GetTokenInformation = _ConvertSidToStringSidW = None
+_ConvertStringSecurityDescriptorToSecurityDescriptorW = None
 
 
 class _STARTUPINFOW(ctypes.Structure):
@@ -124,102 +132,108 @@ class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
     ]
 
 
-_CreateDesktopW = _u.CreateDesktopW
-_CreateDesktopW.restype = wintypes.HANDLE
-_CreateDesktopW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
-                            wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p)
-_CloseDesktop = _u.CloseDesktop
-_CloseDesktop.argtypes = (wintypes.HANDLE,)
-_CloseDesktop.restype = wintypes.BOOL
+if os.name == "nt":
+    _u = ctypes.WinDLL("user32", use_last_error=True)
+    _k = ctypes.WinDLL("kernel32", use_last_error=True)
+    _adv = ctypes.WinDLL("advapi32", use_last_error=True)
 
-_CreateProcessW = _k.CreateProcessW
-_CreateProcessW.restype = wintypes.BOOL
-_CreateProcessW.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
-                            wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
-                            ctypes.POINTER(_STARTUPINFOW), ctypes.POINTER(_PROCESS_INFORMATION))
-_CreateFileW = _k.CreateFileW
-_CreateFileW.restype = wintypes.HANDLE
-_CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                         ctypes.POINTER(_SECURITY_ATTRIBUTES), wintypes.DWORD, wintypes.DWORD,
-                         wintypes.HANDLE)
-_CloseHandle = _k.CloseHandle
-_CloseHandle.argtypes = (wintypes.HANDLE,)
-_CloseHandle.restype = wintypes.BOOL
-_TerminateProcess = _k.TerminateProcess
-_TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
-_TerminateProcess.restype = wintypes.BOOL
-_WaitForSingleObject = _k.WaitForSingleObject
-_WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
-_WaitForSingleObject.restype = wintypes.DWORD
-_GetExitCodeProcess = _k.GetExitCodeProcess
-_GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
-_GetExitCodeProcess.restype = wintypes.BOOL
-_ResumeThread = _k.ResumeThread
-_ResumeThread.argtypes = (wintypes.HANDLE,)
-_ResumeThread.restype = wintypes.DWORD
-_CreateJobObjectW = _k.CreateJobObjectW
-_CreateJobObjectW.restype = wintypes.HANDLE
-_CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
-_SetInformationJobObject = _k.SetInformationJobObject
-_SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
-_SetInformationJobObject.restype = wintypes.BOOL
-_AssignProcessToJobObject = _k.AssignProcessToJobObject
-_AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
-_AssignProcessToJobObject.restype = wintypes.BOOL
-_TerminateJobObject = _k.TerminateJobObject
-_TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
-_TerminateJobObject.restype = wintypes.BOOL
-_InitializeProcThreadAttributeList = _k.InitializeProcThreadAttributeList
-_InitializeProcThreadAttributeList.argtypes = (ctypes.c_void_p, wintypes.DWORD,
-                                               wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t))
-_InitializeProcThreadAttributeList.restype = wintypes.BOOL
-_UpdateProcThreadAttribute = _k.UpdateProcThreadAttribute
-_UpdateProcThreadAttribute.argtypes = (ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t,
-                                       ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
-                                       ctypes.POINTER(ctypes.c_size_t))
-_UpdateProcThreadAttribute.restype = wintypes.BOOL
-_DeleteProcThreadAttributeList = _k.DeleteProcThreadAttributeList
-_DeleteProcThreadAttributeList.argtypes = (ctypes.c_void_p,)
-_DeleteProcThreadAttributeList.restype = None
+    _CreateDesktopW = _u.CreateDesktopW
+    _CreateDesktopW.restype = wintypes.HANDLE
+    _CreateDesktopW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
+                                wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p)
+    _CloseDesktop = _u.CloseDesktop
+    _CloseDesktop.argtypes = (wintypes.HANDLE,)
+    _CloseDesktop.restype = wintypes.BOOL
 
-_GetProcessWindowStation = _u.GetProcessWindowStation
-_GetProcessWindowStation.restype = wintypes.HANDLE
-_GetUserObjectInformationW = _u.GetUserObjectInformationW
-_GetUserObjectInformationW.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
-                                       wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
-_GetUserObjectInformationW.restype = wintypes.BOOL
-_SetUserObjectSecurity = _u.SetUserObjectSecurity
-_SetUserObjectSecurity.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p)
-_SetUserObjectSecurity.restype = wintypes.BOOL
+    _CreateProcessW = _k.CreateProcessW
+    _CreateProcessW.restype = wintypes.BOOL
+    _CreateProcessW.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
+                                wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+                                ctypes.POINTER(_STARTUPINFOW), ctypes.POINTER(_PROCESS_INFORMATION))
+    _CreateFileW = _k.CreateFileW
+    _CreateFileW.restype = wintypes.HANDLE
+    _CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                             ctypes.POINTER(_SECURITY_ATTRIBUTES), wintypes.DWORD, wintypes.DWORD,
+                             wintypes.HANDLE)
+    _CloseHandle = _k.CloseHandle
+    _CloseHandle.argtypes = (wintypes.HANDLE,)
+    _CloseHandle.restype = wintypes.BOOL
+    _TerminateProcess = _k.TerminateProcess
+    _TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _TerminateProcess.restype = wintypes.BOOL
+    _WaitForSingleObject = _k.WaitForSingleObject
+    _WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    _WaitForSingleObject.restype = wintypes.DWORD
+    _GetExitCodeProcess = _k.GetExitCodeProcess
+    _GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    _GetExitCodeProcess.restype = wintypes.BOOL
+    _ResumeThread = _k.ResumeThread
+    _ResumeThread.argtypes = (wintypes.HANDLE,)
+    _ResumeThread.restype = wintypes.DWORD
+    _CreateJobObjectW = _k.CreateJobObjectW
+    _CreateJobObjectW.restype = wintypes.HANDLE
+    _CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+    _SetInformationJobObject = _k.SetInformationJobObject
+    _SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+    _SetInformationJobObject.restype = wintypes.BOOL
+    _AssignProcessToJobObject = _k.AssignProcessToJobObject
+    _AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    _AssignProcessToJobObject.restype = wintypes.BOOL
+    _TerminateJobObject = _k.TerminateJobObject
+    _TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _TerminateJobObject.restype = wintypes.BOOL
+    _InitializeProcThreadAttributeList = _k.InitializeProcThreadAttributeList
+    _InitializeProcThreadAttributeList.argtypes = (ctypes.c_void_p, wintypes.DWORD,
+                                                   wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t))
+    _InitializeProcThreadAttributeList.restype = wintypes.BOOL
+    _UpdateProcThreadAttribute = _k.UpdateProcThreadAttribute
+    _UpdateProcThreadAttribute.argtypes = (ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t,
+                                           ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
+                                           ctypes.POINTER(ctypes.c_size_t))
+    _UpdateProcThreadAttribute.restype = wintypes.BOOL
+    _DeleteProcThreadAttributeList = _k.DeleteProcThreadAttributeList
+    _DeleteProcThreadAttributeList.argtypes = (ctypes.c_void_p,)
+    _DeleteProcThreadAttributeList.restype = None
 
-_GetCurrentProcess = _k.GetCurrentProcess
-_GetCurrentProcess.restype = wintypes.HANDLE
-_LocalFree = _k.LocalFree
-_LocalFree.argtypes = (wintypes.HLOCAL,)
-_LocalFree.restype = wintypes.HLOCAL
-_OpenProcessToken = _adv.OpenProcessToken
-_OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
-_OpenProcessToken.restype = wintypes.BOOL
-_GetTokenInformation = _adv.GetTokenInformation
-_GetTokenInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
-                                 wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
-_GetTokenInformation.restype = wintypes.BOOL
-_ConvertSidToStringSidW = _adv.ConvertSidToStringSidW
-_ConvertSidToStringSidW.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR))
-_ConvertSidToStringSidW.restype = wintypes.BOOL
-_ConvertStringSecurityDescriptorToSecurityDescriptorW = (
-    _adv.ConvertStringSecurityDescriptorToSecurityDescriptorW)
-_ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
-    wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.ULONG))
-_ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    _GetProcessWindowStation = _u.GetProcessWindowStation
+    _GetProcessWindowStation.restype = wintypes.HANDLE
+    _GetUserObjectInformationW = _u.GetUserObjectInformationW
+    _GetUserObjectInformationW.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                           wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+    _GetUserObjectInformationW.restype = wintypes.BOOL
+    _SetUserObjectSecurity = _u.SetUserObjectSecurity
+    _SetUserObjectSecurity.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p)
+    _SetUserObjectSecurity.restype = wintypes.BOOL
+
+    _GetCurrentProcess = _k.GetCurrentProcess
+    _GetCurrentProcess.restype = wintypes.HANDLE
+    _LocalFree = _k.LocalFree
+    _LocalFree.argtypes = (wintypes.HLOCAL,)
+    _LocalFree.restype = wintypes.HLOCAL
+    _OpenProcessToken = _adv.OpenProcessToken
+    _OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
+    _OpenProcessToken.restype = wintypes.BOOL
+    _GetTokenInformation = _adv.GetTokenInformation
+    _GetTokenInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                     wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+    _GetTokenInformation.restype = wintypes.BOOL
+    _ConvertSidToStringSidW = _adv.ConvertSidToStringSidW
+    _ConvertSidToStringSidW.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR))
+    _ConvertSidToStringSidW.restype = wintypes.BOOL
+    _ConvertStringSecurityDescriptorToSecurityDescriptorW = (
+        _adv.ConvertStringSecurityDescriptorToSecurityDescriptorW)
+    _ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.ULONG))
+    _ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
 
 
 def _fail(step: str) -> OSError:
     return OSError(0, "%s failed (winerror %d)" % (step, ctypes.get_last_error()))
 
 
-def _open_file(path: str, access: int, disposition: int, sa, step: str):
-    handle = _CreateFileW(path, access, _FILE_SHARE_RW, ctypes.byref(sa), disposition,
+def _open_file(path: str, access: int, disposition: int, sa, step: str,
+               share: int = _FILE_SHARE_RW):
+    handle = _CreateFileW(path, access, share, ctypes.byref(sa), disposition,
                           _FILE_ATTRIBUTE_NORMAL, None)
     if not handle or handle == _INVALID_HANDLE_VALUE:
         raise _fail(step)
@@ -311,8 +325,18 @@ def run(argv: list[str], cwd, timeout, *,
     ``OSError`` if an isolation step fails (never falls back to the default
     desktop).
     """
+    if os.name != "nt":
+        raise OSError("_winlaunch requires Windows")
     argv = [str(item) for item in argv]
-    timeout_ms = _INFINITE if timeout is None else max(0, int(timeout * 1000))
+    work_dir = None if cwd is None else os.fsdecode(os.fspath(cwd))
+    if timeout is None:
+        timeout_ms = _INFINITE
+    else:
+        if isinstance(timeout, float) and math.isnan(timeout):
+            raise ValueError("timeout must not be NaN")
+        timeout_ms = max(0, int(timeout * 1000))
+        if timeout_ms >= _INFINITE:
+            raise OverflowError("timeout is too large")
     # uuid4 is per-call random and independent of the Windows clock, so two
     # threads in one process can never collide on a desktop name; pid kept for
     # readable provenance only (nothing relies on the exact name format).
@@ -346,8 +370,11 @@ def run(argv: list[str], cwd, timeout, *,
             raise _fail("SetInformationJobObject")
 
         sa = _SECURITY_ATTRIBUTES(ctypes.sizeof(_SECURITY_ATTRIBUTES), None, True)
-        hout = _open_file(out_path, _GENERIC_WRITE, _CREATE_ALWAYS, sa, "CreateFileW(stdout)")
-        herr = _open_file(err_path, _GENERIC_WRITE, _CREATE_ALWAYS, sa, "CreateFileW(stderr)")
+        temp_share = _FILE_SHARE_RW | _FILE_SHARE_DELETE
+        hout = _open_file(out_path, _GENERIC_WRITE, _CREATE_ALWAYS, sa, "CreateFileW(stdout)",
+                          share=temp_share)
+        herr = _open_file(err_path, _GENERIC_WRITE, _CREATE_ALWAYS, sa, "CreateFileW(stderr)",
+                          share=temp_share)
         hnin = _open_file("NUL", _GENERIC_READ, _OPEN_EXISTING, sa, "CreateFileW(stdin)")
 
         size = ctypes.c_size_t(0)
@@ -355,9 +382,10 @@ def run(argv: list[str], cwd, timeout, *,
         if not size.value:
             raise _fail("InitializeProcThreadAttributeList(size)")
         attr_buffer = ctypes.create_string_buffer(size.value)
-        attr = ctypes.cast(attr_buffer, ctypes.c_void_p)
-        if not _InitializeProcThreadAttributeList(attr, 1, 0, ctypes.byref(size)):
+        raw_attr = ctypes.cast(attr_buffer, ctypes.c_void_p)
+        if not _InitializeProcThreadAttributeList(raw_attr, 1, 0, ctypes.byref(size)):
             raise _fail("InitializeProcThreadAttributeList")
+        attr = raw_attr
         handles = (wintypes.HANDLE * 3)(hnin, hout, herr)
         if not _UpdateProcThreadAttribute(attr, 0, _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                                           ctypes.cast(handles, ctypes.c_void_p),
@@ -376,7 +404,7 @@ def run(argv: list[str], cwd, timeout, *,
         command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
         flags = _EXTENDED_STARTUPINFO_PRESENT | _CREATE_SUSPENDED
         created = _CreateProcessW(
-            argv[0], command_line, None, None, True, flags, None, str(cwd),
+            argv[0], command_line, None, None, True, flags, None, work_dir,
             ctypes.cast(ctypes.byref(siex), ctypes.POINTER(_STARTUPINFOW)), ctypes.byref(pi))
         if not created:
             raise _fail("CreateProcessW")
@@ -399,6 +427,7 @@ def run(argv: list[str], cwd, timeout, *,
         _GetExitCodeProcess(hproc, ctypes.byref(code))
         # Reap only our owned subtree; never touch processes by image name.
         _TerminateJobObject(hjob, 1 if timed_out else 0)
+        _WaitForSingleObject(hproc, 2000)
         stdout = _read_stream(out_path)
         stderr = _read_stream(err_path)
         if timed_out:
