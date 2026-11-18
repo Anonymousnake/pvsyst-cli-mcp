@@ -14,7 +14,7 @@ Before running a CLI command, the adapter inspects `PVsystCLI.exe help` on the h
 |---|---|---|
 | Simulate existing project/variant, export CSV/PDF, date range, language, report pages | Yes | Yes |
 | Convert weather CSV to `.MET`, license commands, export diagnostic logs | Yes | Yes |
-| Batch parameter CSV / `.RVT`, shading table recomputation (`-rs`) | No | Yes |
+| Batch parameter CSV / `.RVT`, shading table recomputation (`-rst`) | No | Yes |
 | Create `.SIT` site file, override project site, generate synthetic weather | No | Yes |
 | Sub-hourly / hourly step selection | No | Yes |
 
@@ -52,7 +52,7 @@ Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comp
 | `pvsyst_list_projects`, `pvsyst_inspect_project` | List workspace projects and inspect `.PRJ`/`.VCx` metadata and SHA-256 hashes |
 | `pvsyst_prepare_design_project` | Run component discovery, weather preparation, and project configuration without launching an annual simulation |
 | `pvsyst_clone_variant` | Clone a variant into a new `.VCx` (within or across projects) with optional component updates |
-| `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Read stored variant state and apply guarded parameter updates (angles, series count, MPPT/string counts, losses, horizon, seasonal tilt, temperature, PF, grid limits, P50/P90, system unavailability) |
+| `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Read stored variant state and apply guarded parameter updates (angles, series count, MPPT/string counts, losses, horizon, seasonal tilt, temperature, PF, grid limits, P50/P90, system unavailability periods/removal) |
 | `pvsyst_create_tracking_variant` | Create a new variant with updated axis/backtracking/limit parameters from an existing tracking template |
 | `pvsyst_create_dc_cabling_variant` | Headlessly set DC wiring resistance (`mOhm`) or STC loss (`%`, using 1-diode `.PAN` STC MPP solver) across subarray and `StringNode` entries and save as a new `.VCx` variant (built-in unreadable modules allow `resistance` mode) |
 | `pvsyst_create_ac_cabling_variant` | Configure uniform per-inverter AC cable length (`0.1 m` precision) and section in a new variant |
@@ -98,7 +98,7 @@ Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parame
 | Tool | What it does |
 |---|---|
 | `pvsyst_build_sfi` | Generate a `.SFI` hourly variable selection file under `Models` (presets include `all_common`, `shading`, `soiling`, `grid_limit`, `grid_storage`, etc.) |
-| `pvsyst_run_simulation` | Run a single or batch simulation via `PVsystCLI.exe` with optional date range, `.SFI`, `.RVT`, report page selection (`-rp`), and shading recomputation (`-rs`) |
+| `pvsyst_run_simulation` | Run a single or batch simulation via `PVsystCLI.exe` with optional date range, `.SFI`, `.RVT`, report page selection (`-rp`), and shading recomputation (`-rst`) |
 | `pvsyst_run_house_task` | End-to-end 3D house + obstacles workflow: generate `.pvc2`, build native `.VCx` (`scene_import_method="native"` default, `linear` or `module_layout`), and run a full-year CLI simulation with checkpoint resume |
 | `pvsyst_simulate_design` | Unified single-design workflow combining component lookup, template matching, integer capacity sizing (or declared electrical envelope), weather acquisition/preparation, and annual simulation |
 | `pvsyst_prepare_sourced_design` | Extract an `electrical_design` envelope from cited datasheet snippets and check whether all required voltage/current/temperature inputs are present |
@@ -127,7 +127,7 @@ See [result comparison](result-comparison-verification.md) for side-by-side diff
 ## Parameter & variant guides
 
 `pvsyst_update_variant_parameters` applies one domain update per transaction (optionally paired with `variant_name`) so flag mutations stay isolated:
-- Detailed losses: [loss scalars (Uc, LID, quality, mismatch)](grid-capacity-verification.md), [loss GUI roundtrip notes](loss-gui-roundtrip.md), [soiling](soiling-verification.md), [string mismatch, auxiliary profiles & PV-system outage removal](native-detailed-losses.md), [constant auxiliary power](native-auxiliary-power.md), [IAM & ageing](native-model-inputs.md)
+- Detailed losses: [loss scalars (Uc, LID, quality, mismatch)](grid-capacity-verification.md), [loss GUI roundtrip notes](loss-gui-roundtrip.md), [soiling](soiling-verification.md), [string mismatch, auxiliary profiles & PV-system outage periods & removal](native-detailed-losses.md), [constant auxiliary power](native-auxiliary-power.md), [IAM & ageing](native-model-inputs.md)
 - Orientation & horizon: [seasonal tilt](seasonal-orientation.md), [far horizon profile](horizon-profile.md), [plane & horizon notes](plane-horizon-native.md), [orientation types](native-orientation-controls.md)
 - Energy management: [inverter temperature](inverter-temperature.md), [power factor & PNom](power-factor.md), [grid injection limit](grid-power-limit.md), [combined PF + power controls](native-power-controls.md), [system flags & units](native-energy-management.md), [P50/P90 parameters](p50-native-parameters.md)
 
@@ -143,7 +143,7 @@ For safety, file arguments only accept bare filenames (no path traversal or arbi
 |---|---|
 | `.PRJ`, `.VC0`..`.VCn` | `Projects` |
 | `.SFI`, input `.RVT` | `Models` |
-| `.PAN`, `.OND`, `.BTR`, `.GEN` | `ComposPV` subdirectories |
+| `.PAN`, `.OND`, `.BTR`, `.GEN`, `.REV` | `ComposPV` subdirectories |
 | Weather `.CSV`, `.MEF`, `.MET`, monthly weather `.CSV` | `Meteo` |
 | `.SIT` | `Sites` |
 | `Advanced.dat`, load CSVs, authored `.pvc2` scenes | `UserData` |

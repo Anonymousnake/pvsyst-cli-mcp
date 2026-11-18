@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -37,6 +38,11 @@ def main(argv=None):
 
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
+    if os.environ.get("PVSYST_TEST_INSTALLED") != "1":
+        src = str(REPO / "src")
+        if src in sys.path:
+            sys.path.remove(src)
+        sys.path.insert(0, src)
     targets = ["tests/unit", "tests/integration"] if args.suite == "all" else SUITES[args.suite]
     loader = unittest.TestLoader()
     combined = unittest.TestSuite()

@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from typing import Literal
-from pydantic import StrictBool, StrictFloat, StrictInt, StrictStr
+from pydantic import StrictBool, StrictInt, StrictStr
 from pvsyst_auto.workflows.design import prepare_design_project
 from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.project.domes import create_dome_allocation_variant
 from pvsyst_auto.scene.author import create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, DCCablingUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, ObstacleSpec, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
+from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, DCCablingUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, ObstacleSpec, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StrictNum, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
 from pvsyst_auto.api.context import categorized_tool, cli, components, variant_call, variant_store
 
 
@@ -112,13 +112,13 @@ def pvsyst_review_project_inputs(project: StrictStr, variant: StrictStr,
 def pvsyst_update_variant_parameters(project: str, variant: str,
                                      expected_sha256: str | None = None, subarray_id: StrictInt = 1,
                                      orientation_id: StrictInt = 1,
-                                     subarray_updates: dict[str, StrictFloat] | None = None,
-                                     orientation_updates: dict[str, StrictFloat] | None = None,
+                                     subarray_updates: dict[str, StrictNum] | None = None,
+                                     orientation_updates: dict[str, StrictNum] | None = None,
                                      generator_updates: GeneratorUpdates | None = None,
                                      dry_run: StrictBool = False,
                                      power_sharing_enabled: StrictBool | None = None,
                                      independent_mppt_enabled: StrictBool | None = None,
-                                     main_array_updates: dict[str, StrictFloat] | None = None,
+                                     main_array_updates: dict[str, StrictNum] | None = None,
                                      variant_name: StrictStr | None = None,
                                      add_utf8_bom: StrictBool = False,
                                      soiling_updates: SoilingUpdates | None = None,
@@ -138,7 +138,7 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     """Update variant parameters (subarray/orientation/main_array scalars, generator, power sharing,
     independent MPPT, display name, soiling, grid limit, auxiliaries, seasonal tilt, horizon,
     inverter temperature, power factor, power controls, P50/P90, string mismatch, ageing, IAM,
-    or system unavailability removal) with SHA-256 optimistic locking and rollback backup."""
+    or system unavailability periods/removal) with SHA-256 optimistic locking and rollback backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
                         generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
@@ -270,31 +270,32 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
                                    method: Literal["gui", "native"] = "native") -> dict:
     """Import a .pvc2 house/PV scene into a new variant via the headless builder (default, method='native')
     or the legacy PVsyst GUI path (method='gui'), supporting linear and module_layout shading."""
-    if not (method == "native" and shading_mode == "module_layout"):
-        # A scene whose recipe carries an explicit binding must not be fed to the GUI/linear
-        # importer, which would silently ignore per-cell wiring. Detect it on the recipe and
-        # stop before any write; old scenes without a binding keep their exact legacy routing.
-        recovered = read_house_pv_scene(components(), scene_name)
-        binding = (recovered.get("create_arguments") or {}).get("string_layout")
-        if binding is not None:
-            return {"status": "blocked", "stage": "preflight", "method": method,
-                    "scene_name": scene_name, "dry_run": dry_run,
-                    "native_consumption_verified": False,
-                    "issues": ["This scene declares an explicit string_layout; it can only be "
-                               "imported with method='native' and shading_mode='module_layout'. "
-                               "The GUI/linear importer auto-allocates strings and will not drop "
-                               "declared per-cell wiring silently."]}
-    if method == "native":
-        from pvsyst_auto.native.headless import import_house_pv_scene_native
-        store = variant_store()
-        return import_house_pv_scene_native(store, store.components, scene_name, variant_name,
-                                            dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
-    if method != "gui":
-        raise ValueError("method must be gui or native")
-    from pvsyst_auto.native.scene import import_house_pv_scene
+    current = cli()
     store = variant_store()
-    return import_house_pv_scene(store, store.components, cli(), scene_name, variant_name,
-                                 dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
+    with store.lock:
+        if not (method == "native" and shading_mode == "module_layout"):
+            # A scene whose recipe carries an explicit binding must not be fed to the GUI/linear
+            # importer, which would silently ignore per-cell wiring. Detect it on the recipe and
+            # stop before any write; old scenes without a binding keep their exact legacy routing.
+            recovered = read_house_pv_scene(store.components, scene_name)
+            binding = (recovered.get("create_arguments") or {}).get("string_layout")
+            if binding is not None:
+                return {"status": "blocked", "stage": "preflight", "method": method,
+                        "scene_name": scene_name, "dry_run": dry_run,
+                        "native_consumption_verified": False,
+                        "issues": ["This scene declares an explicit string_layout; it can only be "
+                                   "imported with method='native' and shading_mode='module_layout'. "
+                                   "The GUI/linear importer auto-allocates strings and will not drop "
+                                   "declared per-cell wiring silently."]}
+        if method == "native":
+            from pvsyst_auto.native.headless import import_house_pv_scene_native
+            return import_house_pv_scene_native(store, store.components, scene_name, variant_name,
+                                                dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
+        if method != "gui":
+            raise ValueError("method must be gui or native")
+        from pvsyst_auto.native.scene import import_house_pv_scene
+        return import_house_pv_scene(store, store.components, current, scene_name, variant_name,
+                                     dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
 
 @categorized_tool()
 def pvsyst_prepare_design_project(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:

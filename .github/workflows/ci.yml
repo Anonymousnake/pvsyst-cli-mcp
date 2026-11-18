@@ -37,8 +37,10 @@ jobs:
         run: python -c "import importlib.metadata, os; assert os.environ['GITHUB_REF_NAME'] == 'v' + importlib.metadata.version('pvsyst-cli-mcp'), 'Tag and package version differ'"
       - name: Integration tests (zero skips)
         run: python scripts/ci_checks.py --report dist/ci-report.json
-      - name: Split unit tests (workflows)
-        run: python scripts/run_tests.py --suite workflows -v
+      - name: Unit tests
+        env:
+          PVSYST_TEST_INSTALLED: '1'
+        run: python scripts/run_tests.py --suite unit -v
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -160,7 +160,7 @@ def _scan_result(path, units, year):
     if not any(name.startswith("E") for name in selected):
         raise ValueError("Native CSV contains no supported energy/power result column")
     for name in selected:
-        if ((name.startswith(("E", "CL_", "IL_")) and units[name] not in ("W", "kW"))
+        if ((name.startswith(("E", "CL_", "IL_")) and units[name] not in ("W", "kW", "Wh", "kWh"))
                 or ((name.startswith("SOC") or name == "SolFrac") and units[name] not in ("ratio", "%"))):
             raise ValueError(f"{name}: unsupported native unit {units[name]!r}")
     stats = {name: {"unit": units[name], "samples": 0, "sum": 0.0, "min": None, "max": None,
@@ -202,11 +202,19 @@ def _scan_result(path, units, year):
             for extremum, direction in (("min", -1), ("max", 1)):
                 if state[extremum] is None or direction * value > direction * state[extremum]:
                     state[extremum], state[extremum + "_at"] = value, str(stamp)
+    if count == 0:
+        raise ValueError("Result CSV contains no simulation rows")
     step = step if regular else None
     for state in stats.values():
         samples = state["samples"]
-        scale = {"W": 0.001, "kW": 1}.get(state["unit"])
-        observed = state["sum"] * step / 60 * scale if samples and step is not None and scale else None
+        power_scale = {"W": 0.001, "kW": 1}.get(state["unit"])
+        energy_scale = {"Wh": 0.001, "kWh": 1}.get(state["unit"])
+        if samples and step is not None and power_scale is not None:
+            observed = state["sum"] * step / 60 * power_scale
+        elif samples and step is not None and energy_scale is not None:
+            observed = state["sum"] * energy_scale
+        else:
+            observed = None
         if observed is not None and not math.isfinite(observed):
             raise ValueError("Scenario energy integral exceeds finite range")
         state.update(missing_samples=count - samples, coverage=samples / count, complete=samples == count,
