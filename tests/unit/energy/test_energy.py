@@ -203,6 +203,26 @@ class WorkspaceTests(unittest.TestCase):
                                           new_variant="VC1", load_manifest_name="load_load.json",
                                           dry_run=False, **{"battery": BATTERY, "storage": STORAGE, **changes})
 
+    def test_peak_shaving_preserves_active_limit_point_and_defaults_to_inverter(self):
+        peak = GRID_STORAGE.format(strategy="PeakShaving", unavail="").replace("PVAvailable", "PVToGridMin")
+        for source_flags, expected_flags, has_limit in (
+            ("$11100040", "$11100040", True),
+            ("$15100040", "$15100040", True),
+            ("$14000040", "$11000040", False),
+        ):
+            with self.subTest(source_flags=source_flags):
+                pv_system = STORAGE_SYSTEM.replace("$10010040", source_flags)
+                if has_limit:
+                    pv_system = pv_system.replace("    BatteryFile=", "    PLimGrid=6000.0\n    BatteryFile=")
+                self.source(ROOT.format(root_flags="$00") + ARRAY + pv_system + peak + CLOSE)
+                result = create_grid_storage_variant(
+                    self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                    updates={"grid_limit_kw": 6100.0}, dry_run=True,
+                )
+                self.assertEqual(result["status"], "ready", result)
+                self.assertEqual(result["after"]["system_flags"], expected_flags)
+                self.assertEqual(result["after"]["grid_limit_kw"], 6100.0)
+
     def test_storage_scalars_never_use_exponent_notation(self):
         self.source(ROOT.format(root_flags="$00") + ARRAY + STORAGE_SYSTEM
                     + GRID_STORAGE.format(strategy="SelfConsumption", unavail="") + CLOSE)
@@ -702,7 +722,7 @@ class WorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(wg["status"], "created", wg)
 
-        # 4. PeakShaving sets bit 24 (0x01000000 / 0x05000000), updates LimGrSeparLoss=False,
+        # 4. PeakShaving preserves the enabled injection-point limit, updates LimGrSeparLoss=False,
         #    and reads back PLimGrid without setting Constant PF bit 20 (0x00100000)
         pv_lim = (
             "PVObject_=pvVCalcul\n  Comment=Fixture\n  Version=8.1.7\n  Flags=$00\n"
@@ -747,7 +767,7 @@ class WorkspaceTests(unittest.TestCase):
         # Ensure Constant PF bit 20 (0x00100000) was NOT set
         sys_flag_line = next(l for l in vc3_lines[sys3[0]:sys3[1]] if l.strip().startswith("Flags=$"))
         sys_flag_int = int(sys_flag_line.split("$")[1].strip(), 16)
-        self.assertTrue(sys_flag_int & 0x01000000)
+        self.assertEqual(sys_flag_int & 0x07000000, 0x05000000)
         self.assertEqual(sys_flag_int & 0x00100000, 0)
 
         # 5. Sub-cent PowerShift scalar (0.004) survives roundtrip via decimal_text

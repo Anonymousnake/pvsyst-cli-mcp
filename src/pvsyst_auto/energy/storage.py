@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.components.generator import direct_fields, finite, one
 from pvsyst_auto.energy.availability import native_availability
+from pvsyst_auto.energy.power import ENABLED, INJECTION
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
@@ -220,13 +221,16 @@ def set_grid_export(lines, system, allow_grid_export):
 
 
 def set_system_grid_limit(lines, system, grid_limit_kw: float) -> float:
-    """Write positive PLimGrid (kW), LimGrSeparLoss=False, and grid-limit bits (0x05000000) on pvSystem."""
+    """Write PLimGrid and enable the native limit, defaulting to the inverter point."""
     limit = finite(grid_limit_kw, "grid_limit_kw", 0, math.inf, positive=True)
     fields = direct_fields(lines, system)
-    flag_idx, flags = one(fields, "Flags")
-    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", flags):
+    flag_idx, raw_flags = one(fields, "Flags")
+    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags):
         raise ValueError("Owning system flags must be unambiguous hexadecimal values")
-    lines[flag_idx] = replace_value(lines[flag_idx], f"${int(flags[1:], 16) | 0x05000000:08X}")
+    flags = int(raw_flags[1:], 16)
+    if not flags & ENABLED:
+        flags &= ~INJECTION
+    lines[flag_idx] = replace_value(lines[flag_idx], f"${flags | ENABLED:08X}")
     newline = "\r\n" if any("\r\n" in line for line in lines) else "\n"
     insert = []
     for key, val in (("PLimGrid", decimal_text(limit)), ("LimGrSeparLoss", "False")):
