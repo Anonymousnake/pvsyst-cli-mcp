@@ -447,14 +447,15 @@ def load_weather_manifest(workspace, name, year, sit_name, met_name):
             or data.get("time_basis") != "local_standard_interval_start" or data.get("source_preserved") is not True):
         raise ValueError("Weather manifest must describe a prepared unchanged source and the requested year/time basis")
     assets = {"weather_manifest": {"path": str(path), "sha256": fingerprint(path)}}
-    for key, folder in (("sit", "Sites"), ("met", "Meteo"), ("mef", "Meteo"),
-                         ("normalized_csv", "Meteo"), ("monthly_csv", "Meteo"), ("source", "Meteo")):
+    for key, folder, ext in (("sit", "Sites", ".sit"), ("met", "Meteo", ".met"), ("mef", "Meteo", ".mef"),
+                             ("normalized_csv", "Meteo", ".csv"), ("monthly_csv", "Meteo", ".csv"), ("source", "Meteo", ".csv")):
         asset = data["source"] if key == "source" else data["created_files"][key]
-        file = workspace_file(workspace, folder, asset["name"], Path(asset["name"]).suffix)
+        file = workspace_file(workspace, folder, asset["name"], ext)
         if fingerprint(file) != asset["sha256"]:
             raise ValueError("Weather preparation input/output changed: " + key)
         assets["weather_" + key] = {"path": str(file), "sha256": asset["sha256"]}
-    if data["created_files"]["sit"]["name"] != sit_name or data["created_files"]["met"]["name"] != met_name:
+    if (data["created_files"]["sit"]["name"].casefold() != sit_name.casefold()
+            or data["created_files"]["met"]["name"].casefold() != met_name.casefold()):
         raise ValueError("Weather manifest SIT/MET names differ from simulation inputs")
     report = inspect_weather_csv(Path(assets["weather_source"]["path"]), year)
     if report["valid"] is not True:

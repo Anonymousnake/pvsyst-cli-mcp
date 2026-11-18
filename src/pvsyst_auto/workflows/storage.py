@@ -60,7 +60,10 @@ def prepare_storage_revision(store, project, variant, new_variant, updates,
             loads = [block for block in blocks if block.object_type == "pvLoad"]
             if len(loads) != 1 or loads[0].path != "PVObject_UserNeeds" or not loads[0].end_line:
                 raise ValueError("Require one complete directly owned native hourly load")
-            record, profile, values, snapshots = load_snapshot(store.workspace, load_manifest_name)
+            record, profile, values = load_snapshot(store.workspace, load_manifest_name)
+            manifest_path = workspace_file(store.workspace, "Results", load_manifest_name, ".json")
+            raw_source_path = workspace_file(store.workspace, "UserData", record["source"]["name"], ".csv")
+            snapshots = {path: path.read_bytes() for path in (manifest_path, raw_source_path, profile)}
             if record["year"] != year:
                 raise ValueError("Prepared load and native annual execution must use the same year")
             expected, encoding = hourly_load_block(profile, values, year, "\n")

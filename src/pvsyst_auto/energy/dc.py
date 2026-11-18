@@ -373,8 +373,8 @@ def create_dc_cabling_variant(store, *, project, source_variant, new_variant, dc
         if len(format(value, "f")) > 20:
             raise ValueError("DC value exceeds 20 characters")
         if dc["mode"] == "percent":
-            if value != value.quantize(Decimal("0.01")) or value > 100:
-                raise ValueError("DC loss percent must be in [0, 100] with at most 0.01 precision")
+            if value != value.quantize(Decimal("0.01")) or value >= 99:
+                raise ValueError("DC loss percent must be in [0, 99) with at most 0.01 precision (PVsystCLI simulation limit <99%)")
         else:
             if value != value.quantize(Decimal("0.001")):
                 raise ValueError("DC resistance (mOhm) supports at most 0.001 precision")

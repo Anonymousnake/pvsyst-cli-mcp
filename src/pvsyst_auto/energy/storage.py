@@ -187,7 +187,7 @@ def render_par_simul_series(prop_name: str, varident: str, var_type: str,
     """Build exact native PVsyst TParSimulSeries lines inside pvGridStorage."""
     encoded = encode_subhour_schedule(slots, maximum=maximum)
     return [
-        f"    {scalar_key}={scalar_value:.2f}",
+        f"    {scalar_key}={decimal_text(scalar_value)}",
         f"    {prop_name}=TParSimulSeries",
         "      fVarSimul=TVarSimul",
         f"        Varident={varident}",
@@ -220,20 +220,19 @@ def set_grid_export(lines, system, allow_grid_export):
 
 
 def set_system_grid_limit(lines, system, grid_limit_kw: float) -> float:
-    """Write positive PLimGrid (kW), LimGrSeparLoss=False, and bit20 (0x00100000) on pvSystem."""
+    """Write positive PLimGrid (kW), LimGrSeparLoss=False, and grid-limit bits (0x05000000) on pvSystem."""
     limit = finite(grid_limit_kw, "grid_limit_kw", 0, math.inf, positive=True)
     fields = direct_fields(lines, system)
     flag_idx, flags = one(fields, "Flags")
     if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", flags):
         raise ValueError("Owning system flags must be unambiguous hexadecimal values")
-    lines[flag_idx] = replace_value(lines[flag_idx], f"${int(flags[1:], 16) | 0x00100000:08X}")
+    lines[flag_idx] = replace_value(lines[flag_idx], f"${int(flags[1:], 16) | 0x05000000:08X}")
     newline = "\r\n" if any("\r\n" in line for line in lines) else "\n"
     insert = []
     for key, val in (("PLimGrid", decimal_text(limit)), ("LimGrSeparLoss", "False")):
         existing = one(fields, key, False)
         if existing:
-            if key == "PLimGrid":
-                lines[existing[0]] = replace_value(lines[existing[0]], val)
+            lines[existing[0]] = replace_value(lines[existing[0]], val)
         else:
             insert.append(f"    {key}={val}{newline}")
     if insert:
@@ -247,7 +246,7 @@ def _system_grid_limit(lines, system) -> float | None:
     plim = one(fields, "PLimGrid", False)
     if plim is None or not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", flag_val):
         return None
-    if not (int(flag_val[1:], 16) & 0x00100000):
+    if not (int(flag_val[1:], 16) & 0x01000000):
         return None
     return finite(float(Decimal(plim[1])), "PLimGrid", 0, math.inf, positive=True)
 
@@ -577,7 +576,7 @@ def render_grid_storage_block(state: dict, unavail_lines: list[str] | None = Non
                 "DischargingPower", state["discharging_power_kw"], state["discharging_schedule_48"],
             ))
         else:
-            lines.append(f"    DischargingPower={state['discharging_power_kw']:.2f}")
+            lines.append(f"    DischargingPower={decimal_text(state['discharging_power_kw'])}")
     if state["discharging_strategy"] == "MinMaxHour":
         lines.append(f"    HourBegDisch={state['HourBegDisch']}")
         lines.append(f"    HourEndDisch={state['HourEndDisch']}")
@@ -679,8 +678,9 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
         if (availability is not None) != weak:
             raise ValueError("Supply a fresh complete availability declaration exactly when configuring WeakGrid")
 
-        if any(line.strip().startswith("VarList,") for line in lines):
+        if any(line.strip().startswith(("VarList,", "Histogram=THistogramme")) for line in lines):
             strip_result_cache(lines)
+            _, bounds, _ = storage_state(lines, store._sections(lines)[1])
 
         candidate_text = "".join(lines)
         if weak:
