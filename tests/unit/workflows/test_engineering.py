@@ -4,7 +4,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.components.store import ComponentStore
@@ -13,8 +13,10 @@ from pvsyst_auto.engineering.handoff import _load_records
 from pvsyst_auto.engineering.inputs import discover_design_inputs
 from pvsyst_auto.engineering.review import review_project_inputs
 from pvsyst_auto.project.variants import VariantStore
-from pvsyst_auto.scene.author import source_profile
+from pvsyst_auto.results import fingerprint
+from pvsyst_auto.scene.author import house_profile, source_profile
 from pvsyst_auto.scene.mapping import verify_grouped_hardware
+from pvsyst_auto.workflows import house as house_flow
 from pvsyst_auto.workflows.blocks import prepare_block_project
 from pvsyst_auto.workflows.design import _prune_empty
 from pvsyst_auto.workflows.sourced_house import run_sourced_house_task
@@ -415,6 +417,70 @@ class EngineeringTests(unittest.TestCase):
         self.assertEqual(res["status"], "blocked")
         self.assertEqual(res["stage"], "native_preflight")
         self.assertIn("no remaining trial executions", res["issues"][0])
+
+    def test_preserve_source_hardware_resume_only_checks_quota_for_new_attempts(self):
+        request = {
+            "prepare_mode": "preserve_source_hardware", "source_project": "Src.PRJ",
+            "source_variant": "VC0", "new_project": "Out.PRJ", "variant_name": "Preserved",
+            "design": {"year": 2024}, "report_pdf": False, "allow_window_creation": False,
+            "house": {"kind": "mesh", "meshes": [{"name": "r", "vertices": [[0, 0, 0], [4, 0, 0], [0, 4, 0]],
+                                                   "triangles": [[0, 1, 2]]}]},
+            "layout": {"module_rows": 1, "module_columns": 1, "orientation": "landscape",
+                       "row_spacing_m": 0.0, "column_spacing_m": 0.0, "origin_m": [0.0, 0.0, 0.0], "roof_mesh": "r"},
+        }
+        child = {key: value for key, value in request.items() if key not in ("prepare_mode", "design")}
+        child["year"] = 2024
+        plan = {"scene_name": "house.pvc2", "obstacles": [], "house_parts": [], "pv_tables": [],
+                "source": {"module_total": 1}, "shading_mode": "linear"}
+        scene = {"status": "ready", "create_arguments": {"project": "Out.PRJ", "variant": "VC0",
+                 "house": house_profile(request["house"]), "layout": request["layout"]}}
+        for phase in ("simulated", "completed", "gui_closed"):
+            with self.subTest(phase=phase):
+                root = self.workspace()
+                store = VariantStore(root, ComponentStore(root))
+                cli = Mock()
+                cli.version.return_value = "8.1.7"
+                cli.license_info.return_value = {"status": "TRIAL", "remaining_executions": 0}
+                cli._redact.side_effect = str
+                cli.run_simulation.side_effect = AssertionError("No new simulation should run")
+                paths = {"working_project": root / "Projects" / "Out.PRJ",
+                         "working_variant": root / "Projects" / "Out.VC0",
+                         "native_variant": root / "Projects" / "Out.VC1",
+                         "scene": root / "house.pvc2", "sfi": root / "house.SFI"}
+                for key, path in paths.items():
+                    path.write_text(key, encoding="utf-8")
+                guards = {key: fingerprint(path) for key, path in paths.items()}
+                manifest = paths["manifest"] = root / "Results" / "Out_house_task.json"
+                output = root / "Results" / "Out_house_run01.csv"
+                record = {"schema": 1, "request": child, "phase": phase, "status": "needs_attention",
+                          "issues": [], "guards": guards, "artifacts": {}, "warnings": [], "variant": "VC1",
+                          "runs": [{"number": 1, "status": "running", "csv": output.name}]}
+                if phase != "gui_closed":
+                    output.write_text("recorded output", encoding="utf-8")
+                    record["runs"][0].update(status="returned", native={"warnings": []})
+                    record["output_guards"] = {"csv": fingerprint(output)}
+                manifest.write_text(json.dumps(record), encoding="utf-8")
+                with patch.object(house_flow, "_prepare", return_value=(paths, plan)), \
+                        patch.object(house_flow, "read_house_pv_scene", return_value=scene), \
+                        patch.object(house_flow, "_verify_new"), \
+                        patch.object(house_flow, "_annual", return_value={"metrics": {"diagnostic_flags": []}}) as annual:
+                    result = run_sourced_house_task(store, store.components, cli, request=request, dry_run=False,
+                                                    confirm=True, resume=True, retry_simulation=phase == "gui_closed")
+                cli.run_simulation.assert_not_called()
+                self.assertIsNotNone(result["house"], result)
+                self.assertEqual(result["house"]["runs"], record["runs"], result)
+                if phase == "gui_closed":
+                    self.assertEqual(result["status"], "needs_attention", result)
+                    self.assertIn("no remaining trial executions", result["house"]["issues"][0])
+                    cli.version.assert_called_once_with(allow_window_creation=False)
+                    cli.license_info.assert_called_once_with(allow_window_creation=False)
+                    annual.assert_not_called()
+                else:
+                    self.assertEqual((result["status"], result["stage"]), ("completed", "completed"), result)
+                    self.assertTrue(result["native_consumption_verified"])
+                    cli.version.assert_not_called()
+                    cli.license_info.assert_not_called()
+                    annual.assert_called_once_with(output, output.with_suffix(".pdf"), child, plan, "VC1", require_pdf=False)
 
 
 if __name__ == "__main__":

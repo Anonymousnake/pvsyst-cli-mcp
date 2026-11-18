@@ -281,7 +281,11 @@ def _engineering_assets(paths, plan, guards):
 
 
 def run_house_task(store, components, cli, *, request, dry_run=True, confirm=False,
-                   resume=False, retry_simulation=False):
+                   resume=False, retry_simulation=False, simulation_preflight=None):
+    """Deliver the house task, calling optional preflight only before a new attempt.
+
+    The preflight callback returns an error message or None.
+    """
     result = {"status": "blocked", "stage": "preflight", "issues": [], "warnings": [],
               "artifacts": {}, "native_consumption_verified": False}
     paths = None
@@ -565,6 +569,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 pdf_path = workspace_file(store.workspace, "Results", stem + ".pdf", ".pdf")
                 if csv_path.exists() or (require_pdf and pdf_path.exists()):
                     raise FileExistsError("Simulation outputs already exist; no native overwrite/retry")
+                if simulation_preflight is not None and (error := simulation_preflight()) is not None:
+                    raise ValueError(error)
                 attempt = {"number": number, "status": "running", "csv": csv_path.name}
                 if require_pdf:
                     attempt["pdf"] = pdf_path.name
