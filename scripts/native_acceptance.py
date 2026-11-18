@@ -15,6 +15,11 @@ import shutil
 import sys
 from zipfile import ZipFile, ZIP_DEFLATED
 
+if os.environ.get("PVSYST_TEST_INSTALLED") != "1" and not os.environ.get("PVSYST_PACKAGE_INSTALLED_PYTHON"):
+    _src = str(Path(__file__).resolve().parents[1] / "src")
+    if _src not in sys.path:
+        sys.path.insert(0, _src)
+
 from pvsyst_auto.native.cli import PVsystCLI, iter_result_csv, result_units
 from pvsyst_auto.project.paths import workspace_file
 
@@ -121,18 +126,29 @@ def load_case(path):
 
 
 def check_context(path, expected):
-    actual = {}
-    with path.open(encoding="utf-8-sig", errors="strict", newline="") as stream:
-        for line in stream:
-            if line.lstrip().lower().startswith(("date;", "date,")):
-                break
-            separator = ";" if ";" in line else ","
-            cells = next(csv.reader([line], delimiter=separator))
-            if cells and cells[0].strip() in CONTEXT:
-                key = cells[0].strip()
-                if key in actual or len(cells) < 2:
-                    raise ValueError("Ambiguous CSV context: " + key)
-                actual[key] = cells[1].strip()
+    def parse_lines(encoding):
+        found = {}
+        with path.open(encoding=encoding, errors="strict", newline="") as stream:
+            for line in stream:
+                if line.lstrip().lower().startswith(("date;", "date,")):
+                    break
+                separator = ";" if ";" in line else ","
+                cells = next(csv.reader([line], delimiter=separator))
+                if cells and cells[0].strip() in CONTEXT:
+                    key = cells[0].strip()
+                    if key in found or len(cells) < 2:
+                        raise ValueError("Ambiguous CSV context: " + key)
+                    found[key] = cells[1].strip()
+        return found
+
+    with path.open("rb") as probe:
+        has_bom = probe.read(3) == b"\xef\xbb\xbf"
+    try:
+        actual = parse_lines("utf-8-sig")
+    except UnicodeDecodeError:
+        if has_bom:
+            raise
+        actual = parse_lines("cp1252")
     if actual != expected:
         raise ValueError("CSV context differs from the declared native run: " + str(path))
 
@@ -226,13 +242,24 @@ def save(path, value):
         os.fsync(stream.fileno())
 
 
+def _is_link_or_junction(path: Path) -> bool:
+    if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+        return True
+    st = path.lstat()
+    return getattr(st, "st_reparse_tag", 0) in (0xA0000003, 0xA000000C)
+
+
 def workspace_bytes(root):
     # Fixture-sized byte snapshots; stream/archive if measured size warrants it.
+    root_path = Path(root)
+    resolved_root = root_path.resolve(strict=True)
+    if _is_link_or_junction(root_path):
+        raise ValueError("Fixture links and junctions must be resolved into a standalone copy")
     result = {}
     for directory, dirs, files in os.walk(root, followlinks=False):
         for name in dirs + files:
             path = Path(directory) / name
-            if path.resolve(strict=True) != path.absolute():
+            if _is_link_or_junction(path) or not path.resolve(strict=True).is_relative_to(resolved_root):
                 raise ValueError("Fixture links and junctions must be resolved into a standalone copy")
         for name in files:
             path = Path(directory) / name
@@ -383,12 +410,19 @@ def main():
     try:
         case = load_case(args.case.resolve(strict=True))
         if args.mode == "run":
-            if args.attempt is None or not args.attempt_id:
+            if args.attempt is None or not args.attempt_id or not args.attempt_id.strip():
                 raise ValueError("Run mode requires a fresh attempt directory and pre-registered attempt ID")
+            if args.candidate is not None:
+                raise ValueError("Run mode accepts only its fresh native-produced candidate")
             target = args.attempt.resolve()
             source = case["workspace_path"]
             if target.is_relative_to(source) or source.is_relative_to(target):
                 raise ValueError("Attempt output must be separate from the source workspace")
+            if type(args.max_cli_commands) is not int or not 1 <= args.max_cli_commands <= 3:
+                raise ValueError("Explicit native command budget must be in 1..3")
+            executable = Path(text(args.cli)).resolve(strict=True)
+            if not executable.is_file():
+                raise ValueError("Require a regular file: " + str(executable))
             target.mkdir(parents=True, exist_ok=False)
             attempt = target
             save(attempt / "budget-spent.json", dict(report, max_cli_commands=args.max_cli_commands))
@@ -403,8 +437,6 @@ def main():
             report["comparison"] = compare(case, args.candidate.resolve(strict=True))
             report["status"] = "compared" if report["comparison"]["passed"] else "failed"
         else:
-            if args.candidate is not None:
-                raise ValueError("Run mode accepts only its fresh native-produced candidate")
             save_bytes(attempt / "case.json", case["case_bytes"])
             for _ in result_rows(case, case["baseline_path"], case["baseline"]["context"]):
                 pass

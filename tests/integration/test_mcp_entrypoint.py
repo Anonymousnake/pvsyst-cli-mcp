@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -108,6 +110,31 @@ class PackageEntrypointTests(unittest.TestCase):
             self.assertEqual(module, entry)
             self.assertEqual(source, entry)
         asyncio.run(check())
+
+    def test_run_tests_prepends_src_unless_installed_flag_set(self):
+        spec = importlib.util.spec_from_file_location("run_tests_script", REPO / "scripts" / "run_tests.py")
+        runner_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner_mod)
+        src_str = str(REPO / "src")
+        ok_result = MagicMock(wasSuccessful=MagicMock(return_value=True), testsRun=1)
+        original_path = list(sys.path)
+        try:
+            sys.path[:] = [p for p in original_path if p != src_str]
+            with patch.dict(os.environ, {}, clear=False), \
+                    patch.object(unittest.TestLoader, "discover", return_value=unittest.TestSuite()), \
+                    patch.object(unittest.TextTestRunner, "run", return_value=ok_result):
+                os.environ.pop("PVSYST_TEST_INSTALLED", None)
+                self.assertEqual(runner_mod.main(["--suite", "core"]), 0)
+                self.assertEqual(sys.path[0], src_str)
+
+            sys.path[:] = [p for p in original_path if p != src_str]
+            with patch.dict(os.environ, {"PVSYST_TEST_INSTALLED": "1"}), \
+                    patch.object(unittest.TestLoader, "discover", return_value=unittest.TestSuite()), \
+                    patch.object(unittest.TextTestRunner, "run", return_value=ok_result):
+                self.assertEqual(runner_mod.main(["--suite", "core"]), 0)
+                self.assertNotIn(src_str, sys.path)
+        finally:
+            sys.path[:] = original_path
 
 
 class ToolGroupsTests(unittest.TestCase):

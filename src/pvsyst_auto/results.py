@@ -28,16 +28,18 @@ def annual_summary(path, year, nominal_dc_power_kw):
         raise ValueError("Nominal DC power must be a positive finite kWp value")
     before = fingerprint(path)
     units = result_units(path, strict=True)
-    power = {name: {"W": 0.001, "kW": 1}.get(units.get(name))
+    power = {name: {"W": 0.001, "Wh": 0.001, "kW": 1, "kWh": 1}.get(units.get(name))
              for name in ("E_Grid", "EArray", "IL_Pmax")}
     irradiation_scale = {"W/m2": 0.001, "W/m\u00b2": 0.001,
-                         "kW/m2": 1, "kW/m\u00b2": 1}.get(units.get("GlobInc"))
+                         "Wh/m2": 0.001, "Wh/m\u00b2": 0.001,
+                         "kW/m2": 1, "kW/m\u00b2": 1,
+                         "kWh/m2": 1, "kWh/m\u00b2": 1}.get(units.get("GlobInc"))
     pr_scale = {"ratio": 1, "%": 0.01}.get(units.get("PR"))
     if any(scale is None for scale in power.values()) or irradiation_scale is None or pr_scale is None:
         raise ValueError("Annual output requires explicit power, irradiance and PR units")
     columns = (*power, "GlobInc", "PR")
     totals = dict.fromkeys(power, 0.0)
-    irradiation = weighted_pr = 0.0
+    irradiation = weighted_pr = dark_tare_kwh = 0.0
     first = expected = datetime(year, 1, 1)
     end = datetime(year + 1, 1, 1)
     indices = None
@@ -62,18 +64,22 @@ def annual_summary(path, year, nominal_dc_power_kw):
             if not math.isfinite(values["PR"]):
                 raise ValueError(f"Annual output has missing PR during irradiation at {expected}")
             weighted_pr += light * values["PR"] * pr_scale
+        elif values["E_Grid"] < 0:
+            dark_tare_kwh += values["E_Grid"] * power["E_Grid"]
         expected += timedelta(hours=1)
         count += 1
     if expected != end:
         raise ValueError(f"Annual output is incomplete: {count} hourly rows; ended at {expected}")
-    if irradiation <= 0 or any(not math.isfinite(v) for v in (*totals.values(), irradiation, weighted_pr)):
+    if irradiation <= 0 or any(not math.isfinite(v) for v in (*totals.values(), irradiation, weighted_pr, dark_tare_kwh)):
         raise ValueError("Annual arithmetic requires positive irradiation and finite totals")
     reference_energy = irradiation * nominal_dc_power_kw
     if not math.isfinite(reference_energy) or reference_energy <= 0:
         raise ValueError("Annual STC reference energy exceeds finite numeric range")
     ratio = totals["E_Grid"] / reference_energy
     native_ratio = weighted_pr / irradiation
-    if not math.isfinite(ratio) or not math.isclose(ratio, native_ratio, abs_tol=0.002, rel_tol=0):
+    expected_ratio = native_ratio + dark_tare_kwh / reference_energy
+    if (not math.isfinite(ratio) or not math.isfinite(expected_ratio)
+            or not math.isclose(ratio, expected_ratio, abs_tol=0.002, rel_tol=0)):
         raise ValueError("Native PR disagrees with standard grid-only PR; check capacity, self-consumption or PR correction")
     if before != fingerprint(path):
         raise ValueError("Annual output changed during validation")
@@ -154,12 +160,21 @@ def compare_results(baseline, target, columns, *, include_key_periods=False):
                     if include_key_periods:
                         key_periods[name] = {"column": name, "timestamp": last, "unit": units[0][name],
                                              "baseline": va, "target": vb, "delta": difference}
+    if count == 0:
+        raise ValueError("Result CSV contains no simulation rows")
     step = step if regular else None
     for name, state in stats.items():
         samples = state["paired_samples"]
         complete = samples == count
-        scale = {"W": 0.001, "kW": 1}.get(units[0][name])
-        observed = state["paired_delta_sum"] * step / 60 * scale if samples and step is not None and scale else None
+        unit = units[0][name]
+        power_scale = {"W": 0.001, "kW": 1}.get(unit)
+        energy_scale = {"Wh": 0.001, "kWh": 1}.get(unit)
+        if samples and step is not None and power_scale is not None:
+            observed = state["paired_delta_sum"] * step / 60 * power_scale
+        elif samples and step is not None and energy_scale is not None:
+            observed = state["paired_delta_sum"] * energy_scale
+        else:
+            observed = None
         relative = (state["paired_delta_sum"] / state["paired_baseline_sum"] * 100
                     if samples and state["paired_baseline_sum"] else None)
         if any(value is not None and not math.isfinite(value) for value in (observed, relative)):

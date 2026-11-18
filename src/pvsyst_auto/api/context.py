@@ -22,6 +22,8 @@ from pvsyst_auto.project.paths import workspace_file
 mcp = MCPServer("pvsyst-cli")
 
 _cli: PVsystCLI | None = None
+_cli_key: tuple[str | None, str | None] | None = None
+_cli_owner: PVsystCLI | None = None
 
 _cli_init_lock = Lock()
 
@@ -216,10 +218,14 @@ def create_mcp_server(tool_groups: str | None = None) -> MCPServer:
     return server
 
 def cli() -> PVsystCLI:
-    global _cli
+    global _cli, _cli_key, _cli_owner
     with _cli_init_lock:
-        if _cli is None:
-            _cli = PVsystCLI(os.environ.get("PVSYST_CLI"), os.environ.get("PVSYST_WORKSPACE"))
+        key = (os.environ.get("PVSYST_CLI"), os.environ.get("PVSYST_WORKSPACE"))
+        if _cli is None or (_cli is _cli_owner and _cli_key != key):
+            _cli = _cli_owner = None
+            _cli_key = None
+            _cli = _cli_owner = PVsystCLI(*key)
+            _cli_key = key
         return _cli
 
 def components() -> ComponentStore:

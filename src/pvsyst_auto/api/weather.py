@@ -48,11 +48,13 @@ def pvsyst_acquire_weather(csv_name: StrictStr = "", year: StrictInt | None = No
                            dry_run: StrictBool = True) -> dict:
     """Download a full calendar year (1969..2068) of Open-Meteo ERA5 hourly irradiance and
     temperature aligned to local winter standard time, saving raw JSON, CSV, and manifest."""
-    return download_weather(cli().workspace, csv_name=csv_name, year=year,
-                            location_id=location_id, latitude=latitude, longitude=longitude,
-                            site_name=site_name, country_code=country_code, altitude=altitude,
-                            timezone_name=timezone_name, temperature_method=temperature_method,
-                            dry_run=dry_run)
+    current = cli()
+    with current._lock:
+        return download_weather(current.workspace, csv_name=csv_name, year=year,
+                                location_id=location_id, latitude=latitude, longitude=longitude,
+                                site_name=site_name, country_code=country_code, altitude=altitude,
+                                timezone_name=timezone_name, temperature_method=temperature_method,
+                                dry_run=dry_run)
 
 @categorized_tool()
 def pvsyst_review_weather(csv_name: StrictStr, native_csv_name: StrictStr, year: StrictInt,
@@ -65,21 +67,22 @@ def pvsyst_review_weather(csv_name: StrictStr, native_csv_name: StrictStr, year:
                           weather_manifest_name=weather_manifest_name)
 
 @categorized_tool()
-def pvsyst_build_monthly_weather(filename: str, global_h: list[float],
-                                 temperature: list[float],
-                                 diffuse_h: list[float] | None = None,
-                                 wind_velocity: list[float] | None = None) -> dict:
+def pvsyst_build_monthly_weather(filename: str, global_h: list[StrictNum],
+                                 temperature: list[StrictNum],
+                                 diffuse_h: list[StrictNum] | None = None,
+                                 wind_velocity: list[StrictNum] | None = None) -> dict:
     """Create the 14-row monthly weather CSV for create-site in workspace/Meteo."""
-    target = workspace_path("Meteo", filename, ".csv")
-    build_monthly_weather_csv(target, global_h, temperature, diffuse_h, wind_velocity)
+    with cli()._lock:
+        target = workspace_path("Meteo", filename, ".csv")
+        build_monthly_weather_csv(target, global_h, temperature, diffuse_h, wind_velocity)
     return {"weather_csv": str(target)}
 
 @categorized_tool()
-def pvsyst_create_site(site_name: str, latitude: float, longitude: float,
+def pvsyst_create_site(site_name: str, latitude: StrictNum, longitude: StrictNum,
                        weather_csv_name: str, sit_name: str,
-                       altitude: float | None = None, timezone: float | None = None,
+                       altitude: StrictNum | None = None, timezone: StrictNum | None = None,
                        country_code: str = "", region: str = "", source: str = "",
-                       albedo: float | None = None, log_level: int | None = None) -> dict:
+                       albedo: StrictNum | None = None, log_level: StrictInt | None = None) -> dict:
     """Use CLI create-site to create a NEW SIT in workspace/Sites (8.1+).
     Stage or generate monthly weather CSV in workspace/Meteo. If altitude,
     timezone or country are omitted, the CLI may query an external service."""
@@ -93,8 +96,8 @@ def pvsyst_create_site(site_name: str, latitude: float, longitude: float,
 
 @categorized_tool()
 def pvsyst_convert_meteo(csv_name: str, mef_name: str, sit_name: str,
-                         met_name: str, timeshift: int = 0,
-                         log_level: int | None = None) -> dict:
+                         met_name: str, timeshift: StrictInt = 0,
+                         log_level: StrictInt | None = None) -> dict:
     """Convert a staged CSV + MEF in Meteo and SIT in Sites to a NEW MET."""
     source = workspace_path("Meteo", csv_name, ".csv")
     mef = workspace_path("Meteo", mef_name, ".mef")
