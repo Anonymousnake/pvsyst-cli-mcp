@@ -2,7 +2,7 @@
 
 For setup instructions and package layout, see [README.md](../README.md) or [README.zh-CN.md](../README.zh-CN.md).
 
-By default the MCP server exposes **34 core workflow tools across 8 default groups**. Set `PVSYST_TOOL_GROUPS=all` (or include `admin` / `expert`) to expose all **66 tools** across 10 groups, or restrict a server process to specific groups via `PVSYST_TOOL_GROUPS` (for example `setup,engineering,results`). Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
+By default the MCP server exposes **34 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **66 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
 
 ## PVsystCLI version differences
 
@@ -155,3 +155,65 @@ General conventions across all tools:
 - **Optimistic locking & backups**: Mutating tools verify `expected_sha256` (or current file tokens), write a backup snapshot before touching existing files, and refuse to overwrite existing target filenames when creating new variants/projects.
 - **Date format**: PVsyst CLI dates use dots (`MM.DD`, `YY.MM.DD`, or `YYYY.MM.DD`, e.g. `2024.01.01`), never hyphens.
 - **Strict arguments**: Every tool validates its top-level argument names and types before running; unknown keys return an immediate MCP `ToolError` listing the accepted parameter names.
+
+## Upgrading from v0.1.0
+
+The `v0.1.0` release exposed 82 MCP tools. The current surface registers 34 tools by default and 66 tools with `PVSYST_TOOL_GROUPS=all`. `PVSYST_TOOL_GROUPS` is an explicit allow-list: an explicit value replaces the default groups. To retain all defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`.
+
+The following table lists all 32 tools that remain available but moved out of the default groups:
+
+| Tool | Group |
+|---|---|
+| `pvsyst_export_logs` | `admin` |
+| `pvsyst_license_activate` | `admin` |
+| `pvsyst_license_deactivate` | `admin` |
+| `pvsyst_license_info` | `admin` |
+| `pvsyst_license_sync` | `admin` |
+| `pvsyst_build_monthly_weather` | `expert` |
+| `pvsyst_clone_subarray` | `expert` |
+| `pvsyst_compare_components` | `expert` |
+| `pvsyst_convert_meteo` | `expert` |
+| `pvsyst_create_dome_allocation_variant` | `expert` |
+| `pvsyst_create_house_pv_scene` | `expert` |
+| `pvsyst_create_mv_night_disconnect_variant` | `expert` |
+| `pvsyst_create_project` | `expert` |
+| `pvsyst_create_site` | `expert` |
+| `pvsyst_export_engineering_delivery` | `expert` |
+| `pvsyst_get_variant_components` | `expert` |
+| `pvsyst_import_house_pv_scene` | `expert` |
+| `pvsyst_inspect_weather_csv` | `expert` |
+| `pvsyst_list_variants` | `expert` |
+| `pvsyst_prepare_block_project` | `expert` |
+| `pvsyst_project_components` | `expert` |
+| `pvsyst_project_handoff` | `expert` |
+| `pvsyst_read_house_pv_scene` | `expert` |
+| `pvsyst_remove_subarray` | `expert` |
+| `pvsyst_review_engineering_brief` | `expert` |
+| `pvsyst_review_project_inputs` | `expert` |
+| `pvsyst_run_sourced_house_task` | `expert` |
+| `pvsyst_update_project_parameters` | `expert` |
+| `pvsyst_update_project_sources` | `expert` |
+| `pvsyst_update_variant_components` | `expert` |
+| `pvsyst_validate_component` | `expert` |
+| `pvsyst_validate_variant_structure` | `expert` |
+
+The following 16 entry points were removed. The paths below follow the consolidated APIs documented above; where no current MCP tool provides the old operation, the entry is marked explicitly.
+
+| `v0.1.0` tool | Migration path |
+|---|---|
+| `pvsyst_archive_component` | No direct replacement (removed) |
+| `pvsyst_archive_project` | No direct replacement (removed) |
+| `pvsyst_archive_variant` | No direct replacement (removed) |
+| `pvsyst_backup_component` | `pvsyst_update_component` creates an automatic backup during an update; there is no standalone backup call |
+| `pvsyst_clone_component` | `pvsyst_build_sourced_component` for PAN/OND template derivation; generic component cloning was removed |
+| `pvsyst_clone_project` | `pvsyst_clone_variant` can clone an individual VC; whole-project cloning has no direct replacement (removed) |
+| `pvsyst_copy_component` | `pvsyst_build_sourced_component` for PAN/OND template derivation; generic component copying was removed |
+| `pvsyst_create_load_variant` | `pvsyst_create_native_load_variant` with `mode="hourly"` and a prepared load manifest |
+| `pvsyst_create_peak_shaving_variant` | `pvsyst_create_grid_storage_variant` with the `PeakShaving` limits or discharge-timing updates |
+| `pvsyst_open_native_project` | No direct replacement (removed) |
+| `pvsyst_restore_archived_component` | No direct replacement (removed) |
+| `pvsyst_restore_component` | No direct replacement (removed) |
+| `pvsyst_restore_project_archive` | No direct replacement (removed) |
+| `pvsyst_restore_project_sources` | No direct replacement (removed) |
+| `pvsyst_restore_variant` | No direct replacement (removed) |
+| `pvsyst_simulate_template` | `pvsyst_simulate_design` is the documented unified design workflow with template matching and annual simulation |
