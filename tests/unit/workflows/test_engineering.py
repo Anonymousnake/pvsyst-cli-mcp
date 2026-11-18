@@ -1,5 +1,7 @@
 """Consolidated engineering and scene/hardware verification tests."""
+import ctypes
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -9,7 +11,7 @@ from unittest.mock import patch
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.engineering.comparison import RUN_FIELDS, compare_engineering_scenarios
-from pvsyst_auto.engineering.handoff import _load_records
+from pvsyst_auto.engineering.handoff import _load_records, build_project_handoff
 from pvsyst_auto.engineering.inputs import discover_design_inputs
 from pvsyst_auto.engineering.review import review_project_inputs
 from pvsyst_auto.project.variants import VariantStore
@@ -237,6 +239,37 @@ class EngineeringTests(unittest.TestCase):
         self.assertEqual(record["values"]["ValHour_1"], "1.000,2.000,3.000,6,")
         self.assertEqual(record["omitted_cache_fields"], ["Day_1"])
         self.assertFalse(load["hourly_cache_contents_included"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows path aliases require Windows")
+    def test_handoff_recognizes_workspace_path_with_short_name_components(self):
+        root = self.workspace()
+        load_dir = root / "UserHourlyParams"
+        other_dir = root / "Other"
+        for folder in (load_dir, other_dir):
+            folder.mkdir()
+            (folder / "Load.csv").write_text("sample", encoding="utf-8")
+        buf = ctypes.create_unicode_buffer(1024)
+        size = ctypes.windll.kernel32.GetShortPathNameW(str(load_dir), buf, len(buf))
+        if not 0 < size < len(buf) or Path(buf.value) == load_dir:
+            self.skipTest("The workspace directory has no NTFS short alias")
+        short = Path(buf.value)
+        mixed = short.parent / load_dir.name if short.parent != load_dir.parent else load_dir.parent / short.name
+        project = root / "Projects" / "Work.PRJ"
+        project.write_text("PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
+        store = VariantStore(root, ComponentStore(root))
+        for directory, matches in ((load_dir, True), (short, True), (mixed, True), (other_dir, False)):
+            with self.subTest(directory=directory):
+                text = grouped_variant().replace("End of PVObject pvVCalcul\n", (
+                    "  PVObject_UserNeeds=pvLoad\n    HourlyLoad=THourlyParams\n"
+                    f"      FileName=Load.csv\n      PathName={directory}\n"
+                    "    End of THourlyParams\n  End of PVObject pvLoad\nEnd of PVObject pvVCalcul\n"))
+                project.with_suffix(".VC0").write_text(text, encoding="utf-8-sig")
+                result = build_project_handoff(store, project=project.name, variant="VC0")
+                self.assertNotEqual(result["status"], "blocked", result)
+                load = next(item for item in result["external_dependencies"] if item["kind"] == "load")
+                self.assertEqual(load["resolution"], "workspace")
+                self.assertEqual(load["path_matches_workspace"], matches)
+                self.assertEqual(any("PathName" in note for note in result["review_items"]), not matches)
 
     def test_discovery_rejects_float_inverter_count_and_allows_unbounded_tilt(self):
         root = self.workspace()
