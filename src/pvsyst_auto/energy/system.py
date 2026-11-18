@@ -152,8 +152,8 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
         if load_record is not None:
             # Bit19 enables user-load consumption.
             lines[root_index] = replace_value(lines[root_index], f"${int(root_flags[1:], 16) | 0x00080000:08X}")
-        # Bit28 + 0x10040 enables native centralized AC grid storage.
-        lines[system_index] = replace_value(lines[system_index], f"${int(system_flags[1:], 16) | 0x10010040:08X}")
+        # Enable native centralized AC grid storage and leave SystemUnavail (bit 16) untouched.
+        lines[system_index] = replace_value(lines[system_index], f"${int(system_flags[1:], 16) | 0x10000040:08X}")
         set_grid_export(lines, system, allow_grid_export)
         if "grid_limit_kw" in controls and ("grid_limit_kw" in storage_clean or controls["strategy"] == "PeakShaving"):
             set_system_grid_limit(lines, system, controls["grid_limit_kw"])

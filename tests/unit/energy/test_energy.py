@@ -230,6 +230,33 @@ class WorkspaceTests(unittest.TestCase):
         self.assertNotIn("Comment=old", text)
         self.assertTrue(text.endswith("    End of PVObject pvUnavail\r\n  End of PVObject pvGridStorage\r\n" + CLOSE.replace("\n", "\r\n")))
 
+    def test_new_storage_preserves_owning_system_unavailability_bit(self):
+        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+
+        for source_flags, has_outage, controls in (
+            ("$00", False, {"strategy": "peak_shaving", "grid_limit_kw": 6000.0}),
+            ("$05100000", False, {"strategy": "power_shift", "charging_pv_fraction": 0.4, "discharging_power_kw": 3000.0}),
+            ("$05100000", True, {"strategy": "power_shift", "charging_pv_fraction": 0.4, "discharging_power_kw": 3000.0}),
+        ):
+            with self.subTest(source_flags=source_flags, has_outage=has_outage, strategy=controls["strategy"]):
+                text = ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM.replace("$00", source_flags) + CLOSE
+                lines = text.splitlines(keepends=True)
+                if has_outage:
+                    replace_system_unavailability(lines, self.store._sections(lines)[1], {
+                        "mode": "periods", "periods": [{"date_beg": "03/06/90 00:00", "duration_hours": 48}],
+                    })
+                self.source("".join(lines))
+                result = create_grid_storage_system(
+                    self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                    battery=BATTERY, storage={**STORAGE, **controls}, dry_run=False,
+                )
+                written = self.created(result).splitlines(keepends=True)
+                saved = self.root / "Projects/Fixture.VC1"
+                saved.unlink()
+                state = system_unavail_state(written, self.store._sections(written)[1])
+                self.assertEqual(state["configured"], has_outage)
+                self.assertEqual(bool(int(result["configuration"]["system_flags"][1:], 16) & 0x00010000), has_outage)
+
     def test_storage_system_load_insertion_and_replacement(self):
         self.source(ROOT.format(root_flags="$00100001") + ARRAY + PV_SYSTEM + "  " + CLOSE)
         battery = {**BATTERY, "monthly_temperature_c": [0.00001] + [20] * 11, "cycle_sow": 0.00001}
