@@ -63,7 +63,9 @@ def system_unavail_state(lines, system):
             periods.append({"date_beg": value, "duration": duration})
     declared = settings.get("NbPeriods")
     # ASCII digits only: str.isdigit() also accepts e.g. "²", which int() then rejects.
-    if declared is None or not declared.isascii() or not declared.isdigit() or int(declared) != len(periods):
+    # In DefMode=Random without materialized DateBeg rows, NbPeriods belongs to RandomUnavSettings.
+    if (declared is None or not declared.isascii() or not declared.isdigit()
+            or ((mode != "Random" or len(periods) > 0) and int(declared) != len(periods))):
         issues.append("NbPeriods does not match the stored period list")
     undated = sum(period["duration"] is None for period in periods)
     if undated:

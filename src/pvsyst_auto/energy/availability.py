@@ -20,7 +20,7 @@ def native_availability(workspace, declaration, newline):
     source = workspace_file(workspace, "UserData", declaration["csv_name"], ".csv")
     original = _read(source)
     reader = csv.reader(io.StringIO(original.decode("utf-8-sig")), delimiter=";", strict=True)
-    if next(reader) != ["Date", "Grid Available"] or next(reader) != ["", "ratio"]:
+    if next(reader, None) != ["Date", "Grid Available"] or next(reader, None) != ["", "ratio"]:
         raise ValueError("Expected Date;Grid Available / ;ratio availability CSV")
     count = 24 * (366 if calendar.isleap(year) else 365)
     beginning = datetime(year, 1, 1)

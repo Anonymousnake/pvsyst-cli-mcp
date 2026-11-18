@@ -173,13 +173,23 @@ def create_ac_cabling_variant(store, *, project, source_variant, new_variant, ac
         if state["mode"] == "active":
             replace(main.one("ACWireMetal")[0], metal)
         else:
-            index = main.one("UFAverEffic")[0] + 1
+            anchor_field = next((k for k in ("UFAverEffic", "MVNbTransfos", "Flags2", "Flags") if k in main.fields), None)
+            if anchor_field is None:
+                raise ValueError("Main array lacks an anchor field for AC cable declarations")
+            index = main.one(anchor_field)[0] + 1
             indent = re.match(r"\s*", lines[index - 1]).group(0)
             edits.append((index, index, [f"{indent}{key}={value}{newline}" for key, value in
                                         (("ACWireNoSect", "0"), ("ACWireLength", "0.0"), ("ACWireMetal", metal))]))
         for node, cable in zip(nodes, cables):
-            anchor, = node.field_lines["NElements"]
-            indent = re.match(r"[ \t]*", lines[anchor]).group(0)
+            if "NElements" in node.field_lines:
+                anchor, = node.field_lines["NElements"]
+                indent = re.match(r"[ \t]*", lines[anchor]).group(0)
+            elif node.field_lines:
+                anchor = max(idx for indices in node.field_lines.values() for idx in indices)
+                indent = re.match(r"[ \t]*", lines[anchor]).group(0)
+            else:
+                anchor = node.line - 1
+                indent = re.match(r"[ \t]*", lines[anchor]).group(0) + "  "
             replacement = _cable_text(indent, length, metal, section, newline)
             start, end = (cable["start"], cable["end"] + 1) if cable else (anchor + 1, anchor + 1)
             edits.append((start, end, replacement))

@@ -109,7 +109,8 @@ def _provider_to_csv(source: Path, report: dict, acquisition: dict, workspace: P
     if not isinstance(created, dict):
         raise ValueError("Acquisition manifest created_files must be a JSON object")
     declared_csv = created.get("csv")
-    if not isinstance(declared_csv, dict) or declared_csv.get("name") != csv_name:
+    if (not isinstance(declared_csv, dict) or not isinstance(declared_csv.get("name"), str)
+            or declared_csv["name"].casefold() != csv_name.casefold()):
         raise ValueError("Acquisition manifest created_files.csv.name does not name the reviewed CSV")
     raw_path = _named_asset(workspace, "Meteo", acquisition, "created_files", "raw_json", ".json")
     if raw_path.stat().st_size > MAX_CSV_BYTES:
@@ -308,7 +309,7 @@ def _time_basis_declaration(workspace: Path, weather_manifest_name: str, native_
         declaration_issues.append(f"Weather manifest year {manifest.get('year')!r} differs from the "
                                   f"reviewed year {year}")
     source = manifest.get("source")
-    if not isinstance(source, dict) or source.get("name") != csv_name:
+    if not isinstance(source, dict) or not isinstance(source.get("name"), str) or source["name"].casefold() != csv_name.casefold():
         declaration_issues.append("Weather manifest source.name does not name the reviewed CSV")
     met_path = _named_asset(workspace, "Meteo", manifest, "created_files", "met", ".met")
     sit_path = _named_asset(workspace, "Sites", manifest, "created_files", "sit", ".sit")
@@ -320,8 +321,10 @@ def _time_basis_declaration(workspace: Path, weather_manifest_name: str, native_
                   met_header_read_stop=stop, reviewed=True,
                   declared_source_year=_declared_source_year(met_fields))
     result["conflicts"].extend(declaration_issues)
-    result["context_matches"] = (result["consumed_met"] == met_path.name
-                                 and result["consumed_sit"] == sit_path.name
+    result["context_matches"] = (isinstance(result["consumed_met"], str)
+                                 and isinstance(result["consumed_sit"], str)
+                                 and result["consumed_met"].casefold() == met_path.name.casefold()
+                                 and result["consumed_sit"].casefold() == sit_path.name.casefold()
                                  and not duplicates)
     if not result["context_matches"]:
         result["conflicts"].append(
