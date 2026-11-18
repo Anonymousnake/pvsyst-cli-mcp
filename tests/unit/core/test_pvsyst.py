@@ -626,6 +626,37 @@ class PVsystTests(unittest.TestCase):
         with self.assertRaises(native_scene.UnsupportedEnvironment):
             native_scene._check_cli(fake_818)
 
+    def test_gui_dpi_gate_checks_monitor_scale(self):
+        user = Mock()
+        user.GetDpiForWindow.return_value = 96
+        with patch.object(native_scene, "_libs", return_value=(user, None)), \
+                patch.object(native_scene, "_monitor_dpi", return_value=144, create=True) as monitor_dpi:
+            with self.subTest(window=96, monitor=144):
+                with self.assertRaisesRegex(native_scene.UnsupportedEnvironment, "monitor 144"):
+                    native_scene._dpi(1)
+                monitor_dpi.assert_called_once_with(1)
+            with self.subTest(window=96, monitor=96):
+                monitor_dpi.return_value = 96
+                self.assertEqual(native_scene._dpi(1), 96)
+            with self.subTest(window=120):
+                user.GetDpiForWindow.return_value = 120
+                monitor_dpi.reset_mock()
+                with self.assertRaisesRegex(native_scene.UnsupportedEnvironment, "120 dpi"):
+                    native_scene._dpi(1)
+                monitor_dpi.assert_not_called()
+
+    def test_gui_monitor_dpi_fails_closed_on_hresult(self):
+        user = Mock()
+        user.MonitorFromWindow.return_value = 2
+        shcore = Mock()
+        shcore.GetDpiForMonitor.return_value = -1
+        with patch.object(native_scene, "_libs", return_value=(user, None)), \
+                patch.object(native_scene, "_physical_coordinates", contextlib.nullcontext), \
+                patch.object(native_scene, "_S", shcore, create=True):
+            with self.assertRaisesRegex(native_scene.UnsupportedEnvironment, "Monitor DPI cannot be verified"):
+                native_scene._monitor_dpi(1)
+            shcore.GetDpiForMonitor.assert_called_once()
+
     def test_cli_control_chars_bool_guards_csv_encoding_headers_and_leap_day(self):
         import warnings
         from pvsyst_auto.native.cli import (

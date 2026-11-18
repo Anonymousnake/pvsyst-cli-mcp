@@ -60,6 +60,8 @@ CB_GETLBTEXTLEN = 0x0149
 CB_SETCURSEL = 0x014E
 CF_UNICODETEXT = 13
 GA_ROOT = 2
+MONITOR_DEFAULTTONEAREST = 2
+MDT_EFFECTIVE_DPI = 0
 SMTO_ABORTIFHUNG = 0x0002
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 VK_MENU, VK_SHIFT, VK_CONTROL = 0x12, 0x10, 0x11
@@ -75,6 +77,7 @@ PVSYST_PROCESS_CLASSES = ("THomeForm", "TProjectForm", "TProjectLoadForm",
 _PID = 0
 _U = None
 _K = None
+_S = None
 
 
 class NativeBridgeError(RuntimeError):
@@ -149,6 +152,9 @@ def _bind(u, k):
     if hasattr(u, "GetDpiForWindow"):
         u.GetDpiForWindow.argtypes = [HWND]
         u.GetDpiForWindow.restype = UINT
+    if hasattr(u, "MonitorFromWindow"):
+        u.MonitorFromWindow.argtypes = [HWND, w.DWORD]
+        u.MonitorFromWindow.restype = ctypes.c_void_p
     k.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
     k.OpenProcess.restype = ctypes.c_void_p
     k.CloseHandle.argtypes = [ctypes.c_void_p]
@@ -264,6 +270,31 @@ def _physical_coordinates():
             _fail("The worker DPI awareness context could not be restored")
 
 
+def _monitor_dpi(hwnd):
+    global _S
+    message = "Monitor DPI cannot be verified"
+    # Query effective DPI in a per-monitor-aware thread to avoid DPI virtualization.
+    with _physical_coordinates():
+        u, _ = _libs()
+        try:
+            hmon = u.MonitorFromWindow(w.HWND(hwnd), MONITOR_DEFAULTTONEAREST)
+            if not hmon:
+                raise UnsupportedEnvironment(message)
+            if _S is None:
+                shcore = ctypes.WinDLL("shcore")
+                shcore.GetDpiForMonitor.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                                   ctypes.POINTER(w.UINT), ctypes.POINTER(w.UINT)]
+                shcore.GetDpiForMonitor.restype = w.LONG
+                _S = shcore
+            x, y = w.UINT(), w.UINT()
+            status = _S.GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, ctypes.byref(x), ctypes.byref(y))
+        except (AttributeError, OSError) as exc:
+            raise UnsupportedEnvironment(message) from exc
+        if status != 0 or x.value != y.value:
+            raise UnsupportedEnvironment(message)
+        return x.value
+
+
 def _dpi(root):
     u, _ = _libs()
     probe = getattr(u, "GetDpiForWindow", None)
@@ -272,6 +303,10 @@ def _dpi(root):
     value = int(probe(w.HWND(root)))
     if value != EXPECTED_DPI:
         raise UnsupportedEnvironment("Unsupported display scale: %d dpi" % value)
+    monitor = _monitor_dpi(root)
+    if monitor != EXPECTED_DPI:
+        raise UnsupportedEnvironment("Unsupported display scale: monitor %d dpi (window %d dpi)"
+                                     % (monitor, value))
     return value
 
 
