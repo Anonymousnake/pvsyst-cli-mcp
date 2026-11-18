@@ -1,12 +1,11 @@
 """Simulation MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
-from pydantic import StrictBool, StrictInt, StrictStr
+from pydantic import StrictBool, StrictStr
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
 from pvsyst_auto.workflows.design import simulate_design
-from pvsyst_auto.workflows.simulation import simulate_template
 from pvsyst_auto.workflows.sourced_design import prepare_sourced_design
-from pvsyst_auto.api.schemas import CapacityRequest, HouseTaskRequest, LossRequest, SingleDesignRequest, SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest, StrictNum, TrackingControls
+from pvsyst_auto.api.schemas import HouseTaskRequest, SingleDesignRequest, SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest
 from pvsyst_auto.api.context import categorized_tool, cli, components, optional_path, simulation_csv_path, variant_store, workspace_path
 from pvsyst_auto.components.identity import sourced_component
 
@@ -31,33 +30,6 @@ def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
     store = variant_store()
     return run_house_task(store, store.components, cli(), request=spec.model_dump(exclude_none=True),
         dry_run=dry_run, confirm=confirm, resume=resume, retry_simulation=retry_simulation)
-
-@categorized_tool()
-def pvsyst_simulate_template(template_project: StrictStr = "", variant: StrictStr = "",
-                             new_project: StrictStr = "", pan_name: StrictStr = "",
-                             ond_name: StrictStr = "", site_name: StrictStr = "",
-                             met_name: StrictStr = "", tilt: StrictNum | None = None,
-                             azimuth: StrictNum | None = None,
-                             year: StrictInt | None = None, dry_run: StrictBool = True,
-                             capacity: CapacityRequest | None = None,
-                             weather_manifest_name: StrictStr = "",
-                             losses: LossRequest | None = None,
-                             report_pages: list[StrictStr] | None = None,
-                             tracking: TrackingControls | None = None,
-                             tracking_variant: StrictStr = "",
-                             nominal_dc_power_kw: StrictNum | None = None,
-                             tracking_power_source: StrictStr = "") -> dict:
-    """Clone a fixed-plane or UnlimTracking template project, apply component, weather,
-    angle, capacity, or loss edits, and run a full-year simulation (year 1969..2068)."""
-    return simulate_template(cli(), variant_store(), template_project=template_project, variant=variant,
-        new_project=new_project, pan_name=pan_name, ond_name=ond_name, site_name=site_name,
-        met_name=met_name, tilt=tilt, azimuth=azimuth, year=year, dry_run=dry_run,
-        capacity=capacity.model_dump(exclude_none=True) if capacity is not None else None,
-        weather_manifest_name=weather_manifest_name,
-        losses=losses.model_dump(exclude_none=True) if losses is not None else None,
-        report_pages=report_pages, tracking=tracking.model_dump(exclude_none=True) if tracking is not None else None,
-        tracking_variant=tracking_variant, nominal_dc_power_kw=nominal_dc_power_kw,
-        tracking_power_source=tracking_power_source)
 
 @categorized_tool()
 def pvsyst_run_simulation(project: str, variant: str,

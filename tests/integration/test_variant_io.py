@@ -137,7 +137,7 @@ class VariantIOTests(unittest.IsolatedAsyncioTestCase):
             (root / "Projects" / "U.VC0").write_text(vc, encoding="utf-8")
             cli = root / "PVsystCLI.exe"
             cli.write_bytes(b"fake")
-            async with mcp_session(root, cli) as session:
+            async with mcp_session(root, cli, tool_groups="all") as session:
                 err, info = decode_reply(await session.call_tool("pvsyst_get_variant_parameters", {"project": "U.PRJ", "variant": "VC0"}))
                 self.assertFalse(err, info)
                 self.assertEqual(info["subarrays"][0]["inverter_state"]["PNomAC_InMPPT"], 7.50)

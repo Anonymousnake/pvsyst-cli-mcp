@@ -17,7 +17,7 @@
 
 | 功能模块 | 对应工具 | 实现说明与相关文档 |
 |---|---|---|
-| 工程与变体生命周期 | `inspect`、`create`、`clone`、归档/恢复、标题更新、气象源切换 | 见[工程文件与事务](project-source-verification.md)、[项目显示标题](project-title.md) |
+| 工程与变体生命周期 | `inspect`、`create`、`clone_variant`、标题更新、气象源切换（部分位于 `expert` 组） | 见[工程文件与事务](project-source-verification.md)、[项目显示标题](project-title.md) |
 | 站点与气象准备 | `create_site`、`convert_meteo`、`prepare_weather`、`acquire_weather`、`review_weather` | 见[天气准备](weather-preparation.md)；支持 Open-Meteo ERA5 下载、当地标准时（`LegalTime`）对齐与 `.SIT`/`.MET` 转换 |
 | 单方案设计与源工程准备 | `simulate_design`、`prepare_design_project`、`prepare_sourced_design` | 见[单方案设计输入](single-design-inputs.md)、[源工程准备](design-project-preparation.md) |
 | 固定分块工程拼装 | `prepare_block_project` | 见[分块工程准备](block-project-preparation.md)；按模板子阵分块的整数倍批量复制组装新工程 |
@@ -68,7 +68,7 @@
 | 双朝向 Dome 分配 | MCP 已封装 | `pvsyst_create_dome_allocation_variant` 在已有配对 `Dome` 模板上重新分配正反两面组串数，见[Dome 双朝向分配](native-dome-allocation.md) |
 | 棚架与遮阳板（Sheds / SunShields） | MCP 已封装 | `pvsyst_create_shed_geometry_variant` 修改现有棚架/遮阳板模板的间距、倾角、排数、宽度与电气阴影开关，见[棚架与遮阳板](native-shed-controls.md) |
 | 单轴 / 双轴跟踪器参数 | MCP 已封装 | `pvsyst_create_tracking_variant` 支持 9 种原生跟踪类型的所属几何、角度限值、回溯（Backtracking）与间距修改，见[跟踪控制](native-tracking-controls.md) |
-| 无限水平轴跟踪模板仿真 | MCP 已封装 | `pvsyst_simulate_template` 支持直接跑基于 `UnlimTracking` 模板的全年仿真流程，见[跟踪模板流程](tracking-template-flow.md) |
+| 无限水平轴跟踪仿真 | MCP 已封装 | `pvsyst_create_tracking_variant` + `pvsyst_run_engineering_task` 支持修改并运行 `UnlimTracking` 全年仿真，见[跟踪模板流程](tracking-template-flow.md) |
 | 远方地平线（Far Horizon） | MCP 可读写 | `horizon_updates` 写入 4..100 个方位角/仰角点对或清空地平线，见[地平线轮廓](horizon-profile.md) |
 | 房屋、周边遮挡与光伏 `.pvc2` 建模与回读 | MCP 已封装 | `pvsyst_create_house_pv_scene` 与 `pvsyst_read_house_pv_scene`，支持单朝向多分区、多朝向屋顶及 4 类 `obstacles`（`building`、`tree`、`wall`、`mesh`）生成与 XML 无损还原，见[住宅与光伏建模](house-pv-modeling.md) |
 | 3D 场景免 GUI 原生导入与全年任务 | MCP 已封装（默认 `native`） | `pvsyst_import_house_pv_scene`、`pvsyst_run_house_task`、`pvsyst_run_sourced_house_task`（默认 `"native"`，支持 `landscape`/`portrait` 竖装、正模块间距、3+ 独立固定朝向屋面、`PowerSharingInverterId >= 0` 共享逆变器、`pvShdGenObject` 与原生 `oeTree`；`"gui"` 保留为旧版未维护路径），见[住宅单任务](native-house-task.md)与[双屋面交付说明](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance) |
@@ -80,10 +80,10 @@
 
 | 功能项 | 当前支持状态 | 底层字段与注意事项 |
 |---|---|---|
-| 全年逐时负荷 CSV 准备与绑定 | MCP 已封装 | `pvsyst_prepare_load_profile` 校验 8760/8784 小时负荷；`pvsyst_create_load_variant` 将逐时数据编码写入 `pvLoad` 的 `Energy/MJ` base62 缓存，见[逐时负荷与原生绑定](storage-loads.md) |
+| 全年逐时负荷 CSV 准备与绑定 | MCP 已封装 | `pvsyst_prepare_load_profile` 校验 8760/8784 小时负荷；`pvsyst_create_native_load_variant(load={"mode":"hourly","load_manifest_name":...})` 将逐时数据编码写入 `pvLoad` 的 `Energy/MJ` base62 缓存，见[逐时负荷与原生绑定](storage-loads.md) |
 | 常数 / 月度 / 24 小时日曲线负荷 | MCP 已封装 | `pvsyst_create_native_load_variant` 在纯光伏变体上配置常数（`kW`）、月度（12 个月 `kWh`）或日曲线（24 小时 `kW`）自发自用负荷，见[逐时负荷与原生绑定](storage-loads.md) |
 | 集中式 AC 耦合光储系统构建 | MCP 已封装 | `pvsyst_create_grid_storage_system` 在纯光伏变体（兼容 3D 阴影/多朝向）上挂载工作区或内置 `.BTR` 锂电/铅酸电池，支持 `SelfConsumption`、`WeakGrid`、`PeakShaving`（无需手动负荷，写入 `PLimGrid`）与 `PowerShift`（`PVProdFraction` / `SpecChargPower` / `PVToGridMin` + `SpecifiedHours` / `Night` / `MinMaxHour` 的 48 槽 `TParSimulSeries`），见[光储系统与参数](grid-storage-parameters.md) |
-| 既有光储系统参数修改 | MCP 已封装 | `pvsyst_create_grid_storage_variant` 修改 SOC、充放电功率、效率、`PowerShift` 48 槽充放电曲线、`PeakShaving` `grid_limit_kw` 与 `allow_grid_export`（系统 bit 27 防逆流位），保留 `pvShading`/`pvModuleLayout` 并自动清理 `VarList` |
-| 削峰（Peak Shaving）放电窗口 | MCP 已封装 | `pvsyst_create_peak_shaving_variant` 修改现有削峰变体（支持内置/工作区锂电 `.BTR` 与 3D 场景）的放电时序（`AfterSunset` 或起止小时窗口），见[削峰放电控制](native-peak-shaving.md) |
+| 既有光储系统参数修改 | MCP 已封装 | `pvsyst_create_grid_storage_variant` 修改 SOC、充放电功率、效率、`PowerShift` 48 槽充放电曲线、`PeakShaving` `grid_limit_kw` 与 `discharging_strategy`（`after_sunset`/`hour_window`）及 `allow_grid_export`（系统 bit 27 防逆流位），保留 `pvShading`/`pvModuleLayout` 并自动清理 `VarList` |
+| 削峰（Peak Shaving）放电窗口 | MCP 已封装 | 由 `pvsyst_create_grid_storage_variant` 统一设置 `strategy="peak_shaving"` 与 `discharging_strategy`（`after_sunset` / `hour_window`），见[削峰放电控制](native-peak-shaving.md) |
 | 完整 AC 光储能量流导出 | MCP 已封装 | `pvsyst_build_sfi(variables="grid_storage")` 自动包含 `CL_Over`（变流器限幅损失）等完整能量平衡列 |
 | 概率/家用电器负荷、随机停电、DC 耦合混储 | 实测边界锁定 | 概率/家用电器负荷与随机停电见[负荷与储能模式笔记](native-load-storage-controls.md)；PVsyst 8.1.7 并网储能仅实现 Common AC Bus（无 DC 直充电池端口），`coupling` 锁定 `"ac_coupled"` 并在传入 `"dc_coupled"`/`"hybrid"` 时显式拒接 |

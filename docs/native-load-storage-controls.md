@@ -11,7 +11,7 @@
 | `Constant` | `Flags=$00`，`ConstantLoad` 直接存常数功率（`kW`） | 已支持（`pvsyst_create_native_load_variant`） |
 | `Monthly` | `Flags=$01`，`UsesModul=Yearly`，`ValMonth` 15 个槽（前 12 槽存每月的**总电量 `kWh`** + 3 个尾零槽；注意不要被文件里写的 `Energy Units=kW` 误导成传功率） | 已支持（`pvsyst_create_native_load_variant`） |
 | `DailyProfile` | `Flags=$02`，`NHourlyValues=1`，`ValHour_1` 25 个槽（前 24 槽存每小时功率 `kW` + 第 25 槽存日总和） | 已支持（`pvsyst_create_native_load_variant`） |
-| `HourlyFile` | `Flags=$4000`，外加内嵌在 `HourlyLoad`/`ParSimulH` 中的 366 行 `Day_DDMM` signed-base62 逐时缓存（光改 `HourlyFile` 路径不改缓存不会生效） | 已支持（`pvsyst_prepare_load_profile` + `pvsyst_create_load_variant`） |
+| `HourlyFile` | `Flags=$4000`，外加内嵌在 `HourlyLoad`/`ParSimulH` 中的 366 行 `Day_DDMM` signed-base62 逐时缓存（光改 `HourlyFile` 路径不改缓存不会生效） | 已支持（`pvsyst_prepare_load_profile` + `pvsyst_create_native_load_variant(load={"mode":"hourly",...})`） |
 | `HouseHold` | 嵌套家用电器数量与 24 小时使用时段位图 | 仅识别，未开放创建 |
 | `Probability` | 与 `DailyProfile` 同样使用 `Flags=$02`（因此解析时必须看 `LoadType` 而不是光看 `Flags`），依赖内部分档与归一化规则 | 仅识别，未开放创建 |
 

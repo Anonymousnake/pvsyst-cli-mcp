@@ -265,7 +265,7 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(json.loads(manifest.read_text()), result)
 
         for step in result["recovery"]:
-            method = self.store.restore if step["tool"] == "pvsyst_restore_variant" else self.store.restore_project_sources
+            method = self.store.restore if step["action"] == "restore_variant" else self.store.restore_project_sources
             method(**step["arguments"])
         for name, data in self.originals.items():
             self.assertEqual((self.root / "Projects" / name).read_bytes(), data)
@@ -359,7 +359,7 @@ class SimulationTests(unittest.TestCase):
         values = self.store.inspect_parameters("Work.PRJ", "VC0")["subarrays"][0]["values"]
         self.assertEqual((values["NModSerie"], values["NStringCh"], values["NInverter"]), ("16", "4", "1"))
         for step in result["recovery"]:
-            method = self.store.restore if step["tool"] == "pvsyst_restore_variant" else self.store.restore_project_sources
+            method = self.store.restore if step["action"] == "restore_variant" else self.store.restore_project_sources
             method(**step["arguments"])
         for name, data in originals.items():
             self.assertEqual((projects / name).read_bytes(), data)
@@ -467,7 +467,7 @@ class SimulationTests(unittest.TestCase):
         self.assertTrue(failed["recovery"])
         self.assertIn("Weather preparation remains needs_review", " ".join(failed["warnings"]))
         for step in failed["recovery"]:
-            method = self.store.restore if step["tool"] == "pvsyst_restore_variant" else self.store.restore_project_sources
+            method = self.store.restore if step["action"] == "restore_variant" else self.store.restore_project_sources
             method(**step["arguments"])
         for name, raw in self.originals.items():
             self.assertEqual((self.root / "Projects" / name).read_bytes(), raw)

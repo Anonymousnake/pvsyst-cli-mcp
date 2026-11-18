@@ -251,7 +251,20 @@ def _apply_block(lines, load, newline):
 
 def create_native_load_variant(store, *, project, source_variant, new_variant, load,
                                dry_run=True, variant_name=None, add_utf8_bom=False):
-    """Preview or create a NEW VC only; the source and every other field stay untouched."""
+    """Preview or create a NEW VC only; handles constant/monthly/daily native blocks and hourly manifests."""
+    if isinstance(load, dict) and load.get("mode") == "hourly":
+        if set(load) != {"mode", "load_manifest_name"}:
+            raise ValueError("hourly load accepts only mode and load_manifest_name")
+        manifest_name = load["load_manifest_name"]
+        if not isinstance(manifest_name, str) or not manifest_name.strip():
+            raise ValueError("load_manifest_name must be a non-empty manifest filename")
+        from pvsyst_auto.energy.load import create_load_variant
+        return create_load_variant(
+            store, project=project, source_variant=source_variant, new_variant=new_variant,
+            load_manifest_name=manifest_name, dry_run=dry_run,
+            variant_name=variant_name, add_utf8_bom=add_utf8_bom,
+        )
+
     def build(*, text, lines, **_):
         arrays, system = store._sections(lines)
         root_flags = _require_scope(store, lines, arrays, system)

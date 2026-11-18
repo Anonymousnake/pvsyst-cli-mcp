@@ -57,19 +57,25 @@ class PackageEntrypointTests(unittest.TestCase):
                     await session.initialize()
                     tools = (await session.list_tools()).tools
                     names = {tool.name for tool in tools}
+                    self.assertEqual(len(names), 34)
                     self.assertTrue({"pvsyst_capabilities", "pvsyst_run_engineering_task",
-                                     "pvsyst_review_engineering_brief", "pvsyst_run_house_task",
-                                     "pvsyst_prepare_block_project"}.issubset(names))
-                    reply = await session.call_tool("pvsyst_review_engineering_brief", {
-                        "brief": {"sources": [{"id": "source", "title": "Declared fixture", "locator": "Public entrypoint"}],
-                                  "claims": [{"id": "count", "field": "module_count", "scope": "project",
-                                              "value": 1, "unit": "count", "source_id": "source",
-                                              "pdf_page": 1, "excerpt": "One declared module"}]}})
+                                     "pvsyst_simulate_design", "pvsyst_run_house_task",
+                                     "pvsyst_create_native_load_variant"}.issubset(names))
+                    self.assertTrue({"pvsyst_license_info", "pvsyst_prepare_block_project",
+                                     "pvsyst_clone_project", "pvsyst_simulate_template"}.isdisjoint(names))
+                    reply = await session.call_tool("pvsyst_run_engineering_task", {
+                        "spec": {
+                            "source_project": "Missing.PRJ", "source_variant": "VC0",
+                            "new_project": "Work.PRJ", "new_variant": "VC1",
+                            "objective": "Public entrypoint", "year": 2024,
+                            "nominal_dc_power_kw": 10.0, "power_source": "Declared fixture",
+                            "changes": {},
+                        }})
                     self.assertFalse(reply.is_error, reply.content)
                     value = json.loads("\n".join(item.text for item in reply.content if hasattr(item, "text")))
-                    self.assertIn(value["status"], ("blocked", "needs_review"))
+                    self.assertEqual(value["status"], "blocked")
                     self.assertFalse(value["native_consumption_verified"])
-                    unknown = await session.call_tool("pvsyst_review_engineering_brief", {"brief": {}, "unexpected": True})
+                    unknown = await session.call_tool("pvsyst_run_engineering_task", {"spec": {}, "unexpected": True})
                     self.assertTrue(unknown.is_error)
                     self.assertIn("Unknown argument", "\n".join(item.text for item in unknown.content if hasattr(item, "text")))
             self.assertEqual(list(root.iterdir()), [])
@@ -131,10 +137,13 @@ class ToolGroupsTests(unittest.TestCase):
                         tools = sorted([item.model_dump(mode="json", by_alias=True, exclude_none=True)
                                         for item in (await session.list_tools()).tools], key=lambda item: item["name"])
                         if groups is not None:
-                            reply = await session.call_tool("pvsyst_clone_project", {"source_project": "SOURCE.PRJ", "new_project": "NEW.PRJ"})
-                            self.assertTrue(reply.is_error)
-                            self.assertRegex("\n".join(i.text for i in reply.content if hasattr(i, "text")).lower(),
-                                             r"unknown tool|not found|not registered")
+                            for gone in ("pvsyst_clone_project", "pvsyst_open_native_project",
+                                         "pvsyst_simulate_template", "pvsyst_create_peak_shaving_variant",
+                                         "pvsyst_create_load_variant"):
+                                reply = await session.call_tool(gone, {})
+                                self.assertTrue(reply.is_error)
+                                self.assertRegex("\n".join(i.text for i in reply.content if hasattr(i, "text")).lower(),
+                                                 r"unknown tool|not found|not registered")
                         if groups is None:
                             reply = await session.call_tool("pvsyst_update_variant_parameters", {
                                 "project": "SOURCE.PRJ", "variant": "VC0", "expected_sha256": "0" * 64, "dryrun": True})
@@ -143,16 +152,29 @@ class ToolGroupsTests(unittest.TestCase):
                                           "\n".join(i.text for i in reply.content if hasattr(i, "text")))
                 return tools
 
-            full, selected = await asyncio.gather(
+            default_tools, full, selected, expert_only, admin_only = await asyncio.gather(
                 capture(None),
+                capture("all"),
                 capture("setup, engineering,results", module=True),
+                capture("expert"),
+                capture("admin"),
             )
-            self.assertIn("pvsyst_clone_project", {item["name"] for item in full})
+            default_names = {item["name"] for item in default_tools}
+            full_names = {item["name"] for item in full}
+            self.assertEqual(len(default_names), 34)
+            self.assertEqual(len(full_names), 66)
+            self.assertTrue({"pvsyst_license_info", "pvsyst_prepare_block_project"}.isdisjoint(default_names))
+            self.assertTrue({"pvsyst_license_info", "pvsyst_prepare_block_project"}.issubset(full_names))
+            self.assertEqual({item["name"] for item in admin_only},
+                             {"pvsyst_license_info", "pvsyst_license_activate",
+                              "pvsyst_license_deactivate", "pvsyst_license_sync", "pvsyst_export_logs"})
+            self.assertEqual(len(expert_only), 27)
+            self.assertEqual(default_names | {i["name"] for i in expert_only} | {i["name"] for i in admin_only}, full_names)
             expected = [item for item in full if item["description"].split("]", 1)[0][1:]
                         in {"Setup & License", "Engineering", "Results"}]
             self.assertEqual(selected, expected)
             self.assertEqual(list(workspace.iterdir()), [])
-            invalid_values = ("", "engineering,", "unknown", "results,results")
+            invalid_values = ("", "engineering,", "unknown", "results,results", "all,setup")
             processes = await asyncio.gather(*(
                 asyncio.to_thread(
                     subprocess.run,

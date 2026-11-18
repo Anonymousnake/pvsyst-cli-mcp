@@ -68,24 +68,24 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cli.write_bytes(b"fake")
             async with mcp_session(root, cli) as session:
                 tools = {item.name: item for item in (await session.list_tools()).tools}
-                self.assertIn("report_pages", tools["pvsyst_simulate_template"].input_schema["properties"])
+                self.assertIn("pvsyst_simulate_design", tools)
+                self.assertNotIn("pvsyst_simulate_template", tools)
+                design_schema = tools["pvsyst_simulate_design"].input_schema
+                defs = design_schema.get("$defs") or {}
+                self.assertIn("report_pages", defs.get("SingleDesignRequest", {}).get("properties", {}))
                 for pages in (["summary", "losses"], [], ["SUMMARY"], [1], "summary"):
-                    for design in (False, True):
-                        tool = "pvsyst_simulate_design" if design else "pvsyst_simulate_template"
-                        args = {"spec": {"report_pages": pages}} if design else {"report_pages": pages}
-                        err, data = decode_reply(await session.call_tool(tool, args))
-                        if isinstance(pages, str) or pages == [1]:
-                            self.assertTrue(err)
-                            continue
-                        self.assertFalse(err, data)
-                        self.assertEqual(data["status"], "blocked")
-                        page_issues = [item for item in data["issues"] if item.get("field") == "report_pages"]
-                        if pages == ["summary", "losses"]:
-                            self.assertFalse(page_issues)
-                            if not design:
-                                self.assertEqual(data["request"]["report_pages"], pages)
-                        else:
-                            self.assertTrue(page_issues)
+                    args = {"spec": {"report_pages": pages}}
+                    err, data = decode_reply(await session.call_tool("pvsyst_simulate_design", args))
+                    if isinstance(pages, str) or pages == [1]:
+                        self.assertTrue(err)
+                        continue
+                    self.assertFalse(err, data)
+                    self.assertEqual(data["status"], "blocked")
+                    page_issues = [item for item in data["issues"] if item.get("field") == "report_pages"]
+                    if pages == ["summary", "losses"]:
+                        self.assertFalse(page_issues)
+                    else:
+                        self.assertTrue(page_issues)
             self.assertEqual(set(root.iterdir()), {cli})
 
     async def test_result_and_batch_reading_boundaries(self):
@@ -148,7 +148,7 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
             }
             house = {"kind": "mesh", "meshes": [{"name": "m", "vertices": [[0, 0, 0], [1, 0, 0], [1, 1, 0]], "triangles": [[0, 1, 2]]}]}
             layout = {"module_rows": 1, "module_columns": 1, "orientation": "portrait", "row_spacing_m": 0, "column_spacing_m": 0, "origin_m": [0, 0, 0], "roof_mesh": "m"}
-            async with mcp_session(root, cli) as session:
+            async with mcp_session(root, cli, tool_groups="all") as session:
                 err, data = decode_reply(await session.call_tool("pvsyst_review_engineering_brief", {"brief": copy.deepcopy(brief)}))
                 self.assertFalse(err, data)
                 self.assertEqual(data["status"], "blocked")

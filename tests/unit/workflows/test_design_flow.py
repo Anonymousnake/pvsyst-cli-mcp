@@ -360,7 +360,7 @@ class DesignFlowTests(unittest.TestCase):
         )
         self.assertEqual((raised_prep["status"], raised_prep["stage"]), ("failed", "weather_prepare"))
 
-        recovery = [{"tool": "pvsyst_restore_variant", "arguments": {"project": "Plant.PRJ"}}]
+        recovery = [{"action": "restore_variant", "arguments": {"project": "Plant.PRJ"}}]
         reason = "Configured counts do not match the accepted capacity plan"
         sim_fail, _ = self.run_flow(
             spec(weather={"mode": "csv", "csv_name": "stage.csv", "country_code": "CN", "time_basis": flow.TIME_BASIS}),

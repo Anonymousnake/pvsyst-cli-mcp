@@ -2,26 +2,24 @@
 
 在并网削峰储能（`Strategy=PeakShaving`、`ChargingStrategy=PVToGridMin`）方案中，光伏阵列优先向电网送电，只有超出并网点上限 `PLimGrid` 的那部分功率才充入电池；而电池什么时候把电放出来，则由放电策略 `DischStrategy` 控制。
 
-`pvsyst_create_peak_shaving_variant` 用于在现有的 PVsyst 8.1.6 AC 削峰模板上修改放电时序（切换为日落后放电 `AfterSunset` 或指定起止小时窗口 `MinMaxHour`），并另存为一个新的 `.VCx` 变体。
-
-如果需要修改该削峰模板的 SOC 上下限、充放电功率或变流器效率，可配合使用 [`pvsyst_create_grid_storage_variant`](grid-storage-parameters.md)（不传 `strategy` 参数即可保留原有的 `PeakShaving` 策略）。
+[`pvsyst_create_grid_storage_variant`](grid-storage-parameters.md) 可在现有的 PVsyst 8.1.6 / 8.1.7 AC 削峰变体上统一修改放电时序（`discharging_strategy` 设为 `after_sunset`、`immediate` 或 `hour_window`）、`grid_limit_kw`、SOC 上下限、充放电功率或变流器效率，并另存为一个新的 `.VCx` 变体（v0.2.0 起已合并原单用途 `pvsyst_create_peak_shaving_variant`）。
 
 ```json
 {
   "project": "example.PRJ",
   "source_variant": "VCL",
   "new_variant": "VCN",
-  "discharge": {
-    "mode": "hour_window",
-    "start_hour": 18,
-    "end_hour": 8
+  "updates": {
+    "strategy": "peak_shaving",
+    "discharging_strategy": "hour_window",
+    "discharge_start_hour": 18,
+    "discharge_end_hour": 8
   },
-  "variant_name": "Peak Window 18-08",
   "dry_run": true
 }
 ```
 
-## 两种放电时序模式（`discharge.mode`）
+## 两种定时放电模式（`discharging_strategy`）
 
 | `mode` | 入参要求 | `.VCx` 中 `pvGridStorage` 写入的字段 |
 |---|---|---|

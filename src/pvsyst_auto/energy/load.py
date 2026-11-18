@@ -123,7 +123,8 @@ def upsert_load_block(text: str, block: str) -> tuple[str, bool]:
     return text[:begin] + block + text[finish + text.startswith("\n", finish):], True
 
 
-def create_load_variant(store, *, project, source_variant, new_variant, load_manifest_name, dry_run=True):
+def create_load_variant(store, *, project, source_variant, new_variant, load_manifest_name, dry_run=True,
+                        variant_name=None, add_utf8_bom=False):
     """Preview or create a NEW VC only; keep its original system/strategy/site and sources intact."""
     def build(*, text, lines, **_):
         _, system = store._sections(lines)
@@ -158,7 +159,9 @@ def create_load_variant(store, *, project, source_variant, new_variant, load_man
         source_variant=source_variant,
         new_variant=new_variant,
         dry_run=dry_run,
-        bom_display_target=new_variant,
+        add_utf8_bom=add_utf8_bom,
+        variant_name=variant_name,
+        bom_display_target=new_variant if variant_name is None else None,
         build=build,
         source_changed_error="A template/load input changed before variant creation",
         extra_exceptions=(csv.Error,),

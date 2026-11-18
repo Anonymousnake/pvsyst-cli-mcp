@@ -129,7 +129,7 @@ class SceneComponentTests(unittest.IsolatedAsyncioTestCase):
                 _roof_mesh("roof_1", 0, 0, 25.0, 0.0),
                 _roof_mesh("roof_2", 20, 0, 25.0, 90.0),
             ]}
-            async with mcp_session(root, cli) as session:
+            async with mcp_session(root, cli, tool_groups="all") as session:
                 # 1) Mixed-PAN scene authoring + native preview bind distinct module_geometry per table
                 err, created = decode_reply(await session.call_tool("pvsyst_create_house_pv_scene", {
                     "project": "Demo.PRJ", "variant": "VC1", "output_name": "Mixed.pvc2",
@@ -210,7 +210,7 @@ class SceneComponentTests(unittest.IsolatedAsyncioTestCase):
                 {"kind": "wall", "name": "Wall1", "start_m": [0.0, -4.0, 0.0],
                  "end_m": [10.0, -4.0, 0.0], "height_m": 1.5},
             ]
-            async with mcp_session(root, cli) as session:
+            async with mcp_session(root, cli, tool_groups="all") as session:
                 tool_names = {t.name for t in (await session.list_tools()).tools}
                 self.assertIn("pvsyst_create_dc_cabling_variant", tool_names)
                 self.assertNotIn("pvsyst_create_native_dc_cabling_variant", tool_names)

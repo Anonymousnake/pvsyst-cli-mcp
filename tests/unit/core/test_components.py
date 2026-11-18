@@ -424,7 +424,7 @@ class ComponentTests(unittest.TestCase):
         self.addCleanup(setattr, server, "_cli", None)
         with patch.dict(os.environ, {"PVSYST_BUILTIN_COMPONENTS": ""}):
             self.assertEqual(api_components.pvsyst_list_components("OND", "builtin")["total"], 1)
-            self.assertEqual(api_components.pvsyst_copy_component(
+            self.assertEqual(server.components().copy(
                 "OND", "official.OND", "imported.OND", "builtin")["type"], "OND")
             second = install / "DataRO" / "PVsyst8.0_Data" / "ComposPV"
             second.mkdir(parents=True)

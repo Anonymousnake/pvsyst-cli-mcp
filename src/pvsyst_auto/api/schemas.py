@@ -352,20 +352,6 @@ class HouseTaskRequest(BaseModel):
     scene_import_method: Literal["gui", "native"] | None = None
     allow_window_creation: StrictBool | None = None
 
-class AfterSunsetDischarge(BaseModel):
-    """Native AfterSunset discharge mode; it carries no hour fields."""
-    model_config = ConfigDict(extra="forbid")
-    mode: Literal["after_sunset"]
-
-class HourWindowDischarge(BaseModel):
-    """Native MinMaxHour window with two distinct adapter-bounded hours."""
-    model_config = ConfigDict(extra="forbid")
-    mode: Literal["hour_window"]
-    start_hour: StrictInt
-    end_hour: StrictInt
-
-PeakDischarge = Annotated[AfterSunsetDischarge | HourWindowDischarge, Field(discriminator="mode")]
-
 class ConstantNativeLoad(BaseModel):
     """Native fixed constant consumption in kW; unknown fields stop at the boundary."""
     model_config = ConfigDict(extra="forbid")
@@ -384,8 +370,14 @@ class DailyNativeLoad(BaseModel):
     mode: Literal["daily"]
     daily_power_kw: list[StrictNum] = Field(min_length=24, max_length=24)
 
+class HourlyNativeLoad(BaseModel):
+    """Prepared 8760/8784 hourly load manifest bound as an embedded MJ base62 snapshot."""
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["hourly"]
+    load_manifest_name: StrictStr
+
 NativeLoadRequest = Annotated[
-    ConstantNativeLoad | MonthlyNativeLoad | DailyNativeLoad,
+    ConstantNativeLoad | MonthlyNativeLoad | DailyNativeLoad | HourlyNativeLoad,
     Field(discriminator="mode"),
 ]
 

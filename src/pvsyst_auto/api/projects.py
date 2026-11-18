@@ -28,32 +28,9 @@ def pvsyst_inspect_project(project: str) -> dict:
     return variant_call("inspect_project", project)
 
 @categorized_tool()
-def pvsyst_archive_project(project: str, expected_files: dict[str, str] | None = None,
-                           confirm: bool = False) -> dict:
-    """Archive up to 128 PRJ/VC members (with optional file hash check; requires confirm=true)."""
-    return variant_call("archive_project", project, expected_files, confirm)
-
-@categorized_tool()
-def pvsyst_archive_variant(project: str, variant: str, expected_sha256: str | None = None,
-                           confirm: bool = False) -> dict:
-    """Archive a VC if another variant remains (with optional SHA-256 check; requires confirm=true)."""
-    return variant_call("archive_variant", project, variant, expected_sha256, confirm)
-
-@categorized_tool()
-def pvsyst_restore_project_archive(project: str, archive_name: str,
-                                   confirm: bool = False) -> dict:
-    """Restore an archived project or variant without overwriting existing files (requires confirm=true)."""
-    return variant_call("restore_archive", project, archive_name, confirm)
-
-@categorized_tool()
 def pvsyst_create_project(project: str, project_content: str, variants: dict[str, str]) -> dict:
     """Create a new PRJ/VC set (1..127 variants) from complete UTF-8 text."""
     return variant_call("create_project", project, project_content, variants)
-
-@categorized_tool()
-def pvsyst_clone_project(source_project: str, new_project: str) -> dict:
-    """Clone an existing PRJ and all its VC variants into a new project."""
-    return variant_call("clone_project", source_project, new_project)
 
 @categorized_tool()
 def pvsyst_update_project_parameters(project: str, project_name: StrictStr,
@@ -68,13 +45,6 @@ def pvsyst_update_project_sources(project: str, site_name: str, met_name: str,
                                   expected_files: dict[str, str] | None = None) -> dict:
     """Bind a workspace SIT/MET pair across PRJ and all its VC variants with backup and optional file hash checks."""
     return variant_call("update_project_sources", project, site_name, met_name, expected_files)
-
-@categorized_tool()
-def pvsyst_restore_project_sources(project: str, backups: dict[str, str],
-                                   expected_files: dict[str, str] | None = None,
-                                   confirm: bool = False) -> dict:
-    """Restore PRJ/VC snapshots from a project source/name transaction (requires confirm=true)."""
-    return variant_call("restore_project_sources", project, backups, expected_files, confirm)
 
 @categorized_tool()
 def pvsyst_get_variant_components(project: str, variant: str) -> dict:
@@ -189,12 +159,6 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         system_unavailability_updates.model_dump() if system_unavailability_updates is not None else None)
 
 @categorized_tool()
-def pvsyst_restore_variant(project: str, variant: str, backup_name: str,
-                           expected_sha256: str | None = None, confirm: bool = False) -> dict:
-    """Restore a variant from a backup snapshot with optional SHA-256 check (requires confirm=true)."""
-    return variant_call("restore", project, variant, backup_name, expected_sha256, confirm)
-
-@categorized_tool()
 def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr,
                                    new_variant: StrictStr, tracking: TrackingControls,
                                    dry_run: StrictBool = True,
@@ -298,13 +262,6 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
 def pvsyst_read_house_pv_scene(scene_name: StrictStr) -> dict:
     """Parse a UserData/*.pvc2 XML scene back into structured house, layout, and string_layout arguments."""
     return read_house_pv_scene(components(), scene_name)
-
-@categorized_tool()
-def pvsyst_open_native_project(project: StrictStr, dry_run: StrictBool = True,
-                                 confirm: StrictBool = False) -> dict:
-    """Open a workspace project in the PVsyst 8.1.6 Chinese GUI (96 DPI), requiring dry_run=false and confirm=true."""
-    from pvsyst_auto.native.project import open_native_project
-    return open_native_project(variant_store(), cli(), project=project, dry_run=dry_run, confirm=confirm)
 
 @categorized_tool()
 def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,

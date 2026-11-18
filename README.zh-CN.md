@@ -10,21 +10,21 @@ Windows 下配合本地 PVsyst 8 使用的 MCP 服务端与 Python 封装库。�
 
 | 要做的事 | 入口工具 | 详细文档 |
 |---|---|---|
-| 核对可研简报里的设备数量、串并联关系与缺项 | `pvsyst_review_engineering_brief` | [工程简报预审](docs/engineering-brief.md) |
-| 读取现有工程参数，隔离改参并跑全年仿真 | `pvsyst_project_handoff`、`pvsyst_run_engineering_task` | [工程修订与交付](docs/engineering-delivery.md) |
-| 按固定子阵分块模板批量拼装新工程 | `pvsyst_prepare_block_project` | [分块工程准备](docs/block-project-preparation.md) |
+| 一站式执行固定倾角单方案选型与全年仿真 | `pvsyst_simulate_design` | [单方案设计输入](docs/single-design-inputs.md) |
+| 读取现有工程参数，隔离改参并跑全年仿真 | `pvsyst_run_engineering_task` | [工程修订与交付](docs/engineering-delivery.md) |
 | 生成屋顶光伏与周边遮挡 3D 场景、原生导入并跑全年阴影仿真 | `pvsyst_run_house_task` | [住宅建模任务](docs/native-house-task.md) |
-| 绑定全年逐时负荷，评估集中式 AC 耦合光储方案 | `pvsyst_run_engineering_task` | [AC 光储评估](docs/engineering-storage.md) |
-| 对比两到三个方案的仿真结果并打包交付 ZIP | `pvsyst_compare_engineering_scenarios`、`pvsyst_export_engineering_delivery` | [多方案对比](docs/engineering-scenarios.md) |
+| 绑定全年逐时负荷，评估集中式 AC 耦合光储方案 | `pvsyst_create_grid_storage_system`、`pvsyst_run_engineering_task` | [AC 光储评估](docs/engineering-storage.md) |
+| 对比两到三个方案的仿真结果 | `pvsyst_compare_engineering_scenarios` | [多方案对比](docs/engineering-scenarios.md) |
+| 可研简报核对、交接读参、分块拼装与交付打包（`expert` 组） | `pvsyst_review_engineering_brief`、`pvsyst_project_handoff`、`pvsyst_prepare_block_project`、`pvsyst_export_engineering_delivery` | [工程简报预审](docs/engineering-brief.md) |
 
-服务默认注册 **8 组共 82 个工具**。如果需要直接调底层的组件增删改、变体参数编辑、拓扑调整、天气下载转换或 CSV 结果分页读取，见[完整工具参考](docs/tool-reference.md)。
+服务默认仅注册 **8 个默认核心组共 34 个高频工具**以降低模型上下文开销；如需开放许可运维（`admin`）及底层工程/场景/校验工具（`expert`），设置 `PVSYST_TOOL_GROUPS=all` 即可加载全部 **66 个工具**，见[完整工具参考](docs/tool-reference.md)。
 
 ## 安装与环境准备
 
 环境要求：
 - Windows 系统，Python 3.10+
 - 已安装 `PVsystCLI.exe`（已在 8.0.6、8.1.6 rev49278 与 8.1.7 rev49382 验证）
-- 仅在需要手动打开 PVsyst 桌面窗口查看工程时（`pvsyst_open_native_project`）需要桌面 GUI（中文版 8.1.6/8.1.7，96 DPI）；3D 住宅场景、周边遮挡物、`module_layout` 与 DC 线缆均已默认免 GUI 原生写入
+- 仅在显式使用旧版 `scene_import_method="gui"` 时需要桌面 GUI（中文版 8.1.6/8.1.7，96 DPI）；3D 住宅场景、周边遮挡物、`module_layout` 与 DC 线缆均已默认免 GUI 原生写入
 
 在仓库根目录执行：
 
@@ -59,13 +59,16 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 
 仓库根目录保留了 `pvsyst_mcp_server.py` 兼容壳，老配置直接指向该脚本也能正常启动。改了环境变量或更新代码后记得重启 MCP 客户端。
 
-连上之后建议先调一次 `pvsyst_capabilities` 和 `pvsyst_license_info`，确认本机 CLI 版本支持的命令行选项以及 CLI 许可剩余配额（PVsyst 的 GUI 许可和 CLI 许可是分开计数的）。
+连上之后建议先调一次 `pvsyst_capabilities` 确认本机 CLI 版本支持的命令行选项（若需查询或管理 CLI 许可配额，请在 `PVSYST_TOOL_GROUPS` 中开启 `admin` 或 `all` 后调用 `pvsyst_license_info`；注意 PVsyst 的 GUI 许可和 CLI 许可是分开计数的）。
 
-### 按需裁剪暴露的工具组
+### 按需调整暴露的工具组
 
-一次挂满 82 个工具比较占上下文。如果某个客户端只需要其中几类能力，可以在 `env` 里加上 `PVSYST_TOOL_GROUPS`，比如 `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`，这样就只注册这三组的 15 个工具。不配该变量则默认暴露全量工具。
+未配置 `PVSYST_TOOL_GROUPS` 时，服务默认仅暴露 **34 个高频核心工具**（涵盖 `setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering` 八个默认组），大幅减少 LLM 上下文占用。可通过 `env` 中的 `PVSYST_TOOL_GROUPS` 精确控制：
 
-合法的组名（区分大小写）：`setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering`。传了空项、重复项或拼错的组名会在启动时直接报错退出，免得静默漏挂工具。
+- `"PVSYST_TOOL_GROUPS": "all"`：加载全部 **66 个工具**（包含默认组及 `admin`、`expert`）。
+- `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`：只加载这三组的 6 个工具。
+
+合法的组名（区分大小写）：`setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering`、`admin`、`expert`（或单独传入 `all`）。传了空项、重复项或拼错的组名会在启动时直接报错退出，免得静默漏挂工具。
 
 ## 状态字段说明
 

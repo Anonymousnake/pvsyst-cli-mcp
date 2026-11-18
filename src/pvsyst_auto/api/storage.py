@@ -4,12 +4,10 @@ from __future__ import annotations
 from typing import Literal
 from pydantic import StrictBool, StrictInt, StrictStr
 from pvsyst_auto.energy.profiles import prepare_load_profile
-from pvsyst_auto.energy.load import create_load_variant
 from pvsyst_auto.energy.storage import create_grid_storage_variant
 from pvsyst_auto.energy.system import create_grid_storage_system
 from pvsyst_auto.native.load import create_native_load_variant
-from pvsyst_auto.energy.peak import create_peak_shaving_variant
-from pvsyst_auto.api.schemas import BatteryPackDesign, GridAvailabilityProfile, GridStorageDesign, GridStorageUpdates, NativeLoadRequest, PeakDischarge
+from pvsyst_auto.api.schemas import BatteryPackDesign, GridAvailabilityProfile, GridStorageDesign, GridStorageUpdates, NativeLoadRequest
 from pvsyst_auto.api.context import categorized_tool, cli, variant_store
 
 
@@ -28,35 +26,13 @@ def pvsyst_prepare_load_profile(csv_name: StrictStr, year: StrictInt, output_nam
                                 load_column=load_column, dry_run=dry_run)
 
 @categorized_tool()
-def pvsyst_create_load_variant(project: StrictStr, source_variant: StrictStr, new_variant: StrictStr,
-                                load_manifest_name: StrictStr, dry_run: StrictBool = True) -> dict:
-    """Create a new variant binding a prepared hourly load manifest into pvLoad using
-    signed-base62 Energy/MJ hourly encoding."""
-    return create_load_variant(variant_store(), project=project, source_variant=source_variant,
-                               new_variant=new_variant, load_manifest_name=load_manifest_name,
-                               dry_run=dry_run)
-
-@categorized_tool()
-def pvsyst_create_peak_shaving_variant(project: StrictStr, source_variant: StrictStr,
-                                       new_variant: StrictStr, discharge: PeakDischarge,
-                                       dry_run: StrictBool = True,
-                                       variant_name: StrictStr | None = None,
-                                       add_utf8_bom: StrictBool = False) -> dict:
-    """Create a new variant updating the PeakShaving discharge timing (after_sunset or
-    hour_window with 0..23 start/end hours) on an existing PeakShaving storage variant."""
-    return create_peak_shaving_variant(variant_store(), project=project, source_variant=source_variant,
-                                       new_variant=new_variant, discharge=discharge.model_dump(),
-                                       dry_run=dry_run, variant_name=variant_name,
-                                       add_utf8_bom=add_utf8_bom)
-
-@categorized_tool()
 def pvsyst_create_native_load_variant(project: StrictStr, source_variant: StrictStr,
                                       new_variant: StrictStr, load: NativeLoadRequest,
                                       dry_run: StrictBool = True,
                                       variant_name: StrictStr | None = None,
                                       add_utf8_bom: StrictBool = False) -> dict:
     """Create a new PV-only self-consumption variant with a native constant (kW),
-    monthly (12 x kWh), or daily (24 x kW) load profile."""
+    monthly (12 x kWh), daily (24 x kW), or prepared hourly manifest load profile."""
     return create_native_load_variant(variant_store(), project=project, source_variant=source_variant,
                                       new_variant=new_variant, load=load.model_dump(),
                                       dry_run=dry_run, variant_name=variant_name,

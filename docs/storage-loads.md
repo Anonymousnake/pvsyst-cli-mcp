@@ -1,8 +1,8 @@
 # 用户负荷配置：常数/月度/日曲线与全年逐时 CSV 绑定
 
-在 PVsyst 8.1.6 中，给并网系统配置用户用电负荷（User's Needs）有两条路径：
-1. **原生简明负荷（`pvsyst_create_native_load_variant`）**：适用于无电池的纯光伏自发自用场景，直接写入常数功率（`kW`）、12 个月电量（`kWh`）或 24 小时日负荷曲线（`kW`）。
-2. **全年逐时负荷 CSV（`pvsyst_prepare_load_profile` + `pvsyst_create_load_variant`）**：校验 8760/8784 小时负荷 CSV，并将其编码为 `.VCx` 内部 `pvLoad` 的 `Energy/MJ` signed-base62 逐日缓存（适用于纯光伏自用或配合 [AC 光储系统](grid-storage-parameters.md)）。
+在 PVsyst 8.1.6+ 中，给并网系统配置用户用电负荷（User's Needs）统一通过 `pvsyst_create_native_load_variant` 完成：
+1. **简明负荷（`mode="constant" | "monthly" | "daily"`）**：适用于无电池的纯光伏自发自用场景，直接写入常数功率（`kW`）、12 个月电量（`kWh`）或 24 小时日负荷曲线（`kW`）。
+2. **全年逐时负荷 CSV（`pvsyst_prepare_load_profile` + `pvsyst_create_native_load_variant(load={"mode": "hourly", "load_manifest_name": ...})`）**：校验 8760/8784 小时负荷 CSV，并将其编码为 `.VCx` 内部 `pvLoad` 的 `Energy/MJ` signed-base62 逐日缓存（适用于纯光伏自用或配合 [AC 光储系统](grid-storage-parameters.md)）。
 
 ## 1. 常数、月度与 24 小时日曲线负荷（`pvsyst_create_native_load_variant`）
 
@@ -61,12 +61,12 @@ Date;P Load
 
 （`date_format` 支持 `"iso"` 即 `YYYY-MM-DD HH:MM`、`"pvsyst_dot"` 即 `DD.MM.YYYY HH:MM`、或 `"pvsyst_slash"` 即 `DD/MM/YYYY HH:MM`。）
 
-## 3. 将逐时负荷缓存绑定到新变体（`pvsyst_create_load_variant`）
+## 3. 将逐时负荷缓存绑定到新变体（`pvsyst_create_native_load_variant`）
 
 **为什么不能只改 `.VCx` 里的 CSV 文件路径？**
 PVsyst 在导入逐时负荷 CSV 时，会把全年的每小时电量转换成以 `MJ` 为单位、乘以比例因子 `WRFactor` 后的 3 字符有符号 base62 编码，按天存在 `.VCx` 内部 `pvLoad` 的 `Day_DDMM`（共 366 行，含闰日 `2902`）缓存里。如果你只改了 `HourlyFile` 的文件名而不重算这 366 行 `Day_DDMM` 缓存，哪怕 CLI 日志打印了读取文件名，实际跑出来的 `E_User` 依然是旧缓存里的负荷！
 
-调用 `pvsyst_create_load_variant(project, source_variant, new_variant, load_manifest_name, dry_run=...)` 时，工具会：
+调用 `pvsyst_create_native_load_variant(project, source_variant, new_variant, load={"mode": "hourly", "load_manifest_name": ...}, dry_run=...)` 时，工具会：
 1. 重新核对 `load_manifest_name` 对应的源 CSV 与规范化 CSV 指纹。
 2. 自动计算合适的 `WRFactor` 比例因子（防止大负荷溢出 3 位 base62 上限），将全年每小时负荷编码写入 `HourlyLoad`/`ParSimulH` 的 `Day_DDMM` 缓存，同时设置 `HourlyFile`、`Flags=$4000`、`UsesModul=Yearly`（关闭年总量重归一化和夏令时偏移），并生成新 `.VCx` 变体。
 3. 在返回结果中给出 base62 整数步量化带来的最大理论/实际舍入误差，供仿真后与导出 CSV 的 `E_User` 列逐小时核对。如果后续修改了外部负荷 CSV，记得重新跑一次准备和绑定。

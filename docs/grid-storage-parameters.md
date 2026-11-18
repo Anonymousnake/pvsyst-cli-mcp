@@ -38,7 +38,7 @@
 | `battery_inverter_max_efficiency_pct` / `battery_inverter_euro_efficiency_pct` | `BattInvMaxEffic` / `BattInvEuroEffic` | 电池放电逆变器最大效率与欧洲效率（`%`，需满足 `0 < Euro <= Max <= 100`） |
 
 关于 `strategy`（策略保持）的规则：
-- 如果省略 `strategy`，工具会原样保留源变体已有的策略三元组——这意味着除了 `SelfConsumption` 和 `WeakGrid` 外，你也可以在不传 `strategy` 的情况下直接修改现有 `PeakShaving` / `PVToGridMin` 削峰变体的 SOC、充放电功率和效率标量（改完后仍可继续用 [`pvsyst_create_peak_shaving_variant`](native-peak-shaving.md) 调整放电时间窗）。
+- 如果省略 `strategy`，工具会原样保留源变体已有的策略三元组——这意味着除了 `SelfConsumption` 和 `WeakGrid` 外，你也可以直接修改现有 `PeakShaving` / `PVToGridMin` 削峰变体的 SOC、充放电功率、效率标量以及放电时间窗（`discharging_strategy="after_sunset" | "hour_window"`，详见[削峰放电配置](native-peak-shaving.md)）。
 - 如果源变体是 `WeakGrid`（或显式传了 `strategy="weak_grid"`），每次调用都必须同时传入完整的电网可用性 `availability` 声明。
 
 ## 2. 从纯光伏变体新建 AC 光储系统（`pvsyst_create_grid_storage_system`）

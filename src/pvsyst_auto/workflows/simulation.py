@@ -332,19 +332,19 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             raise ValueError("Template changed after preflight")
         check_inputs()
         cloned = store.clone_project(template_project, new_project)
-        transaction("pvsyst_clone_project", cloned)
+        transaction("clone_project", cloned)
         stage("sources")
         sources = store.update_project_sources(new_project, site_name, met_name, cloned["files"])
-        transaction("pvsyst_update_project_sources", sources, {
-            "tool": "pvsyst_restore_project_sources", "arguments": {
+        transaction("update_project_sources", sources, {
+            "action": "restore_project_sources", "arguments": {
                 "project": new_project, "backups": sources["backups"],
                 "expected_files": sources["files"], "confirm": True}})
         if not tracking_mode:
             stage("components")
             edited = store.update(new_project, variant, {"PAN": pan_name, "OND": ond_name},
                                   store.inspect(new_project, variant)["sha256"], array_id)
-            transaction("pvsyst_update_variant_components", edited, {
-                "tool": "pvsyst_restore_variant", "arguments": {
+            transaction("update_variant_components", edited, {
+                "action": "restore_variant", "arguments": {
                     "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
                     "expected_sha256": edited["sha256"], "confirm": True}})
         if capacity is not None:
@@ -352,8 +352,8 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             for updates in result["capacity_plan"]["steps"]:
                 edited = store.update_parameters(new_project, variant, edited["sha256"], array_id, orientation_id,
                                                  subarray_updates=updates)
-                transaction("pvsyst_update_variant_parameters", edited, {
-                    "tool": "pvsyst_restore_variant", "arguments": {
+                transaction("update_variant_parameters", edited, {
+                    "action": "restore_variant", "arguments": {
                         "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
                         "expected_sha256": edited["sha256"], "confirm": True}} if edited.get("backup_name") else None)
             actual = store.inspect_parameters(new_project, variant)["subarrays"][0]["values"]
@@ -365,7 +365,7 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             stage("tracking")
             created = create_tracking_variant(store, project=new_project, source_variant=variant,
                                                new_variant=tracking_variant, tracking=tracking, dry_run=False)
-            transaction("pvsyst_create_tracking_variant", created)
+            transaction("create_tracking_variant", created)
             if created["status"] != "created":
                 raise ValueError("Tracking variant was not created: " + "; ".join(created["issues"]))
             variant = tracking_variant
@@ -377,8 +377,8 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                                              orientation_updates=angles,
                                               subarray_updates=subarray_losses or None,
                                               main_array_updates=main_losses or None)
-            transaction("pvsyst_update_variant_parameters", edited, {
-                "tool": "pvsyst_restore_variant", "arguments": {
+            transaction("update_variant_parameters", edited, {
+                "action": "restore_variant", "arguments": {
                     "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
                     "expected_sha256": edited["sha256"], "confirm": True}} if edited.get("backup_name") else None)
         result["working_files"] = store.inspect_project(new_project)["files"]

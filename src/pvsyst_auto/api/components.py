@@ -30,21 +30,9 @@ def pvsyst_validate_component(component_type: str, filename: str,
     return component_call("validate", component_type, filename, library)
 
 @categorized_tool()
-def pvsyst_copy_component(component_type: str, source_name: str, new_name: str,
-                          source_library: str = "workspace") -> dict:
-    """Copy a PAN/OND/BTR/GEN/REV into the workspace without overwrite."""
-    return component_call("copy", component_type, source_name, new_name, source_library)
-
-@categorized_tool()
 def pvsyst_create_component(component_type: str, filename: str, content: str) -> dict:
     """Create a new PAN, OND, BTR, GEN, or REV file in the workspace from UTF-8 PVObject_ text."""
     return component_call("create", component_type, filename, content)
-
-@categorized_tool()
-def pvsyst_clone_component(component_type: str, source_name: str, new_name: str,
-                           updates: dict[str, str], source_library: str = "workspace") -> dict:
-    """Clone an existing text component into the workspace with updated scalar fields."""
-    return component_call("clone", component_type, source_name, new_name, updates, source_library)
 
 @categorized_tool()
 def pvsyst_update_component(component_type: str, filename: str,
@@ -61,29 +49,6 @@ def pvsyst_update_component(component_type: str, filename: str,
     return component_call("update", component_type, filename, updates,
                           expected_sha256, dry_run, curve_updates, use_file_curve,
                           commercial_updates, remarks, curve_csv)
-
-@categorized_tool()
-def pvsyst_backup_component(component_type: str, filename: str) -> dict:
-    """Save a byte-identical backup under workspace/ComposPV/.mcp-backups."""
-    return component_call("backup", component_type, filename)
-
-@categorized_tool()
-def pvsyst_restore_component(component_type: str, filename: str,
-                             backup_name: str, confirm: bool = False) -> dict:
-    """Restore a workspace component from a backup snapshot (requires confirm=true)."""
-    return component_call("restore", component_type, filename, backup_name, confirm)
-
-@categorized_tool()
-def pvsyst_archive_component(component_type: str, filename: str,
-                             confirm: bool = False) -> dict:
-    """Move an unreferenced workspace component to .mcp-archive (requires confirm=true)."""
-    return component_call("archive", component_type, filename, confirm)
-
-@categorized_tool()
-def pvsyst_restore_archived_component(component_type: str, filename: str,
-                                      archive_name: str, confirm: bool = False) -> dict:
-    """Restore an archived component to the workspace without overwriting existing files (requires confirm=true)."""
-    return component_call("restore_archive", component_type, filename, archive_name, confirm)
 
 @categorized_tool()
 def pvsyst_compare_components(component_type: str, first: str, second: str,

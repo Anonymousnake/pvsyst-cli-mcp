@@ -12,7 +12,7 @@ from mcp.shared.memory import create_client_server_memory_streams
 
 
 @asynccontextmanager
-async def mcp_session(workspace: Path, cli: Path):
+async def mcp_session(workspace: Path, cli: Path, *, tool_groups: str | None = None):
     """Run an in-memory MCP ClientSession bound to ``workspace`` and ``cli``."""
     previous = {k: os.environ.get(k) for k in ("PVSYST_WORKSPACE", "PVSYST_CLI",
                                                "PVSYST_BUILTIN_COMPONENTS", "PVSYST_TOOL_GROUPS")}
@@ -22,14 +22,15 @@ async def mcp_session(workspace: Path, cli: Path):
     os.environ.pop("PVSYST_TOOL_GROUPS", None)
 
     from pvsyst_auto.api import context
-    from pvsyst_auto.api.app import mcp
+    from pvsyst_auto.api.app import create_mcp_server, mcp
 
+    server = mcp if tool_groups is None else create_mcp_server(tool_groups)
     context._cli = None
     try:
         async with create_client_server_memory_streams() as (client_streams, server_streams):
             c_read, c_write = client_streams
             s_read, s_write = server_streams
-            low = mcp._lowlevel_server
+            low = server._lowlevel_server
             async with anyio.create_task_group() as tg:
                 tg.start_soon(low.run, s_read, s_write, low.create_initialization_options())
                 async with ClientSession(c_read, c_write) as session:
