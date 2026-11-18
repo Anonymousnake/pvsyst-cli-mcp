@@ -5,6 +5,7 @@ import csv
 import math
 import re
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.components.generator import direct_fields, finite, one
@@ -16,6 +17,7 @@ from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 SUBHOUR_SCALE_MAX = 90000
 SUBHOUR_TOKEN_LIMIT = 62**3
+SUBHOUR_DECIMAL_PLACES = 6
 
 NUMERIC_FIELDS = {
     "soc_min": ("SOCDischDecl", 0, 1),
@@ -96,17 +98,42 @@ def encode_subhour_schedule(slots: list[float], *, maximum: float = math.inf) ->
     if not isinstance(slots, list) or len(slots) != 48:
         raise ValueError("Sub-hour daily schedule must contain exactly 48 half-hour values")
     checked = [finite(value, "schedule slot", 0, maximum) for value in slots]
-    peak = max(checked)
+    normalized = [round(value, SUBHOUR_DECIMAL_PLACES) for value in checked]
+    for index, (value, rounded) in enumerate(zip(checked, normalized), 1):
+        if value > 0 and rounded == 0:
+            raise ValueError(f"Sub-hour schedule slot {index} rounds to zero at six decimal places")
+
+    peak = max(normalized)
     if peak == 0:
         return "48+1" + "+0" * 48
-    scale = max(1, int(round(SUBHOUR_SCALE_MAX / peak)))
-    while int(round(peak * scale)) >= SUBHOUR_TOKEN_LIMIT and scale > 1:
-        scale -= 1
+    default_scale = max(1, round(SUBHOUR_SCALE_MAX / peak))
+    default_tokens = [round(value * default_scale) for value in normalized]
+    if max(default_tokens) >= SUBHOUR_TOKEN_LIMIT:
+        raise ValueError("Sub-hour schedule value exceeds the native base62 token limit")
+
+    exact_scale = math.lcm(*(Fraction(str(value)).denominator for value in normalized))
+    exact_peak = Fraction(str(peak))
+    candidates = [default_scale]
+    if exact_peak * exact_scale < SUBHOUR_TOKEN_LIMIT:
+        candidates.append(exact_scale)
+    candidates.append((SUBHOUR_TOKEN_LIMIT - 1) // exact_peak)
+    for scale in dict.fromkeys(candidates):
+        if scale < 1:
+            continue
+        tokens = default_tokens if scale == default_scale else [round(value * scale) for value in normalized]
+        if max(tokens) < SUBHOUR_TOKEN_LIMIT and all(
+            round(token / scale, SUBHOUR_DECIMAL_PLACES) == value
+            for token, value in zip(tokens, normalized)
+        ):
+            break
+    else:
+        scale, tokens = default_scale, default_tokens
+        for index, (value, token) in enumerate(zip(normalized, tokens), 1):
+            if value > 0 and token == 0:
+                raise ValueError(f"Sub-hour schedule slot {index} would encode as zero at the native scale")
+
     parts = [f"48+{scale}"]
-    for val in checked:
-        raw = int(round(val * scale))
-        if not 0 <= raw < SUBHOUR_TOKEN_LIMIT:
-            raise ValueError("Sub-hour schedule value exceeds native base62 token limit")
+    for raw in tokens:
         if raw == 0:
             parts.append("+0")
         else:
@@ -137,8 +164,19 @@ def decode_subhour_schedule(raw: str) -> list[float]:
             if idx < 0:
                 raise ValueError(f"Invalid base62 digit in ValSubHour: {ch!r}")
             acc = acc * 62 + idx
-        values.append(round(sign * acc / scale, 6))
+        values.append(round(sign * acc / scale, SUBHOUR_DECIMAL_PLACES))
     return values
+
+
+def warn_schedule_quantization(requested, stored, warnings):
+    """Report native encoding error relative to the six-decimal schedule input."""
+    for key in ("charging_schedule_48", "discharging_schedule_48"):
+        if key not in requested or key not in stored:
+            continue
+        error = max(abs(round(expected, SUBHOUR_DECIMAL_PLACES) - actual)
+                    for expected, actual in zip(requested[key], stored[key], strict=True))
+        if error:
+            warnings.append(f"Native encoding approximated {key} (max absolute error {error:.6g})")
 
 
 def _parse_par_simul_series(lines, bounds) -> dict[str, dict]:
@@ -723,6 +761,8 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
                              preserved=before if not structural else None)
             if verified != after:
                 raise ValueError("Candidate did not retain the declared storage state")
+            if structural:
+                warn_schedule_quantization(merged_state, verified, res["warnings"])
             res.update(before=before, after=after)
 
         return {"candidate_text": candidate_text, "verify": verify}

@@ -21,6 +21,7 @@ from pvsyst_auto.energy.storage import (
     set_system_grid_limit,
     storage_state,
     validate_storage,
+    warn_schedule_quantization,
 )
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
@@ -198,6 +199,7 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             _, checked_system = store._sections(checked)
             configured, _, _ = storage_state(checked, checked_system)
             validate_storage(configured, allow_weak=weak)
+            warn_schedule_quantization(state, configured, res["warnings"])
             artifacts = {"battery": battery_artifact}
             if load_profile is not None:
                 artifacts["load_csv"] = str(load_profile)
