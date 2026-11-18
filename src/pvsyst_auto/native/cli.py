@@ -97,13 +97,27 @@ def validate_report_pages(pages):
 
 
 def _cli_text(value: str) -> bool:
-    """True for a value that can travel as one PVsystCLI argument: one line, no double quote.
+    """True for a value that can travel as one PVsystCLI argument: one line, no double quote or control char.
 
     PVsystCLI is a Delphi program whose command-line parser does not honour the ``\\"``
     escape that ``subprocess.list2cmdline`` emits, so a quote inside a value could end it
     early and smuggle in another option (for example a second ``-osf:`` output path).
     """
-    return not any(char in value for char in '\r\n"')
+    return isinstance(value, str) and not any(
+        char == '"' or ord(char) < 0x20 or ord(char) == 0x7F for char in value
+    )
+
+
+def _csv_encoding(path: str | os.PathLike) -> str:
+    """Detect UTF-8 BOM, strict UTF-8, or legacy PVsyst CP1252 CSV encoding."""
+    raw = Path(path).read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    try:
+        raw.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "cp1252"
 
 
 def _is_plain_csv_run(args) -> bool:
@@ -149,7 +163,7 @@ def build_monthly_weather_csv(path: str | os.PathLike, global_h: list[float],
         series["DiffH"] = diffuse_h
     if wind_velocity is not None:
         series["WindVel"] = wind_velocity
-    if any(len(values) != 12 or any(not math.isfinite(v) for v in values)
+    if any(len(values) != 12 or any(isinstance(v, bool) or not math.isfinite(v) for v in values)
            for values in series.values()):
         raise ValueError("Every weather series must contain 12 finite monthly values")
     if any(v < 0 for v in global_h) or (diffuse_h is not None and
@@ -207,10 +221,10 @@ class PVsystCLI:
                 allow_window_creation: bool | None) -> subprocess.CompletedProcess[str]:
         # Argument arrays preserve spaces in paths; serialize CLI operations on one workspace.
         argv = [str(self.cli), *args]
-        if any('"' in str(arg) for arg in args):
+        if any('"' in s or any(ord(c) < 0x20 or ord(c) == 0x7F for c in s) for s in map(str, args)):
             # Last line of defence for every command (see _cli_text); never echo the value,
-            # which may be a license key. Windows paths cannot contain a double quote.
-            raise ValueError("PVsystCLI arguments cannot contain double quotes")
+            # which may be a license key. Windows paths cannot contain a double quote or control char.
+            raise ValueError("PVsystCLI arguments cannot contain double quotes or control characters")
         with self._lock:
             if os.name == "nt":
                 # Every real CLI call runs on its own private, non-input desktop
@@ -382,11 +396,11 @@ class PVsystCLI:
         return sorted(p.name for p in project_root(self.workspace).glob("*.PRJ") if p.is_file())
 
     def list_variants(self, project: str) -> list[str]:
-        # Canonical upper-case IDs, matching variant_id(), whatever the on-disk suffix case.
+        # Canonical upper-case IDs (3-char VC0..VC9, VCA..VCZ, VD0..VZZ), whatever the on-disk suffix case.
         stem = Path(self._project_name(project)).stem
         return sorted({p.suffix[1:].upper() for p in project_root(self.workspace).iterdir()
                        if p.stem.casefold() == stem.casefold() and p.is_file()
-                       and re.fullmatch(r"VC[A-Za-z0-9]+", p.suffix[1:], re.I)})
+                       and re.fullmatch(r"V[C-Z][A-Za-z0-9]", p.suffix[1:], re.I)})
 
     @staticmethod
     def _project_name(project: str) -> str:
@@ -428,7 +442,7 @@ class PVsystCLI:
         workspace_folder(self.workspace, "UserHourly")
         batch_dir = workspace_folder(self.workspace, "UserBatch")
         names: list[str] = []
-        with batch_params.open("r", encoding="utf-8-sig", errors="replace", newline="") as stream:
+        with batch_params.open("r", encoding=_csv_encoding(batch_params), errors="replace", newline="") as stream:
             for fields in csv.reader(stream, delimiter=";"):
                 if fields and re.fullmatch(r"SIM_[A-Za-z0-9_-]+", fields[0].strip()):
                     if len(fields) > 1 and fields[1].strip():
@@ -495,15 +509,18 @@ class PVsystCLI:
             raise ValueError("Time step must be hour or subhour")
         for value in (start_date, end_date):
             if value:
-                formats = ((r"\d{2}\.\d{2}", "%m.%d"),
-                           (r"\d{2}\.\d{2}\.\d{2}", "%y.%m.%d"),
-                           (r"\d{4}\.\d{2}\.\d{2}", "%Y.%m.%d"))
+                formats = ((r"[0-9]{2}\.[0-9]{2}", "%m.%d"),
+                           (r"[0-9]{2}\.[0-9]{2}\.[0-9]{2}", "%y.%m.%d"),
+                           (r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}", "%Y.%m.%d"))
                 matching = next((fmt for pattern, fmt in formats
                                  if re.fullmatch(pattern, value)), None)
                 if matching is None:
                     raise ValueError("Date must use MM.DD, YY.MM.DD, or YYYY.MM.DD")
                 try:
-                    datetime.strptime(value, matching)
+                    if matching == "%m.%d":
+                        datetime.strptime(f"2000.{value}", "%Y.%m.%d")
+                    else:
+                        datetime.strptime(value, matching)
                 except ValueError:
                     raise ValueError(f"Invalid calendar date: {value}") from None
         validate_report_pages(report_pages)
@@ -643,7 +660,7 @@ class PVsystCLI:
                               sit: str | os.PathLike, out_met: str | os.PathLike,
                               timeshift: int = 0, log_level: int | None = None, *,
                               allow_window_creation: bool | None = None) -> dict:
-        if not -30 <= timeshift <= 30:
+        if isinstance(timeshift, bool) or not -30 <= timeshift <= 30:
             raise ValueError("MEF timeshift must be between -30 and 30")
         sources = [self._input(path, ext) for path, ext in
                    ((input_csv, ".csv"), (mef, ".mef"), (sit, ".sit"))]
@@ -688,9 +705,9 @@ class PVsystCLI:
                                         (longitude, -180, 180, "Longitude"),
                                         (timezone, -12, 12, "Timezone"),
                                         (albedo, 0, 1, "Albedo")):
-            if value is not None and (not math.isfinite(value) or not low <= value <= high):
+            if value is not None and (isinstance(value, bool) or not math.isfinite(value) or not low <= value <= high):
                 raise ValueError(f"{label} outside [{low}, {high}]")
-        if altitude is not None and not math.isfinite(altitude):
+        if altitude is not None and (isinstance(altitude, bool) or not math.isfinite(altitude)):
             raise ValueError("Altitude must be finite")
         if country_code and not re.fullmatch(r"[A-Za-z]{2}", country_code):
             raise ValueError("Country code must have two letters")
@@ -735,8 +752,7 @@ def is_batch_summary_name(filename: str) -> bool:
 def parse_batch_results(path: str | os.PathLike,
                         columns: tuple[str, ...] = ("E_Grid", "PR")) -> dict:
     """Read the SIM_* rows of a PVsyst UserBatch/*Results.CSV summary."""
-    with open(path, "rb") as probe:
-        encoding = "utf-8-sig" if probe.read(3) == b"\xef\xbb\xbf" else "cp1252"
+    encoding = _csv_encoding(path)
     headers: list[str] = []
     scenarios: list[dict] = []
     with open(path, "r", encoding=encoding, errors="replace", newline="") as stream:
@@ -767,14 +783,14 @@ def parse_batch_results(path: str | os.PathLike,
 
 def result_units(path: str | os.PathLike, *, strict: bool = False) -> dict[str, str]:
     """Read variable units from the row following a date header."""
-    with open(path, "r", encoding="utf-8-sig", errors="replace", newline="") as stream:
+    with open(path, "r", encoding=_csv_encoding(path), errors="replace", newline="") as stream:
         for line in stream:
             if re.match(r"^\s*date[;,]", line, re.IGNORECASE):
                 separator = line.lstrip()[4]
                 headers = [h.strip() for h in next(csv.reader([line], delimiter=separator))]
                 unit_line = next(stream, "")
-                units = [u.strip() for u in next(csv.reader([unit_line], delimiter=separator))]
-                if strict and (len(units) != len(headers) or units[0]):
+                units = [u.strip() for u in next(csv.reader([unit_line], delimiter=separator), [])]
+                if strict and (len(units) != len(headers) or (units and units[0])):
                     raise ValueError("Comparison requires a complete units row after the SFI header")
                 return dict(zip(headers[1:], units[1:]))
     raise ValueError("Missing SFI result header")
@@ -794,7 +810,7 @@ def _result_timestamp(value):
 
 def _iter_result_cells(path, *, strict=False):
     """Validate every timestamp and row shape before projecting numeric cells."""
-    with open(path, "r", encoding="utf-8-sig", errors="replace", newline="") as stream:
+    with open(path, "r", encoding=_csv_encoding(path), errors="replace", newline="") as stream:
         for line in stream:
             if re.match(r"^\s*date[;,]", line, re.IGNORECASE):
                 separator = line.lstrip()[4]
@@ -850,9 +866,11 @@ def read_result_page(path, columns, offset, limit):
     page = []
     for headers, stamp, values in _iter_result_cells(path):
         if indices is None:
+            if len(set(headers)) != len(headers):
+                raise ValueError("Duplicate column names in SFI result header")
             if not columns or any(name not in headers[1:] for name in columns):
                 raise ValueError(f"Choose columns from {headers[1:]}")
-            indices = [headers.index(name) - 1 for name in columns]
+            indices = [headers.index(name, 1) - 1 for name in columns]
         if offset <= total < offset + limit:
             selected = [_result_number(values[index]) for index in indices]
             page.append([str(stamp), *(value if math.isfinite(value) else None
@@ -881,9 +899,11 @@ def summarize_results(path: str | os.PathLike, columns: tuple[str, ...]) -> dict
     regular = True
     for headers, stamp, values in _iter_result_cells(path):
         if indices is None:
+            if len(set(headers)) != len(headers):
+                raise ValueError("Duplicate column names in SFI result header")
             if not columns or any(name not in headers[1:] for name in columns):
                 raise ValueError(f"Choose columns from {headers[1:]}")
-            indices = {name: headers.index(name) - 1 for name in columns}
+            indices = {name: headers.index(name, 1) - 1 for name in columns}
             first = str(stamp)
         if previous is not None:
             delta = (stamp - previous).total_seconds() / 60
@@ -899,6 +919,8 @@ def summarize_results(path: str | os.PathLike, columns: tuple[str, ...]) -> dict
             if math.isfinite(value):
                 stats[name]["samples"] += 1
                 stats[name]["sum"] += value
+                if not math.isfinite(stats[name]["sum"]):
+                    raise ValueError(f"{name}: summary arithmetic exceeds finite numeric range")
                 stats[name]["max"] = max(stats[name]["max"], value)
     step = step_minutes if regular else None
     units = result_units(path)
@@ -909,6 +931,8 @@ def summarize_results(path: str | os.PathLike, columns: tuple[str, ...]) -> dict
         observed = None
         if samples and name in ("E_Grid", "EArray") and step is not None and unit in ("W", "kW"):
             observed = state["sum"] * step / 60 * (0.001 if unit == "W" else 1)
+            if not math.isfinite(observed):
+                raise ValueError(f"{name}: summary arithmetic exceeds finite numeric range")
         complete = samples == count
         summary[name] = {**state, "max": state["max"] if samples else None,
                          "mean": state["sum"] / samples if samples else None,

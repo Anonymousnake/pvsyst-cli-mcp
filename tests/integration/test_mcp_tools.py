@@ -2,11 +2,23 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from pvsyst_auto.api.schemas import HouseTaskRequest, SourcedHouseTaskRequest
+from pydantic import ValidationError
+from pvsyst_auto.api import context as api_context
+from pvsyst_auto.api.schemas import (
+    CapacityRequest,
+    EngineeringRevisionRequest,
+    GeneratorUpdates,
+    HouseTaskRequest,
+    SingleDesignRequest,
+    SoilingUpdates,
+    SourcedHouseTaskRequest,
+)
 from tests.integration._session import decode_reply, mcp_session
 
 
@@ -195,6 +207,120 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 source_project="A.PRJ", source_variant="VC0", new_project="B.PRJ", variant_name="V", year=2020,
                 house={"kind": "mesh", "meshes": []}, layout={}, obstacles=[{"kind": "tree", "name": "Bad", "unexpected": 1}],
             )
+
+    def test_cli_context_recreates_on_env_change_and_rejects_nonfinite_schemas(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws1, ws2 = root / "ws1", root / "ws2"
+            ws1.mkdir()
+            ws2.mkdir()
+            cli1, cli2 = root / "cli1.exe", root / "cli2.exe"
+            cli1.write_bytes(b"fake1")
+            cli2.write_bytes(b"fake2")
+            api_context._cli = None
+            self.addCleanup(setattr, api_context, "_cli", None)
+            with patch.dict(os.environ, {"PVSYST_CLI": str(cli1), "PVSYST_WORKSPACE": str(ws1)}):
+                first = api_context.cli()
+                self.assertIs(api_context.cli(), first)
+                self.assertEqual(first.workspace, ws1.resolve())
+                os.environ["PVSYST_WORKSPACE"] = str(ws2)
+                second = api_context.cli()
+                self.assertIsNot(second, first)
+                self.assertEqual(second.workspace, ws2.resolve())
+                os.environ["PVSYST_CLI"] = str(cli2)
+                third = api_context.cli()
+                self.assertIsNot(third, second)
+                self.assertEqual(third.cli, cli2.resolve())
+                api_context._cli = None
+                fourth = api_context.cli()
+                self.assertIsNot(fourth, third)
+
+        for nonfinite in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(ValidationError):
+                SingleDesignRequest(target_dc_kw=nonfinite)
+            with self.assertRaises(ValidationError):
+                CapacityRequest(target_dc_kw=nonfinite)
+            with self.assertRaises(ValidationError):
+                SoilingUpdates(mode="constant", yearly_loss_pct=nonfinite)
+            with self.assertRaises(ValidationError):
+                GeneratorUpdates(operating_power_kw=nonfinite)
+            with self.assertRaises(ValidationError):
+                EngineeringRevisionRequest(
+                    source_project="A.PRJ", source_variant="VC0", new_project="B.PRJ", new_variant="VC1",
+                    objective="Check", year=2024, nominal_dc_power_kw=nonfinite, power_source="Spec", changes={},
+                )
+
+        gen = GeneratorUpdates(operating_power_kw=12, thresholds={"1": {"VBkUpEncl_syst": 0, "VBkUpDecl_syst": 1}})
+        self.assertEqual(gen.operating_power_kw, 12)
+        self.assertEqual(gen.thresholds["1"]["VBkUpDecl_syst"], 1)
+        with self.assertRaises(ValidationError):
+            GeneratorUpdates(operating_power_kw=True)
+
+    async def test_strict_boundary_types_and_workspace_locks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for folder in ("Projects", "Results", "Models", "Meteo", "Sites", "UserData", "ComposPV/Inverters"):
+                (root / folder).mkdir(parents=True)
+            cli = root / "PVsystCLI.exe"
+            cli.write_bytes(b"fake")
+            (root / "Results" / "sample.csv").write_text("date;E_Grid;PR\n;kW;ratio\n01/01/24 00:00;1;0.8\n", encoding="utf-8")
+            async with mcp_session(root, cli, tool_groups="all") as session:
+                tools = {item.name: item for item in (await session.list_tools()).tools}
+                self.assertIn("system unavailability periods/removal",
+                              tools["pvsyst_update_variant_parameters"].description)
+
+                rejected_calls = (
+                    ("pvsyst_license_activate", {"key": "k", "confirm": 1}),
+                    ("pvsyst_license_deactivate", {"customer_id": "c", "confirm": "true"}),
+                    ("pvsyst_license_sync", {"confirm": 1}),
+                    ("pvsyst_list_components", {"component_type": "PAN", "offset": True}),
+                    ("pvsyst_get_component", {"component_type": "PAN", "filename": "a.PAN", "limit": "10"}),
+                    ("pvsyst_update_component", {"component_type": "OND", "filename": "a.OND", "updates": {}, "dry_run": 1}),
+                    ("pvsyst_update_component", {"component_type": "OND", "filename": "a.OND", "updates": {},
+                                                 "curve_updates": {"Converter/ProfilPIO": [[True, 0], [1, 1], [2, 2], [3, 3]]}}),
+                    ("pvsyst_update_variant_parameters", {"project": "A.PRJ", "variant": "VC0",
+                                                          "subarray_updates": {"NModSerie": True}}),
+                    ("pvsyst_run_simulation", {"project": "A.PRJ", "variant": "VC0", "csv_name": "out", "synthetic_weather": 1}),
+                    ("pvsyst_run_simulation", {"project": "A.PRJ", "variant": "VC0", "csv_name": "out", "recompute_shading": 0}),
+                    ("pvsyst_run_simulation", {"project": "A.PRJ", "variant": "VC0", "csv_name": "out", "allow_window_creation": "false"}),
+                    ("pvsyst_run_simulation", {"project": "A.PRJ", "variant": "VC0", "csv_name": "out", "log_level": True}),
+                    ("pvsyst_build_monthly_weather", {"filename": "m.csv", "global_h": [True] * 12, "temperature": [20] * 12}),
+                    ("pvsyst_create_site", {"site_name": "S", "latitude": True, "longitude": 10, "weather_csv_name": "m.csv", "sit_name": "s.sit"}),
+                    ("pvsyst_create_site", {"site_name": "S", "latitude": 10, "longitude": 10, "weather_csv_name": "m.csv",
+                                            "sit_name": "s.sit", "albedo": False}),
+                    ("pvsyst_convert_meteo", {"csv_name": "w.csv", "mef_name": "w.mef", "sit_name": "s.sit",
+                                              "met_name": "w.met", "timeshift": True}),
+                    ("pvsyst_read_rows", {"csv_name": "sample.csv", "offset": True}),
+                    ("pvsyst_read_rows", {"csv_name": "sample.csv", "limit": 10.0}),
+                )
+                for tool_name, arguments in rejected_calls:
+                    with self.subTest(tool=tool_name, arguments=arguments):
+                        err, msg = decode_reply(await session.call_tool(tool_name, arguments))
+                        self.assertTrue(err, msg)
+
+                # Integer values in StrictNum parameters pass schema validation cleanly
+                err, monthly = decode_reply(await session.call_tool("pvsyst_build_monthly_weather", {
+                    "filename": "monthly_int.csv", "global_h": [100] * 12, "temperature": [20] * 12,
+                }))
+                self.assertFalse(err, monthly)
+                self.assertTrue((root / "Meteo" / "monthly_int.csv").is_file())
+
+                err, sfi = decode_reply(await session.call_tool("pvsyst_build_sfi", {"filename": "check.sfi"}))
+                self.assertFalse(err, sfi)
+                self.assertTrue((root / "Models" / "check.sfi").is_file())
+
+                # Verify workspace RLock is held across multi-step operations
+                current_cli = api_context.cli()
+                lock_states = []
+                with patch("pvsyst_auto.api.projects.read_house_pv_scene",
+                           side_effect=lambda *_a, **_k: (lock_states.append(current_cli._lock._is_owned()),
+                                                          {"create_arguments": {"string_layout": {"tables": []}}})[1]):
+                    err, blocked = decode_reply(await session.call_tool("pvsyst_import_house_pv_scene", {
+                        "scene_name": "s.pvc2", "variant_name": "V", "shading_mode": "linear", "method": "native",
+                    }))
+                self.assertFalse(err, blocked)
+                self.assertEqual(blocked["status"], "blocked")
+                self.assertEqual(lock_states, [True])
 
 
 if __name__ == "__main__":

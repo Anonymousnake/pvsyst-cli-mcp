@@ -74,7 +74,7 @@ def replace_grid_limit(lines, system, updates):
             raise ValueError("Use 0.1 kW increments, matching native GUI save precision")
     fields, index, flags, before = _read(lines, system)
     work = list(lines)
-    new_flags = flags | 0x05000000 if enabled else flags & ~0x01000000
+    new_flags = flags | 0x05000000 if enabled else flags & ~0x05000000
     if new_flags != flags:
         work[index] = replace_value(work[index], f"${new_flags:08X}" if new_flags else "$00")
     count = len(work)

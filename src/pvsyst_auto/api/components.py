@@ -2,23 +2,23 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal
-from pydantic import Field, StrictBool, StrictFloat, StrictStr
+from pydantic import Field, StrictBool, StrictInt, StrictStr
 from pvsyst_auto.components.builder import build_sourced_component
-from pvsyst_auto.api.schemas import SourceDeclarationRequest, SourceTextRequest
+from pvsyst_auto.api.schemas import SourceDeclarationRequest, SourceTextRequest, StrictNum
 from pvsyst_auto.api.context import categorized_tool, component_call, components
 
 
 @categorized_tool()
 def pvsyst_list_components(component_type: str, library: str = "workspace",
-                           query: str = "", offset: int = 0, limit: int = 100) -> dict:
+                           query: str = "", offset: StrictInt = 0, limit: StrictInt = 100) -> dict:
     """List PAN, OND, BTR, GEN or REV loose files in workspace or installed DataRO.
     The encrypted built-in component database is not enumerable."""
     return component_call("list", component_type, library, query, offset, limit)
 
 @categorized_tool()
 def pvsyst_get_component(component_type: str, filename: str,
-                         library: str = "workspace", offset: int = 0,
-                         limit: int = 100, include_curve_csv: StrictBool = False) -> dict:
+                         library: str = "workspace", offset: StrictInt = 0,
+                         limit: StrictInt = 100, include_curve_csv: StrictBool = False) -> dict:
     """Read paged UTF-8 text, editable scalar allowlist, SHA-256, OND/BTR curves,
     commercial fields, and remarks for a PAN, OND, BTR, GEN, or REV component."""
     return component_call("inspect", component_type, filename, library, offset, limit, include_curve_csv)
@@ -37,8 +37,8 @@ def pvsyst_create_component(component_type: str, filename: str, content: str) ->
 @categorized_tool()
 def pvsyst_update_component(component_type: str, filename: str,
                            updates: dict[str, str],
-                           expected_sha256: str | None = None, dry_run: bool = False,
-                           curve_updates: dict[str, list[list[StrictFloat]]] | None = None,
+                           expected_sha256: str | None = None, dry_run: StrictBool = False,
+                           curve_updates: dict[str, list[list[StrictNum]]] | None = None,
                            use_file_curve: StrictBool = False,
                            commercial_updates: dict[str, str] | None = None,
                            remarks: list[str] | None = None,

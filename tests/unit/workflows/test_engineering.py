@@ -383,6 +383,39 @@ class EngineeringTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, pattern):
                     profile(latitude)
 
+    def test_preserve_source_hardware_checks_trial_exhaustion_in_preflight(self):
+        root = self.workspace()
+        store = VariantStore(root, ComponentStore(root))
+
+        class ExhaustedCLI:
+            def _require(self, command, option, *, allow_window_creation=None):
+                return None
+
+            def version(self, *, allow_window_creation=None):
+                return "8.1.7"
+
+            def license_info(self, *, allow_window_creation=None):
+                return {"status": "TRIAL", "remaining_executions": 0}
+
+            def _redact(self, text):
+                return text
+
+        req = {
+            "prepare_mode": "preserve_source_hardware",
+            "source_project": "Src.PRJ",
+            "source_variant": "VC0",
+            "new_project": "Out.PRJ",
+            "variant_name": "Preserved",
+            "design": {"year": 2024},
+            "house": {"kind": "mesh", "meshes": [{"name": "r", "vertices": [[0, 0, 0], [4, 0, 0], [0, 4, 0]], "triangles": [[0, 1, 2]]}]},
+            "layout": {"module_rows": 1, "module_columns": 1, "orientation": "landscape",
+                       "row_spacing_m": 0.0, "column_spacing_m": 0.0, "origin_m": [0.0, 0.0, 0.0], "roof_mesh": "r"},
+        }
+        res = run_sourced_house_task(store, store.components, ExhaustedCLI(), request=req, dry_run=True)
+        self.assertEqual(res["status"], "blocked")
+        self.assertEqual(res["stage"], "native_preflight")
+        self.assertIn("no remaining trial executions", res["issues"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

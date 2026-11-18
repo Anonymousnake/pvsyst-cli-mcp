@@ -216,6 +216,14 @@ class HeadlessDCCablingTests(unittest.TestCase):
         self.assertEqual(res["status"], "blocked")
         self.assertIn("99%", res["issues"][0])
 
+        for pct in (99.0, 99.5, 100.0):
+            bad_pct = create_dc_cabling_variant(
+                store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+                dc={"mode": "percent", "value": pct}, dry_run=True,
+            )
+            self.assertEqual(bad_pct["status"], "blocked")
+            self.assertIn("99", bad_pct["issues"][0])
+
     def test_cold_and_legacy_flag_readback_supported(self):
         ws, _ = self._setup_ws(pan_bytes=JKM600_PAN.encode("utf-8"))
         lines = (ws / "Projects" / "Demo.VC0").read_text(encoding="utf-8-sig").splitlines(True)

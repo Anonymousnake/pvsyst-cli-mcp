@@ -1,7 +1,7 @@
 """Results MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
-from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import StrictInt
 from pvsyst_auto.native.cli import (is_batch_summary_name, parse_batch_results,
                                     read_result_page, summarize_results)
 from pvsyst_auto.results import compare_results
@@ -15,13 +15,12 @@ def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR",
     """Summarize hourly or sub-hourly SFI rows in Results or UserHourly, or diff
     target (csv_name) minus baseline (compare_to) across 1..64 aligned columns."""
     requested = tuple(column.strip() for column in columns.split(",") if column.strip())
+    if not 1 <= len(requested) <= 64 or len(set(requested)) != len(requested):
+        raise ValueError("Select 1..64 distinct numeric columns")
     if compare_to:
         baseline_folder = folder if compare_folder is None else compare_folder
-        try:
-            result = compare_results(result_path(baseline_folder, compare_to),
-                                     result_path(folder, csv_name), requested)
-        except (ValueError, OSError) as exc:
-            raise ToolError(str(exc)) from None
+        result = compare_results(result_path(baseline_folder, compare_to),
+                                 result_path(folder, csv_name), requested)
         result["baseline"]["folder"] = baseline_folder
         result["target"]["folder"] = folder
         return result
@@ -31,7 +30,7 @@ def pvsyst_read_results(csv_name: str, columns: str = "E_Grid,PR",
 
 @categorized_tool()
 def pvsyst_read_rows(csv_name: str, columns: str = "E_Grid,PR",
-                     offset: int = 0, limit: int = 100,
+                     offset: StrictInt = 0, limit: StrictInt = 100,
                      folder: str = "Results") -> dict:
     """Read a bounded page from Results or batch UserHourly CSVs."""
     if offset < 0 or not 1 <= limit <= 500:

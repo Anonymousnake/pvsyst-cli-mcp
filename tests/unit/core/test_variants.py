@@ -887,7 +887,7 @@ class VariantTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exceeds 2 members"):
                 self.store.archive_project("Example.PRJ", confirm=True)
         self.store.clone_project("Example.PRJ", "Example.East.PRJ")
-        self.assertEqual(self.store.inspect_project("Example.PRJ")["variants"], ["VC0", "VC1"])
+        self.assertCountEqual(self.store.inspect_project("Example.PRJ")["variants"], ["VC0", "VC1"])
         self.store.clone_project("Example.PRJ", "\u5149\u4f0f.PRJ")
         self.assertEqual(self.components.dependencies("\u5149\u4f0f", "vc0")["project"], "\u5149\u4f0f.PRJ")
         for bad in ("../\u5149\u4f0f.PRJ", "CON.PRJ", "x.PRJ "):

@@ -200,6 +200,21 @@ def _shd_tree(idx, noc, obstacle, anchor_azim, turn):
             "      End of PVObject pvShdElemObject"]
 
 
+def _resolve_table_owner(row, orientations):
+    """Resolve a grouped table's owning source subarray id without conflating orientation_id and subarray_id."""
+    if "source_subarray_id" in row:
+        return row["source_subarray_id"]
+    oid = row.get("orientation_id", 1)
+    matches = [item.get("subarray_id", item["id"]) for item in orientations if item["id"] == oid]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError("Table %r names orientation %r, not a declared source orientation"
+                         % (row.get("name"), oid))
+    raise ValueError("Orientation %r is shared by multiple source subarrays; table %r requires explicit source_subarray_id"
+                     % (oid, row.get("name")))
+
+
 def build_pvshading(house, tables, modules, source, shading_mode="linear", *, max_tables=MAX_TABLES_SINGLE,
                     obstacles=None):
     """Return (pvShading text, {table_name: (slot, created)}).
@@ -236,7 +251,10 @@ def build_pvshading(house, tables, modules, source, shading_mode="linear", *, ma
     noc, idx = 2, 1
     for profile in ordered:
         oid = profile.get("orientation_id", 1)
-        owner = profile.get("source_subarray_id", oid)
+        owner = _resolve_table_owner(profile, orientations) if orientations else 1
+        if owner not in groups or (orientations and groups[owner]["id"] != oid):
+            raise ValueError("Table %r source owner %r does not match orientation %r"
+                             % (profile.get("name"), owner, oid))
         native_profile = {**profile, "orientation_id": oid}
         lines += _shd_table(idx, noc, native_profile, groups[owner], modules, turn)
         lines.append("")
@@ -645,6 +663,35 @@ def strip_result_cache(lines):
     return lines, report
 
 
+_INPUT_SIMUL_SCOPES = {
+    "EconomicEval=TEcoEvaluation": "End of TEcoEvaluation",
+    "PVObject_UserNeeds=pvLoad": "End of PVObject pvLoad",
+    "PVObject_GridStorage=pvGridStorage": "End of PVObject pvGridStorage",
+    "PVObject_GridUnavail=pvUnavail": "End of PVObject pvUnavail",
+    "SystemUnavail=TUnavailability": "End of PVObject pvUnavail",
+}
+
+
+def _has_derived_simul_cache(lines):
+    closer = None
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("VarList, list of="):
+            return "VarList, list of="
+        if stripped.startswith("PVObject_Simul="):
+            return "PVObject_Simul="
+        if closer is not None:
+            if stripped == closer:
+                closer = None
+            continue
+        if stripped in _INPUT_SIMUL_SCOPES:
+            closer = _INPUT_SIMUL_SCOPES[stripped]
+            continue
+        if stripped.startswith("End of VarSimul=") or re.match(r"^VarSimul_[0-9]+=", stripped):
+            return "End of VarSimul=" if stripped.startswith("End of VarSimul=") else "VarSimul_"
+    return None
+
+
 def assemble_variant(base_text, pvshading, module_layout=None):
     """Splice the constructed scene into the clean electrical source; strip derived caches."""
     eol = "\r\n" if "\r\n" in base_text else "\n"
@@ -662,6 +709,15 @@ def assemble_variant(base_text, pvshading, module_layout=None):
         closing = "End of PVObject pvVCalcul"
         index = max(i for i, line in enumerate(lines) if line.strip() == closing)
         lines = lines[:index] + block + lines[index:]
+    try:
+        s, e = _block(lines, lambda x: x == "PVObject_ModuleLayout=pvModuleLayout",
+                      lambda x: x == "End of PVObject pvModuleLayout")
+    except ValueError as exc:
+        if "block start not found" not in str(exc):
+            raise
+    else:
+        stop = e + 1 if e + 1 < len(lines) and not lines[e + 1].strip() else e
+        del lines[s:stop + 1]
     # Derived-cache removal is idempotent on a valid cold source: a source that was never
     # simulated carries no VarList block at all, so its absence is a legal noop. A block that
     # IS present must be properly closed -- an unclosed cache is malformed and raises.
@@ -671,10 +727,12 @@ def assemble_variant(base_text, pvshading, module_layout=None):
         index = max(i for i, line in enumerate(lines) if line.strip() == closing)
         lines = lines[:index] + module_layout.split("\n") + [""] + lines[index:]
     text = eol.join(lines)
-    banned = ("pvShdFTable", "ShdTableLin", "VarSimul", "Histogram=THistogramme")
-    for item in banned:
+    for item in ("pvShdFTable", "ShdTableLin", "Histogram=THistogramme"):
         if item in text:
             raise ValueError("derived item still present: " + item)
+    derived_simul = _has_derived_simul_cache(lines)
+    if derived_simul is not None:
+        raise ValueError("derived item still present: " + derived_simul)
     if module_layout is None and "pvModuleLayout" in text:
         raise ValueError("unexpected module layout in a linear-mode variant")
     return text
@@ -753,19 +811,26 @@ def verify_generated(text, source_text, house, tables, modules, source, shading_
 
 
 # --------------------------------------------------------------------- preflight / execute
+_VARIANT_DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_VARIANT_IDS = tuple(
+    f"V{lead}{tail}"
+    for lead in _VARIANT_DIGITS[12:]
+    for tail in _VARIANT_DIGITS
+)
+
+
 def _next_variant_id(store, project):
     root = store._path(project).parent
     stem = Path(project).stem
-    used = set()
-    for path in root.iterdir():
-        if path.suffix.casefold().startswith(".vc") and path.stem.casefold() == stem.casefold():
-            match = re.fullmatch(r"\.VC([0-9]+)", path.suffix, re.I)
-            if match:
-                used.add(int(match[1]))
-    number = 0
-    while number in used:
-        number += 1
-    return "VC%d" % number
+    used = {
+        path.suffix[1:].upper()
+        for path in root.iterdir()
+        if path.stem.casefold() == stem.casefold() and len(path.suffix) >= 2
+    }
+    for candidate in _VARIANT_IDS:
+        if candidate not in used:
+            return candidate
+    raise ValueError("All native 3-character variant identifiers (VC0..VZZ) are exhausted")
 
 
 def _circuit_counts_valid(source_text, subs):
@@ -840,7 +905,7 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
             if row["orientation_id"] not in orientation_ids:
                 raise ValueError("Table %r names orientation %r, not a declared source orientation"
                                  % (row.get("name"), row["orientation_id"]))
-            owner = row.get("source_subarray_id", row["orientation_id"])
+            owner = _resolve_table_owner(row, source["orientations"])
             if owner not in owners:
                 raise ValueError("Table %r names source owner %r, not a declared source subarray"
                                  % (row.get("name"), owner))
@@ -896,9 +961,15 @@ def _support_gate(source, tables, source_text, mode="linear", string_layout=None
                 raise ValueError("Native tables require portrait/landscape orientation and non-negative spacing")
         per_owner = defaultdict(int)
         for table in tables:
-            owner = table.get("source_subarray_id", table["orientation_id"])
+            if table.get("orientation_id") not in orientation_ids:
+                raise ValueError("Table %r names orientation %r, not a declared source orientation"
+                                 % (table.get("name"), table.get("orientation_id")))
+            owner = _resolve_table_owner(table, orientations)
             if owner not in owners:
                 raise ValueError("Table %r names unknown source owner %r" % (table.get("name"), owner))
+            if owners[owner]["id"] != table["orientation_id"]:
+                raise ValueError("Table %r source owner %r does not belong to orientation %r"
+                                 % (table.get("name"), owner, table["orientation_id"]))
             per_owner[owner] += table["module_rows"] * table["module_columns"]
         for owner, item in owners.items():
             if per_owner.get(owner, 0) != item["module_total"]:
@@ -1025,7 +1096,15 @@ def import_house_pv_scene_native(store, components, scene_name, variant_name,
             for pan_path, pan_before in snap.get("pan_snapshots") or []:
                 if components._read(pan_path) != pan_before:
                     raise ValueError("Source PAN changed after preflight")
-            target = store._path(args["project"], next_variant)
+            try:
+                target = store._path(args["project"], next_variant)
+            except ValueError:
+                if not re.fullmatch(r"V[D-Z][0-9A-Z]", next_variant):
+                    raise
+                prj_path = store._path(args["project"])
+                target = prj_path.with_name(f"{prj_path.stem}.{next_variant}")
+                if target.is_symlink() or target.resolve().parent != prj_path.parent:
+                    raise ValueError("Symlink or escaping project files are not supported") from None
             if any(p.name.casefold() == target.name.casefold() for p in target.parent.iterdir()):
                 raise FileExistsError("Native variant name already exists: " + target.name)
             original = snap["bytes"]

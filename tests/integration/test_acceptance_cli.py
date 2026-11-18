@@ -1,6 +1,8 @@
 """Offline CLI tests for scripts/native_acceptance.py."""
 from datetime import datetime, timedelta
 import csv
+import ctypes
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -190,6 +193,79 @@ class AcceptanceCLITests(unittest.TestCase):
         self.assertEqual((report["request_budget_spent"], report["cli_commands_spent"]), (1, 0))
         self.assertFalse(target.exists())
         self.assertEqual(before, {p: p.read_bytes() for p in self.workspace.rglob("*") if p.is_file()})
+
+    def test_cp1252_units_and_context_decode_cleanly_while_bom_corrupt_utf8_fails(self):
+        self.case["context"]["Geographical Site"] = "Caf\u00e9.SIT"
+        self.case["baseline"]["context"]["Geographical Site"] = "Caf\u00e9.SIT"
+        self.write_case()
+
+        def write_cp1252(name, context):
+            lines = [f"{k};{v};01/01/90 00h00;Native metadata;\r\n" for k, v in context.items()]
+            lines.append("date;E_Grid;ShdElec;GlobInc\r\n")
+            lines.append(";kW;kW;W/m\u00b2\r\n")
+            for idx in range(24):
+                stamp = (datetime(1990, 1, 1) + timedelta(hours=idx)).strftime("%d/%m/%y %H:%M")
+                lines.append(f"{stamp};{10 + idx};{idx % 2};500\r\n")
+            (self.root / name).write_bytes("".join(lines).encode("cp1252"))
+
+        write_cp1252("baseline.csv", self.case["baseline"]["context"])
+        write_cp1252("candidate.csv", self.case["context"])
+        code, report = self.compare()
+        self.assertEqual(code, 0, report)
+        self.assertEqual(report["status"], "compared")
+
+        (self.root / "candidate.csv").write_bytes(b"\xef\xbb\xbf" + (self.root / "candidate.csv").read_bytes())
+        code, bad = self.compare()
+        self.assertEqual(code, 1, bad)
+        self.assertEqual(bad["status"], "failed")
+
+    def test_workspace_bytes_accepts_short_paths_and_rejects_links_and_junctions(self):
+        spec = importlib.util.spec_from_file_location("native_acceptance", ENTRY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        long_dir = self.root / "very_long_acceptance_fixture_directory"
+        (long_dir / "Projects").mkdir(parents=True)
+        (long_dir / "Projects" / "Example.PRJ").write_bytes(b"fixture")
+        expected = {Path("Projects/Example.PRJ"): b"fixture"}
+        self.assertEqual(mod.workspace_bytes(long_dir), expected)
+        if os.name == "nt":
+            buf = ctypes.create_unicode_buffer(1024)
+            if ctypes.windll.kernel32.GetShortPathNameW(str(long_dir), buf, len(buf)):
+                self.assertEqual(mod.workspace_bytes(Path(buf.value)), expected)
+            outside = self.root / "outside_target"
+            outside.mkdir()
+            junction = long_dir / "linked_dir"
+            created = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+                                     capture_output=True, text=True)
+            if created.returncode == 0:
+                try:
+                    with self.assertRaisesRegex(ValueError, "links and junctions"):
+                        mod.workspace_bytes(long_dir)
+                finally:
+                    junction.rmdir()
+        with patch.object(Path, "is_symlink", side_effect=lambda self=None: True):
+            with self.assertRaisesRegex(ValueError, "links and junctions"):
+                mod.workspace_bytes(long_dir)
+
+    def test_run_mode_validates_cli_flags_before_creating_attempt_dir(self):
+        invalid_invocations = (
+            ("candidate_in_run", ("--cli", sys.executable, "--max-cli-commands", 3, "--candidate", self.root / "candidate.csv")),
+            ("missing_cli", ("--max-cli-commands", 3)),
+            ("nonexistent_cli", ("--cli", self.root / "missing.exe", "--max-cli-commands", 3)),
+            ("directory_cli", ("--cli", self.workspace, "--max-cli-commands", 3)),
+            ("missing_budget", ("--cli", sys.executable)),
+            ("zero_budget", ("--cli", sys.executable, "--max-cli-commands", 0)),
+            ("excess_budget", ("--cli", sys.executable, "--max-cli-commands", 4)),
+        )
+        for index, (label, extra_args) in enumerate(invalid_invocations):
+            attempt = self.root / f"precheck-{index}"
+            with self.subTest(case=label):
+                code, report = self.invoke("run", self.path, "--attempt", attempt,
+                                           "--attempt-id", f"id-{index}", *extra_args)
+                self.assertEqual(code, 1, report)
+                self.assertEqual(report["status"], "failed")
+                self.assertFalse(attempt.exists(), f"{label} should not create attempt directory")
 
 
 if __name__ == "__main__":

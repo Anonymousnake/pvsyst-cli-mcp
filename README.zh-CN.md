@@ -95,7 +95,7 @@ src/pvsyst_auto/
 ├── energy/       # 逐时负荷、储能配置、详细损失标量、功率因数与并网限发
 ├── weather/      # Open-Meteo ERA5 下载、标准时对齐、.SIT/.MET 转换与核对
 ├── native/       # PVsystCLI.exe 进程封装与受控 Win32 GUI 自动化入口
-└── results.py    # 仿真结果 CSV/PDF 解析与年度指标汇总
+└── results.py    # 仿真结果 CSV 解析与逐时指标汇总
 ```
 
 各子模块的详细职责与旧版扁平模块导入路径对照见[软件包结构](docs/architecture.md)，PVsyst 各功能点的支持情况见[功能入口地图](docs/native-entry-map.md)。

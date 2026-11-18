@@ -1,7 +1,7 @@
 """Simulation MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
-from pydantic import StrictBool, StrictStr
+from pydantic import StrictBool, StrictInt, StrictStr
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
 from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.sourced_design import prepare_sourced_design
@@ -14,10 +14,11 @@ from pvsyst_auto.components.identity import sourced_component
 def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
     """Create a new hourly export definition (.SFI) in workspace/Models from a preset group
     (energy, inverter_losses, all_common, shading, soiling, grid_limit, grid_storage) or comma-separated vi* variables."""
-    target = workspace_path("Models", filename, ".sfi")
-    names = (VAR_GROUPS[variables] if variables in VAR_GROUPS
-             else [part.strip() for part in variables.split(",")])
-    build_sfi(target, list(names))
+    with cli()._lock:
+        target = workspace_path("Models", filename, ".sfi")
+        names = (VAR_GROUPS[variables] if variables in VAR_GROUPS
+                 else [part.strip() for part in variables.split(",")])
+        build_sfi(target, list(names))
     return {"sfi": str(target), "variables": list(names)}
 
 @categorized_tool()
@@ -37,38 +38,39 @@ def pvsyst_run_simulation(project: str, variant: str,
                           met_name: str = "", rvt_name: str = "",
                           params_name: str = "", batch_params_name: str = "",
                           batch_rvt_name: str = "", site_name: str = "",
-                          synthetic_weather: bool = False,
+                          synthetic_weather: StrictBool = False,
                           time_step: str = "", start_date: str = "", end_date: str = "",
                           report_language: str = "", report_pages: str = "",
-                          recompute_shading: bool | None = None,
-                          log_level: int | None = None,
-                          allow_window_creation: bool | None = None) -> dict:
+                          recompute_shading: StrictBool | None = None,
+                          log_level: StrictInt | None = None,
+                          allow_window_creation: StrictBool | None = None) -> dict:
     """Run a single or batch simulation via PVsystCLI.exe on an existing project/variant,
     writing CSV/PDF outputs to Results or batch outputs to UserBatch/UserHourly."""
     current = cli()
-    options = dict(
-        sfi=optional_path("Models", sfi_name, ".sfi"),
-        out_csv=simulation_csv_path(csv_name),
-        report_pdf=optional_path("Results", pdf_name, ".pdf"),
-        met=optional_path("Meteo", met_name, ".met"),
-        rvt=optional_path("Models", rvt_name, ".rvt"),
-        params=optional_path("UserData", params_name, ".dat"),
-        batch_params=optional_path("UserBatch", batch_params_name, ".csv"),
-        batch_rvt=optional_path("UserBatch", batch_rvt_name, ".rvt"),
-        site=optional_path("Sites", site_name, ".sit"),
-        synthetic_weather=synthetic_weather, time_step=time_step or None,
-        start_date=start_date or None, end_date=end_date or None,
-        report_language=report_language or None,
-        report_pages=[p.strip() for p in report_pages.split(",")] if report_pages else None,
-        recompute_shading=recompute_shading, log_level=log_level,
-        allow_window_creation=allow_window_creation,
-    )
-    # Pure filename/path/date/output checks run before any license query or help launch.
-    current.preflight_run_simulation(project, variant, **options)
-    license_state = current.license_info(allow_window_creation=allow_window_creation)
-    if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
-        raise ValueError("PVsystCLI reports no remaining trial executions")
-    return current.run_simulation(project, variant, **options)
+    with current._lock:
+        options = dict(
+            sfi=optional_path("Models", sfi_name, ".sfi"),
+            out_csv=simulation_csv_path(csv_name),
+            report_pdf=optional_path("Results", pdf_name, ".pdf"),
+            met=optional_path("Meteo", met_name, ".met"),
+            rvt=optional_path("Models", rvt_name, ".rvt"),
+            params=optional_path("UserData", params_name, ".dat"),
+            batch_params=optional_path("UserBatch", batch_params_name, ".csv"),
+            batch_rvt=optional_path("UserBatch", batch_rvt_name, ".rvt"),
+            site=optional_path("Sites", site_name, ".sit"),
+            synthetic_weather=synthetic_weather, time_step=time_step or None,
+            start_date=start_date or None, end_date=end_date or None,
+            report_language=report_language or None,
+            report_pages=[p.strip() for p in report_pages.split(",")] if report_pages else None,
+            recompute_shading=recompute_shading, log_level=log_level,
+            allow_window_creation=allow_window_creation,
+        )
+        # Pure filename/path/date/output checks run before any license query or help launch.
+        current.preflight_run_simulation(project, variant, **options)
+        license_state = current.license_info(allow_window_creation=allow_window_creation)
+        if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
+            raise ValueError("PVsystCLI reports no remaining trial executions")
+        return current.run_simulation(project, variant, **options)
 
 @categorized_tool()
 def pvsyst_simulate_design(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:

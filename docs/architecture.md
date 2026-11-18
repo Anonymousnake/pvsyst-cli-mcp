@@ -17,7 +17,7 @@
 | `energy` | 负荷曲线、储能系统、电气参数、AC/DC 线缆与详细损失字段读写 | `profiles.py`、`storage.py`、`system.py`、`power.py`、`ac.py`、`dc.py` |
 | `weather` | 地理编码、Open-Meteo ERA5 下载、时基转换、`.SIT`/`.MET` 准备与核对 | `acquisition.py`、`preparation.py`、`review.py`、`csv.py` |
 | `native` | `PVsystCLI.exe` 命令行封装、免 GUI 场景构建（`headless.py` / `_prep.py`）与旧版 Win32 GUI 辅助外壳 | `cli.py`、`headless.py`、`_prep.py`、`project.py`、`scene.py`、`horizon.py`、`dc.py` |
-| `results.py` | 仿真导出的 CSV 与 PDF 解析、年度能量平衡校核与双结果逐时对比 | `results.py` |
+| `results.py` | 仿真结果 CSV 解析与逐时指标汇总、年度能量平衡校核与双结果逐时对比 | `results.py` |
 
 阅读代码时的经验法则：
 - 想看某个 MCP 工具怎么接请求、转换异常，去 `api/` 下找对应分组文件。
@@ -29,9 +29,9 @@ Windows 上所有原始 CLI 调用统一经 `native/cli.PVsystCLI._run` 在私�
 
 ## MCP 上下文与参数校验
 
-`api/context.py` 维护了进程内唯一的 `PVsystCLI` 实例和工作区重入锁（`RLock`），并挂载了一个前置中间件 `reject_unknown_tool_arguments`。所有 82 个工具都会根据 Python 函数签名严格校验顶层入参，一旦传了未知字段名会直接返回明确的错误提示，避免因为参数名拼写错误而在写文件时静默漏掉配置。复杂嵌套参数的结构校验集中在 `api/schemas.py`。
+`api/context.py` 维护了进程内唯一的 `PVsystCLI` 实例和工作区重入锁（`RLock`），并挂载了一个前置中间件 `reject_unknown_tool_arguments`。所有 66 个工具都会根据 Python 函数签名严格校验顶层入参，一旦传了未知字段名会直接返回明确的错误提示，避免因为参数名拼写错误而在写文件时静默漏掉配置。复杂嵌套参数的结构校验集中在 `api/schemas.py`。
 
-`api/app.py` 根据环境变量 `PVSYST_TOOL_GROUPS` 动态导入选定的工具组模块并启动 stdio 服务。未设置该变量时默认加载全部 8 个分组。
+`api/app.py` 根据环境变量 `PVSYST_TOOL_GROUPS` 动态导入选定的工具组模块并启动 stdio 服务（共 10 个分组；未设置该变量时默认加载 8 个核心分组共 34 个工具，设为 `all` 时加载全部 10 个分组共 66 个工具）。
 
 需要注意的是，进程内的 `RLock` 只负责同步当前 MCP 服务进程内部的多线程调用；如果你同时在桌面上开着 PVsyst GUI 手动改同一个工程，还是要靠文件 SHA-256 校验（`expected_sha256`）来防止互相覆盖。
 

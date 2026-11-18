@@ -14,6 +14,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as w
 import math
+import os
 import re
 import sys
 import time
@@ -454,11 +455,21 @@ def _read_unicode_clipboard(expected, hwnd, timeout=3.0):
 
 
 def _ini_path():
-    return Path.home() / "AppData" / "Local" / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini"
+    local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    return local / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini"
 
 
 def _ini_datapath():
-    raw = _ini_path().read_bytes().decode("utf-16")
+    data = _ini_path().read_bytes()
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        raw = data.decode("utf-16")
+    elif data.startswith(b"\xef\xbb\xbf"):
+        raw = data.decode("utf-8-sig")
+    else:
+        try:
+            raw = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = data.decode("cp1252")
     found = re.findall(r"(?m)^DataPath=([^\r\n]*)", raw)
     if len(found) != 1:
         _fail("PVsyst.ini must declare exactly one DataPath")

@@ -337,7 +337,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 preview = create_house_pv_scene(store, components, project=request["source_project"],
                     variant=request["source_variant"], output_name=plan["scene_name"], house=request["house"],
                     layout=request["layout"], module_geometry=request.get("module_geometry"), dry_run=True,
-                    string_layout=request.get("string_layout"))
+                    string_layout=request.get("string_layout"), obstacles=request.get("obstacles"))
                 if preview["status"] != "ready":
                     return {**result, "scene_preflight": preview, "issues": preview["issues"]}
                 if method == "gui":

@@ -1,13 +1,17 @@
 """Result comparison regression cases; no vendor CLI execution."""
+import asyncio
+from datetime import datetime, timedelta
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from pvsyst_auto.api import app as _registered_app, context as server
 import pvsyst_auto.api.results as api_results
+from pvsyst_auto.engineering import comparison as eng_comparison
 import pvsyst_auto.results as results
 from pvsyst_auto.native.cli import PVsystCLI, summarize
 
@@ -175,3 +179,121 @@ class ResultComparisonTests(unittest.TestCase):
                                 encoding="utf-8")
                 direct = summarize(path)
                 self.assertEqual((direct["complete"], direct["step_minutes"], direct["energy_kwh"]), (complete, step, None))
+
+    def test_zero_row_iterators_raise_value_error_and_block_comparison(self):
+        header_only = (
+            "Project;Alpha.PRJ\nSimulation variant;Alpha.VC0\n"
+            "Geographical Site;Site.SIT\nWeather data;Weather.MET\n"
+            "date;E_Grid;GlobInc\n;kW;W/m2\n"
+        )
+        self.a.write_text(header_only, encoding="utf-8")
+        self.b.write_text(header_only.replace("Alpha", "Beta"), encoding="utf-8")
+        with patch.object(results, "iter_result_csv", side_effect=lambda *_a, **_k: (_ for _ in ())), \
+                self.assertRaisesRegex(ValueError, "no simulation rows"):
+            self.compare()
+        with patch.object(eng_comparison, "iter_result_csv", side_effect=lambda *_a, **_k: (_ for _ in ())), \
+                self.assertRaisesRegex(ValueError, "no simulation rows"):
+            eng_comparison._scan_result(self.a, {"E_Grid": "kW", "GlobInc": "W/m2"}, 2024)
+
+        (self.root / "Results").mkdir(exist_ok=True)
+        for name, proj in (("base0.csv", "Alpha"), ("cand0.csv", "Beta")):
+            (self.root / "Results" / name).write_text(header_only.replace("Alpha", proj), encoding="utf-8")
+        store = type("Store", (), {"lock": threading.RLock(), "workspace": self.root})()
+        handoff = {"status": "ready", "review_items": [],
+                   "saved": {"project": {"values": {}}, "system": {"SystemType": "Grid"},
+                             "sources": {"variant": {"site": {"name": "Site.SIT"}, "meteo": {"name": "Weather.MET"}}}}}
+        scenarios = [
+            {"label": "baseline", "project": "Alpha.PRJ", "variant": "VC0", "csv_name": "base0.csv", "declared_changes": []},
+            {"label": "candidate", "project": "Beta.PRJ", "variant": "VC0", "csv_name": "cand0.csv", "declared_changes": ["system"]},
+        ]
+        with patch("pvsyst_auto.engineering.handoff.build_project_handoff", return_value=handoff):
+            blocked = eng_comparison.compare_engineering_scenarios(
+                store, objective="Header-only CSV guard", scenarios=scenarios, output_name="zero.json", dry_run=True)
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertTrue(any("no simulation rows" in issue for issue in blocked["issues"]), blocked["issues"])
+
+    def test_energy_and_irradiation_units_in_compare_and_annual_summary(self):
+        for unit, expected in (("Wh", 3.0), ("kWh", 3000.0), ("Wh/m2", None),
+                               ("Wh/m\u00b2", None), ("kWh/m2", None), ("kWh/m\u00b2", None)):
+            self.write(self.a, [100, 200, 300], unit=unit, times=["00:00", "00:01", "00:02"])
+            self.write(self.b, [1100, 1200, 1300], unit=unit, times=["00:00", "00:01", "00:02"])
+            summary = self.compare()["summary"]["E_Grid"]
+            self.assertEqual(summary["delta_energy_kwh"], expected, unit)
+
+        nominal = 10.0
+        start = datetime(1990, 1, 1)
+        annual_path = self.root / "annual_units.csv"
+        for e_unit, e_factor, g_unit, g_factor in (
+            ("Wh", 1000.0, "Wh/m2", 1.0),
+            ("Wh", 1000.0, "Wh/m\u00b2", 1.0),
+            ("kWh", 1.0, "kWh/m2", 0.001),
+            ("kWh", 1.0, "kWh/m\u00b2", 0.001),
+        ):
+            lines = ["date;E_Grid;EArray;IL_Pmax;GlobInc;PR\n",
+                     f";{e_unit};{e_unit};{e_unit};{g_unit};%\n"]
+            for h in range(8760):
+                stamp = (start + timedelta(hours=h)).strftime("%d/%m/%y %H:%M")
+                if h % 2:
+                    g = 500.0 * g_factor
+                    e_grid = nominal * 0.5 * 0.8 * e_factor
+                    lines.append(f"{stamp};{e_grid};{e_grid * 1.05};{0.1 * e_factor};{g};80\n")
+                else:
+                    lines.append(f"{stamp};0;0;0;0;\n")
+            annual_path.write_text("".join(lines), encoding="utf-8")
+            summary = results.annual_summary(annual_path, 1990, nominal)
+            self.assertAlmostEqual(summary["incident_irradiation_kwh_m2"], 4380 * 0.5)
+            self.assertAlmostEqual(summary["grid_energy_kwh"], 4380 * nominal * 0.5 * 0.8)
+            self.assertAlmostEqual(summary["pr_ratio"], 0.8)
+
+    def test_annual_summary_dark_hour_tare_and_pr_mismatch_detection(self):
+        nominal = 10.0
+        start = datetime(1990, 1, 1)
+        annual_path = self.root / "annual_tare.csv"
+
+        def write_annual(dark_e_grid=-0.1, day_pr=0.8):
+            lines = ["date;E_Grid;EArray;IL_Pmax;GlobInc;PR\n", ";kW;kW;kW;W/m2;ratio\n"]
+            for h in range(8760):
+                stamp = (start + timedelta(hours=h)).strftime("%d/%m/%y %H:%M")
+                if h % 2:
+                    e_grid = nominal * 0.5 * 0.8
+                    lines.append(f"{stamp};{e_grid};{e_grid + 0.5};0;500;{day_pr}\n")
+                else:
+                    lines.append(f"{stamp};{dark_e_grid};0;0;0;\n")
+            annual_path.write_text("".join(lines), encoding="utf-8")
+
+        write_annual(dark_e_grid=-0.1, day_pr=0.8)
+        summary = results.annual_summary(annual_path, 1990, nominal)
+        expected_grid = 4380 * (nominal * 0.5 * 0.8) + 4380 * (-0.1)
+        expected_ref = 4380 * 0.5 * nominal
+        self.assertAlmostEqual(summary["grid_energy_kwh"], expected_grid)
+        self.assertAlmostEqual(summary["native_pr_irradiance_weighted_ratio"], 0.8)
+        self.assertAlmostEqual(summary["pr_ratio"], expected_grid / expected_ref)
+        self.assertLess(summary["pr_ratio"], 0.785)
+
+        with self.assertRaisesRegex(ValueError, "Native PR disagrees"):
+            results.annual_summary(annual_path, 1990, nominal * 2)
+        write_annual(dark_e_grid=-0.1, day_pr=0.85)
+        with self.assertRaisesRegex(ValueError, "Native PR disagrees"):
+            results.annual_summary(annual_path, 1990, nominal)
+        write_annual(dark_e_grid=0.2, day_pr=0.8)
+        with self.assertRaisesRegex(ValueError, "Native PR disagrees"):
+            results.annual_summary(annual_path, 1990, nominal)
+
+    def test_read_results_column_bounds_and_permission_error_prefix(self):
+        (self.root / "Results").mkdir(exist_ok=True)
+        self.write(self.root / "Results" / "base.csv", [1, 2])
+        self.write(self.root / "Results" / "target.csv", [3, 4])
+        with patch.object(server, "_cli", PVsystCLI(sys.executable, self.root)):
+            for bad_columns in ("", " , ", "E_Grid,E_Grid", ",".join(f"C{i}" for i in range(65))):
+                with self.subTest(columns=bad_columns), self.assertRaisesRegex(ValueError, "1..64 distinct"):
+                    api_results.pvsyst_read_results("target.csv", bad_columns)
+            with patch.object(api_results, "compare_results",
+                              side_effect=PermissionError(13, "Permission denied", "base.csv")), \
+                    self.assertRaises(server.ToolError) as raised:
+                asyncio.run(server.mcp.call_tool("pvsyst_read_results", {
+                    "csv_name": "target.csv", "columns": "E_Grid", "compare_to": "base.csv"}))
+            self.assertIn("PermissionError:", str(raised.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

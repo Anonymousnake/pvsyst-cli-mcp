@@ -26,11 +26,11 @@ LAST_COMPILE = "$81"
 def _number(value, label, low, high, step=False):
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError(f"{label} must be a finite number") from None
     if not low <= number <= high or (step and (Decimal(str(number)) * 10) % 1):
         raise ValueError(f"{label} must be a finite value inside {low}..{high}")
-    return number
+    return 0.0 if number == 0 else number
 
 
 def _locate(lines):
@@ -218,7 +218,7 @@ def replace_horizon(lines, updates):
         lines[index] = replace_value(lines[index], name)
         after = {**before, "profile_name": name}
     else:
-        ending = "\r\n" if lines[0].endswith("\r\n") else "\n"
+        ending = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
         if located is None:
             mains = [i for i, line in enumerate(lines) if line.strip() == MAIN]
             if len(mains) != 1:

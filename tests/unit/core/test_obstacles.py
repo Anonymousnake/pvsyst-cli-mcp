@@ -512,3 +512,258 @@ End of PVObject pvVCalcul
         )
         self.assertEqual(imp_exp["status"], "native_variant_created", imp_exp)
         self.assertTrue(imp_exp["stored_module_layout_verified"])
+
+    def test_grouped_owner_resolution_variant_ids_assemble_variant_and_nonzero_anchor_verify(self):
+        from pvsyst_auto.native.cli import PVsystCLI
+        from pvsyst_auto.native.headless import (
+            _next_variant_id, _resolve_table_owner, _support_gate, assemble_variant, build_pvshading,
+        )
+        from pvsyst_auto.scene.author import _rotate_z, house_profile, table_profiles
+
+        ws, comps, store = self._setup_ws()
+
+        # 1. _resolve_table_owner: non-matching SubArrayId vs NoOrientation (SA2->Orient1, SA3->Orient2)
+        orientations_offset = [
+            {"id": 1, "subarray_id": 2, "module_total": 10, "tilt_deg": 25.0,
+             "azimuth_deg": 180.0, "field_azimuth_deg": 0.0},
+            {"id": 2, "subarray_id": 3, "module_total": 10, "tilt_deg": 20.0,
+             "azimuth_deg": 90.0, "field_azimuth_deg": -90.0},
+        ]
+        self.assertEqual(_resolve_table_owner({"name": "T1", "orientation_id": 1}, orientations_offset), 2)
+        self.assertEqual(_resolve_table_owner({"name": "T2", "orientation_id": 2}, orientations_offset), 3)
+
+        # Shared orientation requires explicit source_subarray_id
+        shared_orients = [
+            {"id": 1, "subarray_id": 1, "module_total": 10, "tilt_deg": 25.0, "azimuth_deg": 180.0, "field_azimuth_deg": 0.0},
+            {"id": 1, "subarray_id": 2, "module_total": 10, "tilt_deg": 25.0, "azimuth_deg": 180.0, "field_azimuth_deg": 0.0},
+        ]
+        with self.assertRaisesRegex(ValueError, "source_subarray_id"):
+            _resolve_table_owner({"name": "Ambiguous", "orientation_id": 1}, shared_orients)
+        self.assertEqual(
+            _resolve_table_owner({"name": "Bound", "orientation_id": 1, "source_subarray_id": 2}, shared_orients),
+            2,
+        )
+
+        # End-to-end build_pvshading + _support_gate on SA2->Orient1, SA3->Orient2 without source_subarray_id
+        offset_vc = """PVObject_=pvVCalcul
+  Comment=Offset SubArray IDs
+  Version=8.1.6
+  Flags=$00100000
+  Orientations, list of=2 TOrientGroup
+    PVObject_=pvOrient
+      Version=8.1.6
+      Flags=$00
+      NoOrient=1
+      FieldType=FixedPlane
+      FieldTilt=25.0
+      FieldAzim=20.0
+      BaseSlope=0.0
+      UsesTiltAver=False
+      UsesAzimAver=False
+      UsesSlopeAver=False
+    End of TOrientGroup
+    PVObject_=pvOrient
+      Version=8.1.6
+      Flags=$00
+      NoOrient=2
+      FieldType=FixedPlane
+      FieldTilt=20.0
+      FieldAzim=-70.0
+      BaseSlope=0.0
+      UsesTiltAver=False
+      UsesAzimAver=False
+      UsesSlopeAver=False
+    End of TOrientGroup
+  End of Orientations
+  PVObject_PVMainArray=pvMainArray
+    Flags=$01900400
+    Flags2=$082A
+    PVObject_SystemCircuit=pvCircuit
+      Version=8.1.6
+      Flags=$00
+      InjectionPointNode Start;
+        Children=Start
+          InverterNode Start;
+            NElements=1
+            SubArrayId=2
+            SubArrayName=South
+            Children=Start
+              MPPTNode Start;
+                NElements=1
+                SubArrayId=2
+                SubArrayName=South
+                Children=Start
+                  StringNode Start;
+                    NElements=1
+                    SubArrayId=2
+                    SubArrayName=South
+                  StringNode End;
+                Children=End
+              MPPTNode End;
+            Children=End
+          InverterNode End;
+          InverterNode Start;
+            NElements=1
+            SubArrayId=3
+            SubArrayName=East
+            Children=Start
+              MPPTNode Start;
+                NElements=1
+                SubArrayId=3
+                SubArrayName=East
+                Children=Start
+                  StringNode Start;
+                    NElements=1
+                    SubArrayId=3
+                    SubArrayName=East
+                  StringNode End;
+                Children=End
+              MPPTNode End;
+            Children=End
+          InverterNode End;
+        Children=End
+      InjectionPointNode End;
+    End of PVObject pvCircuit
+    SubArrays=Start
+      PVObject_=pvSubArray
+        Comment=South
+        Version=8.1.6
+        Flags=$019E0402
+        Flags2=$20
+        SubArrayId=2
+        PVModule=Mod600.PAN
+        GInverter=Inv50.OND
+        NoOrientation=1
+        NModSerie=10
+        NStringCh=1
+        NStrOrient1=1
+        NInverter=1
+        NInvMPPT=1
+        PowerSharingInverterId=-1
+      End of PVObject pvSubArray
+      PVObject_=pvSubArray
+        Comment=East
+        Version=8.1.6
+        Flags=$019E0402
+        Flags2=$20
+        SubArrayId=3
+        PVModule=Mod600.PAN
+        GInverter=Inv50.OND
+        NoOrientation=2
+        NModSerie=10
+        NStringCh=1
+        NStrOrient1=1
+        NInverter=1
+        NInvMPPT=1
+        PowerSharingInverterId=-1
+      End of PVObject pvSubArray
+    EndTags
+  End of PVObject pvMainArray
+  PVObject_System=pvSystem
+    Flags=$00
+    SystemType=Grid
+  End of PVObject pvSystem
+End of PVObject pvVCalcul
+"""
+        def sloped(name, origin, wx, sy, tilt, azim):
+            t = math.radians(tilt)
+            pts = [(0.0, 0.0, 0.0), (wx, 0.0, 0.0), (wx, sy * math.cos(t), sy * math.sin(t)), (0.0, sy * math.cos(t), sy * math.sin(t))]
+            verts = [[round(origin[k] + _rotate_z(p, -azim)[k], 6) for k in range(3)] for p in pts]
+            return {"name": name, "vertices": verts, "triangles": [[0, 1, 2], [0, 2, 3]]}
+
+        # Note: COLLADA frame uses orientation 1 as y-up roof, orientation 2 rotated by +90 deg relative to orientation 1
+        house_2r = {"kind": "mesh", "meshes": [
+            sloped("Roof1", [0.0, 0.0, 4.0], 20.0, 8.0, 25.0, 0.0),
+            sloped("Roof2", [25.0, 0.0, 4.0], 20.0, 8.0, 20.0, -90.0),
+        ]}
+        pocket_2r = house_profile(house_2r)
+        source_2r = {
+            "pan_name": "Mod600.PAN",
+            "module_total": 20,
+            "tilt_deg": 25.0,
+            "azimuth_deg": 200.0,
+            "field_azimuth_deg": 20.0,
+            "site": {"latitude": 45.0, "longitude": 5.0, "altitude": 10.0},
+            "orientations": [
+                {"id": 1, "subarray_id": 2, "module_total": 10, "tilt_deg": 25.0,
+                 "azimuth_deg": 200.0, "field_azimuth_deg": 20.0},
+                {"id": 2, "subarray_id": 3, "module_total": 10, "tilt_deg": 20.0,
+                 "azimuth_deg": 110.0, "field_azimuth_deg": -70.0},
+            ],
+        }
+        modules_meta = {"name": "Mod600", "width_m": 1.134, "length_m": 2.465, "depth_m": 0.03}
+        tables_2r = table_profiles({"tables": [
+            {"name": "SouthT", "orientation_id": 1, "roof_mesh": "Roof1",
+             "module_rows": 2, "module_columns": 5, "orientation": "landscape",
+             "row_spacing_m": 0.0, "column_spacing_m": 0.0,
+             "origin_m": [1.0, 0.5, 4.0 + 0.5 * math.tan(math.radians(25.0)) + 0.2]},
+            {"name": "EastT", "orientation_id": 2, "roof_mesh": "Roof2",
+             "module_rows": 2, "module_columns": 5, "orientation": "landscape",
+             "row_spacing_m": 0.0, "column_spacing_m": 0.0,
+             "origin_m": [25.0 - 0.5 * math.cos(math.radians(20.0)), 1.0, 4.0 + 0.5 * math.sin(math.radians(20.0)) + 0.2]},
+        ]}, pocket_2r, modules_meta, source_2r)
+
+        _support_gate(source_2r, tables_2r, offset_vc, "module_layout")
+        shd_text, slot_map = build_pvshading(house_2r, tables_2r, modules_meta, source_2r, "linear", max_tables=64)
+        self.assertIn("DAzimut=20.000000", shd_text)
+        self.assertIn("DAzimut=-70.000000", shd_text)
+
+        # 2. _prep._verify_new passes anchor_turn on non-zero anchor grouped variants (FieldAzim=20.0)
+        assembled_2r = assemble_variant(offset_vc, shd_text)
+        target_2r = ws / "Projects" / "Demo.VC8"
+        target_2r.write_bytes(assembled_2r.encode("utf-8"))
+        verified_2r = _verify_new(
+            target_2r, offset_vc.encode("utf-8"), 2, 2, 20,
+            scene_context={"house": pocket_2r, "tables": tables_2r, "modules": modules_meta, "source": source_2r},
+        )
+        self.assertTrue(verified_2r["house_geometry_verified"])
+        self.assertTrue(verified_2r["pv_geometry_verified"])
+        target_2r.unlink()
+
+        # 3. _next_variant_id base-36 3-character progression (VC0..VC9, VCA..VCZ, VD0..VZZ; never VC10)
+        proj_dir = ws / "Projects"
+        for i in range(1, 10):
+            (proj_dir / f"Demo.VC{i}").write_text("v", encoding="utf-8")
+        self.assertEqual(_next_variant_id(store, "Demo.PRJ"), "VCA")
+        for ch in "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[10:]:
+            (proj_dir / f"Demo.VC{ch}").write_text("v", encoding="utf-8")
+        self.assertEqual(_next_variant_id(store, "Demo.PRJ"), "VD0")
+        (proj_dir / "Demo.VC10").write_text("bad4char", encoding="utf-8")
+        fake_exe = ws / "PVsystCLI.exe"
+        fake_exe.write_bytes(b"MZ")
+        cli_check = PVsystCLI(fake_exe, ws)
+        listed = cli_check.list_variants("Demo.PRJ")
+        self.assertIn("VCA", listed)
+        self.assertNotIn("VC10", listed)
+
+        # 4. assemble_variant strips pre-existing pvModuleLayout and allows TEcoEvaluation TVarSimul
+        warm_with_ml_and_econ = offset_vc.replace(
+            "End of PVObject pvVCalcul",
+            "  EconomicEval=TEcoEvaluation\n"
+            "    Currency=EUR\n"
+            "    HourlyTariff=THourlyParams\n"
+            "      ParSimulH=TVarSimul\n"
+            "        Varident=TarifH\n"
+            "      End of VarSimul=viTarifH\n"
+            "    End of THourlyParams\n"
+            "  End of TEcoEvaluation\n"
+            "  PVObject_ModuleLayout=pvModuleLayout\n"
+            "    Flags=$0B00\n"
+            "  End of PVObject pvModuleLayout\n"
+            "End of PVObject pvVCalcul",
+        )
+        linear_out = assemble_variant(warm_with_ml_and_econ, shd_text, module_layout=None)
+        self.assertNotIn("pvModuleLayout", linear_out)
+        self.assertIn("ParSimulH=TVarSimul", linear_out)
+        new_ml = "  PVObject_ModuleLayout=pvModuleLayout\n    Comment=Fresh\n  End of PVObject pvModuleLayout"
+        ml_out = assemble_variant(warm_with_ml_and_econ, shd_text, module_layout=new_ml)
+        self.assertEqual(ml_out.count("PVObject_ModuleLayout=pvModuleLayout"), 1)
+        self.assertIn("Comment=Fresh", ml_out)
+
+        for leftover in (
+            "  PVObject_Simul=pvSimulFile\n  End of TSimulFich\n",
+            "  End of VarSimul=E_Grid\n",
+        ):
+            bad_src = offset_vc.replace("End of PVObject pvVCalcul", leftover + "End of PVObject pvVCalcul")
+            with self.assertRaisesRegex(ValueError, "derived item still present"):
+                assemble_variant(bad_src, shd_text)

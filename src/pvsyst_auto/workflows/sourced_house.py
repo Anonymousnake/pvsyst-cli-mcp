@@ -120,7 +120,7 @@ def _run_preserve_source_hardware(store, components, cli, *, request, dry_run=Tr
             raise ValueError("Use strict booleans")
         child = _preserve_child_request(request)
         preflight, error = _native_preflight(
-            cli, "existing", prepare_only=True,
+            cli, "existing", prepare_only=False,
             allow_window_creation=request.get("allow_window_creation"))
         result["native_preflight"] = preflight
         if error is not None:

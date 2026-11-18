@@ -551,7 +551,14 @@ class PVsystTests(unittest.TestCase):
             from pvsyst_auto.native import _winlaunch
             invalid = _winlaunch.ctypes.c_void_p(-1).value
             create = Mock(return_value=0)
-            with patch.object(_winlaunch, "_CreateFileW", return_value=invalid), \
+            with patch.object(_winlaunch, "_current_station_name", return_value="WinSta0"), \
+                    patch.object(_winlaunch, "_CreateDesktopW", return_value=101), \
+                    patch.object(_winlaunch, "_CloseDesktop", return_value=1), \
+                    patch.object(_winlaunch, "_CreateJobObjectW", return_value=102), \
+                    patch.object(_winlaunch, "_SetInformationJobObject", return_value=1), \
+                    patch.object(_winlaunch, "_TerminateJobObject", return_value=1), \
+                    patch.object(_winlaunch, "_CloseHandle", return_value=1), \
+                    patch.object(_winlaunch, "_CreateFileW", return_value=invalid), \
                     patch.object(_winlaunch, "_CreateProcessW", create):
                 with self.assertRaisesRegex(OSError, r"CreateFileW\(stdout\) failed"):
                     _winlaunch.run([sys.executable, "-c", "pass"], Path.cwd(), 5)
@@ -618,6 +625,283 @@ class PVsystTests(unittest.TestCase):
         self.assertIn("49382", native_scene._check_cli(fake_817))
         with self.assertRaises(native_scene.UnsupportedEnvironment):
             native_scene._check_cli(fake_818)
+
+    def test_cli_control_chars_bool_guards_csv_encoding_headers_and_leap_day(self):
+        import warnings
+        from pvsyst_auto.native.cli import (
+            _cli_text, _csv_encoding, read_result_page, summarize_results,
+        )
+
+        # 1. Control-char injection rejected in _cli_text and _launch without echoing secrets
+        for bad_ch in ('\x00', '\t', '\n', '\r', '\x1b', '\x1f', '\x7f', '"'):
+            self.assertFalse(_cli_text(f"secret{bad_ch}value"))
+        self.assertTrue(_cli_text("Normal Site 01"))
+        with contextlib.ExitStack() as stack:
+            launchers = [stack.enter_context(patch("subprocess.run"))]
+            if os.name == "nt":
+                from pvsyst_auto.native import _winlaunch
+                launchers.append(stack.enter_context(patch.object(_winlaunch, "run")))
+            for bad_ch in ('\x00', '\x07', '\x1b', '\x7f', '\n'):
+                secret = f"secret-token{bad_ch}-osf:evil.sit"
+                with self.assertRaises(ValueError) as caught:
+                    self.client._run("lic-activate", f"-k:{secret}")
+                self.assertNotIn("secret-token", str(caught.exception))
+                with self.assertRaises(ValueError) as caught2:
+                    self.client.license_activate(secret, confirm=True)
+                self.assertNotIn("secret-token", str(caught2.exception))
+            for launcher in launchers:
+                launcher.assert_not_called()
+
+        # 2. Bool-as-numeric guards
+        for bad_bool in (True, False):
+            with self.assertRaises(ValueError):
+                build_monthly_weather_csv(
+                    self.workspace / "Meteo" / "bool_w.csv",
+                    [bad_bool] + [100.0] * 11, [20.0] * 12,
+                )
+            with self.assertRaises(ValueError):
+                build_monthly_weather_csv(
+                    self.workspace / "Meteo" / "bool_t.csv",
+                    [100.0] * 12, [bad_bool] + [20.0] * 11,
+                )
+        inputs = [self.workspace / "Meteo" / "b.csv", self.workspace / "Meteo" / "b.mef", self.workspace / "Sites" / "b.sit"]
+        for p in inputs:
+            p.write_text("x", encoding="utf-8")
+        for bad_bool in (True, False):
+            with self.assertRaises(ValueError):
+                self.client.convert_meteo_details(*inputs, self.workspace / "Meteo" / "b.met", timeshift=bad_bool)
+        self.client._help_cache["create-site"] = "--site-name|-sn:"
+        out_sit = self.workspace / "Sites" / "bool_out.sit"
+        for kwargs in (
+            {"latitude": True, "longitude": 0.0},
+            {"latitude": 0.0, "longitude": False},
+            {"latitude": 0.0, "longitude": 0.0, "timezone": True},
+            {"latitude": 0.0, "longitude": 0.0, "albedo": True},
+            {"latitude": 0.0, "longitude": 0.0, "altitude": False},
+        ):
+            lat = kwargs.pop("latitude")
+            lon = kwargs.pop("longitude")
+            with self.assertRaises(ValueError):
+                self.client.create_site_details("Site", lat, lon, inputs[0], out_sit, **kwargs)
+
+        # 3. CP1252 vs BOM-less UTF-8 vs UTF-8-sig CSV decoding without U+FFFD
+        sfi_body = "date;GlobInc;E_Grid\n;W/m\u00b2;kW\n01/01/90 00:00;500;4.0\n"
+        for label, raw_bytes, expected_enc in (
+            ("utf8_bom", b"\xef\xbb\xbf" + sfi_body.encode("utf-8"), "utf-8-sig"),
+            ("utf8_nobom", sfi_body.encode("utf-8"), "utf-8"),
+            ("cp1252", sfi_body.encode("cp1252"), "cp1252"),
+        ):
+            csv_file = self.workspace / "Results" / f"enc_{label}.csv"
+            csv_file.write_bytes(raw_bytes)
+            self.assertEqual(_csv_encoding(csv_file), expected_enc)
+            units = result_units(csv_file, strict=True)
+            self.assertEqual(units["GlobInc"], "W/m\u00b2")
+            self.assertNotIn("\ufffd", str(units))
+            page = read_result_page(csv_file, ["GlobInc"], 0, 10)
+            self.assertEqual(page["units"]["GlobInc"], "W/m\u00b2")
+            summ = summarize_results(csv_file, ("GlobInc", "E_Grid"))
+            self.assertEqual(summ["summary"]["GlobInc"]["unit"], "W/m\u00b2")
+
+        batch_cp1252 = self.workspace / "Models" / "accentParams.CSV"
+        batch_cp1252.write_bytes("Ident;Create hourly\nSIM_1;Caf\u00e9.CSV\n".encode("cp1252"))
+        names, _, _ = self.client._batch_outputs(batch_cp1252)
+        self.assertEqual(names, ["Caf\u00e9.CSV"])
+
+        summary_utf8 = self.workspace / "Results" / "utf8_Results.CSV"
+        summary_utf8.write_bytes("Ident;Create hourly;Error;E_Grid;PR\nSIM_1;Caf\u00e9.CSV;;10;0.8\n".encode("utf-8"))
+        parsed_batch = parse_batch_results(summary_utf8)
+        self.assertEqual(parsed_batch["scenarios"][0]["hourly_file"], "Caf\u00e9.CSV")
+
+        # 4. Truncated units row returns {} cleanly or raises ValueError in strict mode (never StopIteration)
+        trunc = self.workspace / "Results" / "truncated.csv"
+        trunc.write_text("date;E_Grid\n", encoding="utf-8")
+        self.assertEqual(result_units(trunc, strict=False), {})
+        with self.assertRaises(ValueError):
+            result_units(trunc, strict=True)
+
+        # 5. Duplicate headers, 'date' column indexing, and sum overflow
+        dup = self.workspace / "Results" / "dup.csv"
+        dup.write_text("date;E_Grid;E_Grid\n;kW;kW\n01/01/90 00:00;1;2\n", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            read_result_page(dup, ["E_Grid"], 0, 5)
+        with self.assertRaises(ValueError):
+            summarize_results(dup, ("E_Grid",))
+
+        date_col = self.workspace / "Results" / "date_col.csv"
+        date_col.write_text("Date;date;PR\n;kW;ratio\n01/01/90 00:00;12.5;0.85\n", encoding="utf-8")
+        self.assertEqual(read_result_page(date_col, ["date"], 0, 5)["rows"][0][1:], [12.5])
+        self.assertEqual(summarize_results(date_col, ("date",))["summary"]["date"]["sum"], 12.5)
+
+        overflow_csv = self.workspace / "Results" / "overflow.csv"
+        overflow_csv.write_text(
+            "date;E_Grid\n;kW\n01/01/90 00:00;1e308\n01/01/90 01:00;1e308\n", encoding="utf-8"
+        )
+        with self.assertRaises(ValueError):
+            summarize_results(overflow_csv, ("E_Grid",))
+
+        # 6. Leap day "02.29" without DeprecationWarning + ASCII digit enforcement
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            pre = self.client.preflight_run_simulation(
+                "Example.PRJ", "VC0", out_csv=self.workspace / "Results" / "leap.csv",
+                start_date="02.29", end_date="2024.02.29",
+            )
+        self.assertEqual(pre["variant"], "VC0")
+        for bad_date in ("02.30", "23.02.29", "\u0660\u0661.\u0660\u0661"):
+            with self.assertRaises(ValueError):
+                self.client.preflight_run_simulation(
+                    "Example.PRJ", "VC0", out_csv=self.workspace / "Results" / "leap.csv",
+                    start_date=bad_date,
+                )
+
+    def test_winlaunch_posix_import_attr_guard_cwd_share_and_timeout_clamp(self):
+        import importlib.util
+        from pvsyst_auto.native import _winlaunch
+
+        # 1. Importing _winlaunch on non-Windows does not touch ctypes.WinDLL
+        spec = importlib.util.spec_from_file_location(
+            "_winlaunch_posix_probe", Path(_winlaunch.__file__)
+        )
+        probe = importlib.util.module_from_spec(spec)
+        with patch.object(os, "name", "posix"), \
+                patch.object(_winlaunch.ctypes, "WinDLL", side_effect=AttributeError("no WinDLL"), create=True):
+            spec.loader.exec_module(probe)
+            self.assertIsNone(probe._u)
+            with self.assertRaises(OSError):
+                probe.run(["echo"], None, 1)
+
+        if os.name == "nt":
+            # 2. Timeout overflow guard before creating handles
+            with self.assertRaises(OverflowError):
+                _winlaunch.run([sys.executable], None, _winlaunch._INFINITE / 1000)
+            with self.assertRaises(OverflowError):
+                _winlaunch.run([sys.executable], None, 5_000_000)
+
+            # 3. Failed InitializeProcThreadAttributeList never calls DeleteProcThreadAttributeList
+            delete_attr = Mock()
+            def init_attr(buf, count, flags, size_ptr):
+                if buf is None:
+                    size_ptr._obj.value = 64
+                    return 0
+                return 0
+
+            with patch.object(_winlaunch, "_current_station_name", return_value="WinSta0"), \
+                    patch.object(_winlaunch, "_CreateDesktopW", return_value=101), \
+                    patch.object(_winlaunch, "_CloseDesktop", return_value=1), \
+                    patch.object(_winlaunch, "_CreateJobObjectW", return_value=102), \
+                    patch.object(_winlaunch, "_SetInformationJobObject", return_value=1), \
+                    patch.object(_winlaunch, "_TerminateJobObject", return_value=1), \
+                    patch.object(_winlaunch, "_CloseHandle", return_value=1), \
+                    patch.object(_winlaunch, "_CreateFileW", side_effect=[201, 202, 203]), \
+                    patch.object(_winlaunch, "_InitializeProcThreadAttributeList", side_effect=init_attr), \
+                    patch.object(_winlaunch, "_DeleteProcThreadAttributeList", delete_attr):
+                with self.assertRaisesRegex(OSError, "InitializeProcThreadAttributeList failed"):
+                    _winlaunch.run([sys.executable], None, 5)
+            delete_attr.assert_not_called()
+
+            # 4. FILE_SHARE_DELETE on stdout/stderr, cwd=None -> None, WaitForSingleObject before _read_stream
+            events = []
+            share_modes = []
+
+            def fake_create_file(path, access, share, sa, disp, attr, tpl):
+                share_modes.append((path, share))
+                return 300 + len(share_modes)
+
+            def fake_init_ok(buf, count, flags, size_ptr):
+                if buf is None:
+                    size_ptr._obj.value = 64
+                    return 0
+                return 1
+
+            captured_cwd = []
+
+            def fake_create_proc(app, cmd, pa, ta, inh, flags, env, cwd_arg, si, pi):
+                captured_cwd.append(cwd_arg)
+                pi._obj.hProcess = 401
+                pi._obj.hThread = 402
+                return 1
+
+            def fake_wait(handle, ms):
+                events.append(("wait", handle, ms))
+                return 0
+
+            def fake_term_job(handle, code):
+                events.append(("term_job", handle, code))
+                return 1
+
+            def fake_read(path):
+                events.append(("read", os.path.basename(path)))
+                return "ok"
+
+            with patch.object(_winlaunch, "_current_station_name", return_value="WinSta0"), \
+                    patch.object(_winlaunch, "_CreateDesktopW", return_value=101), \
+                    patch.object(_winlaunch, "_CloseDesktop", return_value=1), \
+                    patch.object(_winlaunch, "_CreateJobObjectW", return_value=102), \
+                    patch.object(_winlaunch, "_SetInformationJobObject", return_value=1), \
+                    patch.object(_winlaunch, "_CreateFileW", side_effect=fake_create_file), \
+                    patch.object(_winlaunch, "_InitializeProcThreadAttributeList", side_effect=fake_init_ok), \
+                    patch.object(_winlaunch, "_UpdateProcThreadAttribute", return_value=1), \
+                    patch.object(_winlaunch, "_DeleteProcThreadAttributeList"), \
+                    patch.object(_winlaunch, "_CreateProcessW", side_effect=fake_create_proc), \
+                    patch.object(_winlaunch, "_AssignProcessToJobObject", return_value=1), \
+                    patch.object(_winlaunch, "_ResumeThread", return_value=1), \
+                    patch.object(_winlaunch, "_WaitForSingleObject", side_effect=fake_wait), \
+                    patch.object(_winlaunch, "_GetExitCodeProcess", return_value=1), \
+                    patch.object(_winlaunch, "_TerminateJobObject", side_effect=fake_term_job), \
+                    patch.object(_winlaunch, "_TerminateProcess", return_value=1), \
+                    patch.object(_winlaunch, "_CloseHandle", return_value=1), \
+                    patch.object(_winlaunch, "_read_stream", side_effect=fake_read):
+                completed = _winlaunch.run([sys.executable, "-V"], None, 5)
+            self.assertEqual(completed.stdout, "ok")
+            self.assertEqual(captured_cwd, [None])
+            self.assertEqual(share_modes[0][1], _winlaunch._FILE_SHARE_RW | _winlaunch._FILE_SHARE_DELETE)
+            self.assertEqual(share_modes[1][1], _winlaunch._FILE_SHARE_RW | _winlaunch._FILE_SHARE_DELETE)
+            term_idx = events.index(("term_job", 102, 0))
+            rundown_idx = events.index(("wait", 401, 2000))
+            read_idx = events.index(("read", "stdout"))
+            self.assertLess(term_idx, rundown_idx)
+            self.assertLess(rundown_idx, read_idx)
+
+    def test_scene_ini_datapath_encodings_and_e2e_helpers(self):
+        import importlib.util
+
+        repo_root = Path(__file__).resolve().parents[3]
+        def load_mod(name, rel):
+            sp = importlib.util.spec_from_file_location(name, repo_root / rel)
+            mod = importlib.util.module_from_spec(sp)
+            sp.loader.exec_module(mod)
+            return mod
+
+        e2e_launch = load_mod("_e2e_launch", "tests/e2e/test_native_cli_launch_e2e.py")
+        e2e_full = load_mod("_e2e_full", "tests/e2e/test_mcp_full_workflows_e2e.py")
+
+        self.assertIn("synthetic_weather", e2e_launch._ALLOWED_INPUTS)
+        with patch.dict(os.environ, {"LOCALAPPDATA": ""}, clear=False):
+            expected_local = Path.home() / "AppData" / "Local"
+            self.assertEqual(
+                native_scene._ini_path(),
+                expected_local / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini",
+            )
+            self.assertEqual(
+                e2e_full._ini_paths()[0],
+                expected_local / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini",
+            )
+
+        custom_local = self.workspace / "AppDataLocal"
+        ini_file = custom_local / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini"
+        ini_file.parent.mkdir(parents=True, exist_ok=True)
+        expected_dp = Path(r"C:\Users\René\PVsyst8.1_Data")
+        ini_text = f"[Main]\r\nDataPath={expected_dp}\r\n"
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(custom_local)}, clear=False):
+            for payload in (
+                ini_text.encode("utf-16"),
+                b"\xfe\xff" + ini_text.encode("utf-16-be"),
+                ini_text.encode("utf-8-sig"),
+                ini_text.encode("utf-8"),
+                ini_text.encode("cp1252"),
+            ):
+                ini_file.write_bytes(payload)
+                self.assertEqual(native_scene._ini_datapath(), expected_dp)
 
 
 if __name__ == "__main__":

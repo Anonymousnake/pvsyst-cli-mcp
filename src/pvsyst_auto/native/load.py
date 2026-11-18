@@ -61,7 +61,7 @@ def _tail(text, label):
 def _number(value, label, positive=False):
     number = finite(value, label, 0, LIMIT, positive)
     _decimal(str(value), label)
-    return number
+    return 0.0 if number == 0 else number
 
 
 def _plain(value):
@@ -205,7 +205,8 @@ def _require_scope(store, lines, arrays, system):
     if system_root.one("SystemType")[1] != "Grid":
         raise ValueError("SystemType must be Grid")
     sys_flags = system_root.one("Flags")[1]
-    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", sys_flags) or (int(sys_flags[1:], 16) & ~0x00010000) not in (0, 0x06000000):
+    if (not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", sys_flags)
+            or (int(sys_flags[1:], 16) & ~0x00010000) not in (0, 0x04000000, 0x05000000, 0x06000000)):
         raise ValueError("Native load editing requires plain or standard Grid pvSystem Flags")
     main = store._main_array(lines)
     if main is None:
@@ -244,8 +245,7 @@ def _apply_block(lines, load, newline):
     index, raw = one(_root_header(candidate), "Flags")
     flags_val = int(raw[1:], 16) | 0x00080000
     candidate[index] = replace_value(candidate[index], f"${flags_val:08X}")
-    if any(line.strip().startswith("VarList, list of=") for line in candidate):
-        candidate, _ = strip_result_cache(candidate)
+    candidate, _ = strip_result_cache(candidate)
     return candidate
 
 

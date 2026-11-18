@@ -6,42 +6,43 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, Stri
 
 
 StrictNum = StrictInt | StrictFloat
+_STRICT_CONFIG = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 class GeneratorUpdates(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     enabled: StrictBool | None = None
     filename: str | None = None
-    operating_power_kw: StrictFloat | None = None
-    thresholds: dict[str, dict[str, StrictFloat]] | None = None
+    operating_power_kw: StrictNum | None = None
+    thresholds: dict[str, dict[str, StrictNum]] | None = None
 
 class SoilingUpdates(BaseModel):
     """Explicit native soiling mode and GUI-precision percentage values."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["none", "constant", "monthly"]
     yearly_loss_pct: StrictNum | None = None
     monthly_loss_pct: list[StrictNum] | None = None
 
 class UnavailabilityPeriod(BaseModel):
     """Explicit PVsyst planned outage start timestamp (DD/MM/YY HH:MM) and duration in hours."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     date_beg: StrictStr
     duration_hours: StrictNum
 
 class SystemUnavailabilityUpdates(BaseModel):
     """Configure explicit outage periods or remove existing native PV-system outages."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["none", "periods"]
     periods: Annotated[list[UnavailabilityPeriod], Field(min_length=1, max_length=1000)] | None = None
 
 class GridLimitUpdates(BaseModel):
     """Native constant active-power limit at the grid injection point."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["none", "constant"]
     limit_kw: StrictNum | None = None
 
 class AuxiliaryUpdates(BaseModel):
     """Explicit native whole-system operating/night auxiliary powers in kW."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["none", "constant", "profile"]
     operating_kw: StrictNum | None = None
     night_kw: StrictNum | None = None
@@ -51,7 +52,7 @@ class AuxiliaryUpdates(BaseModel):
 
 class SeasonalUpdates(BaseModel):
     """Explicit native summer/winter angles and winter-month selection."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     summer_tilt: StrictNum
     winter_tilt: StrictNum
     winter_months: list[StrictInt]
@@ -59,21 +60,21 @@ class SeasonalUpdates(BaseModel):
 
 class HorizonUpdates(BaseModel):
     """Native far-horizon points in PVsyst azimuth/elevation degrees."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["none", "profile"]
     points: list[list[StrictNum]] | None = None
     profile_name: StrictStr | None = None
 
 class InverterTemperatureUpdates(BaseModel):
     """Explicit native temperature mode and both saved temperature values in degC."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["ambient", "offset", "fixed"]
     offset_c: StrictNum | None = None
     fixed_c: StrictNum | None = None
 
 class AgeingUpdates(BaseModel):
     """Existing activated native template; inputs and recorded RMS/retention controls only."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     simulation_year: StrictInt
     annual_module_degradation_percent: StrictNum
     keep_mc_values: StrictBool | None = None
@@ -82,19 +83,19 @@ class AgeingUpdates(BaseModel):
 
 class IamUpdates(BaseModel):
     """Component IAM bit or the ASHRAE model; PAN curve data is never written."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["component", "ashrae"]
     ashrae_b0: StrictNum | None = None
 
 class StringMismatchUpdates(BaseModel):
     """Native string-voltage-mismatch default bit or one explicit manual percentage."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["default", "constant"]
     loss_percent: StrictNum | None = None
 
 class PowerFactorUpdates(BaseModel):
     """Explicit native signed tangent values; no cosine or reactive-power calculation."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["none", "constant", "monthly"]
     pnom_limit: Literal["native", "active", "apparent"]
     tan_phi: StrictNum | None = None
@@ -102,7 +103,7 @@ class PowerFactorUpdates(BaseModel):
 
 class PowerControlLimitUpdates(BaseModel):
     """Explicit native limit quantity, application point and loss classification."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["none", "constant"]
     quantity: Literal["active", "apparent"]
     point: Literal["injection", "inverter"]
@@ -111,13 +112,13 @@ class PowerControlLimitUpdates(BaseModel):
 
 class PowerControlsUpdates(BaseModel):
     """Combined power factor and grid limit transaction."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     power_factor: PowerFactorUpdates
     grid_limit: PowerControlLimitUpdates
 
 class P50P90Updates(BaseModel):
     """P50/P90 probabilistic simulation parameters on an existing result block."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     MeteoKind: Literal["SpecYear", "TMY"]
     P90Custom: StrictInt
     PxxCustom: StrictInt
@@ -135,7 +136,7 @@ class P50P90Updates(BaseModel):
 
 class TrackingControls(BaseModel):
     """Explicit controls of the source native tracking type; absent fields remain inherited."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     axis_azimuth_deg: StrictNum | None = None
     min_rotation_deg: StrictNum | None = None
     max_rotation_deg: StrictNum | None = None
@@ -160,7 +161,7 @@ class TrackingControls(BaseModel):
 
 class ACCablingUpdates(BaseModel):
     """Explicit native cable geometry; omitted conductor/section inherit active source."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     length_m: StrictNum
     metal: Literal["Copper", "Aluminium"] | None = None
     section: Literal["ISO60228_10", "ISO60228_16", "ISO60228_25", "ISO60228_35", "ISO60228_50",
@@ -168,13 +169,13 @@ class ACCablingUpdates(BaseModel):
 
 class DCCablingUpdates(BaseModel):
     """DC wiring target: resistance (mOhm) or STC loss percentage."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["resistance", "percent"]
     value: StrictNum
 
 class ShedGeometryUpdates(BaseModel):
     """Explicit native Sheds/SunShields inputs; omitted values stay inherited."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     field_tilt_deg: StrictNum | None = None
     field_azimuth_deg: StrictNum | None = None
     pitch_m: StrictNum | None = None
@@ -189,12 +190,12 @@ class ShedGeometryUpdates(BaseModel):
 
 class FlatRoof(BaseModel):
     """Flat roof: the plate sits at the eave height."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     kind: Literal["flat"]
 
 class GableRoof(BaseModel):
     """Symmetric gable roof with the ridge parallel to the house local X axis."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     kind: Literal["gable"]
     pitch_deg: StrictNum
 
@@ -202,7 +203,7 @@ RoofSpec = Annotated[FlatRoof | GableRoof, Field(discriminator="kind")]
 
 class HouseSpec(BaseModel):
     """Rectangular footprint with an explicit eave height; no other shapes are supported."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     length_m: StrictNum
     width_m: StrictNum
     eave_height_m: StrictNum
@@ -210,7 +211,7 @@ class HouseSpec(BaseModel):
 
 class PVTableLayout(BaseModel):
     """One fixed table; tilt and azimuth always come from the source variant."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     module_rows: StrictInt
     module_columns: StrictInt
     orientation: Literal["portrait", "landscape"]
@@ -221,20 +222,20 @@ class PVTableLayout(BaseModel):
 
 class HouseMesh(BaseModel):
     """AI-authored named architectural geometry; indices are explicit, zero-based triangles."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     name: StrictStr
     vertices: list[Annotated[list[StrictNum], Field(min_length=3, max_length=3)]]
     triangles: list[Annotated[list[StrictInt], Field(min_length=3, max_length=3)]]
 
 class MeshHouseSpec(BaseModel):
     """One house composed by the caller, not selected from a roof-template catalogue."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     kind: Literal["mesh"]
     meshes: list[HouseMesh]
 
 class BuildingObstacle(BaseModel):
     """Surrounding flat- or gable-roofed building obstacle in the house local frame."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     kind: Literal["building"]
     name: StrictStr
     origin_m: Annotated[list[StrictNum], Field(min_length=3, max_length=3)]
@@ -246,7 +247,7 @@ class BuildingObstacle(BaseModel):
 
 class WallObstacle(BaseModel):
     """Vertical barrier/parapet wall extruded along an XY line segment."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     kind: Literal["wall"]
     name: StrictStr
     start_m: Annotated[list[StrictNum], Field(min_length=3, max_length=3)]
@@ -256,7 +257,7 @@ class WallObstacle(BaseModel):
 
 class MeshObstacle(BaseModel):
     """Arbitrary custom 3D obstacle mesh (vertices + triangles) in the house local frame."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     kind: Literal["mesh"]
     name: StrictStr
     vertices: list[Annotated[list[StrictNum], Field(min_length=3, max_length=3)]]
@@ -264,7 +265,7 @@ class MeshObstacle(BaseModel):
 
 class TreeObstacle(BaseModel):
     """Native PVsyst parametric tree obstacle (ObjetElemType=oeTree)."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     kind: Literal["tree"]
     name: StrictStr
     origin_m: Annotated[list[StrictNum], Field(min_length=3, max_length=3)]
@@ -283,7 +284,7 @@ ObstacleSpec = Annotated[
 
 class ModuleGeometry(BaseModel):
     """Explicit geometric metadata, checked against a readable loose PAN when present."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     model_name: StrictStr
     nom_power_wp: StrictNum
     width_m: StrictNum
@@ -292,7 +293,7 @@ class ModuleGeometry(BaseModel):
 
 class PlacedPVTableLayout(BaseModel):
     """Explicit local placement over one named, planar, upward-facing roof surface mesh."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     module_rows: StrictInt
     module_columns: StrictInt
     orientation: Literal["portrait", "landscape"]
@@ -311,31 +312,31 @@ class NamedPVTableLayout(PlacedPVTableLayout):
 
 class NamedPVTablesLayout(BaseModel):
     """List of 1..64 named PV table regions."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     tables: Annotated[list[NamedPVTableLayout], Field(min_length=1, max_length=64)]
 
 class ModuleCellBinding(BaseModel):
     """One module cell (1-based row/col and global_string; 0 marks an unassigned draft cell)."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     row: Annotated[StrictInt, Field(ge=1)]
     col: Annotated[StrictInt, Field(ge=1)]
     global_string: Annotated[StrictInt, Field(ge=0)]
 
 class TableStringBinding(BaseModel):
     """Per-table cell wiring keyed by table name and source subarray_id."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     name: StrictStr
     subarray_id: Annotated[StrictInt, Field(ge=1)]
     cells: list[ModuleCellBinding]
 
 class StringLayoutBinding(BaseModel):
     """Explicit per-module string wiring across named PV tables."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     tables: Annotated[list[TableStringBinding], Field(min_length=1, max_length=64)]
 
 class HouseTaskRequest(BaseModel):
     """3D house task specification: authored house mesh, PV layout, source variant, and run options."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     source_project: StrictStr
     source_variant: StrictStr
     new_project: StrictStr
@@ -354,25 +355,25 @@ class HouseTaskRequest(BaseModel):
 
 class ConstantNativeLoad(BaseModel):
     """Native fixed constant consumption in kW; unknown fields stop at the boundary."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["constant"]
     constant_kw: StrictNum
 
 class MonthlyNativeLoad(BaseModel):
     """Native monthly loads as twelve declared kWh values; never derived from monthly power."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["monthly"]
     monthly_energy_kwh: list[StrictNum] = Field(min_length=12, max_length=12)
 
 class DailyNativeLoad(BaseModel):
     """Native daily profile as 24 hourly powers; the trailing slot is native format only."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["daily"]
     daily_power_kw: list[StrictNum] = Field(min_length=24, max_length=24)
 
 class HourlyNativeLoad(BaseModel):
     """Prepared 8760/8784 hourly load manifest bound as an embedded MJ base62 snapshot."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["hourly"]
     load_manifest_name: StrictStr
 
@@ -383,7 +384,7 @@ NativeLoadRequest = Annotated[
 
 class GridStorageUpdates(BaseModel):
     """Native existing AC-coupled storage controls and schedules; unknown fields stop at the boundary."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     coupling: Literal["ac_coupled"] = "ac_coupled"
     strategy: Literal["self_consumption", "weak_grid", "peak_shaving", "power_shift"] | None = None
     charging_strategy: Literal[
@@ -412,14 +413,14 @@ class GridStorageUpdates(BaseModel):
     battery_inverter_euro_efficiency_pct: StrictNum | None = None
 
 class GridAvailabilityProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     csv_name: StrictStr
     year: StrictInt
     utc_offset_hours: StrictInt
     time_basis: Literal["local_standard_interval_start"]
 
 class BatteryPackDesign(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     file_name: StrictStr
     library: Literal["workspace", "builtin"] = "workspace"
     series_count: StrictInt
@@ -429,7 +430,7 @@ class BatteryPackDesign(BaseModel):
     static_sow: StrictNum
 
 class GridStorageDesign(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     coupling: Literal["ac_coupled"] = "ac_coupled"
     strategy: Literal["self_consumption", "weak_grid", "peak_shaving", "power_shift"]
     charging_strategy: Literal[
@@ -458,7 +459,7 @@ class GridStorageDesign(BaseModel):
     battery_inverter_euro_efficiency_pct: StrictNum
 
 class CapacityRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     target_dc_kw: StrictInt | StrictFloat | None = None
     max_dc_ac_ratio: StrictInt | StrictFloat | None = None
     capacity_tolerance_pct: StrictInt | StrictFloat = 5
@@ -481,7 +482,7 @@ class LossRequest(BaseModel):
     LIDLoss, PMismMPP and ModuleQualityLoss target the subarray, UFactor targets the
     whole main array. Omitted keys keep their template value and are never fitted.
     """
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     LIDLoss: StrictNum | None = None
     PMismMPP: StrictNum | None = None
     ModuleQualityLoss: StrictNum | None = None
@@ -493,7 +494,7 @@ class DeclaredValue(BaseModel):
     A bare number is also accepted, but module and MPPT current limits without a source
     are reported as issues by the design backend instead of being assumed.
     """
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     value: StrictNum | None = None
     unit: StrictStr | None = None
     source: StrictStr | None = None
@@ -504,7 +505,7 @@ class CoefficientDeclaration(BaseModel):
     The unit of a serialized component coefficient is never assumed, and both fields are
     therefore required.
     """
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     value: StrictNum
     unit: StrictStr
     source: StrictStr
@@ -516,7 +517,7 @@ class EquipmentRequest(BaseModel):
     whether one exact manufacturer+model pair or a filename was supplied, so an empty
     string is never mistaken for a filled-in identity.
     """
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     file_name: StrictStr | None = None
     manufacturer: StrictStr | None = None
     model: StrictStr | None = None
@@ -527,7 +528,7 @@ class WeatherRequest(BaseModel):
     Text fields default to null so a missing SIT/MET/CSV name, country code or place
     label is reported by the backend as an unsupplied input instead of an empty value.
     """
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     mode: Literal["existing", "csv", "open_meteo"] = "existing"
     sit_name: StrictStr | None = None
     met_name: StrictStr | None = None
@@ -545,7 +546,7 @@ class WeatherRequest(BaseModel):
 
 class TemperatureRequest(BaseModel):
     """Design temperatures in degC; min_ambient_basis names its source or method."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     min_ambient_c: StrictNum | None = None
     min_ambient_basis: StrictStr | None = None
     min_module_operating_c: StrictNum | None = None
@@ -554,14 +555,14 @@ class TemperatureRequest(BaseModel):
 
 class EnvelopeRequest(BaseModel):
     """Direct manufacturer voltage values, each optionally carrying unit and source."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     cold_voc_v: StrictNum | DeclaredValue | None = None
     cold_vmp_v: StrictNum | DeclaredValue | None = None
     hot_vmp_v: StrictNum | DeclaredValue | None = None
 
 class CoefficientsRequest(BaseModel):
     """Declared temperature coefficients, each with an explicit unit and source."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     beta_voc: CoefficientDeclaration | None = None
     beta_vmp: CoefficientDeclaration | None = None
     alpha_isc: CoefficientDeclaration | None = None
@@ -569,13 +570,13 @@ class CoefficientsRequest(BaseModel):
 
 class CurrentLimitRequest(BaseModel):
     """Declared manufacturer current limits, as a value or a declaring object."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     max_operating_current_a: StrictNum | DeclaredValue | None = None
     max_short_circuit_current_a: StrictNum | DeclaredValue | None = None
 
 class EffectiveIrradianceRequest(BaseModel):
     """The maximum effective irradiance and rear gain used by a coefficient envelope."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     max_irradiance_w_m2: StrictNum | None = None
     rear_gain_factor: StrictNum | None = None
     source: StrictStr | None = None
@@ -587,7 +588,7 @@ class DesignEnvelopeRequest(BaseModel):
     Omitted fields stay empty and are returned as concrete issues by the backend, so an
     empty object never becomes a ready design.
     """
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     manufacturer_model: StrictStr | None = None
     target_dc_kw: StrictNum | None = None
     max_dc_ac_ratio: StrictNum | None = None
@@ -606,7 +607,7 @@ class SingleDesignRequest(BaseModel):
 
     scope is fixed to fixed_unshaded_grid and is never guessed from other inputs.
     """
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     new_project: StrictStr = ""
     year: StrictInt | None = None
     target_dc_kw: StrictNum | None = None
@@ -625,7 +626,7 @@ class SingleDesignRequest(BaseModel):
 
 class SourceTextRequest(BaseModel):
     """One caller-declared source; its text is checked here and never returned."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     kind: Literal["manufacturer", "site", "assumption"]
     title: Annotated[StrictStr, Field(min_length=1)]
     locator: Annotated[StrictStr, Field(min_length=1)]
@@ -634,7 +635,7 @@ class SourceTextRequest(BaseModel):
 
 class SourceDeclarationRequest(BaseModel):
     """One claimed value with the exact citation text and tokens it must agree with."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     field: StrictStr
     value: StrictNum
     unit: StrictStr
@@ -646,7 +647,7 @@ class SourceDeclarationRequest(BaseModel):
 
 class SourcedDesignGoals(BaseModel):
     """Explicit engineering goals only; no envelope, coefficient or limit is injected here."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     target_dc_kw: StrictNum | None = None
     max_dc_ac_ratio: StrictNum | None = None
     capacity_tolerance_pct: StrictNum | None = None
@@ -655,7 +656,7 @@ class SourcedDesignGoals(BaseModel):
 
 class SourcedHouseTaskRequest(BaseModel):
     """Cited source inputs plus house geometry, layout, and optional prepare_mode."""
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     design: SingleDesignRequest
     new_project: StrictStr
     variant_name: StrictStr
@@ -697,7 +698,7 @@ class SourcedHouseTaskRequest(BaseModel):
         return self
 
 class EngineeringChanges(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     tilt: StrictNum | None = None
     azimuth: StrictNum | None = None
     losses: LossRequest | None = None
@@ -705,7 +706,7 @@ class EngineeringChanges(BaseModel):
     storage: GridStorageUpdates | None = None
 
 class EngineeringRevisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     source_project: StrictStr
     source_variant: StrictStr
     new_project: StrictStr
@@ -721,7 +722,7 @@ class EngineeringRevisionRequest(BaseModel):
     availability: GridAvailabilityProfile | None = None
 
 class EngineeringScenario(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     label: StrictStr
     project: StrictStr
     variant: StrictStr
@@ -733,7 +734,7 @@ class EngineeringScenario(BaseModel):
     assumptions: list[StrictStr] | None = None
 
 class EngineeringBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _STRICT_CONFIG
     id: Annotated[StrictStr, Field(min_length=1, max_length=100)]
     source_subarray_id: Annotated[StrictInt, Field(ge=1, le=2147483647)]
     count: Annotated[StrictInt, Field(ge=1, le=100)]

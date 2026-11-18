@@ -653,6 +653,142 @@ class WorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(ps_res["status"], "created", ps_res)
 
+    def test_storage_revision_unpack_grid_limit_bitmask_ac_no_nelements_and_random_unavail(self):
+        from pvsyst_auto.energy.ac import create_ac_cabling_variant
+        from pvsyst_auto.energy.storage import grid_storage_state
+        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+        from pvsyst_auto.workflows.storage import prepare_storage_revision
+
+        # 1. prepare_storage_revision succeeds with 3-tuple load_snapshot (no unpack error)
+        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + CLOSE)
+        built = self.build_storage()
+        self.assertEqual(built["status"], "created", built)
+        rev = prepare_storage_revision(
+            self.store, "Fixture.PRJ", "VC1", "VC2",
+            {"soc_min": 0.25, "reserve_soc": 0.25}, "load_load.json", 2023,
+        )
+        self.assertEqual(rev["status"], "ready", rev)
+        self.assertEqual(rev["after"]["soc_min"], 0.25)
+
+        # 2. Empty availability CSV fails with descriptive ValueError rather than empty StopIteration("")
+        (self.root / "UserData/empty_avail.csv").write_text("", encoding="utf-8")
+        bad_avail = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC1", new_variant="VC2",
+            updates={"strategy": "weak_grid"},
+            availability={"csv_name": "empty_avail.csv", "year": 2023,
+                          "utc_offset_hours": 8, "time_basis": "local_standard_interval_start"},
+            dry_run=True,
+        )
+        self.assertEqual(bad_avail["status"], "blocked")
+        self.assertIn("availability CSV", bad_avail["issues"][0])
+
+        # 3. WeakGrid splicing survives VarList cache removal preceding pvGridStorage
+        (self.root / "UserData/avail_ok.csv").write_text(
+            hourly("Date;Grid Available", "ratio", "1", year=2023, first="0"),
+            encoding="utf-8", newline="",
+        )
+        vc1_text = (self.root / "Projects/Fixture.VC1").read_text(encoding="utf-8")
+        vc1_cached = vc1_text.replace(
+            "  PVObject_GridStorage=pvGridStorage",
+            "  VarList, list of=1 TVarSimul\r\n    VarSimul_1=E_Grid\r\n  End of the List VarList\r\n  PVObject_GridStorage=pvGridStorage",
+        )
+        (self.root / "Projects/Fixture.VC1").write_bytes(vc1_cached.encode("utf-8"))
+        wg = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC1", new_variant="VC2",
+            updates={"strategy": "weak_grid"},
+            availability={"csv_name": "avail_ok.csv", "year": 2023,
+                          "utc_offset_hours": 8, "time_basis": "local_standard_interval_start"},
+            dry_run=False,
+        )
+        self.assertEqual(wg["status"], "created", wg)
+
+        # 4. PeakShaving sets bit 24 (0x01000000 / 0x05000000), updates LimGrSeparLoss=False,
+        #    and reads back PLimGrid without setting Constant PF bit 20 (0x00100000)
+        pv_lim = (
+            "PVObject_=pvVCalcul\n  Comment=Fixture\n  Version=8.1.7\n  Flags=$00\n"
+            "  PVObject_PVMainArray=pvMainArray\n    Flags=$01900400\n    Flags2=$082A\n    MVNbTransfos=0\n"
+            "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.6\n      Flags=$00\n"
+            "      InjectionPointNode Start;\n        Children=Start\n          InverterNode Start;\n"
+            "            SubArrayId=1\n            SubArrayName=PV Array\n"
+            "            Children=Start\n              MPPTNode Start;\n                NElements=2\n"
+            "                SubArrayId=1\n                SubArrayName=PV Array\n"
+            "                Children=Start\n                  StringNode Start;\n"
+            "                    SubArrayId=1\n                    SubArrayName=PV Array\n"
+            "                  StringNode End;\n                Children=End\n              MPPTNode End;\n"
+            "            Children=End\n          InverterNode End;\n        Children=End\n"
+            "      InjectionPointNode End;\n    End of PVObject pvCircuit\n"
+            "    PVObject_=pvSubArray\n      Comment=PV Array\n      Version=8.1.6\n      Flags=$019E1002\n"
+            "      Flags2=$20\n      SubArrayId=1\n      NModSerie=10\n      NStringCh=2\n      NInverter=1\n"
+            "      NInvMPPT=1\n      NoOrientation=1\n      NStrOrient1=2\n      ACWireLength=0.0\n"
+            "    End of PVObject pvSubArray\n  End of PVObject pvMainArray\n"
+            "  Orientations, list of=1 TOrientGroup\n    PVObject_=pvOrient\n      Version=8.1.6\n"
+            "      Flags=$00\n      NoOrient=1\n      FieldType=FixedPlane\n      FieldTilt=20.0\n"
+            "      FieldAzim=0.0\n      BaseSlope=0.0\n      UsesTiltAver=False\n"
+            "      UsesAzimAver=False\n      UsesSlopeAver=False\n    End of TOrientGroup\n"
+            "  End of Orientations\n"
+            "  PVObject_System=pvSystem\n    Flags=$05000000\n    SystemType=Grid\n"
+            "    PLimGrid=120.0\n    LimGrSeparLoss=True\n  End of PVObject pvSystem\n"
+            "End of PVObject pvVCalcul\n"
+        )
+        self.source(pv_lim)
+        pk = create_grid_storage_system(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC3",
+            battery=BATTERY,
+            storage={**STORAGE, "strategy": "peak_shaving",
+                     "charging_strategy": "pv_above_thresh", "discharging_strategy": "after_sunset"},
+            dry_run=False,
+        )
+        self.assertEqual(pk["status"], "created", pk)
+        vc3_lines = (self.root / "Projects/Fixture.VC3").read_text(encoding="utf-8").splitlines(True)
+        _, sys3 = self.store._sections(vc3_lines)
+        st3 = grid_storage_state(vc3_lines, sys3)
+        self.assertEqual(st3["grid_limit_kw"], 120.0)
+        self.assertIn("    LimGrSeparLoss=False\n", "".join(vc3_lines))
+        # Ensure Constant PF bit 20 (0x00100000) was NOT set
+        sys_flag_line = next(l for l in vc3_lines[sys3[0]:sys3[1]] if l.strip().startswith("Flags=$"))
+        sys_flag_int = int(sys_flag_line.split("$")[1].strip(), 16)
+        self.assertTrue(sys_flag_int & 0x01000000)
+        self.assertEqual(sys_flag_int & 0x00100000, 0)
+
+        # 5. Sub-cent PowerShift scalar (0.004) survives roundtrip via decimal_text
+        ps_tiny = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC3", new_variant="VC4",
+            updates={
+                "strategy": "power_shift",
+                "charging_strategy": "pv_prod_fraction",
+                "charging_pv_fraction": 0.004,
+                "charging_schedule_48": [0.004] * 48,
+                "discharging_strategy": "night",
+                "discharging_power_kw": 0.004,
+            },
+            dry_run=False,
+        )
+        self.assertEqual(ps_tiny["status"], "created", ps_tiny)
+        self.assertEqual(ps_tiny["after"]["charging_pv_fraction"], 0.004)
+        self.assertEqual(ps_tiny["after"]["discharging_power_kw"], 0.004)
+
+        # 6. AC cabling works when InverterNode omits NElements=1 and pvMainArray omits UFAverEffic
+        pv_plain = pv_lim.replace("Flags=$05000000\n    SystemType=Grid\n    PLimGrid=120.0\n    LimGrSeparLoss=True\n",
+                                  "Flags=$00\n    SystemType=Grid\n").replace("Version=8.1.7", "Version=8.1.6")
+        self.source(pv_plain)
+        ac_res = create_ac_cabling_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC5",
+            ac={"length_m": 25.0}, dry_run=False,
+        )
+        self.assertEqual(ac_res["status"], "created", ac_res)
+        self.assertEqual(ac_res["ac"]["length_m"], 25.0)
+        self.assertEqual(ac_res["ac"]["inverter_count"], 1)
+
+        # 7. Native DefMode=Random SystemUnavail with NbPeriods=3 and 0 DateBeg rows can be removed/replaced
+        rand_lines = crlf(
+            "PVObject_System=pvSystem\n  Flags=$00010000\n  SystemType=Grid\n"
+            "  SystemUnavail=TUnavailability\n    PVObject_=pvUnavail\n      Version=8.1.6\n      Flags=$00\n"
+            "    DefMode=Random\n    RandomUnavSettings=TRandomUnavSettings\n      NbPeriods=3\n    EndTags\n"
+            "  End of PVObject pvUnavail\nEnd of PVObject pvSystem\n"
+        )
+        cleared = replace_system_unavailability(rand_lines, (0, len(rand_lines) - 1), {"mode": "none"})
+        self.assertFalse(cleared["after"]["configured"])
+
 
 if __name__ == "__main__":
     unittest.main()

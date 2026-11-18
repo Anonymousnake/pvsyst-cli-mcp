@@ -94,7 +94,7 @@ src/pvsyst_auto/
 ├── energy/       # Load profiles, battery storage, loss scalars, and power factor / grid limits
 ├── weather/      # Open-Meteo ERA5 downloader, LegalTime alignment, and .SIT/.MET conversion
 ├── native/       # Subprocess wrapper for PVsystCLI.exe and Win32 GUI automation bridges
-└── results.py    # Result CSV/PDF parser and hourly aggregation
+└── results.py    # Result CSV parser and hourly aggregation
 ```
 
 See [architecture.md](docs/architecture.md) for module responsibilities and old-to-new import paths, and [native-entry-map.md](docs/native-entry-map.md) for the support matrix across PVsyst features.
