@@ -203,6 +203,45 @@ class WorkspaceTests(unittest.TestCase):
                                           new_variant="VC1", load_manifest_name="load_load.json",
                                           dry_run=False, **{"battery": BATTERY, "storage": STORAGE, **changes})
 
+    def test_peak_shaving_rejects_apparent_grid_limits(self):
+        for flags, limit, updates in (
+            ("$07158000", "    PLimGrid=330.0\n", {}),
+            ("$07158000", "    PLimGrid=330.0\n", {"grid_limit_kw": 331.0}),
+            ("$06158000", "", {"grid_limit_kw": 331.0}),
+        ):
+            with self.subTest(flags=flags, updates=updates):
+                pv_only = PV_SYSTEM.replace("$00", flags).replace("    SystemType=Grid\n", "    SystemType=Grid\n" + limit)
+                self.source(ROOT.format(root_flags="$00") + ARRAY + pv_only + CLOSE)
+                result = create_grid_storage_system(
+                    self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                    battery=BATTERY, storage={**STORAGE, "strategy": "peak_shaving", **updates}, dry_run=True,
+                )
+                self.assertEqual(result["status"], "blocked")
+                self.assertRegex(result["issues"][0], r"apparent.*kVA.*grid_limit_kw")
+
+    def test_storage_edit_does_not_report_apparent_grid_limit_as_kw(self):
+        system = STORAGE_SYSTEM.replace("$10010040", "$17158040").replace(
+            "    BatteryFile=", "    PLimGrid=330.0\n    BatteryFile=",
+        )
+        peak = GRID_STORAGE.format(strategy="PeakShaving", unavail="").replace("PVAvailable", "PVToGridMin")
+        self.source(ROOT.format(root_flags="$00") + ARRAY + system + peak + CLOSE)
+        for updates in ({"initial_soc": 0.55}, {"discharging_strategy": "after_sunset"}):
+            with self.subTest(updates=updates):
+                result = create_grid_storage_variant(
+                    self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                    updates=updates, dry_run=True,
+                )
+                self.assertEqual(result["status"], "ready", result)
+                for key in ("before", "after"):
+                    self.assertNotIn("grid_limit_kw", result[key])
+                    self.assertEqual(result[key]["grid_limit_kva"], 330.0)
+        explicit = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+            updates={"grid_limit_kw": 332.0}, dry_run=True,
+        )
+        self.assertEqual(explicit["status"], "blocked")
+        self.assertRegex(explicit["issues"][0], r"apparent.*kVA.*grid_limit_kw")
+
     def test_storage_scalars_never_use_exponent_notation(self):
         self.source(ROOT.format(root_flags="$00") + ARRAY + STORAGE_SYSTEM
                     + GRID_STORAGE.format(strategy="SelfConsumption", unavail="") + CLOSE)

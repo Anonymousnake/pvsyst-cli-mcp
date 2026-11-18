@@ -113,7 +113,10 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
         if weak and any(line.strip().startswith("PVObject_GridUnavail=") for line in lines):
             raise ValueError("Preserve the source's existing grid-unavailability object instead of adding a duplicate")
 
-        controls = resolve_storage_controls(storage_clean, system_grid_limit=_system_grid_limit(lines, system))
+        inherited_kw = None
+        if base_state["strategy"] == "PeakShaving" and "grid_limit_kw" not in storage_clean:
+            inherited_kw = _system_grid_limit(lines, system)
+        controls = resolve_storage_controls(storage_clean, system_grid_limit=inherited_kw)
         state = {**base_state, **controls}
         validate_storage(state, allow_weak=weak)
 
