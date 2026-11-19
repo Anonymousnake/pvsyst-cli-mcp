@@ -491,7 +491,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(all(len(token) <= 3 for token in encoded.split("+")[2:]))
 
     def test_power_shift_schedule_accepts_six_decimal_values_and_float_noise(self):
-        for value, expected, scale in ((0.333333, 0.333333, 270000), (0.1 + 0.2, 0.3, 300000)):
+        for value, expected, scale in ((0.333333, 0.333333, 270000), (0.1 + 0.2, 0.3, 300000),
+                                       (0.000001, 0.000001, 1000000)):
             with self.subTest(value=value):
                 encoded = encode_subhour_schedule([value] * 48, maximum=1.0)
                 self.assertTrue(encoded.startswith(f"48+{scale}+"))

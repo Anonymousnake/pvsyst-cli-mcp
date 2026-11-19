@@ -16,7 +16,9 @@ from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-SUBHOUR_SCALE_MAX = 90000
+SUBHOUR_TARGET_TOKEN = 90_000
+# Conservative writer ceiling, verified by native consumption; not an asserted native limit.
+SUBHOUR_SCALE_LIMIT = 1_000_000
 SUBHOUR_TOKEN_LIMIT = 62**3
 SUBHOUR_DECIMAL_PLACES = 6
 
@@ -107,7 +109,7 @@ def encode_subhour_schedule(slots: list[float], *, maximum: float = math.inf) ->
     peak = max(normalized)
     if peak == 0:
         return "48+1" + "+0" * 48
-    default_scale = max(1, round(SUBHOUR_SCALE_MAX / peak))
+    default_scale = min(SUBHOUR_SCALE_LIMIT, max(1, round(SUBHOUR_TARGET_TOKEN / peak)))
     default_tokens = [round(value * default_scale) for value in normalized]
     if max(default_tokens) >= SUBHOUR_TOKEN_LIMIT:
         raise ValueError("Sub-hour schedule value exceeds the native base62 token limit")
@@ -115,9 +117,9 @@ def encode_subhour_schedule(slots: list[float], *, maximum: float = math.inf) ->
     exact_scale = math.lcm(*(Fraction(str(value)).denominator for value in normalized))
     exact_peak = Fraction(str(peak))
     candidates = [default_scale]
-    if exact_peak * exact_scale < SUBHOUR_TOKEN_LIMIT:
+    if exact_scale <= SUBHOUR_SCALE_LIMIT and exact_peak * exact_scale < SUBHOUR_TOKEN_LIMIT:
         candidates.append(exact_scale)
-    candidates.append((SUBHOUR_TOKEN_LIMIT - 1) // exact_peak)
+    candidates.append(min(SUBHOUR_SCALE_LIMIT, (SUBHOUR_TOKEN_LIMIT - 1) // exact_peak))
     for scale in dict.fromkeys(candidates):
         if scale < 1:
             continue
