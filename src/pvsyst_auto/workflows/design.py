@@ -77,7 +77,18 @@ WEATHER_KEYS = frozenset((
     "latitude", "longitude", "site_label", "altitude", "timezone_name", "temperature_method",
     "weather_manifest_name",
 ))
-WEATHER_MODES = ("existing", "csv", "open_meteo")
+REMOTE_WEATHER_MODES = ("open_meteo", "pvgis_tmy", "nasa_power")
+WEATHER_MODES = ("existing", "csv", *REMOTE_WEATHER_MODES)
+_PROVIDER_FOR_MODE = {
+    "open_meteo": "open_meteo_era5",
+    "pvgis_tmy": "pvgis_tmy",
+    "nasa_power": "nasa_power",
+}
+_RAW_SUFFIX_FOR_MODE = {
+    "open_meteo": "_openmeteo_raw.json",
+    "pvgis_tmy": "_pvgis_tmy_raw.json",
+    "nasa_power": "_nasapower_raw.json",
+}
 LOSS_KEYS = frozenset(("LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor"))
 CAPACITY_KEYS = frozenset((*CAPACITY_NUMBERS, "min_dc_ac_ratio", "capacity_tolerance_pct", "voltage_standard", "design_basis"))
 ENVELOPE_NESTED = ("temperatures", "envelope", "coefficients", "module_limits", "mppt_limits",
@@ -258,7 +269,7 @@ def _check_weather(weather, spec_issues):
         bad(f"weather.{key}", "Unknown weather input")
     mode = weather.get("mode")
     if mode not in WEATHER_MODES:
-        bad("weather.mode", "Choose existing, csv or open_meteo")
+        bad("weather.mode", "Choose existing, csv, open_meteo, pvgis_tmy or nasa_power")
         return
     country_code = weather.get("country_code")
     if country_code is not None and (not _is_text(country_code) or not ISO_COUNTRY.fullmatch(country_code)):
@@ -281,7 +292,7 @@ def _check_weather(weather, spec_issues):
             bad("weather.country_code", "A staged CSV requires the explicit uppercase ISO alpha-2 code")
         if weather.get("time_basis") != TIME_BASIS:
             bad("weather.time_basis", "A staged CSV requires " + TIME_BASIS)
-    if mode == "open_meteo":
+    if mode in REMOTE_WEATHER_MODES:
         location_id = weather.get("location_id")
         if location_id is not None and any(weather.get(name) is not None
                                            for name in ("latitude", "longitude")):
@@ -462,7 +473,7 @@ def _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name, *, 
             targets["annual_sfi"] = workspace_file(cli.workspace, "Models", prefix + ".SFI", ".SFI")
         # These derivations mirror pvsyst_weather_flow.prepare_weather and
         # pvsyst_weather_acquisition.download_weather; keep the three in step.
-        if weather["mode"] in ("csv", "open_meteo"):
+        if weather["mode"] in ("csv", *REMOTE_WEATHER_MODES):
             met_stem = Path(met_name).stem
             targets["sit"] = workspace_file(cli.workspace, "Sites", sit_name, ".SIT")
             targets["met"] = workspace_file(cli.workspace, "Meteo", met_name, ".MET")
@@ -470,10 +481,12 @@ def _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name, *, 
             targets["weather_monthly_csv"] = workspace_file(cli.workspace, "Meteo", f"{met_stem}_monthly.csv", ".csv")
             targets["weather_mef"] = workspace_file(cli.workspace, "Meteo", f"{met_stem}.MEF", ".MEF")
             targets["weather_manifest"] = workspace_file(cli.workspace, "Results", f"{met_stem}_weather.json", ".json")
-        if weather["mode"] == "open_meteo":
+        if weather["mode"] in REMOTE_WEATHER_MODES:
             csv_stem = Path(csv_name).stem
             targets["source_csv"] = workspace_file(cli.workspace, "Meteo", csv_name, ".csv")
-            targets["provider_raw"] = workspace_file(cli.workspace, "Meteo", f"{csv_stem}_openmeteo_raw.json", ".json")
+            targets["provider_raw"] = workspace_file(
+                cli.workspace, "Meteo", f"{csv_stem}{_RAW_SUFFIX_FOR_MODE[weather['mode']]}", ".json"
+            )
             targets["acquisition_manifest"] = workspace_file(cli.workspace, "Results", f"{csv_stem}_acquisition.json", ".json")
     except (ValueError, OSError) as exc:
         issues.append({"field": "outputs", "message": str(exc)})
@@ -698,7 +711,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     stem = Path(new_project).stem
     sit_name = weather.get("sit_name") or f"{stem}.SIT"
     met_name = weather.get("met_name") or f"{stem}.MET"
-    csv_name = weather.get("csv_name") or (f"{stem}_openmeteo.csv" if mode == "open_meteo" else "")
+    csv_suffix = "openmeteo" if mode == "open_meteo" else mode
+    csv_name = weather.get("csv_name") or (f"{stem}_{csv_suffix}.csv" if mode in REMOTE_WEATHER_MODES else "")
     country_code = weather.get("country_code") or ""
 
     layout_issues, layout = _readonly_layout(cli)
@@ -894,17 +908,22 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     manifest_name = weather.get("weather_manifest_name") or ""
     inherited_review = auto_sizing_review
 
-    if mode in ("csv", "open_meteo"):
-        if mode == "open_meteo":
+    if mode in ("csv", *REMOTE_WEATHER_MODES):
+        if mode in REMOTE_WEATHER_MODES:
             def request_weather(run):
-                return download_weather(cli.workspace, csv_name=csv_name, year=year,
-                                        location_id=weather.get("location_id"),
-                                        latitude=weather.get("latitude"), longitude=weather.get("longitude"),
-                                        site_name=weather.get("site_label") or "", altitude=weather.get("altitude"),
-                                        country_code=country_code,
-                                        timezone_name=weather.get("timezone_name") or "",
-                                        temperature_method=weather.get("temperature_method") or TEMPERATURE_METHOD,
-                                        dry_run=run)
+                kwargs = dict(
+                    csv_name=csv_name, year=year,
+                    location_id=weather.get("location_id"),
+                    latitude=weather.get("latitude"), longitude=weather.get("longitude"),
+                    site_name=weather.get("site_label") or "", altitude=weather.get("altitude"),
+                    country_code=country_code,
+                    timezone_name=weather.get("timezone_name") or "",
+                    temperature_method=weather.get("temperature_method") or TEMPERATURE_METHOD,
+                    dry_run=run,
+                )
+                if mode != "open_meteo":
+                    kwargs["provider"] = _PROVIDER_FOR_MODE[mode]
+                return download_weather(cli.workspace, **kwargs)
 
             # The plan is resolved first, even for an execution run: an unusable place or an offset
             # create-site would reject stops the flow before a provider byte is requested or stored.

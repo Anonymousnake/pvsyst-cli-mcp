@@ -1,6 +1,7 @@
 """Sites & Weather MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
+from typing import Literal
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import StrictBool, StrictInt, StrictStr
 from pvsyst_auto.native.cli import build_monthly_weather_csv
@@ -48,16 +49,48 @@ def pvsyst_acquire_weather(csv_name: StrictStr = "", year: StrictInt | None = No
                            site_name: StrictStr = "", country_code: StrictStr = "",
                            altitude: StrictNum | None = None, timezone_name: StrictStr = "",
                            temperature_method: StrictStr = "endpoint_mean",
+                           provider: Literal["open_meteo_era5", "pvgis_tmy", "nasa_power"] = "open_meteo_era5",
+                           prepare: StrictBool = False,
+                           sit_name: StrictStr = "", met_name: StrictStr = "",
                            dry_run: StrictBool = True) -> dict:
-    """Download a full calendar year (1969..2068) of Open-Meteo ERA5 hourly irradiance and
-    temperature aligned to local winter standard time, saving raw JSON, CSV, and manifest."""
+    """Download a full-year hourly weather dataset from Open-Meteo ERA5, PVGIS v5.3 TMY, or
+    NASA POWER aligned to local winter standard time, saving raw JSON, CSV, and manifest.
+    Set prepare=true to chain directly into prepare_weather and emit SIT/MEF/MET."""
     current = cli()
     with current._lock:
-        return download_weather(current.workspace, csv_name=csv_name, year=year,
-                                location_id=location_id, latitude=latitude, longitude=longitude,
-                                site_name=site_name, country_code=country_code, altitude=altitude,
-                                timezone_name=timezone_name, temperature_method=temperature_method,
-                                dry_run=dry_run)
+        acquired = download_weather(
+            current.workspace, csv_name=csv_name, year=year,
+            location_id=location_id, latitude=latitude, longitude=longitude,
+            site_name=site_name, country_code=country_code, altitude=altitude,
+            timezone_name=timezone_name, temperature_method=temperature_method,
+            provider=provider, dry_run=dry_run,
+        )
+    if prepare:
+        stem = (csv_name[:-4] if csv_name.lower().endswith(".csv") else csv_name) or "AcquiredWeather"
+        target_sit = sit_name or f"{stem}.SIT"
+        target_met = met_name or f"{stem}.MET"
+        effective_country = country_code or ((acquired.get("location") or {}).get("country_code") or "")
+        effective_year = acquired.get("year")
+        if dry_run:
+            acquired["preparation_plan"] = {
+                "sit_name": target_sit,
+                "met_name": target_met,
+                "year": effective_year,
+                "country_code": effective_country,
+                "time_basis": "local_standard_interval_start",
+            }
+        elif acquired.get("status") == "prepared":
+            acquired["preparation"] = prepare_weather(
+                current,
+                csv_name=csv_name,
+                year=effective_year,
+                sit_name=target_sit,
+                met_name=target_met,
+                country_code=effective_country,
+                time_basis="local_standard_interval_start",
+                dry_run=False,
+            )
+    return acquired
 
 @categorized_tool()
 def pvsyst_review_weather(csv_name: StrictStr, native_csv_name: StrictStr, year: StrictInt,

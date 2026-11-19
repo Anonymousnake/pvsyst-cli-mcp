@@ -50,7 +50,15 @@ from pvsyst_auto.project.paths import workspace_file
 GEOCODING_SEARCH_URL = "https://geocoding-api.open-meteo.com/v1/search"
 GEOCODING_GET_URL = "https://geocoding-api.open-meteo.com/v1/get"
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
-ALLOWED_HOSTS = frozenset({"geocoding-api.open-meteo.com", "archive-api.open-meteo.com"})
+PVGIS_TMY_URL = "https://re.jrc.ec.europa.eu/api/v5_3/tmy"
+NASA_POWER_URL = "https://power.larc.nasa.gov/api/temporal/hourly/point"
+ALLOWED_HOSTS = frozenset({
+    "geocoding-api.open-meteo.com",
+    "archive-api.open-meteo.com",
+    "re.jrc.ec.europa.eu",
+    "power.larc.nasa.gov",
+})
+PROVIDERS = ("open_meteo_era5", "pvgis_tmy", "nasa_power")
 
 PROVIDER_MODEL = "era5"
 PROVIDER_LABEL = ("Open-Meteo ERA5 reanalysis "
@@ -602,18 +610,368 @@ def _standard_csv_text(rows, *, site, year, offset_hours):
     return stream.getvalue()
 
 
+def _standard_csv_text_with_source(rows, *, site, year, offset_hours, data_source_label):
+    text = _standard_csv_text(rows, site=site, year=year, offset_hours=offset_hours)
+    return text.replace(f"#Data Source;{PROVIDER_LABEL}", f"#Data Source;{data_source_label}", 1)
+
+
+def _download_pvgis_tmy(
+    workspace_path: Path,
+    *,
+    csv_name: str,
+    year: int | None,
+    site: dict,
+    notes: list[str],
+    dry_run: bool,
+) -> dict:
+    tmy_year = 2021 if year is None else year
+    if type(tmy_year) is not int or not PREPARED_MIN_YEAR <= tmy_year <= MAX_YEAR:
+        raise WeatherAcquisitionError(f"year for pvgis_tmy must be an integer in {PREPARED_MIN_YEAR}..{MAX_YEAR}")
+    if calendar.isleap(tmy_year):
+        raise WeatherAcquisitionError(
+            f"PVGIS TMY has 8760 non-leap hours; choose a non-leap label year instead of {tmy_year}"
+        )
+    offset_hours = standard_utc_offset_hours(site["timezone_name"], tmy_year)
+    params = {
+        "lat": _number_text(site["latitude"]),
+        "lon": _number_text(site["longitude"]),
+        "outputformat": "json",
+        "usehorizon": 1,
+    }
+    label = "PVGIS v5.3 TMY (re.jrc.ec.europa.eu/api/v5_3/tmy)"
+    result = {
+        "status": "blocked", "stage": "plan", "dry_run": dry_run, "year": tmy_year,
+        "provider": {"name": "pvgis_tmy", "model": "tmy_v5_3", "endpoints": {"tmy": PVGIS_TMY_URL}},
+        "time_basis": "local_standard_interval_start", "method": "pvgis_tmy_cyclic_shift",
+        "location": site, "standard_utc_offset_hours": offset_hours,
+        "plan": {
+            "request_url": PVGIS_TMY_URL + "?" + urllib.parse.urlencode(params),
+            "request_params": params,
+            "target_rows": 8760,
+            "leap_year": False,
+            "row_labelling": f"local standard interval start 00:00..23:00 at UTC{offset_hours:+d}",
+        },
+        "units": dict(CSV_UNITS), "artifacts": {}, "created_files": {},
+        "provider_echo": None, "raw_preserved": False, "issues": [],
+        "warnings": list(notes) + [
+            f"PVGIS v5.3 TMY synthesizes 12 representative months into an 8760-hour typical year labelled as {tmy_year}."
+        ],
+        "review_required": ["Verify PVGIS TMY coverage and representative years for the target site"],
+    }
+    manifest_path = None
+    try:
+        if not csv_name:
+            if dry_run:
+                result["warnings"].append("csv_name is empty; supply it before an execution run")
+                result["status"] = "ready"
+                return result
+            raise WeatherAcquisitionError("csv_name is required for an execution run")
+        if not dry_run:
+            (workspace_path / "Meteo").mkdir(parents=True, exist_ok=True)
+            (workspace_path / "Results").mkdir(parents=True, exist_ok=True)
+        elif not workspace_path.is_dir():
+            raise WeatherAcquisitionError(f"workspace {workspace_path} must be an existing directory for a plan run")
+        csv_path = workspace_file(workspace_path, "Meteo", csv_name, ".csv")
+        stem = csv_path.stem
+        raw_path = workspace_file(workspace_path, "Meteo", stem + "_pvgis_tmy_raw.json", ".json")
+        manifest_path = workspace_file(workspace_path, "Results", stem + "_acquisition.json", ".json")
+        result["artifacts"] = {"csv": str(csv_path), "raw_json": str(raw_path), "manifest": str(manifest_path)}
+        existing = [str(p) for p in (csv_path, raw_path, manifest_path) if p.exists()]
+        if existing:
+            raise WeatherAcquisitionError("refusing to overwrite existing files: " + ", ".join(existing))
+        if dry_run:
+            result["status"] = "ready"
+            return result
+
+        result["stage"] = "request"
+        payload, raw_text, request_url = _provider_get(PVGIS_TMY_URL, params)
+        raw_bytes = raw_text.encode("utf-8")
+        if len(raw_bytes) > MAX_RESPONSE_BYTES:
+            raise WeatherAcquisitionError("provider response exceeds the raw storage limit")
+        result["plan"]["request_url"] = request_url
+        result["stage"] = "raw"
+        _bounded_write(raw_path, raw_text)
+        result["created_files"]["raw_json"] = {"name": raw_path.name, "bytes": len(raw_bytes)}
+        result["raw_preserved"] = True
+
+        inputs = payload.get("inputs") or {}
+        loc_echo = inputs.get("location") or {}
+        result["provider_echo"] = {
+            "latitude": loc_echo.get("latitude"),
+            "longitude": loc_echo.get("longitude"),
+            "elevation_m": loc_echo.get("elevation"),
+            "meteo_data": inputs.get("meteo_data"),
+        }
+        if site["elevation_m"] is None:
+            elev = loc_echo.get("elevation")
+            if isinstance(elev, (int, float)) and not isinstance(elev, bool) and math.isfinite(float(elev)):
+                site["elevation_m"] = float(elev)
+                site["evidence"]["elevation"] = "PVGIS v5.3 location elevation echo"
+            else:
+                raise WeatherAcquisitionError("no altitude supplied and PVGIS echoed none")
+
+        result["stage"] = "validation"
+        hourly = (payload.get("outputs") or {}).get("tmy_hourly")
+        if not isinstance(hourly, list) or len(hourly) != 8760:
+            raise WeatherAcquisitionError(f"PVGIS TMY returned {len(hourly) if isinstance(hourly, list) else 'invalid'} rows; expected 8760")
+
+        # Map each UTC row into its 0..8759 hour-of-non-leap-year index, then shift by offset_hours
+        base_start = datetime(tmy_year, 1, 1, 0, 0)
+        by_local_idx: dict[int, tuple[float, float, float]] = {}
+        clamped_dhi = 0
+        for row_idx, item in enumerate(hourly):
+            if not isinstance(item, dict):
+                raise WeatherAcquisitionError(f"PVGIS TMY row {row_idx} is not an object")
+            raw_time = str(item.get("time(UTC)") or "")
+            try:
+                mm = int(raw_time[4:6])
+                dd = int(raw_time[6:8])
+                hh = int(raw_time[9:11])
+                utc_dt = datetime(tmy_year, mm, dd, hh, 0)
+            except (ValueError, IndexError) as exc:
+                raise WeatherAcquisitionError(f"Invalid PVGIS time(UTC) label {raw_time!r}") from exc
+            utc_index = int((utc_dt - base_start).total_seconds() // 3600)
+            local_index = (utc_index + offset_hours) % 8760
+            ghi = _finite_number(item.get("G(h)"), f"PVGIS row {row_idx} G(h)")
+            dhi = _finite_number(item.get("Gd(h)"), f"PVGIS row {row_idx} Gd(h)")
+            tamb = _finite_number(item.get("T2m"), f"PVGIS row {row_idx} T2m")
+            if ghi < 0 or dhi < 0:
+                raise WeatherAcquisitionError(f"Negative irradiance in PVGIS row {row_idx}")
+            if dhi > ghi:
+                if dhi - ghi <= 2.0:
+                    dhi = ghi
+                    clamped_dhi += 1
+                else:
+                    raise WeatherAcquisitionError(f"PVGIS row {row_idx} has DHI ({dhi}) > GHI ({ghi})")
+            by_local_idx[local_index] = (ghi, dhi, tamb)
+
+        if len(by_local_idx) != 8760:
+            raise WeatherAcquisitionError(f"PVGIS TMY mapped {len(by_local_idx)} unique local hours; expected 8760")
+        if clamped_dhi:
+            result["warnings"].append(f"Clamped tiny rounding excess (<= 2 W/m2) where DHI > GHI on {clamped_dhi} hours.")
+        rows = [(base_start + timedelta(hours=h), *by_local_idx[h]) for h in range(8760)]
+
+        result["stage"] = "write"
+        _bounded_write(csv_path, _standard_csv_text_with_source(
+            rows, site=site, year=tmy_year, offset_hours=offset_hours, data_source_label=label
+        ))
+        result["created_files"]["csv"] = {"name": csv_path.name, "rows": len(rows)}
+        result["plan"]["verified"] = {"rows": len(rows), "dhi_le_ghi": True, "no_missing_hours": True}
+        result.update(status="prepared", stage="done")
+    except WeatherAcquisitionError as error:
+        result.update(status="blocked" if result["stage"] != "request" else "failed")
+        result["issues"].append(str(error))
+    except (OSError, ValueError) as error:
+        result.update(status="failed")
+        result["issues"].append(str(error))
+    finally:
+        if not dry_run and manifest_path is not None:
+            result["created_files"]["manifest"] = {"name": manifest_path.name}
+            try:
+                _bounded_write(manifest_path, json.dumps(result, indent=2, ensure_ascii=True, allow_nan=False))
+            except (OSError, ValueError) as error:
+                result["created_files"].pop("manifest", None)
+                result["issues"].append("manifest write failed: " + str(error))
+                if result["status"] == "prepared":
+                    result.update(status="failed", stage="manifest")
+    return result
+
+
+def _download_nasa_power(
+    workspace_path: Path,
+    *,
+    csv_name: str,
+    year: int | None,
+    site: dict,
+    notes: list[str],
+    dry_run: bool,
+) -> dict:
+    if type(year) is not int or not 2001 <= year <= MAX_YEAR:
+        raise WeatherAcquisitionError(f"year for nasa_power must be an integer in 2001..{MAX_YEAR}")
+    offset_hours = standard_utc_offset_hours(site["timezone_name"], year)
+    hours = _year_hours(year)
+    utc_start = datetime(year, 1, 1) - timedelta(hours=offset_hours)
+    utc_end = utc_start + timedelta(hours=hours - 1)
+    params = {
+        "parameters": "ALLSKY_SFC_SW_DWN,ALLSKY_SFC_SW_DIFF,T2M",
+        "community": "RE",
+        "longitude": _number_text(site["longitude"]),
+        "latitude": _number_text(site["latitude"]),
+        "start": utc_start.strftime("%Y%m%d"),
+        "end": utc_end.strftime("%Y%m%d"),
+        "format": "JSON",
+        "time-standard": "UTC",
+    }
+    label = "NASA POWER Hourly RE (power.larc.nasa.gov/api/temporal/hourly/point)"
+    result = {
+        "status": "blocked", "stage": "plan", "dry_run": dry_run, "year": year,
+        "provider": {"name": "nasa_power", "model": "power_re_hourly", "endpoints": {"hourly": NASA_POWER_URL}},
+        "time_basis": "local_standard_interval_start", "method": "utc_interval_shift",
+        "location": site, "standard_utc_offset_hours": offset_hours,
+        "plan": {
+            "request_url": NASA_POWER_URL + "?" + urllib.parse.urlencode(params),
+            "request_params": params,
+            "target_rows": hours,
+            "leap_year": calendar.isleap(year),
+            "row_labelling": f"local standard interval start 00:00..23:00 at UTC{offset_hours:+d}",
+        },
+        "units": dict(CSV_UNITS), "artifacts": {}, "created_files": {},
+        "provider_echo": None, "raw_preserved": False, "issues": [],
+        "warnings": list(notes) + [
+            "NASA POWER hourly irradiance is satellite-derived (CERES/MERRA-2); review against site measurements if available."
+        ],
+        "review_required": ["Verify NASA POWER grid resolution and satellite diffuse irradiance"],
+    }
+    manifest_path = None
+    try:
+        if not csv_name:
+            if dry_run:
+                result["warnings"].append("csv_name is empty; supply it before an execution run")
+                result["status"] = "ready"
+                return result
+            raise WeatherAcquisitionError("csv_name is required for an execution run")
+        if not dry_run:
+            (workspace_path / "Meteo").mkdir(parents=True, exist_ok=True)
+            (workspace_path / "Results").mkdir(parents=True, exist_ok=True)
+        elif not workspace_path.is_dir():
+            raise WeatherAcquisitionError(f"workspace {workspace_path} must be an existing directory for a plan run")
+        csv_path = workspace_file(workspace_path, "Meteo", csv_name, ".csv")
+        stem = csv_path.stem
+        raw_path = workspace_file(workspace_path, "Meteo", stem + "_nasapower_raw.json", ".json")
+        manifest_path = workspace_file(workspace_path, "Results", stem + "_acquisition.json", ".json")
+        result["artifacts"] = {"csv": str(csv_path), "raw_json": str(raw_path), "manifest": str(manifest_path)}
+        existing = [str(p) for p in (csv_path, raw_path, manifest_path) if p.exists()]
+        if existing:
+            raise WeatherAcquisitionError("refusing to overwrite existing files: " + ", ".join(existing))
+        if dry_run:
+            result["status"] = "ready"
+            return result
+
+        result["stage"] = "request"
+        payload, raw_text, request_url = _provider_get(NASA_POWER_URL, params)
+        raw_bytes = raw_text.encode("utf-8")
+        if len(raw_bytes) > MAX_RESPONSE_BYTES:
+            raise WeatherAcquisitionError("provider response exceeds the raw storage limit")
+        result["plan"]["request_url"] = request_url
+        result["stage"] = "raw"
+        _bounded_write(raw_path, raw_text)
+        result["created_files"]["raw_json"] = {"name": raw_path.name, "bytes": len(raw_bytes)}
+        result["raw_preserved"] = True
+
+        coords = (payload.get("geometry") or {}).get("coordinates") or []
+        elev_echo = coords[2] if len(coords) >= 3 else None
+        result["provider_echo"] = {
+            "longitude": coords[0] if len(coords) >= 1 else None,
+            "latitude": coords[1] if len(coords) >= 2 else None,
+            "elevation_m": elev_echo,
+        }
+        if site["elevation_m"] is None:
+            if isinstance(elev_echo, (int, float)) and not isinstance(elev_echo, bool) and math.isfinite(float(elev_echo)):
+                site["elevation_m"] = float(elev_echo)
+                site["evidence"]["elevation"] = "NASA POWER geometry elevation echo"
+            else:
+                raise WeatherAcquisitionError("no altitude supplied and NASA POWER echoed none")
+
+        result["stage"] = "validation"
+        param_map = ((payload.get("properties") or {}).get("parameter") or {})
+        ghi_map = param_map.get("ALLSKY_SFC_SW_DWN")
+        dhi_map = param_map.get("ALLSKY_SFC_SW_DIFF")
+        t2m_map = param_map.get("T2M")
+        if not all(isinstance(m, dict) for m in (ghi_map, dhi_map, t2m_map)):
+            raise WeatherAcquisitionError("NASA POWER response missing required parameter maps")
+
+        rows = []
+        clamped_dhi = 0
+        for step in range(hours):
+            utc_dt = utc_start + timedelta(hours=step)
+            local_dt = datetime(year, 1, 1) + timedelta(hours=step)
+            key = utc_dt.strftime("%Y%m%d%H")
+            if key not in ghi_map or key not in dhi_map or key not in t2m_map:
+                raise WeatherAcquisitionError(f"NASA POWER missing UTC hour {key}")
+            ghi = _finite_number(ghi_map[key], f"NASA POWER GHI {key}")
+            dhi = _finite_number(dhi_map[key], f"NASA POWER DHI {key}")
+            tamb = _finite_number(t2m_map[key], f"NASA POWER T2M {key}")
+            if ghi <= -900.0 or dhi <= -900.0 or tamb <= -900.0:
+                raise WeatherAcquisitionError(f"NASA POWER sentinel missing value at UTC hour {key}")
+            if ghi < 0 or dhi < 0:
+                raise WeatherAcquisitionError(f"NASA POWER negative irradiance at UTC hour {key}")
+            if dhi > ghi:
+                if dhi - ghi <= 2.0:
+                    dhi = ghi
+                    clamped_dhi += 1
+                else:
+                    raise WeatherAcquisitionError(f"NASA POWER DHI ({dhi}) > GHI ({ghi}) at UTC hour {key}")
+            rows.append((local_dt, ghi, dhi, tamb))
+
+        if clamped_dhi:
+            result["warnings"].append(f"Clamped tiny rounding excess (<= 2 W/m2) where DHI > GHI on {clamped_dhi} hours.")
+        result["stage"] = "write"
+        _bounded_write(csv_path, _standard_csv_text_with_source(
+            rows, site=site, year=year, offset_hours=offset_hours, data_source_label=label
+        ))
+        result["created_files"]["csv"] = {"name": csv_path.name, "rows": len(rows)}
+        result["plan"]["verified"] = {"rows": len(rows), "dhi_le_ghi": True, "no_missing_hours": True}
+        result.update(status="prepared", stage="done")
+    except WeatherAcquisitionError as error:
+        result.update(status="blocked" if result["stage"] != "request" else "failed")
+        result["issues"].append(str(error))
+    except (OSError, ValueError) as error:
+        result.update(status="failed")
+        result["issues"].append(str(error))
+    finally:
+        if not dry_run and manifest_path is not None:
+            result["created_files"]["manifest"] = {"name": manifest_path.name}
+            try:
+                _bounded_write(manifest_path, json.dumps(result, indent=2, ensure_ascii=True, allow_nan=False))
+            except (OSError, ValueError) as error:
+                result["created_files"].pop("manifest", None)
+                result["issues"].append("manifest write failed: " + str(error))
+                if result["status"] == "prepared":
+                    result.update(status="failed", stage="manifest")
+    return result
+
+
 def download_weather(workspace, *, csv_name="", year=None, location_id=None, latitude=None,
                      longitude=None, site_name="", country_code="", altitude=None,
-                     timezone_name="", temperature_method="endpoint_mean", dry_run=True):
-    """Plan or execute one Open-Meteo ERA5 year as a PVsyst standard hourly CSV.
+                     timezone_name="", temperature_method="endpoint_mean",
+                     provider="open_meteo_era5", dry_run=True):
+    """Plan or execute weather acquisition as a PVsyst standard hourly CSV.
 
-    ``dry_run=True`` may use the geocoding endpoint to resolve the place and returns the
-    full request plan without downloading or writing anything. Execution writes three new
-    files - the raw provider response, the standard CSV and a provenance manifest - and
-    refuses to overwrite any existing file. ``temperature_method=endpoint_mean`` is the
-    only verified method: it means the unweighted mean of the two UTC instants bounding
-    each local standard hour, disclosed as a linear approximation in ``warnings``.
+    Supports ``provider="open_meteo_era5"`` (default), ``"pvgis_tmy"`` (PVGIS v5.3 TMY),
+    and ``"nasa_power"`` (NASA POWER hourly RE).
     """
+    if provider not in PROVIDERS:
+        return {
+            "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
+            "provider": {"name": str(provider)}, "issues": [f"provider must be one of {list(PROVIDERS)}"],
+            "warnings": [], "artifacts": {}, "created_files": {},
+        }
+    if provider in ("pvgis_tmy", "nasa_power"):
+        if type(dry_run) is not bool:
+            return {
+                "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
+                "provider": {"name": provider}, "issues": ["dry_run must be a strict boolean"],
+                "warnings": [], "artifacts": {}, "created_files": {},
+            }
+        try:
+            site, notes = _resolve_location(
+                location_id=location_id, latitude=latitude, longitude=longitude,
+                site_name=site_name, country_code=country_code, altitude=altitude,
+                timezone_name=timezone_name,
+            )
+            if provider == "pvgis_tmy":
+                return _download_pvgis_tmy(
+                    Path(workspace), csv_name=csv_name, year=year, site=site, notes=notes, dry_run=dry_run
+                )
+            return _download_nasa_power(
+                Path(workspace), csv_name=csv_name, year=year, site=site, notes=notes, dry_run=dry_run
+            )
+        except WeatherAcquisitionError as error:
+            return {
+                "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
+                "provider": {"name": provider}, "issues": [str(error)],
+                "warnings": [], "artifacts": {}, "created_files": {},
+            }
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
               "provider": {"name": "open-meteo", "model": PROVIDER_MODEL,
                            "endpoints": {"geocoding_search": GEOCODING_SEARCH_URL,

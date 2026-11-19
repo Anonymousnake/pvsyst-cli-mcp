@@ -602,7 +602,7 @@ class WeatherRequest(BaseModel):
     label is reported by the backend as an unsupplied input instead of an empty value.
     """
     model_config = _STRICT_CONFIG
-    mode: Literal["existing", "csv", "open_meteo"] = "existing"
+    mode: Literal["existing", "csv", "open_meteo", "pvgis_tmy", "nasa_power"] = "existing"
     sit_name: StrictStr | None = None
     met_name: StrictStr | None = None
     csv_name: StrictStr | None = None
