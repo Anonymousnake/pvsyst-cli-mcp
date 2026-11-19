@@ -15,9 +15,9 @@ You need your own PVsyst installation and license on the host machine.
 | Build a 3D house + obstacles scene, bind roof orientations, and run annual shading | `pvsyst_run_house_task` | [House task](docs/native-house-task.md) |
 | Evaluate centralized AC-coupled storage against an hourly load profile | `pvsyst_create_grid_storage_system`, `pvsyst_run_engineering_task` | [Storage engineering](docs/engineering-storage.md) |
 | Diff two or three simulation runs | `pvsyst_compare_engineering_scenarios` | [Scenario comparison](docs/engineering-scenarios.md) |
-| Check feasibility briefs, handoffs, block assembly, or ZIP bundles (`expert` group) | `pvsyst_review_engineering_brief`, `pvsyst_project_handoff`, `pvsyst_prepare_block_project`, `pvsyst_export_engineering_delivery` | [Brief review](docs/engineering-brief.md) |
+| Check feasibility briefs, handoffs, block assembly, or ZIP bundles (requires `expert`) | `pvsyst_review_engineering_brief`, `pvsyst_project_handoff`, `pvsyst_prepare_block_project`, `pvsyst_export_engineering_delivery` | [Brief review](docs/engineering-brief.md) |
 
-By default the server registers **34 core tools across 8 default groups**. Set `PVSYST_TOOL_GROUPS=all` (or include `admin` / `expert`) to expose all **66 tools** including license administration, block assembly, low-level project/variant creators, and scene-level primitives; see the [tool reference](docs/tool-reference.md).
+By default the server registers **34 core tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **66 tools**; to keep the defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`. For migrating from `v0.1.0`, see [Upgrading from v0.1.0](docs/tool-reference.md#upgrading-from-v010).
 
 ## Installation
 
@@ -63,9 +63,10 @@ Once connected, run `pvsyst_capabilities` first to see which CLI flags your PVsy
 
 ### Filtering exposed tool groups
 
-By default (when `PVSYST_TOOL_GROUPS` is unset), the server exposes only the **34 core workflow tools** (`setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`) so LLM context stays compact. Set `PVSYST_TOOL_GROUPS` in `env` to customize:
+By default (when `PVSYST_TOOL_GROUPS` is unset), the server exposes only the **34 core workflow tools** (`setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`) so LLM context stays compact. Set `PVSYST_TOOL_GROUPS` in `env` to customize; an explicit list replaces the defaults:
 
 - `"PVSYST_TOOL_GROUPS": "all"` exposes all **66 tools** (the 8 default groups plus `admin` and `expert`).
+- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"` keeps the defaults and adds `expert` (61 tools).
 - `"PVSYST_TOOL_GROUPS": "setup,engineering,results"` exposes only those 6 tools.
 - Valid group keys (case-sensitive): `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`, `admin`, `expert` (or `all`). Unknown, empty, or duplicate group names raise an error at startup so typos fail fast.
 
