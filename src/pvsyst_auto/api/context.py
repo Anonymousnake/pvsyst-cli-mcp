@@ -62,7 +62,8 @@ TOOL_GROUPS = {
     "Engineering": (
         "pvsyst_suggest_sizing", "pvsyst_project_handoff",
         "pvsyst_run_engineering_task", "pvsyst_compare_engineering_scenarios",
-        "pvsyst_evaluate_economics", "pvsyst_export_engineering_delivery",
+        "pvsyst_evaluate_economics", "pvsyst_generate_report",
+        "pvsyst_export_engineering_delivery",
     ),
     "Expert & Low-Level": (
         "pvsyst_list_variants", "pvsyst_create_project", "pvsyst_update_project_parameters",

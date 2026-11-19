@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pvsyst-cli-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "Workspace-scoped MCP and Python adapter for installed PVsyst software"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,7 @@ license = {text = "MIT"}
 dependencies = [
     "mcp>=2.0,<3.0",
     "pydantic>=2.0,<3.0",
+    "plotly>=5.18,<7.0",
     "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 

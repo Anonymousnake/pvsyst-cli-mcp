@@ -7,19 +7,19 @@ SERVER_INSTRUCTIONS = """PVsyst CLI MCP drives a local Windows PVsyst 8.x instal
 
 Quick workflow selection:
 1. Check environment first: call `pvsyst_capabilities` and `pvsyst_license_info` before running simulations.
-2. Inspect available loose components with `pvsyst_list_components` / `pvsyst_get_component` (never invent filenames).
-3. Fixed-plane or ground utility PV (mono or bifacial sheds/trackers):
-   - Use `pvsyst_simulate_design` (or `pvsyst_prepare_design_project`) with `scope="fixed_unshaded_grid" | "ground_sheds" | "ground_tracker"`, optional `ground_layout` (`model_mode="unlimited" | "3d"`) and `bifacial`.
-   - If you have manufacturer datasheet bounds, pass `electrical_design` or `capacity`. If you only have loose `.PAN`/`.OND` files, call `pvsyst_suggest_sizing` first or pass `sizing_mode="auto_from_components"` (output is marked `needs_review` with explicit assumptions).
-4. 3D rooftop house + obstacles + electrical shading (`module_layout`):
-   - Resolve & prepare weather first (`pvsyst_resolve_location` -> `pvsyst_acquire_weather` -> `pvsyst_prepare_weather`), then call `pvsyst_run_house_task` (omit `source_project`/`source_variant` for zero-template synthesis; omit `module_geometry` when the `.PAN` is readable).
-5. Parametric sweeps, revisions, cabling, loads & AC-coupled storage on existing projects:
-   - Inspect current state with `pvsyst_project_handoff` or `pvsyst_get_variant_parameters`.
-   - Sweep tilt/azimuth/pitch/albedo/soiling/grid-limit in one CLI call with `pvsyst_run_batch_sweep` (`dry_run=true` first).
-   - For sub-hourly (5/10/15/30 min) weather & storage runs, prepare the CSV with `pvsyst_prepare_weather(..., step_minutes=15)`, build an SFI with `pvsyst_build_sfi(..., time_step="subhour")`, and run `pvsyst_run_simulation(..., time_step="subhour")`.
-   - Apply targeted edits via `pvsyst_update_variant_parameters`, `pvsyst_create_ac_cabling_variant`, `pvsyst_create_dc_cabling_variant`, `pvsyst_create_native_load_variant`, or `pvsyst_create_grid_storage_system`.
-   - Audit completed CSVs with `pvsyst_diagnose_results`, compare runs with `pvsyst_compare_engineering_scenarios`, and bundle deliverables via `pvsyst_export_engineering_delivery`.
-6. Safety & verification conventions:
+2. Search & select components with `pvsyst_list_components` (supports electrical filters: `min_power_w`, `max_power_w`, `bifacial`, `min_system_voltage_v`, `min_mppt`, `manufacturer`) / `pvsyst_get_component`, or synthesize custom commercial `.PAN`/`.OND` from cited datasheets via `pvsyst_build_sourced_component` (omit `template_name` for zero-template single-diode / Mode-1 synthesis).
+3. Weather: call `pvsyst_resolve_location` -> `pvsyst_acquire_weather(provider="open_meteo_era5" | "pvgis_tmy" | "nasa_power", prepare=true)` to fetch and convert `.SIT`/`.MET` in one step, or pass `weather.mode="open_meteo" | "pvgis_tmy" | "nasa_power"` directly in `pvsyst_simulate_design`.
+4. Fixed-plane or ground utility PV (mono or bifacial sheds/trackers, finite 3D polygon + obstacles + BaseSlope):
+   - Use `pvsyst_simulate_design` with `scope="fixed_unshaded_grid" | "ground_sheds" | "ground_tracker"`, optional `ground_layout` (`model_mode="unlimited" | "3d"`, `site_polygon`, `obstacles`, `base_slope_deg`) and `bifacial`.
+   - Pass `electrical_design`/`capacity` or call `pvsyst_suggest_sizing` / `sizing_mode="auto_from_components"`.
+5. 3D rooftop house + obstacles + electrical shading (`module_layout`):
+   - Call `pvsyst_run_house_task` (omit `source_project`/`source_variant` for zero-template synthesis).
+6. Optimization, parametric sweeps, economics & interactive reporting:
+   - Sweep parameters in one CLI call with `pvsyst_run_batch_sweep` (`dry_run=true` first).
+   - Audit results with `pvsyst_diagnose_results`, auto-remediate on cloned variants via `pvsyst_optimize_variant` (`dry_run=true` first, `confirm=true` bounded loop).
+   - Evaluate fixed/TOU tariffs, PV+BESS arbitrage, LCOE, NPV, IRR, and payback via `pvsyst_evaluate_economics`.
+   - Generate interactive Plotly HTML engineering reports (single- or multi-scenario, zh/en) via `pvsyst_generate_report`, and bundle deliverables via `pvsyst_export_engineering_delivery`.
+7. Safety & verification conventions:
    - Always preview mutating workflows with `dry_run=true` before executing `dry_run=false`.
    - Never overwrite existing projects/outputs; pick fresh filenames on retry.
    - Consult on-demand resources `pvsyst://guide/workflows` and `pvsyst://guide/variables` when choosing SFI variables or multi-step flows.

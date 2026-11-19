@@ -9,9 +9,9 @@ end-to-end MCP tool sequences covering:
      (builtin Li-ion ``.BTR`` + ``PowerShift`` 48-slot schedules) + ``pvsyst_update_variant_parameters``
      (``SystemUnavail`` ``periods``) + ``pvsyst_create_grid_storage_variant`` (``PeakShaving``)
      + ``pvsyst_build_sfi`` / ``pvsyst_run_simulation`` / ``pvsyst_read_results``.
-  3) v0.3.0 zero-template ``ground_tracker`` + ``sizing_mode="auto_from_components"`` + ``pvBiFacial``
+  3) v0.3.0/v0.4.0 zero-template ``ground_tracker`` + ``sizing_mode="auto_from_components"`` + ``pvBiFacial``
      + ``pvsyst_diagnose_results`` (``.VC0`` attribution) + ``pvsyst_run_batch_sweep``
-     + MCP guidance surface (``instructions``, 4 prompts, 2 resources, 40 default tools).
+     + MCP guidance surface (``instructions``, 4 prompts, 2 resources, 43 default tools).
   4) v0.3.0 15-minute sub-hourly weather preparation (``pvsyst_prepare_weather(..., step_minutes=15)``)
      + ``PeakShaving`` AC storage ``-ts:subhour`` vs ``-ts:hour`` run & diagnostics.
 
@@ -487,14 +487,16 @@ End of PVObject pvModule
             async with stdio_client(self._mcp_params()) as (read, write):
                 async with ClientSession(read, write) as session:
                     init = await session.initialize()
-                    # Verify v0.3.0 MCP guidance surface & exact 40-tool default budget
+                    # Verify v0.4.0 MCP guidance surface & exact 43-tool default budget
                     self.assertTrue(init.instructions and "pvsyst_run_batch_sweep" in init.instructions)
+                    self.assertIn("pvsyst_evaluate_economics", init.instructions)
+                    self.assertIn("pvsyst_generate_report", init.instructions)
                     prompts = {item.name for item in (await session.list_prompts()).prompts}
                     self.assertEqual(len(prompts), 4)
                     resources = {str(item.uri) for item in (await session.list_resources()).resources}
                     self.assertEqual(resources, {"pvsyst://guide/workflows", "pvsyst://guide/variables"})
                     tools = {item.name for item in (await session.list_tools()).tools}
-                    self.assertEqual(len(tools), 40)
+                    self.assertEqual(len(tools), 43)
 
                     # 1. Read-only sizing recommendation (0 CLI execs)
                     err, sizing = _decode(await session.call_tool("pvsyst_suggest_sizing", {

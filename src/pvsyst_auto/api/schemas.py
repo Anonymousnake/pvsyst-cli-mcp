@@ -942,3 +942,16 @@ class EconomicsScenarioInput(BaseModel):
     capex_total: StrictNum | None = None
     annual_opex: StrictNum | None = None
     replacement_events: list[EconomicsReplacementEvent] | None = None
+
+
+class ReportScenarioInput(BaseModel):
+    model_config = _STRICT_CONFIG
+    label: StrictStr
+    csv_name: StrictStr
+    project: StrictStr | None = None
+    variant: StrictStr | None = None
+    installed_dc_kw: StrictNum | None = None
+    battery_kwh: StrictNum | None = None
+    capex_total: StrictNum | None = None
+    annual_opex: StrictNum | None = None
+    replacement_events: list[EconomicsReplacementEvent] | None = None

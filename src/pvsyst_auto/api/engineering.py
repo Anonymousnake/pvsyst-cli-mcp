@@ -12,6 +12,7 @@ from pvsyst_auto.api.schemas import (
     EngineeringBlock,
     EngineeringRevisionRequest,
     EngineeringScenario,
+    ReportScenarioInput,
     StrictNum,
 )
 from pvsyst_auto.api.context import categorized_tool, cli, variant_store
@@ -110,6 +111,38 @@ def pvsyst_evaluate_economics(
         tariff=tariff.model_dump(exclude_none=True) if tariff is not None else None,
         rank_by=rank_by,
         include_cashflow_schedule=include_cashflow_schedule,
+    )
+
+
+@categorized_tool()
+def pvsyst_generate_report(
+        title: StrictStr,
+        output_name: StrictStr,
+        scenarios: Annotated[list[ReportScenarioInput], Field(min_length=1, max_length=20)],
+        financial: EconomicsFinancialConfig | None = None,
+        tariff: EconomicsTariffConfig | None = None,
+        language: Literal["zh", "en"] = "zh",
+        plotlyjs: Literal["cdn", "embed"] = "cdn",
+        thresholds: dict[StrictStr, StrictNum] | None = None,
+        overwrite: StrictBool = False,
+        dry_run: StrictBool = False) -> dict:
+    """Generate a single-scenario or multi-scenario interactive Plotly HTML engineering report
+    under workspace/Results (monthly yield/PR combo, loss waterfall, typical 24h PV/load/BESS/TOU
+    profile, 25-year cumulative cashflow, diagnostics table, and print-ready CSS)."""
+    from pvsyst_auto.workflows.report import generate_report
+    return generate_report(
+        workspace=cli().workspace,
+        store=variant_store(),
+        title=title,
+        output_name=output_name,
+        scenarios=[s.model_dump(exclude_none=True) for s in scenarios],
+        financial=financial.model_dump(exclude_none=True) if financial is not None else None,
+        tariff=tariff.model_dump(exclude_none=True) if tariff is not None else None,
+        language=language,
+        plotlyjs=plotlyjs,
+        thresholds=thresholds,
+        overwrite=overwrite,
+        dry_run=dry_run,
     )
 
 

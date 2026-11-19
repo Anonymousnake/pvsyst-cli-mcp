@@ -2,7 +2,7 @@
 
 For setup instructions and package layout, see [README.md](../README.md) or [README.zh-CN.md](../README.zh-CN.md).
 
-By default the MCP server exposes **42 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **71 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
+By default the MCP server exposes **43 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **72 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
 
 ## PVsystCLI version differences
 
@@ -36,7 +36,7 @@ Two CLI flags are intentionally omitted from the MCP surface: `-cof` (options fi
 | `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | Activate, deactivate, or sync the CLI license (`confirm=true` required) |
 | `pvsyst_export_logs` | Export PVsyst diagnostic logs to a new ZIP archive under `Results` |
 
-### Engineering (`engineering`, default: 6)
+### Engineering (`engineering`, default: 7)
 
 | Tool | What it does |
 |---|---|
@@ -45,6 +45,7 @@ Two CLI flags are intentionally omitted from the MCP surface: `-cof` (options fi
 | `pvsyst_run_engineering_task` | Apply an isolated revision (fixed angles/losses, `UnlimTracking` parameters, or centralized AC storage with hourly load) in a new project and run a full-year simulation |
 | `pvsyst_compare_engineering_scenarios` | Compare 2 or 3 completed simulation runs, separating shared conditions from intended/unintended input diffs, and export JSON/CSV/Markdown comparison reports |
 | `pvsyst_evaluate_economics` | Pure-Python PV and PV+BESS financial evaluator computing fixed/TOU tariff settlement, 25-year degraded cashflows, LCOE, NPV, IRR, payback, and multi-scenario rankings over SFI or batch CSVs |
+| `pvsyst_generate_report` | Generate a single- or multi-scenario interactive Plotly HTML engineering report under `Results` (monthly yield/PR, loss waterfall, typical 24h TOU/storage profile, 25-year cashflow, diagnostics, zh/en) |
 | `pvsyst_export_engineering_delivery` | Bundle a completed engineering run (and optional scenario comparison) with its `.PRJ`/`.VCx`, result CSV/PDF, and Markdown handoff summary into a ZIP archive under `Results` |
 
 Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comparison](engineering-scenarios.md), [AC storage engineering](engineering-storage.md), [block project preparation](block-project-preparation.md), and [brief review](engineering-brief.md).
