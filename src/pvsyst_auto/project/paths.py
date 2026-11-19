@@ -16,6 +16,14 @@ def safe_filename(name: str, extension: str, max_length: int = 255) -> str:
     return name
 
 
+def battery_reference_name(name: str) -> str:
+    """Validate a filename to be written into a native BatteryFile field."""
+    name = safe_filename(name, ".BTR")
+    if name != name.lstrip():
+        raise ValueError("Battery references cannot start with whitespace; rename the BTR before using it")
+    return name
+
+
 def project_name(project: str) -> str:
     return safe_filename(project, ".PRJ", 180)
 

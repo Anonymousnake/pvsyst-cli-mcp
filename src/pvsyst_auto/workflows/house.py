@@ -15,8 +15,9 @@ from pvsyst_auto.project.paths import safe_filename, variant_id, workspace_file,
 from pvsyst_auto.results import annual_summary, fingerprint
 from pvsyst_auto.scene.author import create_house_pv_scene, house_profile, obstacle_profiles, table_profiles, check_tables
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.native._prep import _source_snapshot, _verify_new, find_running_pvsyst
+from pvsyst_auto.native._prep import _source_snapshot, _source_snapshot_bytes, _verify_new, find_running_pvsyst
 from pvsyst_auto.native.project import _open, open_native_project
+from pvsyst_auto.project.synthesize import synthesize_house_source
 
 PHASES = ("initialized", "project_created", "scene_created", "prepared", "native_saved", "gui_closed", "simulated", "completed")
 
@@ -99,11 +100,13 @@ def _annual(csv_path, pdf_path, request, plan, variant, *, require_pdf=True):
             "hourly_rows": rows, "shading_output": {"column": "GlobShd", "unit": units["GlobShd"]}}
 
 
-def _prepare(store, components, request):
-    project, variant, target = request["source_project"], variant_id(request["source_variant"]), request["new_project"]
-    store._check_project(project)
-    if project.casefold() == target.casefold():
-        raise ValueError("The working project must be new, not the source project")
+def _prepare(store, components, request, *, resume=False):
+    has_source_project = request.get("source_project") is not None
+    has_source_variant = request.get("source_variant") is not None
+    if has_source_project != has_source_variant:
+        raise ValueError("Provide both source_project and source_variant, or omit both for zero-template synthesis")
+    zero_template = not has_source_project
+    target = request["new_project"]
     store._validate_display_name(request["variant_name"], "variant_name")
     year = request["year"]
     if type(year) is not int or not 1969 <= year <= 2068:
@@ -111,32 +114,46 @@ def _prepare(store, components, request):
     validate_report_pages(request.get("report_pages"))
     prefix = Path(target).stem + "_house"
     scene_name = safe_filename(prefix + ".pvc2", ".pvc2")
-    paths = {"source_project": store._path(project), "source_variant": store._path(project, variant),
-             "working_project": store._path(target), "working_variant": store._path(target, "VC0"),
+    paths = {"working_project": store._path(target), "working_variant": store._path(target, "VC0"),
              "scene": workspace_file(store.workspace, "UserData", scene_name, ".pvc2"),
              "sfi": workspace_file(store.workspace, "Models", prefix + ".SFI", ".sfi"),
              "manifest": workspace_file(store.workspace, "Results", prefix + "_task.json", ".json")}
-    source_bytes = store._read(paths["source_variant"])
-    _, lines = store._text(source_bytes)
+
     entries = request["layout"].get("tables") if isinstance(request["layout"], dict) else None
-    # Grouped authoring route (source_snapshot/source_profile allow_groups) is chosen from the
-    # declared layout, not a caller-supplied source id. Any named layout that assigns regions to
-    # two or more distinct positive source orientations is one grouped source; one orientation
-    # may still span several tables, while a single-plane or repeated-id layout stays on the
-    # single-plane bridge. The real source subarrays and per-group totals are validated by the
-    # existing source_profile -> table_profiles -> check_tables flow below, never by a separate
-    # Native/source permission query.
     orientation_ids = ([item.get("orientation_id") for item in entries]
                        if isinstance(entries, list)
                        and all(isinstance(item, dict) and type(item.get("orientation_id")) is int
                                for item in entries) else [])
-    # Grouped when two or more distinct orientations, OR when any table names its own source owner
-    # (several subarrays may share one NoOrientation, so the orientation set alone is not enough).
     grouped = (bool(orientation_ids) and all(identifier >= 1 for identifier in orientation_ids)
                and (len(set(orientation_ids)) >= 2
                     or any(item.get("source_subarray_id") is not None for item in entries)))
-    snap = _source_snapshot(store, components, project, variant, request.get("module_geometry"),
-                            **({"allow_groups": True} if grouped else {}), layout=request.get("layout"))
+
+    synth_payload = None
+    if zero_template:
+        if (request.get("scene_import_method") or "native") != "native":
+            raise ValueError("Zero-template house task requires scene_import_method='native'")
+        synth = synthesize_house_source(store, components, request)
+        synth_payload = {"prj_text": synth["prj_text"], "vc0_text": synth["vc0_text"]}
+        source_bytes = synth["vc0_text"].encode("utf-8")
+        _, lines = store._text(source_bytes)
+        project_text = synth["prj_text"].lstrip("\ufeff")
+        snap = _source_snapshot_bytes(
+            store, components, source_bytes, request.get("module_geometry"),
+            allow_groups=grouped or len(synth["subarrays"]) > 1, layout=request.get("layout"),
+        )
+        inherited_parameters = {"synthesized": True, "orientations": synth["orientations"], "subarrays": synth["subarrays"]}
+    else:
+        project, variant = request["source_project"], variant_id(request["source_variant"])
+        store._check_project(project)
+        if project.casefold() == target.casefold():
+            raise ValueError("The working project must be new, not the source project")
+        paths.update(source_project=store._path(project), source_variant=store._path(project, variant))
+        source_bytes = store._read(paths["source_variant"])
+        _, lines = store._text(source_bytes)
+        project_text = store._read(paths["source_project"]).decode("utf-8-sig")
+        snap = _source_snapshot(store, components, project, variant, request.get("module_geometry"),
+                                **({"allow_groups": True} if grouped else {}), layout=request.get("layout"))
+        inherited_parameters = store.inspect_parameters(project, variant)
     # A heterogeneous per-source PAN set is carried by the typed per-table geometry forwarded
     # through ``layout`` into resolve_source_geometry; the high-level NATIVE path consumes it
     # per owner instead of collapsing to the first PAN. ``pan_snapshots`` is per-GROUP, so a
@@ -150,7 +167,6 @@ def _prepare(store, components, request):
                          "scene_import_method='native' for a heterogeneous per-source PAN set")
     source_site = store._embedded_reference(lines, "PVObject_SiteSimul=pvSite", "End of PVObject pvSite")
     source_met = store._embedded_reference(lines, "PVObject_MeteoSimul=pvMeteo", "End of PVObject pvMeteo")
-    project_text = store._read(paths["source_project"]).decode("utf-8-sig")
     project_root = objects(project_text)[0]
     project_site = store._embedded_reference(project_text.splitlines(), "PVObject_SitePrj=pvSite", "End of PVObject pvSite")
     met = re.findall(r"(?m)^[ \t]*MeteoFileName=([^\r\n]+)", project_text)
@@ -221,7 +237,7 @@ def _prepare(store, components, request):
         # caller-supplied orientation_id.
         from pvsyst_auto.native.headless import _support_gate
         _support_gate(snap["source"], tables, source_bytes.decode("utf-8-sig"), mode,
-                      string_layout=binding)
+                      string_layout=binding, check_spacing=not resume)
     else:
         import pvsyst_auto.native.scene as native
         if not 1 <= len(tables) <= native.MAX_TABLES_BRIDGED:
@@ -253,6 +269,7 @@ def _prepare(store, components, request):
         # source PAN reference (per group) for the handoff declaration instead of the first one.
         pan_reference = sorted({group["pan_name"] for group in source_groups})
     plan = {"site": source_site, "met": source_met, "scene_name": scene_name,
+            "synthesized": zero_template,
             "nominal_dc_kw": nominal, "shading_mode": mode,
             "house_parts": len(pocket["meshes"]), "pv_tables": len(tables),
             "obstacles": obstacles,
@@ -260,10 +277,12 @@ def _prepare(store, components, request):
             "source": snap["source"], "modules": snap["modules"],
             "tables": tables, "component_libraries": component_libraries,
             "component_references": {"PAN": pan_reference, "OND": ond_reference},
-            "inherited_parameters": store.inspect_parameters(project, variant),
+            "inherited_parameters": inherited_parameters,
             "inherited_project_parameters": {key: project_root.one(key)[1]
                 for key in ("DesignTempMin", "TempOper", "TempOperMin", "TempOperMax", "TranspositionAlgorithm", "ACLossesRef")
                 if key in project_root.fields}}
+    if synth_payload is not None:
+        plan["_synthesized_files"] = synth_payload
     return paths, plan
 
 
@@ -312,7 +331,9 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
             # (absent/None/True). CSV-only runs still recompute shading.
             require_pdf = request.get("report_pdf") is not False
             guard_keys = {"csv", "pdf"} if require_pdf else {"csv"}
-            paths, plan = _prepare(store, components, request)
+            paths, plan = _prepare(store, components, request, resume=resume)
+            synth_payload = plan.pop("_synthesized_files", None)
+            zero_template = synth_payload is not None
             sources = {key: path for key, path in paths.items() if key in ("source_project", "source_variant", "site", "met", "pan", "ond")}
             if resume:
                 if paths["manifest"].stat().st_size > 32 * 1024 * 1024:
@@ -342,10 +363,13 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     raise ValueError("retry_simulation requires resume=true")
                 if paths["manifest"].exists() or any(store._belongs_to_project(p, request["new_project"]) for p in store._root().iterdir()):
                     raise FileExistsError("Working project/checkpoint namespace already exists; use a new project or explicit resume")
-                preview = create_house_pv_scene(store, components, project=request["source_project"],
-                    variant=request["source_variant"], output_name=plan["scene_name"], house=request["house"],
+                preview = create_house_pv_scene(store, components,
+                    project=(request["new_project"] if zero_template else request["source_project"]),
+                    variant=("VC0" if zero_template else request["source_variant"]),
+                    output_name=plan["scene_name"], house=request["house"],
                     layout=request["layout"], module_geometry=request.get("module_geometry"), dry_run=True,
-                    string_layout=request.get("string_layout"), obstacles=request.get("obstacles"))
+                    string_layout=request.get("string_layout"), obstacles=request.get("obstacles"),
+                    source_variant_bytes=(synth_payload["vc0_text"].encode("utf-8") if zero_template else None))
                 if preview["status"] != "ready":
                     return {**result, "scene_preflight": preview, "issues": preview["issues"]}
                 if method == "gui":
@@ -481,11 +505,15 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                         "stage": "preflight", "resume": resume, "native_consumption_verified": False}
             if not resume:
                 _save(paths["manifest"], record, first=True)
-            write_enabled = True
+            write_enabled = record["phase"] != "completed"
             if record["phase"] == "initialized":
                 unchanged()
-                store.create_project(request["new_project"], store._read(paths["source_project"]).decode("utf-8-sig"),
-                                     {"VC0": store._read(paths["source_variant"]).decode("utf-8-sig")})
+                if zero_template:
+                    store.create_project(request["new_project"], synth_payload["prj_text"],
+                                         {"VC0": synth_payload["vc0_text"]})
+                else:
+                    store.create_project(request["new_project"], store._read(paths["source_project"]).decode("utf-8-sig"),
+                                         {"VC0": store._read(paths["source_variant"]).decode("utf-8-sig")})
                 stage("project_created", ("working_project", "working_variant"))
             if record["phase"] == "project_created":
                 created = create_house_pv_scene(store, components, project=request["new_project"], variant="VC0",
@@ -625,7 +653,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                         "Two-orientation authoring and native consumption are separate stages; this task's saved/reloaded geometry and annual evidence are recorded below."
                         if warning == obsolete and record.get("native_import", {}).get("native_reload_verified") is True
                         else warning for warning in record.get("warnings", [])]
-                _save(paths["manifest"], record)
+                if write_enabled:
+                    _save(paths["manifest"], record)
             return _public(record)
         except (OSError, ValueError, RuntimeError, KeyError, StopIteration, TypeError, subprocess.TimeoutExpired) as exc:
             result.update(status="needs_attention" if write_enabled else "blocked", stage="stopped",

@@ -85,19 +85,28 @@ def find_running_pvsyst(exe: Path) -> list[int]:
     return found
 
 
+def _source_snapshot_bytes(store, components, original, module_geometry, *, allow_groups=False, layout=None,
+                           path=None):
+    """Validate an in-memory or disk variant snapshot, reusing the production helpers."""
+    _, lines = store._text(original)
+    arrays, system = store._sections(lines)
+    source = source_profile(store, lines, arrays, system, allow_groups=allow_groups)
+    modules, pan_snapshots = resolve_source_geometry(components, source, module_geometry, layout)
+    return {"path": path, "bytes": original, "source": source, "modules": modules,
+            "pan_snapshot": (pan_snapshots[0] if len(pan_snapshots) == 1 else None),
+            "pan_snapshots": pan_snapshots}
+
+
 def _source_snapshot(store, components, project, variant, module_geometry, *, allow_groups=False, layout=None):
     """Validate the source variant read-only, reusing the production helpers."""
     with store.lock:
         store._check_project(project)
         path = store._path(project, variant)
         original = store._read(path)
-        _, lines = store._text(original)
-        arrays, system = store._sections(lines)
-        source = source_profile(store, lines, arrays, system, allow_groups=allow_groups)
-        modules, pan_snapshots = resolve_source_geometry(components, source, module_geometry, layout)
-    return {"path": path, "bytes": original, "source": source, "modules": modules,
-            "pan_snapshot": (pan_snapshots[0] if len(pan_snapshots) == 1 else None),
-            "pan_snapshots": pan_snapshots}
+        return _source_snapshot_bytes(
+            store, components, original, module_geometry,
+            allow_groups=allow_groups, layout=layout, path=path,
+        )
 
 
 def _prepare_source(store, components, scene, *, allow_groups=False, error_cls=ValueError):

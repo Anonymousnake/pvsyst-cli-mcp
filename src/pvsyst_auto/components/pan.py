@@ -30,8 +30,8 @@ def validation_fields(text):
     fields = {}
     for key, values in root.fields.items():
         fields.setdefault(CANONICAL.get(key, key), []).extend(value for _, value in values)
-    for key in ("Manufacturer", "Model", "Width", "Height"):
-        # Root Width/Height or identity fields do not replace the commercial form.
+    for key in ("Manufacturer", "Model", "Width", "Height", "Depth"):
+        # Root Width/Height/Depth or identity fields do not replace the commercial form.
         fields.pop(key, None)
         if key in commercial.fields:
             fields[key] = [value for _, value in commercial.fields[key]]

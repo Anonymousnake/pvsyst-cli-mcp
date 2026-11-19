@@ -21,8 +21,10 @@ from pvsyst_auto.energy.storage import (
     set_system_grid_limit,
     storage_state,
     validate_storage,
+    warn_schedule_quantization,
 )
 from pvsyst_auto.native.headless import strip_result_cache
+from pvsyst_auto.project.paths import battery_reference_name
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED
 
@@ -36,6 +38,7 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
         required_batt = {"file_name", "series_count", "parallel_count", "monthly_temperature_c", "cycle_sow", "static_sow"}
         if not isinstance(battery, dict) or not required_batt <= set(battery) or set(battery) - (required_batt | {"library"}):
             raise ValueError("Complete explicit battery declaration is required")
+        battery_reference_name(battery["file_name"])
         batt_lib = battery.get("library", "workspace")
         if batt_lib not in ("workspace", "builtin"):
             raise ValueError("battery.library must be 'workspace' or 'builtin'")
@@ -198,6 +201,7 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             _, checked_system = store._sections(checked)
             configured, _, _ = storage_state(checked, checked_system)
             validate_storage(configured, allow_weak=weak)
+            warn_schedule_quantization(state, configured, res["warnings"])
             artifacts = {"battery": battery_artifact}
             if load_profile is not None:
                 artifacts["load_csv"] = str(load_profile)
