@@ -234,10 +234,16 @@ class PVsystCLI:
                 # False always denies (never falls back to an allowing desktop); True
                 # always allows. The value is per call and never stored globally.
                 from pvsyst_auto.native import _winlaunch
+                from pvsyst_auto.native._workspace_ini import preserve_workspace_settings, WorkspaceSettingsError
+
                 allow = ((not _is_plain_csv_run(args)) if allow_window_creation is None
                          else allow_window_creation)
-                return _winlaunch.run(argv, self.cli.parent, self.timeout,
-                                      allow_window_creation=allow)
+                try:
+                    with preserve_workspace_settings(self.cli, restore=True):
+                        return _winlaunch.run(argv, self.cli.parent, self.timeout,
+                                              allow_window_creation=allow)
+                except WorkspaceSettingsError as exc:
+                    raise PVsystError(str(exc)) from None
             return subprocess.run(argv, cwd=self.cli.parent, capture_output=True,
                                   text=True, errors="replace", timeout=self.timeout,
                                   check=False)
