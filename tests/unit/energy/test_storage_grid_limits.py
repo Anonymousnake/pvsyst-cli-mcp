@@ -63,6 +63,20 @@ class StorageGridLimitTests(unittest.TestCase):
                 self.assertIn(f"    PLimGrid=331.0\n    LimGrSeparLoss={separate_loss}\n",
                               target.read_text(encoding="utf-8"))
 
+    def test_explicit_kw_requires_native_grid_limit_precision(self):
+        for existing, flags in ((True, "$11100040"), (False, "$01100000")):
+            with self.subTest(existing=existing):
+                store, target, _ = self.fixture(flags, "    PLimGrid=6000.0\n    LimGrSeparLoss=False\n", existing=existing)
+                save = self.edit if existing else self.build
+                result = save(store, grid_limit_kw=330.05)
+                self.assertEqual(result["status"], "blocked", result)
+                self.assertIn("Use 0.1 kW increments", result["issues"][0])
+                self.assertFalse(target.exists())
+
+                result = save(store, grid_limit_kw=330.1)
+                self.assertEqual(result["status"], "created", result)
+                self.assertIn("    PLimGrid=330.1\n", target.read_text(encoding="utf-8"))
+
     def test_active_kva_rejects_explicit_kw_on_both_storage_paths(self):
         for flags, existing in (("$17158040", True), ("$07158000", False)):
             with self.subTest(existing=existing):

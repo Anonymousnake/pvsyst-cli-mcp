@@ -263,12 +263,15 @@ def set_grid_export(lines, system, allow_grid_export):
 def set_system_grid_limit(lines, system, grid_limit_kw: float) -> float:
     """Update an enabled kW limit's value, or enable a new kW limit at injection."""
     limit = finite(grid_limit_kw, "grid_limit_kw", 0, math.inf, positive=True)
+    tenths = Decimal(str(limit)) * 10
+    if tenths != tenths.to_integral_value():
+        raise ValueError("Use 0.1 kW increments, matching native GUI save precision")
     fields = direct_fields(lines, system)
     flag_idx, raw_flags = one(fields, "Flags")
     if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags):
         raise ValueError("Owning system flags must be unambiguous hexadecimal values")
     flags = int(raw_flags[1:], 16)
-    edits = {"PLimGrid": decimal_text(limit)}
+    edits = {"PLimGrid": f"{limit:.1f}"}
     if flags & ENABLED:
         if flags & APPARENT:
             raise ValueError("Native apparent grid limits use kVA and cannot be set with grid_limit_kw")
