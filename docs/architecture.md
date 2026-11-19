@@ -8,16 +8,16 @@
 
 | 目录 / 模块 | 主要职责 | 核心文件 |
 |---|---|---|
-| `api` | MCP 协议层、入参校验、工具分组注册与进程内共享上下文 | `app.py`、`context.py`、`schemas.py` 及 8 个分组模块 |
-| `workflows` | 串联文件准备、GUI/CLI 调用与结果校验的端到端工作流 | `revision.py`、`house.py`、`simulation.py`、`blocks.py`、`delivery.py` |
-| `engineering` | 可研简报核对、工程参数交接单、输入复核与多方案结果对比 | `brief.py`、`handoff.py`、`review.py`、`comparison.py` |
-| `project` | `.PRJ` / `.VCx` 文本解析、逆变器/组串拓扑、模板筛选与朝向控制 | `variants.py`、`variant_readback.py`、`variant_updates.py`、`variant_topology.py`、`variant_writer.py`、`circuit.py`、`tracking.py`、`paths.py`、`fileio.py` |
-| `components` | `.PAN` / `.OND` / `.BTR` / `.GEN` 组件库管理、曲线编辑、商业字段与引用创建 | `store.py`、`editor.py`、`pan.py`、`battery.py`、`curves.py`、`identity.py` |
-| `scene` | `.pvc2` 房屋与光伏阵列 3D 网格构建、XML 回读及空间坐标比对 | `author.py`、`reader.py`、`mapping.py`、`state.py` |
-| `energy` | 负荷曲线、储能系统、电气参数、AC/DC 线缆与详细损失字段读写 | `profiles.py`、`storage.py`、`system.py`、`power.py`、`ac.py`、`dc.py` |
-| `weather` | 地理编码、Open-Meteo ERA5 下载、时基转换、`.SIT`/`.MET` 准备与核对 | `acquisition.py`、`preparation.py`、`review.py`、`csv.py` |
-| `native` | `PVsystCLI.exe` 命令行封装、免 GUI 场景构建（`headless.py` / `_prep.py`）与旧版 Win32 GUI 辅助外壳 | `cli.py`、`headless.py`、`_prep.py`、`project.py`、`scene.py`、`horizon.py`、`dc.py` |
-| `results.py` | 仿真结果 CSV 解析与逐时指标汇总、年度能量平衡校核与双结果逐时对比 | `results.py` |
+| `api` | MCP 协议层、引导层（`instructions`/Prompt/Resource）、入参校验、工具分组注册与进程内共享上下文 | `app.py`、`context.py`、`guidance.py`、`schemas.py` 及 8 个分组模块 |
+| `workflows` | 串联文件准备、零模板合成、批处理扫描、自动优化、GUI/CLI 调用、Plotly 交互报告与交付打包的端到端工作流 | `design.py`、`utility.py`、`batch.py`、`optimize.py`、`report.py`、`revision.py`、`house.py`、`simulation.py`、`blocks.py`、`delivery.py` |
+| `engineering` | 自动选型、物理诊断引擎、财务/TOU 经济性评估、可研简报核对、工程参数交接单与多方案结果对比 | `suggest.py`、`diagnostics.py`、`economics.py`、`sizing.py`、`envelope.py`、`brief.py`、`handoff.py`、`review.py`、`comparison.py` |
+| `project` | `.PRJ` / `.VCx` 文本解析、零模板工程合成器、`pvBiFacial` 双面建模、逆变器/组串拓扑、模板筛选与朝向控制 | `synthesize.py`、`bifacial.py`、`variants.py`、`variant_readback.py`、`variant_updates.py`、`variant_topology.py`、`variant_writer.py`、`circuit.py`、`tracking.py`、`paths.py`、`fileio.py` |
+| `components` | `.PAN` / `.OND` / `.BTR` / `.GEN` 组件库管理与 mtime 元数据索引、曲线编辑、商业字段、引用衍生与无模板单二极管/Mode-1 合成 | `store.py`、`builder.py`、`single_diode.py`、`editor.py`、`pan.py`、`battery.py`、`curves.py`、`commercial.py`、`identity.py` |
+| `scene` | `.pvc2` 3D 房屋与光伏网格构建、有限 3D 地面多边形裁剪与阴影生成、XML 回读及空间坐标比对 | `author.py`、`ground.py`、`reader.py`、`mapping.py`、`state.py` |
+| `energy` | 负荷曲线、AC 耦合储能系统、电气参数、AC/DC 线缆与详细损失字段读写 | `profiles.py`、`load.py`、`storage.py`、`system.py`、`power.py`、`ac.py`、`dc.py` |
+| `weather` | 地理编码、Open-Meteo ERA5 / PVGIS v5.3 TMY / NASA POWER 下载、亚小时 CSV 与 `.SIT`/`.MET` 制备与核对 | `acquisition.py`、`preparation.py`、`review.py`、`csv.py` |
+| `native` | `PVsystCLI.exe` 命令行封装、免 GUI 3D 阴影/精细接线构建（`headless.py` / `_prep.py`）与旧版 Win32 GUI 辅助外壳 | `cli.py`、`headless.py`、`_prep.py`、`project.py`、`scene.py`、`horizon.py`、`dc.py` |
+| `results.py` | 仿真结果 CSV 解析与逐时/亚小时指标汇总、年度能量平衡校核与双结果逐时对比 | `results.py` |
 
 阅读代码时的经验法则：
 - 想看某个 MCP 工具怎么接请求、转换异常，去 `api/` 下找对应分组文件。
@@ -29,9 +29,9 @@ Windows 上所有原始 CLI 调用统一经 `native/cli.PVsystCLI._run` 在私�
 
 ## MCP 上下文与参数校验
 
-`api/context.py` 维护了进程内唯一的 `PVsystCLI` 实例和工作区重入锁（`RLock`），并挂载了一个前置中间件 `reject_unknown_tool_arguments`。所有 66 个工具都会根据 Python 函数签名严格校验顶层入参，一旦传了未知字段名会直接返回明确的错误提示，避免因为参数名拼写错误而在写文件时静默漏掉配置。复杂嵌套参数的结构校验集中在 `api/schemas.py`。
+`api/context.py` 维护了进程内唯一的 `PVsystCLI` 实例和工作区重入锁（`RLock`），并挂载了一个前置中间件 `reject_unknown_tool_arguments`。所有 72 个工具都会根据 Python 函数签名严格校验顶层入参，一旦传了未知字段名会直接返回明确的错误提示，避免因为参数名拼写错误而在写文件时静默漏掉配置。复杂嵌套参数的结构校验集中在 `api/schemas.py`。
 
-`api/app.py` 根据环境变量 `PVSYST_TOOL_GROUPS` 动态导入选定的工具组模块并启动 stdio 服务（共 10 个分组；未设置该变量时默认加载 8 个核心分组共 34 个工具，设为 `all` 时加载全部 10 个分组共 66 个工具）。
+`api/app.py` 根据环境变量 `PVSYST_TOOL_GROUPS` 动态导入选定的工具组模块并启动 stdio 服务（共 10 个分组；未设置该变量时默认加载 8 个核心分组共 43 个工具，设为 `all` 时加载全部 10 个分组共 72 个工具）。
 
 需要注意的是，进程内的 `RLock` 只负责同步当前 MCP 服务进程内部的多线程调用；如果你同时在桌面上开着 PVsyst GUI 手动改同一个工程，还是要靠文件 SHA-256 校验（`expected_sha256`）来防止互相覆盖。
 

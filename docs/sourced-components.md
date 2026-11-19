@@ -1,8 +1,10 @@
 # 基于规格书引用创建自定义 PAN / OND 组件
 
-当手头只有组件或逆变器的 PDF 规格书参数，还没有现成的 `.PAN` / `.OND` 文件时，可以用 `pvsyst_build_sourced_component` 基于工作区里已有的同类型明文模板派生出一个新的自定义 `.PAN` 或 `.OND` 文件。
+当手头只有组件或逆变器的 PDF 规格书参数，还没有现成的 `.PAN` / `.OND` 文件时，可以用 `pvsyst_build_sourced_component` 创建自定义 `.PAN` 或 `.OND` 文件：
+- **模板派生模式（传入 `template_name`）**：基于工作区里已有的同类型明文模板覆盖规格书参数，并将继承自模板的底层参数和曲线记录在 `.sources.json` 中（状态为 `needs_review`）。
+- **零模板综合模式（v0.4.0 新增，省略 `template_name` / 设为 `null`）**：无需现成模板，直接根据规格书电气参数合成完整明文 `.PAN` / `.OND`——`.PAN` 使用 5 参数单二极管求解器（`RShunt`、`Rp_0`、`RSerie`、`Gamma`）拟合 STC 曲线，`.OND` 自动生成 Mode-1 8 点 `ProfilPIO` 效率曲线并写入 `VNomEff`、`NbMPPT`、`IDCMax`、`IMaxDC` 等关键电气字段。
 
-工具会严格核对每个修改字段的数值、单位和原文摘录（`excerpt`），并把“本次按规格书改了哪些字段”与“从模板直接继承了哪些底层模型参数和曲线”一五一十地列在返回结果和 `.sources.json` 清单里，所以生成后的状态固定为 `needs_review`，提醒工程师清楚哪些底层参数沿用了模板。
+工具会严格核对每个修改字段的数值、单位和原文摘录（`excerpt`），并把“本次按规格书改了哪些字段”与“从模板直接继承（或自动综合拟合）了哪些底层模型参数和曲线”一五一十地列在返回结果和 `.sources.json` 清单里，方便工程师审核确认。
 
 ## 操作步骤
 
@@ -18,8 +20,11 @@
 | `PAN` | `PNom` | `W`（原文里写 `Wp` 也可通过 `source_unit_text="Wp"` 直接匹配） |
 | `PAN` | `ISC`, `Imp` | `A`（写盘时自动保留模板原有的 `ISC` 或 `Isc` 大小写拼写） |
 | `PAN` | `Voc`, `Vmp` | `V` |
+| `PAN` | `muIsc`, `muVocSpec`, `muPmpReq`（v0.4.0） | `%/degC`、`mA/degC`、`A/degC`、`mV/degC`、`V/degC`（允许负温度系数） |
+| `PAN` | `BifacialityFactor`, `NCelS`, `NCelP`（v0.4.0） | 比例（`0..1` 或 `%`）与串/并联电池片数 |
 | `OND` | `PNomConv`, `PMaxOUT` | `kW` |
-| `OND` | `VMppMin`, `VMPPMax`, `VAbsMax` | `V` |
+| `OND` | `VMppMin`, `VMPPMax`, `VAbsMax`, `VNomEff`（v0.4.0） | `V` |
+| `OND` | `IDCMax`, `IMaxDC`, `NbMPPT`（v0.4.0） | `A` 与 MPPT 路数 |
 | `OND` | `EfficMax`, `EfficEuro` | `%`（传百分数如 `97.8`，不要传小数 `0.978`） |
 | 通用商业字段（8.1.6） | `Width`, `Height`, `Depth` | `m` 或 `mm`（传 `mm` 时自动除以 `1000` 转为 `.PAN`/`.OND` 内部使用的米，并在 `unit_conversions` 中记录） |
 | 通用商业字段（8.1.6） | `Weight` | `kg` |

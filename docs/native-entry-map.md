@@ -78,6 +78,18 @@
 | 已保存场景的 PV 表格关联检查 | 只读状态 | `pvsyst_get_variant_parameters` 返回 `shading_scene.pv_bindings`，以及 `module_layout` 保存完整性，见[PV 区域关联读取](native-scene-bindings.md) |
 | Module Layout 精细电气阴影 | MCP 已封装（原生写入 + 显式 `string_layout`） | 导入工具及住宅任务的 `shading_mode="module_layout"` 写入原生组件布局、支持双朝向自动填串与显式逐格 `string_layout` 接线（兼容含 `obstacles`/`oeTree` 场景）；已通过 PVsyst 8.1.7 CLI `ShdElec` 仿真验证，见[原生住宅任务](native-house-task.md#module-layout-电气阴影) |
 | 既有 3D 场景阴影重算 | MCP 已封装 | `pvsyst_run_simulation(recompute_shading=True)` 调 CLI `-rs` 参数重新计算阴影表 |
+| 地面有限 3D 多边形阵列、障碍物与坡度（`BaseSlope`） | MCP 已封装（v0.4.0，已过 8.1.7 实测） | `pvsyst_simulate_design(scope="ground_sheds", ground_layout={site_polygon, setback_m, obstacles, base_slope_deg, ...})` 支持 2D 凸/凹多边形自动裁剪排布 `pvShdArrayTable`、叠加 3D 障碍物与非零 `BaseSlope`（已在 PVsystCLI 8.1.7 零警告通过实测） |
+
+## 商业组件、多源气象、经济性、自动优化与交互报告（v0.4.0）
+
+| 功能项 | 当前支持状态 | 底层模块与注意事项 |
+|---|---|---|
+| 商业组件电气筛选与索引缓存 | MCP 已封装 | `pvsyst_list_components` 支持 `min_power_w`/`max_power_w`/`bifacial`/`min_system_voltage_v`/`min_mppt`/`manufacturer` 筛选，工作区自动维护 mtime 缓存 `.mcp-component-index.json` |
+| 规格书无模板 `.PAN`/`.OND` 合成 | MCP 已封装（已过 8.1.7 实测） | `pvsyst_build_sourced_component(template_name=None)` 调用 `single_diode.py` 数值求解五参数单二极管模型（自动写双面 bit 23 `$00800000`）与 Mode-1 8 点逆变器效率曲线；620W 双面 `.PAN` + 110kW `.OND` 已过 PVsystCLI 8.1.7 零警告实测 |
+| 多权威气象数据源与一键制备 | MCP 已封装 | `pvsyst_acquire_weather` 支持 `provider="open_meteo_era5" \| "pvgis_tmy" \| "nasa_power"` 及 `prepare=true` 一键串接 `prepare_weather`；`pvsyst_simulate_design` 的 `weather.mode` 同步支持 `pvgis_tmy` 与 `nasa_power` |
+| 财务 / 分时电价（TOU）与光储套利评估 | MCP 已封装 | `pvsyst_evaluate_economics`（纯 Python，不修改 `.VC0` 的 `TEcoEvaluation`）流式结算小时/子小时 CSV 或批处理汇总表，计算 25 年衰减现金流、LCOE、NPV、IRR、静动态回收期与多方案排名 |
+| 诊断 → 修正 → 重仿有界优化闭环 | MCP 已封装 | `pvsyst_optimize_variant` 默认 `dry_run=true` 返回确定性修复方案与 diff；`dry_run=false, confirm=true` 在克隆变体上迭代（`max_iterations` 1..5，绝不覆盖基线） |
+| Plotly 交互式 HTML 工程报告 | MCP 已封装 | `pvsyst_generate_report` 输出中/英文单方案或多方案对比 HTML 报告（月度发电/PR、损失瀑布图、24h TOU/光储曲线、25 年现金流、诊断明细与打印 PDF 样式） |
 
 ## 负荷与储能（Loads & Storage）
 

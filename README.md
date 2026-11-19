@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Local MCP server and Python adapter for driving an installed copy of PVsyst 8 on Windows. It wraps `PVsystCLI.exe` for simulations, weather conversion, and license checks, and provides headless parsers and builders for PVsyst text files (`.PRJ`, `.VCx`, `.PAN`, `.OND`, `.BTR`, `.GEN`, `.SIT`) including 3D house scenes with obstacles (`.pvc2` -> `.VCx`) and DC wiring calculations.
+Local MCP server and Python adapter for driving an installed copy of PVsyst 8 on Windows. It wraps `PVsystCLI.exe` for simulations, weather conversion, and license checks, and provides headless parsers, zero-template synthesizers, diagnostics, TOU economics, bounded auto-optimization, and interactive Plotly HTML reporting across `.PRJ`, `.VCx`, `.PAN`, `.OND`, `.BTR`, `.GEN`, `.SIT`, and 3D `.pvc2` shading scenes.
 
 You need your own PVsyst installation and license on the host machine.
 
@@ -10,13 +10,16 @@ You need your own PVsyst installation and license on the host machine.
 
 | What you want to do | Main entry point | Guide |
 |---|---|---|
-| Run a zero-template fixed-plane or utility ground sheds/tracker PV design (mono or bifacial, optional auto-sizing) | `pvsyst_simulate_design`, `pvsyst_suggest_sizing` | [Single-design inputs](docs/single-design-inputs.md) |
+| Run a zero-template fixed-plane or utility ground sheds/tracker PV design (mono/bifacial, finite 3D `site_polygon` + `obstacles` + `base_slope_deg`, optional auto-sizing) | `pvsyst_simulate_design`, `pvsyst_suggest_sizing` | [Single-design inputs](docs/single-design-inputs.md) |
+| Filter workspace/builtin components by electrical specs or synthesize custom `.PAN`/`.OND` directly from datasheets (zero-template single-diode / Mode-1 curves) | `pvsyst_list_components`, `pvsyst_build_sourced_component` | [Sourced components](docs/sourced-components.md) |
+| Fetch hourly or TMY weather (`Open-Meteo ERA5`, `PVGIS v5.3 TMY`, `NASA POWER`) and optionally chain into `.SIT`/`.MET` preparation | `pvsyst_resolve_location`, `pvsyst_acquire_weather`, `pvsyst_prepare_weather` | [Weather preparation](docs/weather-preparation.md) |
 | Run a parametric sweep (tilt, pitch, albedo, soiling, grid limit) in one CLI call and rank results | `pvsyst_run_batch_sweep` | [Tool reference](docs/tool-reference.md) |
-| Audit completed simulation CSVs (+ optional `.VC0` attribution) for clipping, shading, voltage, or storage anomalies | `pvsyst_diagnose_results` | [Tool reference](docs/tool-reference.md) |
-| Inspect an existing project, apply an isolated change, and run a full year | `pvsyst_project_handoff`, `pvsyst_run_engineering_task` | [Engineering delivery](docs/engineering-delivery.md) |
-| Build a 3D house + obstacles scene, bind roof orientations, and run annual shading | `pvsyst_run_house_task` | [House task](docs/native-house-task.md) |
+| Audit completed simulation CSVs (+ optional `.VC0` attribution) and run a bounded Diagnose → Patch → Re-simulate loop on cloned variants | `pvsyst_diagnose_results`, `pvsyst_optimize_variant` | [Tool reference](docs/tool-reference.md) |
+| Evaluate fixed/TOU tariffs, PV+BESS peak-shaving arbitrage, 25-year cashflows, LCOE, NPV, IRR, and payback | `pvsyst_evaluate_economics` | [Tool reference](docs/tool-reference.md) |
+| Generate interactive bilingual (zh/en) Plotly HTML reports (monthly yield/PR, loss waterfall, 24h TOU profile, cashflow) or ZIP delivery bundles | `pvsyst_generate_report`, `pvsyst_export_engineering_delivery` | [Engineering delivery](docs/engineering-delivery.md) |
+| Build a 3D house + obstacles scene, bind roof orientations, and run annual shading (`linear` or `module_layout`) | `pvsyst_run_house_task` | [House task](docs/native-house-task.md) |
 | Prepare hourly or sub-hourly (`5/10/15/30 min`) weather and evaluate AC-coupled storage | `pvsyst_prepare_weather`, `pvsyst_create_grid_storage_system`, `pvsyst_run_simulation` | [Storage engineering](docs/engineering-storage.md) |
-| Diff scenarios and bundle engineering deliverables | `pvsyst_compare_engineering_scenarios`, `pvsyst_export_engineering_delivery` | [Scenario comparison](docs/engineering-scenarios.md) |
+| Inspect an existing project, apply an isolated revision, or diff multiple scenarios | `pvsyst_project_handoff`, `pvsyst_run_engineering_task`, `pvsyst_compare_engineering_scenarios` | [Scenario comparison](docs/engineering-scenarios.md) |
 | Check feasibility briefs or block assembly (requires `expert`) | `pvsyst_review_engineering_brief`, `pvsyst_prepare_block_project` | [Brief review](docs/engineering-brief.md) |
 
 By default the server registers **43 core tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **72 tools**; to keep the defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`. For migrating from `v0.1.0`, see [Upgrading from v0.1.0](docs/tool-reference.md#upgrading-from-v010).
@@ -38,7 +41,7 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 .\.venv\Scripts\python.exe -m pvsyst_auto
 ```
 
-Dependencies (`mcp` 2.x and `tzdata` for Windows IANA timezones) are declared in `pyproject.toml`. Running `pip install -r requirements.txt` installs the same editable package; use `pip install .` for a regular install.
+Dependencies (`mcp` 2.x, `pydantic` 2.x, `plotly` for interactive HTML reports, and `tzdata` for Windows IANA timezones) are declared in `pyproject.toml`. Running `pip install -r requirements.txt` installs the same editable package; use `pip install .` for a regular install.
 
 ## MCP client configuration
 
@@ -68,8 +71,8 @@ Once connected, the server exposes MCP protocol `instructions`, 4 built-in workf
 By default (when `PVSYST_TOOL_GROUPS` is unset), the server exposes only the **43 core workflow tools** (`setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`) so LLM context stays compact. Set `PVSYST_TOOL_GROUPS` in `env` to customize; an explicit list replaces the defaults:
 
 - `"PVSYST_TOOL_GROUPS": "all"` exposes all **72 tools** (the 8 default groups plus `admin` and `expert`).
-- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"` keeps the defaults and adds `expert` (65 tools).
-- `"PVSYST_TOOL_GROUPS": "setup,engineering,results"` exposes only those 11 tools.
+- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"` keeps the defaults and adds `expert` (68 tools).
+- `"PVSYST_TOOL_GROUPS": "setup,engineering,results"` exposes only those 13 tools.
 - Valid group keys (case-sensitive): `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`, `admin`, `expert` (or `all`). Unknown, empty, or duplicate group names raise an error at startup so typos fail fast.
 
 ## Understanding task statuses
@@ -88,16 +91,16 @@ High-level workflow tools return structured status fields so callers can tell th
 
 ```text
 src/pvsyst_auto/
-├── api/          # MCP server setup, strict argument validation, and 8 tool modules
-├── workflows/    # End-to-end pipelines (template runs, revisions, house tasks, ZIP delivery)
-├── engineering/  # Feasibility brief checks, input handoff, and multi-scenario diffs
-├── project/      # .PRJ/.VCx parsing, subarray circuits, templates, and orientations
-├── components/   # .PAN/.OND/.BTR/.GEN readers, allowlisted editors, and curve tables
-├── scene/        # PVCollada (.pvc2) 3D house mesh generator, XML reader, and coordinate checks
-├── energy/       # Load profiles, battery storage, loss scalars, and power factor / grid limits
-├── weather/      # Open-Meteo ERA5 downloader, LegalTime alignment, and .SIT/.MET conversion
-├── native/       # Subprocess wrapper for PVsystCLI.exe and Win32 GUI automation bridges
-└── results.py    # Result CSV parser and hourly aggregation
+├── api/          # MCP server setup, protocol guidance (prompts/resources), strict validation, 8 tool modules
+├── workflows/    # End-to-end pipelines (design, utility 3D, batch sweep, optimize loop, house tasks, Plotly HTML report, ZIP delivery)
+├── engineering/  # Sizing assistant, physics diagnostics, financial/TOU economics, handoff, brief checks, scenario comparison
+├── project/      # .PRJ/.VCx parsing, zero-template synthesizer, pvBiFacial, circuits, templates, and orientations
+├── components/   # .PAN/.OND/.BTR/.GEN store + mtime index cache, allowlisted editors, single-diode/Mode-1 datasheet synthesis
+├── scene/        # PVCollada (.pvc2) 3D house mesh & finite 3D ground polygon clipper/shading builder
+├── energy/       # Load profiles, AC-coupled battery storage, loss scalars, and power factor / grid limits
+├── weather/      # Open-Meteo ERA5, PVGIS v5.3 TMY & NASA POWER downloaders, sub-hourly CSV & .SIT/.MET conversion
+├── native/       # Subprocess wrapper for PVsystCLI.exe, headless 3D pvShading/module_layout emitter, and legacy Win32 bridge
+└── results.py    # Result CSV parser and hourly/sub-hourly aggregation
 ```
 
 See [architecture.md](docs/architecture.md) for module responsibilities and old-to-new import paths, and [native-entry-map.md](docs/native-entry-map.md) for the support matrix across PVsyst features.

@@ -11,7 +11,7 @@ Tests are split into fast, independent suites so local changes only need to run 
   - `tests/e2e/test_mcp_full_workflows_e2e.py`: Full stdio MCP server workflow tests dynamically seeded from `DataRO\PVsyst8.1_Data` in an isolated temp workspace (automatically snapshots & byte-restores `PVsyst.ini` and `PVsystCLI.ini`), covering:
     1. `pvsyst_run_house_task` (`portrait`, positive spacing, `obstacles`, `module_layout`),
     2. DC cabling + `SystemUnavail` + `PowerShift`/`PeakShaving` combo simulation,
-    3. Zero-template `ground_tracker` + `auto_from_components` + `pvBiFacial` + `pvsyst_diagnose_results` (`.VC0` attribution) + `pvsyst_run_batch_sweep` + MCP guidance surface (`instructions`, 4 prompts, 2 resources, 40 default tools),
+    3. Zero-template `ground_tracker` + `auto_from_components` + `pvBiFacial` + `pvsyst_diagnose_results` (`.VC0` attribution) + `pvsyst_run_batch_sweep` + MCP guidance surface (`instructions`, 4 prompts, 2 resources, 43 default tools),
     4. 15-minute sub-hourly weather preparation (`pvsyst_prepare_weather(..., step_minutes=15)`) + `PeakShaving` AC storage `-ts:subhour` vs hourly comparison. Run with:
 
 ```sh
@@ -25,7 +25,7 @@ Use a clean Python 3.10+ virtual environment, build and install the wheel, and r
 ```sh
 python -m pip install build
 python -m build
-python -m pip install dist/pvsyst_cli_mcp-0.3.0-py3-none-any.whl
+python -m pip install dist/pvsyst_cli_mcp-0.4.0-py3-none-any.whl
 python scripts/ci_checks.py --report dist/ci-report.json
 python scripts/run_tests.py --suite workflows -v
 ```

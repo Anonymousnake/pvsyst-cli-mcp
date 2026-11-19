@@ -2,7 +2,9 @@
 
 `pvsyst_prepare_weather` 将工作区 `Meteo` 下的一份 PVsyst 标准逐时气象 CSV 一步转换为新的 `.SIT`（站点）和 `.MET`（二进制/编码气象）文件，并在 `Results` 下生成一份来源清单 JSON，供后续 [`pvsyst_simulate_template`](automatic-simulation.md) 绑定和逐时核对使用。
 
-如果需要先从 Open-Meteo ERA5 在线下载某年的标准逐时 CSV，请先调用 `pvsyst_acquire_weather`（或直接用一站式入口 [`pvsyst_simulate_design`](single-design-inputs.md)）。
+如果需要先在线下载标准逐时 CSV，请调用 `pvsyst_acquire_weather`（支持 `source="open_meteo"` ERA5 历史年、以及 v0.4.0 新增的 `source="pvgis_tmy"` PVGIS v5.3 典型气象年和 `source="nasa_power"` NASA POWER，并支持 `prepare=true` 一步下载并直接生成 `.SIT`/`.MET`），或直接用一站式入口 [`pvsyst_simulate_design`](single-design-inputs.md)。
+
+> **v0.4.0 补充**：`pvsyst_prepare_weather` 同时支持对 15 分钟 / 30 分钟子小时观测 CSV 自动聚合为标准整点气象后转换。
 
 ## 输入要求与调用示例
 

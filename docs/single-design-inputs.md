@@ -14,7 +14,7 @@
 | `tilt` / `azimuth` | 固定倾角（`0..90°`）与方位角（`-180..180°`，遵循 PVsyst 惯例：正南为 `0°`，偏西为正，偏东为负） |
 | `module` / `inverter` | 组件与逆变器标识：可传精确的 `{"manufacturer": "...", "model": "..."}` 或直接传工作区文件名 `{"file_name": "..."}` |
 | `template_project` / `variant` | 可选；指定作为底板的模板工程与变体，不传则自动扫描工作区择优或使用内置标准种子 |
-| `weather` | 气象数据模式：`existing`（已有 `.SIT`/`.MET`）、`csv`（本地标准逐时 CSV）或 `open_meteo`（在线下载 ERA5） |
+| `weather` | 气象数据模式：`existing`（已有 `.SIT`/`.MET`）、`csv`（本地标准逐时 CSV）、`open_meteo`（Open-Meteo ERA5）、`pvgis_tmy`（PVGIS v5.3 典型气象年，v0.4.0）或 `nasa_power`（NASA POWER，v0.4.0） |
 | `capacity` / `electrical_design` | **二选一必填**：`capacity` 直接给算好的电压/电流边界；`electrical_design` 给带出处的温度系数与极值，由工具推导边界 |
 | `losses` | 可选损失参数覆盖，支持 `LIDLoss`、`PMismMPP`、`ModuleQualityLoss` 与主阵列 `UFactor` |
 | `report_pages` | 可选 PDF 报告页名列表，见[天气与报告](automatic-simulation.md#天气与报告) |
@@ -68,13 +68,15 @@
   - 如果用短路电流温度系数 $\alpha_{Isc}$ 推导最大电流，必须同时给出最大有效辐照度 `max_irradiance_w_m2` 和双面背面增益 `rear_gain_factor`（不会默认按 $1000\text{ W/m}^2$ 或背面增益 $0$ 偷算）。
   - 温度须满足 `-100 ≤ 最低环境温度 ≤ 最低组件工作温度 ≤ 最高组件工作温度 ≤ 150 °C`，且最低环境温度需提供设计依据 `min_ambient_basis`（不能直接拿某一年气象文件里的最低温当多年极端低温）。
 
-## 三种气象模式（`weather.mode`）
+## 五种气象模式（`weather.mode`）
 
 - `existing`：直接使用工作区现有的 `sit_name` 和 `met_name`。
 - `csv`：指定 `Meteo` 下已放好的标准逐时 CSV，自动调 [`pvsyst_prepare_weather`](weather-preparation.md) 生成 `.SIT`/`.MET`。
 - `open_meteo`：在线调 Open-Meteo 拉取指定年份的 ERA5 逐时辐射（`GHI`/`DHI`）与 2 米气温（`temperature_2m`）。
-  - 地点可以通过 [`pvsyst_resolve_location`](tool-reference.md) 查出唯一 `location_id` 传入，或者直接传完整的 `latitude`、`longitude`、`site_label`、`altitude`、`country_code`、`timezone_name`（两种方式二选一，不能混传）。
+- `pvgis_tmy`（v0.4.0）：在线调 PVGIS v5.3 拉取 8760 小时典型气象年（TMY，仅支持非闰年）。
+- `nasa_power`（v0.4.0）：在线调 NASA POWER 拉取逐时太阳辐射与气象数据（自动按经度换算并对齐到当地标准时）。
+  - 以上三种在线模式均支持通过 [`pvsyst_resolve_location`](tool-reference.md) 查出唯一 `location_id` 传入，或者直接传完整的 `latitude`、`longitude`、`site_label`、`altitude`、`country_code`、`timezone_name`（两种方式二选一，不能混传）。
   - 下载器会自动把 UTC 数据对齐到当地冬季标准时（`LegalTime`，要求时区为 `-12..+12` 整点偏移且年内标准时不变；半小时时区或像 `Europe/Dublin`、`Africa/Casablanca` 这种带负夏令时的时区会直接拦截，避免错位 1 小时）。
-  - 因为 ERA5 的 `temperature_2m` 是整点瞬时值，工具会取前后两个整点的算术均值（`endpoint_mean`）作为该小时的平均气温，并在返回结果中保留一条 `needs_review` 说明。
+  - 对于 ERA5，因为 `temperature_2m` 是整点瞬时值，工具会取前后两个整点的算术均值（`endpoint_mean`）作为该小时的平均气温，并在返回结果中保留一条 `needs_review` 说明。
 
-注意：当 `weather.mode="open_meteo"` 且 `dry_run=true` 时，因为还没真正联网下载 CSV，预检会返回 `status="ready_for_weather"` 且 `execution_preflight_complete=false`。
+注意：当 `weather.mode` 为在线下载模式（`open_meteo` / `pvgis_tmy` / `nasa_power`）且 `dry_run=true` 时，因为还没真正联网下载 CSV，预检会返回 `status="ready_for_weather"` 且 `execution_preflight_complete=false`。

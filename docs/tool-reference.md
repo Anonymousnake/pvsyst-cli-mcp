@@ -69,9 +69,9 @@ Detailed guides: [project sources & transactions](project-source-verification.md
 
 | Tool | What it does |
 |---|---|
-| `pvsyst_list_components`, `pvsyst_get_component` | List and inspect `.PAN`, `.OND`, `.BTR`, `.GEN`, and `.REV` files |
+| `pvsyst_list_components`, `pvsyst_get_component` | List (with electrical filters: power range, bifaciality, system voltage, MPPT count, manufacturer, backed by an mtime metadata index cache) and inspect `.PAN`, `.OND`, `.BTR`, `.GEN`, and `.REV` files |
 | `pvsyst_create_component` | Create a workspace component from UTF-8 `PVObject_` text |
-| `pvsyst_build_sourced_component` | Derive a new `.PAN` or `.OND` from a workspace/builtin template using cited datasheet values and units, while explicitly listing inherited fields and curves |
+| `pvsyst_build_sourced_component` | Build a new `.PAN` or `.OND` from cited datasheet values: either derived from a template (`template_name` set) or synthesized zero-template with 5-parameter single-diode / Mode-1 efficiency curve derivation (`template_name` omitted) |
 | `pvsyst_update_component` | Edit allowlisted commercial/electrical fields, remarks, or Mode 1 curve tables with SHA-256 checks and automatic backup |
 
 Detailed guides: [sourced components](sourced-components.md), [commercial fields](commercial-verification.md), [Mode 1 curve tables](curve-table-verification.md), [OND efficiency curves](ond-curve-verification.md), [BTR capacity curves](btr-capacity-verification.md), [GUI PAN format](gui-pan-verification.md), and [backup generator settings](generator-verification.md).
@@ -81,8 +81,8 @@ Detailed guides: [sourced components](sourced-components.md), [commercial fields
 | Tool | What it does |
 |---|---|
 | `pvsyst_resolve_location` | Query Open-Meteo geocoding for a place name and return all candidates with `location_id`, coordinates, ISO country code, and IANA timezone |
-| `pvsyst_acquire_weather` | Download a full calendar year of Open-Meteo ERA5 hourly irradiance and temperature, aligned to local winter standard time (`LegalTime`), and save the raw JSON, standard CSV, and manifest |
-| `pvsyst_prepare_weather` | Convert a validated hourly CSV into new `.SIT`/`.MET` files and record a provenance manifest |
+| `pvsyst_acquire_weather` | Download full-year hourly or TMY weather from `open_meteo_era5`, `pvgis_tmy` (PVGIS v5.3 TMY), or `nasa_power`, aligned to local winter standard time (`LegalTime`), with optional one-step `prepare=true` chaining into `.SIT`/`.MET` |
+| `pvsyst_prepare_weather` | Convert a validated hourly or sub-hourly (`5/10/15/30/60 min`) CSV into new `.SIT`/`.MET` files and record a provenance manifest |
 | `pvsyst_review_weather` | Compare an acquired/prepared weather CSV against simulation output and `.MET`/`.SIT` headers |
 
 Detailed guides: [weather input checks](weather-input-verification.md), [weather preparation](weather-preparation.md), and [weather engineering review](weather-engineering-review.md).
@@ -106,7 +106,7 @@ Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parame
 | `pvsyst_run_simulation` | Run a single or batch simulation via `PVsystCLI.exe` with optional date range, `.SFI`, `.RVT`, `time_step="hour" | "subhour"`, report page selection (`-rp`), and shading recomputation (`-rst`) |
 | `pvsyst_run_batch_sweep` | Generate `UserBatch/<name>_BatchParams.CSV` + `_BatchVariables.RVT` from a Cartesian grid or explicit scenario rows (<=100 scenarios), run one `PVsystCLI` batch call, and return ranked scenario results with baseline deltas |
 | `pvsyst_run_house_task` | End-to-end 3D house + obstacles workflow: generate `.pvc2`, build native `.VCx` (`scene_import_method="native"` default, `linear` or `module_layout`), and run a full-year CLI simulation with checkpoint resume |
-| `pvsyst_simulate_design` | Unified single-design workflow (`fixed_unshaded_grid`, `ground_sheds`, `ground_tracker`, optional `ground_layout` and `bifacial`) combining component lookup, zero-template synthesis, sizing (`capacity`/`electrical_design`/`auto_from_components`), weather preparation, annual simulation, and automatic diagnostics |
+| `pvsyst_simulate_design` | Unified single-design workflow (`fixed_unshaded_grid`, `ground_sheds`, `ground_tracker`, optional `ground_layout` with finite 3D `site_polygon`/`obstacles`/`base_slope_deg` and `bifacial`) combining component lookup, zero-template synthesis, sizing (`capacity`/`electrical_design`/`auto_from_components`), weather acquisition/preparation (`open_meteo`, `pvgis_tmy`, `nasa_power`, `csv`, `existing`), annual simulation, and automatic diagnostics |
 | `pvsyst_prepare_sourced_design` | Extract an `electrical_design` envelope from cited datasheet snippets and check whether all required voltage/current/temperature inputs are present |
 | `pvsyst_optimize_variant` | Bounded Diagnose -> Clone -> Patch -> Re-simulate loop (`dry_run=true` default previews deterministic fixes and diffs; `confirm=true` iterates up to `max_iterations` 1..5 on cloned variants without mutating baseline) |
 
@@ -157,7 +157,7 @@ For safety, file arguments only accept bare filenames (no path traversal or arbi
 | `Advanced.dat`, load CSVs, authored `.pvc2` scenes | `UserData` |
 | Batch parameter `.CSV`, batch `.RVT`, batch summaries | `UserBatch` |
 | Per-scenario batch hourly `.CSV` | `UserHourly` |
-| Simulation `.CSV`/`.PDF`, delivery `.ZIP`, run manifests | `Results` |
+| Simulation `.CSV`/`.PDF`, interactive `.HTML` reports, delivery `.ZIP`, run manifests | `Results` |
 
 General conventions across all tools:
 - **Optimistic locking & backups**: Mutating tools verify `expected_sha256` (or current file tokens), write a backup snapshot before touching existing files, and refuse to overwrite existing target filenames when creating new variants/projects.
@@ -166,16 +166,15 @@ General conventions across all tools:
 
 ## Upgrading from v0.1.0
 
-The `v0.1.0` release exposed 82 MCP tools. The current surface registers 34 tools by default and 66 tools with `PVSYST_TOOL_GROUPS=all`. `PVSYST_TOOL_GROUPS` is an explicit allow-list: an explicit value replaces the default groups. To retain all defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`.
+The `v0.1.0` release exposed 82 MCP tools. As of `v0.4.0`, the server registers **43 tools by default** across 8 core groups and **72 tools** with `PVSYST_TOOL_GROUPS=all` (including new v0.3.0/v0.4.0 tools `pvsyst_suggest_sizing`, `pvsyst_diagnose_results`, `pvsyst_run_batch_sweep`, `pvsyst_evaluate_economics`, `pvsyst_optimize_variant`, and `pvsyst_generate_report`; `pvsyst_license_info`, `pvsyst_project_handoff`, and `pvsyst_export_engineering_delivery` were promoted back into the default groups in `v0.3.0`). `PVSYST_TOOL_GROUPS` is an explicit allow-list: an explicit value replaces the default groups. To retain all defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`.
 
-The following table lists all 32 tools that remain available but moved out of the default groups:
+The following table lists the 29 tools that remain available in opt-in groups (`admin` and `expert`):
 
 | Tool | Group |
 |---|---|
 | `pvsyst_export_logs` | `admin` |
 | `pvsyst_license_activate` | `admin` |
 | `pvsyst_license_deactivate` | `admin` |
-| `pvsyst_license_info` | `admin` |
 | `pvsyst_license_sync` | `admin` |
 | `pvsyst_build_monthly_weather` | `expert` |
 | `pvsyst_clone_subarray` | `expert` |
@@ -186,14 +185,12 @@ The following table lists all 32 tools that remain available but moved out of th
 | `pvsyst_create_mv_night_disconnect_variant` | `expert` |
 | `pvsyst_create_project` | `expert` |
 | `pvsyst_create_site` | `expert` |
-| `pvsyst_export_engineering_delivery` | `expert` |
 | `pvsyst_get_variant_components` | `expert` |
 | `pvsyst_import_house_pv_scene` | `expert` |
 | `pvsyst_inspect_weather_csv` | `expert` |
 | `pvsyst_list_variants` | `expert` |
 | `pvsyst_prepare_block_project` | `expert` |
 | `pvsyst_project_components` | `expert` |
-| `pvsyst_project_handoff` | `expert` |
 | `pvsyst_read_house_pv_scene` | `expert` |
 | `pvsyst_remove_subarray` | `expert` |
 | `pvsyst_review_engineering_brief` | `expert` |
