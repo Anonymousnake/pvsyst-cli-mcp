@@ -11,7 +11,7 @@ from tests.unit.energy.test_energy import ARRAY, BATTERY, CLOSE, GRID_STORAGE, P
 
 
 class StorageGridLimitTests(unittest.TestCase):
-    def fixture(self, flags, limit, *, existing=True):
+    def fixture(self, flags, limit, *, existing=True, strategy="PeakShaving"):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         workspace = Path(tmp.name)
@@ -22,8 +22,10 @@ class StorageGridLimitTests(unittest.TestCase):
         )
         system = STORAGE_SYSTEM.replace("$10010040", flags) if existing else PV_SYSTEM.replace("$00", flags)
         system = system.replace("    SystemType=Grid\n", "    SystemType=Grid\n" + limit)
-        peak = GRID_STORAGE.format(strategy="PeakShaving", unavail="").replace("PVAvailable", "PVToGridMin")
-        source = ROOT.format(root_flags="$00") + ARRAY + system + (peak if existing else "") + CLOSE
+        storage = GRID_STORAGE.format(strategy=strategy, unavail="")
+        if strategy == "PeakShaving":
+            storage = storage.replace("PVAvailable", "PVToGridMin")
+        source = ROOT.format(root_flags="$00") + ARRAY + system + (storage if existing else "") + CLOSE
         (projects / "Fixture.VC0").write_text(source, encoding="utf-8", newline="\r\n")
         return VariantStore(workspace, ComponentStore(workspace)), projects / "Fixture.VC1", system
 
@@ -49,6 +51,16 @@ class StorageGridLimitTests(unittest.TestCase):
                     for state in (result["before"], result["after"]):
                         self.assertEqual({k: v for k, v in state.items() if k.startswith("grid_limit_")},
                                          {key: float(value)})
+
+    def test_switching_existing_storage_to_peak_shaving_preserves_kva(self):
+        store, target, system = self.fixture("$17158040", "    PLimGrid=330.0\n    LimGrSeparLoss=False\n",
+                                             strategy="SelfConsumption")
+        result = self.edit(store, strategy="peak_shaving")
+        self.assertEqual(result["status"], "created", result)
+        self.assertEqual(result["after"]["strategy"], "PeakShaving")
+        self.assertEqual(result["after"]["grid_limit_kva"], 330.0)
+        self.assertNotIn("grid_limit_kw", result["after"])
+        self.assertIn(system.replace("\n", "\r\n").encode(), target.read_bytes())
 
     def test_explicit_kw_edits_preserve_active_limit_or_start_at_injection(self):
         for flags, expected_flags, separate_loss in (("$11100040", "$11100040", "True"),

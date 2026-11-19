@@ -452,7 +452,7 @@ def resolve_storage_controls(spec: dict, *, base: dict | None = None, inherited_
             if "grid_limit_kw" in limits:
                 resolved["grid_limit_kw"] = limits["grid_limit_kw"]
             elif "grid_limit_kva" in limits:
-                if not same_strategy:
+                if base is None:
                     raise ValueError("Native apparent grid limits use kVA and cannot be inherited as grid_limit_kw")
                 resolved["grid_limit_kva"] = limits["grid_limit_kva"]
             else:
