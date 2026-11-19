@@ -100,7 +100,7 @@ def _annual(csv_path, pdf_path, request, plan, variant, *, require_pdf=True):
             "hourly_rows": rows, "shading_output": {"column": "GlobShd", "unit": units["GlobShd"]}}
 
 
-def _prepare(store, components, request):
+def _prepare(store, components, request, *, resume=False):
     has_source_project = request.get("source_project") is not None
     has_source_variant = request.get("source_variant") is not None
     if has_source_project != has_source_variant:
@@ -237,7 +237,7 @@ def _prepare(store, components, request):
         # caller-supplied orientation_id.
         from pvsyst_auto.native.headless import _support_gate
         _support_gate(snap["source"], tables, source_bytes.decode("utf-8-sig"), mode,
-                      string_layout=binding)
+                      string_layout=binding, check_spacing=not resume)
     else:
         import pvsyst_auto.native.scene as native
         if not 1 <= len(tables) <= native.MAX_TABLES_BRIDGED:
@@ -331,7 +331,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
             # (absent/None/True). CSV-only runs still recompute shading.
             require_pdf = request.get("report_pdf") is not False
             guard_keys = {"csv", "pdf"} if require_pdf else {"csv"}
-            paths, plan = _prepare(store, components, request)
+            paths, plan = _prepare(store, components, request, resume=resume)
             synth_payload = plan.pop("_synthesized_files", None)
             zero_template = synth_payload is not None
             sources = {key: path for key, path in paths.items() if key in ("source_project", "source_variant", "site", "met", "pan", "ond")}

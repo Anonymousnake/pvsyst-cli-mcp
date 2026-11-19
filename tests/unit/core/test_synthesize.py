@@ -274,6 +274,17 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
         self.assertAlmostEqual(dry["plan"]["nominal_dc_kw"], 12 * 0.440, places=6)
         self.assertEqual(list((self.root / "Projects").iterdir()), [])
 
+        # Invalid native precision must fail before the synthesized project is written.
+        bad_layout = {"tables": [dict(layout["tables"][0], row_spacing_m=0.0005)]}
+        before = set(self.root.rglob("*"))
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                blocked = run_house_task(self.store, self.components, cli, request={**req, "layout": bad_layout},
+                                         dry_run=dry_run, confirm=not dry_run)
+                self.assertEqual(blocked["status"], "blocked", blocked)
+                self.assertRegex(blocked["issues"][0], r"SouthArray.*row_spacing_m=0\.0005 m.*0\.001 m")
+                self.assertEqual(set(self.root.rglob("*")), before)
+
         # Multi-roof zero-template dry run with two distinct roof orientations and auto PAN dimensions.
         house_dual = {
             "kind": "mesh",
