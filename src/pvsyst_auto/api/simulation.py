@@ -1,13 +1,15 @@
 """Simulation MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
-from pydantic import StrictBool, StrictInt, StrictStr
+from typing import Annotated, Literal
+from pydantic import Field, StrictBool, StrictInt, StrictStr
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
 from pvsyst_auto.workflows.batch import run_batch_sweep
 from pvsyst_auto.workflows.design import simulate_design
+from pvsyst_auto.workflows.optimize import optimize_variant
 from pvsyst_auto.workflows.sourced_design import prepare_sourced_design
 from pvsyst_auto.api.schemas import (
-    BatchSweepRequest, HouseTaskRequest, SingleDesignRequest,
+    BatchSweepRequest, HouseTaskRequest, SingleDesignRequest, StrictNum,
     SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest,
 )
 from pvsyst_auto.api.context import categorized_tool, cli, components, optional_path, simulation_csv_path, variant_store, workspace_path
@@ -47,6 +49,34 @@ def pvsyst_run_batch_sweep(spec: BatchSweepRequest, dry_run: StrictBool = True) 
         log_level=spec.log_level,
         allow_window_creation=spec.allow_window_creation,
     )
+
+@categorized_tool()
+def pvsyst_optimize_variant(
+        project: StrictStr, variant: StrictStr, csv_name: StrictStr,
+        max_iterations: Annotated[StrictInt, Field(ge=1, le=5)] = 2,
+        allow_resize: StrictBool = True,
+        min_ambient_c: StrictNum = -10.0,
+        max_operating_c: StrictNum = 65.0,
+        thresholds: dict[StrictStr, StrictNum] | None = None,
+        sfi_name: StrictStr | None = None,
+        time_step: Literal["hour", "subhour"] = "hour",
+        allow_window_creation: StrictBool | None = None,
+        dry_run: StrictBool = True,
+        confirm: StrictBool = False) -> dict:
+    """Bounded Diagnose -> Clone -> Patch -> Re-simulate loop. Default dry_run=true returns
+    deterministic remediation actions and unified diff previews without modifying files;
+    dry_run=false with confirm=true clones new sequential variants (never mutating baseline)
+    for up to max_iterations (1..5), stopping early once high/critical anomalies clear."""
+    return optimize_variant(
+        cli(), variant_store(),
+        project=project, variant=variant, csv_name=csv_name,
+        max_iterations=max_iterations, allow_resize=allow_resize,
+        min_ambient_c=min_ambient_c, max_operating_c=max_operating_c,
+        thresholds=thresholds, sfi_name=sfi_name, time_step=time_step,
+        allow_window_creation=allow_window_creation,
+        dry_run=dry_run, confirm=confirm,
+    )
+
 
 @categorized_tool()
 def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
