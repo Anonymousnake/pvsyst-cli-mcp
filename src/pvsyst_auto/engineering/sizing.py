@@ -21,7 +21,7 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
     result = {"status": "blocked", "issues": []}
     def issue(field, message):
         result["issues"].append({"field": "capacity." + field, "message": message})
-    allowed = {*NUMBERS, "capacity_tolerance_pct", "voltage_standard", "design_basis"}
+    allowed = {*NUMBERS, "min_dc_ac_ratio", "capacity_tolerance_pct", "voltage_standard", "design_basis"}
     if not isinstance(request, dict):
         issue("request", "Use a capacity object")
         return result
@@ -37,11 +37,17 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
             issue(name, "Use a finite strict numeric tolerance, not null")
         elif value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)):
             issue(name, "Use a finite strict numeric value")
+    min_ratio = values.get("min_dc_ac_ratio")
+    if min_ratio is not None:
+        if isinstance(min_ratio, bool) or not isinstance(min_ratio, (int, float)) or not math.isfinite(min_ratio) or min_ratio <= 0:
+            issue("min_dc_ac_ratio", "Use a positive finite numeric min_dc_ac_ratio")
     if result["issues"]:
         return result
     for name in NUMBERS:
         if not name.startswith("design_") and values[name] <= 0:
             issue(name, "Design magnitudes must be positive")
+    if min_ratio is not None and min_ratio > values["max_dc_ac_ratio"]:
+        issue("min_dc_ac_ratio", "min_dc_ac_ratio must not exceed max_dc_ac_ratio")
     if not 0 <= values["capacity_tolerance_pct"] <= 20:
         issue("capacity_tolerance_pct", "Use 0..20 percent")
     if values["voltage_standard"] not in ("IEC", "UL"):
@@ -142,7 +148,9 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
                 if "NElements" not in leaf.fields and parallel != old_leaf:
                     continue
                 per_inverter = series * ports * parallel * module_kw
-                if not math.isfinite(per_inverter) or per_inverter <= 0 or per_inverter / ac_kw > values["max_dc_ac_ratio"]:
+                if (not math.isfinite(per_inverter) or per_inverter <= 0
+                        or per_inverter / ac_kw > values["max_dc_ac_ratio"]
+                        or (min_ratio is not None and per_inverter / ac_kw < min_ratio)):
                     continue
                 ideal = min(10000, max(1, values["target_dc_kw"] / per_inverter))
                 for count in {math.floor(ideal), math.ceil(ideal)}:

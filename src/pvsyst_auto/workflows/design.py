@@ -27,6 +27,7 @@ from pathlib import Path
 from pvsyst_auto.native.cli import PVsystError, validate_report_pages
 from pvsyst_auto.engineering.envelope import REQUEST_KEYS, prepare_design_envelope
 from pvsyst_auto.engineering.inputs import discover_design_inputs
+from pvsyst_auto.engineering.suggest import suggest_sizing
 from pvsyst_auto.project.paths import project_name, variant_id, workspace_file, workspace_folder
 from pvsyst_auto.workflows.simulation import simulate_template, prepare_template
 from pvsyst_auto.engineering.sizing import NUMBERS as CAPACITY_NUMBERS
@@ -60,9 +61,15 @@ LOCATION_FIELDS = ("latitude", "longitude", "site_label", "altitude", "timezone_
 ISO_COUNTRY = re.compile(r"[A-Z]{2}")
 
 SPEC_KEYS = frozenset((
-    "scope", "new_project", "year", "target_dc_kw", "tilt", "azimuth", "module", "inverter",
-    "template_project", "variant", "capacity", "electrical_design", "losses", "weather", "report_pages",
-    "ground_layout", "bifacial",
+    "scope", "sizing_mode", "auto_sizing", "new_project", "year", "target_dc_kw", "tilt", "azimuth",
+    "module", "inverter", "template_project", "variant", "capacity", "electrical_design", "losses",
+    "weather", "report_pages", "ground_layout", "bifacial",
+))
+SIZING_MODES = ("strict", "auto_from_components")
+AUTO_SIZING_KEYS = frozenset((
+    "voltage_standard", "min_ambient_c", "min_operating_c", "max_operating_c",
+    "min_dc_ac_ratio", "max_dc_ac_ratio", "capacity_tolerance_pct",
+    "beta_voc_pct_per_c", "beta_vmp_pct_per_c", "alpha_isc_pct_per_c",
 ))
 EQUIPMENT_KEYS = frozenset(("file_name", "manufacturer", "model"))
 WEATHER_KEYS = frozenset((
@@ -72,7 +79,7 @@ WEATHER_KEYS = frozenset((
 ))
 WEATHER_MODES = ("existing", "csv", "open_meteo")
 LOSS_KEYS = frozenset(("LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor"))
-CAPACITY_KEYS = frozenset((*CAPACITY_NUMBERS, "capacity_tolerance_pct", "voltage_standard", "design_basis"))
+CAPACITY_KEYS = frozenset((*CAPACITY_NUMBERS, "min_dc_ac_ratio", "capacity_tolerance_pct", "voltage_standard", "design_basis"))
 ENVELOPE_NESTED = ("temperatures", "envelope", "coefficients", "module_limits", "mppt_limits",
                    "effective_irradiance")
 STATUSES = ("blocked", "ready_for_weather", "ready", "completed", "needs_review", "failed")
@@ -376,17 +383,35 @@ def _validate_spec(spec) -> list[dict]:
     _check_equipment(spec.get("module"), "module", issues)
     _check_equipment(spec.get("inverter"), "inverter", issues)
 
+    sizing_mode = spec.get("sizing_mode", "strict")
+    if sizing_mode not in SIZING_MODES:
+        bad("sizing_mode", "Choose 'strict' or 'auto_from_components'")
+    auto_sizing = spec.get("auto_sizing")
+    if auto_sizing is not None:
+        if sizing_mode != "auto_from_components":
+            bad("auto_sizing", "auto_sizing options require sizing_mode='auto_from_components'")
+        elif not isinstance(auto_sizing, dict):
+            bad("auto_sizing", "Provide auto_sizing as an object")
+        else:
+            for key in sorted(set(auto_sizing) - AUTO_SIZING_KEYS):
+                bad(f"auto_sizing.{key}", "Unknown auto_sizing option")
+
     capacity = spec.get("capacity")
     design = spec.get("electrical_design")
-    if capacity is None and design is None:
-        bad("capacity", "Provide exactly one of capacity (direct design envelope) or electrical_design "
-                        "(declared manufacturer inputs); a template count is never used instead")
-    elif capacity is not None and design is not None:
-        bad("electrical_design", "Provide exactly one of capacity or electrical_design; they are mutually exclusive")
-    if capacity is not None and _is_number(target):
-        _check_capacity(capacity, target, issues)
-    if design is not None and _is_number(target):
-        _check_design(design, target, issues)
+    if sizing_mode == "auto_from_components":
+        if capacity is not None or design is not None:
+            bad("sizing_mode", "sizing_mode='auto_from_components' cannot be combined with explicit capacity or electrical_design")
+    else:
+        if capacity is None and design is None:
+            bad("capacity", "Provide exactly one of capacity (direct design envelope) or electrical_design "
+                            "(declared manufacturer inputs), or set sizing_mode='auto_from_components'; "
+                            "a template count is never used instead")
+        elif capacity is not None and design is not None:
+            bad("electrical_design", "Provide exactly one of capacity or electrical_design; they are mutually exclusive")
+        if capacity is not None and _is_number(target):
+            _check_capacity(capacity, target, issues)
+        if design is not None and _is_number(target):
+            _check_design(design, target, issues)
 
     losses = spec.get("losses")
     if losses is not None:
@@ -756,7 +781,31 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         _issue(result, "module.inverter", label_issue)
         return _stop(result, "discovery")
 
-    if design is not None:
+    sizing_mode = spec.get("sizing_mode", "strict")
+    auto_sizing_review = False
+    if sizing_mode == "auto_from_components":
+        auto_opts = dict(spec.get("auto_sizing") or {})
+        suggested, stopped = _phase(result, "design_envelope", lambda: suggest_sizing(
+            store,
+            pan_name=Path(components["PAN"]["name"]).name,
+            ond_name=Path(components["OND"]["name"]).name,
+            target_dc_kw=target,
+            **auto_opts,
+        ))
+        if stopped is not None:
+            return stopped
+        result["preview"]["envelope"] = suggested
+        _inherit(result, suggested, "auto_sizing")
+        if suggested.get("status") != "ready" or suggested.get("capacity") is None:
+            return _stop(result, "design_envelope")
+        flat_capacity = suggested["capacity"]
+        auto_sizing_review = True
+        result["sizing_assumptions"] = list(suggested.get("assumptions") or [])
+        result["warnings"].append(
+            "Electrical capacity envelope was auto-estimated from PAN/OND files "
+            "(sizing_mode='auto_from_components'); review sizing_assumptions before engineering signoff"
+        )
+    elif design is not None:
         request = dict(design)
         declared = request.get("manufacturer_model")
         if declared is not None and declared != label:
@@ -843,7 +892,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     ond_name = Path(components["OND"]["name"]).name
 
     manifest_name = weather.get("weather_manifest_name") or ""
-    inherited_review = False
+    inherited_review = auto_sizing_review
 
     if mode in ("csv", "open_meteo"):
         if mode == "open_meteo":

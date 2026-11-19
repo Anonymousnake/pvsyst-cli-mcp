@@ -17,9 +17,11 @@ from pvsyst_auto.native.cli import PVsystCLI, PVsystError
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.project.paths import workspace_file
+from pvsyst_auto.api.guidance import SERVER_INSTRUCTIONS, register_guidance
 
 
-mcp = MCPServer("pvsyst-cli")
+mcp = MCPServer("pvsyst-cli", instructions=SERVER_INSTRUCTIONS)
+register_guidance(mcp)
 
 _cli: PVsystCLI | None = None
 _cli_key: tuple[str | None, str | None] | None = None
@@ -28,10 +30,10 @@ _cli_owner: PVsystCLI | None = None
 _cli_init_lock = Lock()
 
 TOOL_GROUPS = {
-    "Setup & License": ("pvsyst_capabilities",),
+    "Setup & License": ("pvsyst_capabilities", "pvsyst_license_info"),
     "Admin & Diagnostics": (
-        "pvsyst_license_info", "pvsyst_license_activate",
-        "pvsyst_license_deactivate", "pvsyst_license_sync", "pvsyst_export_logs",
+        "pvsyst_license_activate", "pvsyst_license_deactivate",
+        "pvsyst_license_sync", "pvsyst_export_logs",
     ),
     "Projects & Variants": (
         "pvsyst_list_projects", "pvsyst_inspect_project", "pvsyst_prepare_design_project",
@@ -56,7 +58,11 @@ TOOL_GROUPS = {
         "pvsyst_prepare_sourced_design", "pvsyst_run_house_task",
     ),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
-    "Engineering": ("pvsyst_run_engineering_task", "pvsyst_compare_engineering_scenarios"),
+    "Engineering": (
+        "pvsyst_suggest_sizing", "pvsyst_project_handoff",
+        "pvsyst_run_engineering_task", "pvsyst_compare_engineering_scenarios",
+        "pvsyst_export_engineering_delivery",
+    ),
     "Expert & Low-Level": (
         "pvsyst_list_variants", "pvsyst_create_project", "pvsyst_update_project_parameters",
         "pvsyst_update_project_sources", "pvsyst_get_variant_components",
@@ -69,7 +75,6 @@ TOOL_GROUPS = {
         "pvsyst_create_site", "pvsyst_convert_meteo",
         "pvsyst_run_sourced_house_task",
         "pvsyst_prepare_block_project", "pvsyst_review_engineering_brief",
-        "pvsyst_project_handoff", "pvsyst_export_engineering_delivery",
     ),
 }
 
@@ -207,7 +212,8 @@ def create_mcp_server(tool_groups: str | None = None) -> MCPServer:
     missing = sorted((set(STRICT_ARGUMENT_TOOLS) & names) - set(_tool_registry))
     if missing:
         raise RuntimeError(f"Unregistered strict entry points: {missing}")
-    server = MCPServer("pvsyst-cli")
+    server = MCPServer("pvsyst-cli", instructions=SERVER_INSTRUCTIONS)
+    register_guidance(server)
     strict_map: dict[str, frozenset[str]] = {}
     server.middleware.append(make_strict_middleware(strict_map))
     for name in sorted(names):

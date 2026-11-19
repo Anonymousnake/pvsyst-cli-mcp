@@ -60,14 +60,23 @@ class PackageEntrypointTests(unittest.TestCase):
             parameters = StdioServerParameters(command=command[0], args=command[1:], cwd=temporary, env=env)
             async with stdio_client(parameters) as (read, write):
                 async with ClientSession(read, write) as session:
-                    await session.initialize()
+                    init = await session.initialize()
+                    self.assertTrue(init.instructions and "pvsyst_simulate_design" in init.instructions)
+                    prompts = {item.name for item in (await session.list_prompts()).prompts}
+                    self.assertEqual(prompts, {
+                        "design_fixed_or_utility_pv", "design_rooftop_3d_pv",
+                        "design_pv_with_storage", "diagnose_and_optimize_simulation",
+                    })
+                    resources = {str(item.uri) for item in (await session.list_resources()).resources}
+                    self.assertEqual(resources, {"pvsyst://guide/workflows", "pvsyst://guide/variables"})
                     tools = (await session.list_tools()).tools
                     names = {tool.name for tool in tools}
-                    self.assertEqual(len(names), 34)
-                    self.assertTrue({"pvsyst_capabilities", "pvsyst_run_engineering_task",
-                                     "pvsyst_simulate_design", "pvsyst_run_house_task",
-                                     "pvsyst_create_native_load_variant"}.issubset(names))
-                    self.assertTrue({"pvsyst_license_info", "pvsyst_prepare_block_project",
+                    self.assertEqual(len(names), 38)
+                    self.assertTrue({"pvsyst_capabilities", "pvsyst_license_info", "pvsyst_suggest_sizing",
+                                     "pvsyst_project_handoff", "pvsyst_export_engineering_delivery",
+                                     "pvsyst_run_engineering_task", "pvsyst_simulate_design",
+                                     "pvsyst_run_house_task", "pvsyst_create_native_load_variant"}.issubset(names))
+                    self.assertTrue({"pvsyst_license_activate", "pvsyst_prepare_block_project",
                                      "pvsyst_clone_project", "pvsyst_simulate_template"}.isdisjoint(names))
                     reply = await session.call_tool("pvsyst_run_engineering_task", {
                         "spec": {
@@ -230,14 +239,16 @@ class ToolGroupsTests(unittest.TestCase):
             )
             default_names = {item["name"] for item in default_tools}
             full_names = {item["name"] for item in full}
-            self.assertEqual(len(default_names), 34)
-            self.assertEqual(len(full_names), 66)
-            self.assertTrue({"pvsyst_license_info", "pvsyst_prepare_block_project"}.isdisjoint(default_names))
-            self.assertTrue({"pvsyst_license_info", "pvsyst_prepare_block_project"}.issubset(full_names))
+            self.assertEqual(len(default_names), 38)
+            self.assertEqual(len(full_names), 67)
+            self.assertTrue({"pvsyst_license_info", "pvsyst_suggest_sizing",
+                             "pvsyst_project_handoff", "pvsyst_export_engineering_delivery"}.issubset(default_names))
+            self.assertTrue({"pvsyst_license_activate", "pvsyst_prepare_block_project"}.isdisjoint(default_names))
+            self.assertTrue({"pvsyst_license_activate", "pvsyst_prepare_block_project"}.issubset(full_names))
             self.assertEqual({item["name"] for item in admin_only},
-                             {"pvsyst_license_info", "pvsyst_license_activate",
-                              "pvsyst_license_deactivate", "pvsyst_license_sync", "pvsyst_export_logs"})
-            self.assertEqual(len(expert_only), 27)
+                             {"pvsyst_license_activate", "pvsyst_license_deactivate",
+                              "pvsyst_license_sync", "pvsyst_export_logs"})
+            self.assertEqual(len(expert_only), 25)
             self.assertEqual(default_names | {i["name"] for i in expert_only} | {i["name"] for i in admin_only}, full_names)
             expected = [item for item in full if item["description"].split("]", 1)[0][1:]
                         in {"Setup & License", "Engineering", "Results"}]

@@ -2,7 +2,7 @@
 
 For setup instructions and package layout, see [README.md](../README.md) or [README.zh-CN.md](../README.zh-CN.md).
 
-By default the MCP server exposes **34 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **66 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
+By default the MCP server exposes **38 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **67 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
 
 ## PVsystCLI version differences
 
@@ -22,26 +22,29 @@ Two CLI flags are intentionally omitted from the MCP surface: `-cof` (options fi
 
 ## Tools by workflow group
 
-### Setup & License (`setup`, default: 1)
+### Setup & License (`setup`, default: 2)
 
 | Tool | What it does |
 |---|---|
 | `pvsyst_capabilities` | Inspect installed `PVsystCLI.exe` version and supported CLI commands/flags |
+| `pvsyst_license_info` | Query CLI license status and remaining simulation quota (redacts key and Host ID) |
 
-### Admin & Diagnostics (`admin`, opt-in: 5)
+### Admin & Diagnostics (`admin`, opt-in: 4)
 
 | Tool | What it does |
 |---|---|
-| `pvsyst_license_info` | Query CLI license status and remaining simulation quota (redacts key and Host ID) |
 | `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | Activate, deactivate, or sync the CLI license (`confirm=true` required) |
 | `pvsyst_export_logs` | Export PVsyst diagnostic logs to a new ZIP archive under `Results` |
 
-### Engineering (`engineering`, default: 2)
+### Engineering (`engineering`, default: 5)
 
 | Tool | What it does |
 |---|---|
+| `pvsyst_suggest_sizing` | Read-only sizing assistant deriving recommended string/MPPT/inverter counts and a drop-in capacity envelope from readable `.PAN`/`.OND` files with explicit assumptions |
+| `pvsyst_project_handoff` | Read saved equipment, counts, orientation/circuit relationships, weather, load, and storage settings alongside caller declarations and missing inputs |
 | `pvsyst_run_engineering_task` | Apply an isolated revision (fixed angles/losses, `UnlimTracking` parameters, or centralized AC storage with hourly load) in a new project and run a full-year simulation |
 | `pvsyst_compare_engineering_scenarios` | Compare 2 or 3 completed simulation runs, separating shared conditions from intended/unintended input diffs, and export JSON/CSV/Markdown comparison reports |
+| `pvsyst_export_engineering_delivery` | Bundle a completed engineering run (and optional scenario comparison) with its `.PRJ`/`.VCx`, result CSV/PDF, and Markdown handoff summary into a ZIP archive under `Results` |
 
 Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comparison](engineering-scenarios.md), [AC storage engineering](engineering-storage.md), [block project preparation](block-project-preparation.md), and [brief review](engineering-brief.md).
 
@@ -112,13 +115,13 @@ Detailed guides: [automatic simulation](automatic-simulation.md), [single-design
 | `pvsyst_read_results`, `pvsyst_read_rows` | Parse simulation CSV metadata, units, and summary statistics, or page through hourly rows |
 | `pvsyst_read_batch_results` | Parse `SIM_*` summary rows from a batch simulation output CSV |
 
-### Expert & Low-Level (`expert`, opt-in: 27)
+### Expert & Low-Level (`expert`, opt-in: 25)
 
 Enable with `PVSYST_TOOL_GROUPS=expert` or `PVSYST_TOOL_GROUPS=all`:
 - **Projects & scene primitives (15)**: `pvsyst_list_variants`, `pvsyst_create_project`, `pvsyst_update_project_parameters`, `pvsyst_update_project_sources`, `pvsyst_get_variant_components`, `pvsyst_update_variant_components`, `pvsyst_validate_variant_structure`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray`, `pvsyst_review_project_inputs`, `pvsyst_create_mv_night_disconnect_variant`, `pvsyst_create_dome_allocation_variant`, `pvsyst_create_house_pv_scene`, `pvsyst_read_house_pv_scene`, `pvsyst_import_house_pv_scene`
 - **Components (3)**: `pvsyst_validate_component`, `pvsyst_compare_components`, `pvsyst_project_components`
 - **Weather primitives (4)**: `pvsyst_inspect_weather_csv`, `pvsyst_build_monthly_weather`, `pvsyst_create_site`, `pvsyst_convert_meteo`
-- **Simulation & engineering (5)**: `pvsyst_run_sourced_house_task`, `pvsyst_prepare_block_project`, `pvsyst_review_engineering_brief`, `pvsyst_project_handoff`, `pvsyst_export_engineering_delivery`
+- **Simulation & engineering (3)**: `pvsyst_run_sourced_house_task`, `pvsyst_prepare_block_project`, `pvsyst_review_engineering_brief`
 
 See [result comparison](result-comparison-verification.md) for side-by-side diffs of two result CSVs.
 

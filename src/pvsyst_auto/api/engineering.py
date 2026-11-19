@@ -1,11 +1,40 @@
 """Engineering MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from pydantic import Field, StrictBool, StrictStr
 from pvsyst_auto.engineering.brief import EngineeringBriefRequest, review_engineering_brief
-from pvsyst_auto.api.schemas import EngineeringBlock, EngineeringRevisionRequest, EngineeringScenario
+from pvsyst_auto.engineering.suggest import suggest_sizing
+from pvsyst_auto.api.schemas import EngineeringBlock, EngineeringRevisionRequest, EngineeringScenario, StrictNum
 from pvsyst_auto.api.context import categorized_tool, cli, variant_store
+
+
+@categorized_tool()
+def pvsyst_suggest_sizing(
+        pan_name: StrictStr, ond_name: StrictStr, target_dc_kw: StrictNum,
+        voltage_standard: Literal["IEC", "UL"] = "IEC",
+        min_ambient_c: StrictNum = -10.0,
+        min_operating_c: StrictNum = 0.0,
+        max_operating_c: StrictNum = 65.0,
+        min_dc_ac_ratio: StrictNum = 0.85,
+        max_dc_ac_ratio: StrictNum = 1.25,
+        capacity_tolerance_pct: StrictNum = 8.0,
+        beta_voc_pct_per_c: StrictNum | None = None,
+        beta_vmp_pct_per_c: StrictNum | None = None,
+        alpha_isc_pct_per_c: StrictNum | None = None) -> dict:
+    """Read-only sizing assistant: derive recommended series/parallel/inverter counts and a drop-in
+    capacity envelope from readable PAN/OND files with explicit assumptions (requires engineering review)."""
+    return suggest_sizing(
+        variant_store(),
+        pan_name=pan_name, ond_name=ond_name, target_dc_kw=target_dc_kw,
+        voltage_standard=voltage_standard,
+        min_ambient_c=min_ambient_c, min_operating_c=min_operating_c, max_operating_c=max_operating_c,
+        min_dc_ac_ratio=min_dc_ac_ratio, max_dc_ac_ratio=max_dc_ac_ratio,
+        capacity_tolerance_pct=capacity_tolerance_pct,
+        beta_voc_pct_per_c=beta_voc_pct_per_c,
+        beta_vmp_pct_per_c=beta_vmp_pct_per_c,
+        alpha_isc_pct_per_c=alpha_isc_pct_per_c,
+    )
 
 
 @categorized_tool()

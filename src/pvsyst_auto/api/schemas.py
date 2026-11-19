@@ -533,6 +533,7 @@ class GridStorageDesign(BaseModel):
 class CapacityRequest(BaseModel):
     model_config = _STRICT_CONFIG
     target_dc_kw: StrictInt | StrictFloat | None = None
+    min_dc_ac_ratio: StrictInt | StrictFloat | None = None
     max_dc_ac_ratio: StrictInt | StrictFloat | None = None
     capacity_tolerance_pct: StrictInt | StrictFloat = 5
     voltage_standard: StrictStr | None = None
@@ -703,12 +704,30 @@ class GroundLayoutRequest(BaseModel):
     wind_stow_position_deg: StrictNum | None = None
 
 
+class AutoSizingOptions(BaseModel):
+    """Optional bounds used when sizing_mode='auto_from_components' derives capacity from PAN/OND."""
+    model_config = _STRICT_CONFIG
+    voltage_standard: Literal["IEC", "UL"] = "IEC"
+    min_ambient_c: StrictNum = -10.0
+    min_operating_c: StrictNum = 0.0
+    max_operating_c: StrictNum = 65.0
+    min_dc_ac_ratio: StrictNum = 0.85
+    max_dc_ac_ratio: StrictNum = 1.25
+    capacity_tolerance_pct: StrictNum = 8.0
+    beta_voc_pct_per_c: StrictNum | None = None
+    beta_vmp_pct_per_c: StrictNum | None = None
+    alpha_isc_pct_per_c: StrictNum | None = None
+
+
 class SingleDesignRequest(BaseModel):
     """One bounded design request; every nested object rejects unknown keys.
 
     scope selects fixed_unshaded_grid (default), ground_sheds (unlimited or 3D multi-row sheds),
     or ground_tracker (unlimited or 3D horizontal N-S single-axis trackers), with optional
     ground_layout and bifacial (pvBiFacial) configuration.
+    sizing_mode='strict' (default) requires explicit capacity or electrical_design;
+    sizing_mode='auto_from_components' estimates capacity from readable PAN/OND files and
+    marks the output needs_review with full assumptions.
     """
     model_config = _STRICT_CONFIG
     new_project: StrictStr = ""
@@ -717,6 +736,8 @@ class SingleDesignRequest(BaseModel):
     tilt: StrictNum | None = None
     azimuth: StrictNum | None = None
     scope: Literal["fixed_unshaded_grid", "ground_sheds", "ground_tracker"] = "fixed_unshaded_grid"
+    sizing_mode: Literal["strict", "auto_from_components"] = "strict"
+    auto_sizing: AutoSizingOptions | None = None
     module: EquipmentRequest = Field(default_factory=EquipmentRequest)
     inverter: EquipmentRequest = Field(default_factory=EquipmentRequest)
     template_project: StrictStr | None = None
