@@ -375,8 +375,8 @@ class SynthesisSubArraySpec(BaseModel):
     power_sharing_inverter_id: StrictInt = -1
     pnom_ac_in_mppt: StrictNum = 7.5
     lid_loss: StrictNum = 0.0
-    pmism_mpp: StrictNum = 2.0
-    module_quality_loss: StrictNum = 3.0
+    pmism_mpp: StrictNum | None = None
+    module_quality_loss: StrictNum | None = None
     dc_wiring_loss_pct: StrictNum = 1.5
     dc_wiring_resistance_mohm: StrictNum = 0.0
 

@@ -14,6 +14,7 @@ from pvsyst_auto.components.store import FIELD
 from pvsyst_auto.project.bifacial import render_bifacial_block
 from pvsyst_auto.project.circuit import MAX_COUNT, inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
+from pvsyst_auto.weather.preparation import read_object_prefix
 
 SYNTH_VERSION = "8.1.7"
 DEFAULT_PAN_NAME = "Generic_Mono_300W.PAN"
@@ -101,6 +102,15 @@ def _fmt(value: float, decimals: int = 1) -> str:
     return f"{number:.{decimals}f}"
 
 
+def _fmt_angle(value: float, max_decimals: int = 3) -> str:
+    """Format an angle preserving up to 3 decimal places while keeping exact 0.1-step values compact."""
+    number = 0.0 if abs(value) < 1e-9 else round(float(value), max_decimals)
+    if abs(number) < 1e-9:
+        number = 0.0
+    text = f"{number:.{max_decimals}f}".rstrip("0")
+    return text + "0" if text.endswith(".") else text
+
+
 def _clean_text(value: str, label: str) -> str:
     if not isinstance(value, str) or not value.strip() or any(ch in value for ch in ("\r", "\n", "\x00")):
         raise ValueError(f"{label} must be single-line non-empty text")
@@ -175,57 +185,65 @@ def load_site_block(site_path: Path) -> tuple[str, str, list[str]]:
     return site_path.name, site_identity, updated_body
 
 
+def _is_pvmeteo_file(met_path: Path) -> bool:
+    """Check whether the first non-empty header line declares a pvMeteo object."""
+    with met_path.open("rb") as stream:
+        prefix = stream.read(4096)
+    for index, raw_line in enumerate(prefix.split(b"\n"), start=1):
+        line = raw_line.rstrip(b"\r")
+        if index == 1 and line.startswith(b"\xef\xbb\xbf"):
+            line = line[3:]
+        try:
+            text = line.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = line.decode("cp1252")
+            except UnicodeDecodeError:
+                return False
+        stripped = text.strip()
+        if stripped:
+            return stripped == "PVObject_=pvMeteo"
+    return False
+
+
 def load_meteo_header(met_path: Path, site_identity: str, site_body: list[str]) -> tuple[str, list[str]]:
     """Build PVObject_MeteoSimul=pvMeteo block lines from a workspace .MET header."""
-    raw = met_path.read_bytes()
     header_fields: list[tuple[str, str]] = []
     embedded_site: list[str] = []
-    try:
-        # Read only the header section before VarMeteo daily data rows.
-        head_text = raw[:65536].decode("utf-8-sig", errors="strict")
-        lines = [line.rstrip("\r\n") for line in head_text.splitlines()]
-    except UnicodeDecodeError:
-        lines = []
 
-    if lines and lines[0].strip() == "PVObject_=pvMeteo":
-        in_site = False
-        for line in lines[1:]:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if stripped.startswith("VarMeteo, list of=") or stripped == "End of PVObject pvMeteo":
-                break
-            if stripped == "PVObject_SiteMet=pvSite":
-                in_site = True
-                continue
-            if in_site:
-                if stripped == "End of PVObject pvSite":
-                    in_site = False
-                    continue
-                if not stripped.startswith(("PVObject_", "End of PVObject")):
-                    embedded_site.append(stripped)
-                continue
-            match = FIELD.fullmatch(stripped)
-            if match:
-                key, value = match[1], match[2]
-                if key not in ("Comment", "Version"):
-                    header_fields.append((key, value))
+    if _is_pvmeteo_file(met_path):
+        segments, _ = read_object_prefix(met_path)
+        root_entries = sorted(
+            ((entry["line"], key, entry["value"])
+             for key, items in segments.get("root", {}).items()
+             for entry in items),
+            key=lambda item: item[0],
+        )
+        for _, key, value in root_entries:
+            if key not in ("Comment", "Version"):
+                header_fields.append((key, value))
+        site_entries = sorted(
+            ((entry["line"], key, entry["value"])
+             for key, items in segments.get("SiteMet", {}).items()
+             for entry in items),
+            key=lambda item: item[0],
+        )
+        embedded_site = [f"{key}={value}" for _, key, value in site_entries]
 
     field_map = dict(header_fields)
     ordered_keys = [
         ("Flags", field_map.get("Flags", "$010084E1")),
         ("NomF", met_path.name),
-        ("SiteM", site_identity),
+        ("SiteM", field_map.get("SiteM") or site_identity),
     ]
     for key, value in header_fields:
         if key in ("Flags", "NomF", "SiteM"):
             continue
         ordered_keys.append((key, value))
 
-    # Ensure embedded SiteMet carries consistent NomF/Site/coordinates from site_body.
-    site_lines = list(site_body)
-    if embedded_site and not any(line.startswith("Latitude=") for line in site_body):
-        site_lines = embedded_site
+    # Preserve the MET file's own embedded PVObject_SiteMet declarations when present;
+    # fall back to the project site_body only if the MET header has no embedded site block.
+    site_lines = list(embedded_site) if embedded_site else list(site_body)
 
     meteo_lines = ["  PVObject_MeteoSimul=pvMeteo"]
     for key, value in ordered_keys:
@@ -396,8 +414,8 @@ def _normalize_orientation(item: dict) -> dict:
     extra = dict(item.get("extra_fields") or {})
 
     default_comment = {
-        "FixedPlane": f"Fixed, Tilt {_fmt(tilt)} deg, Azim. {_fmt(azim)} deg",
-        "Sheds": f"Unlimited sheds, Tilt {_fmt(tilt)} deg, Azim. {_fmt(azim)} deg",
+        "FixedPlane": f"Fixed, Tilt {_fmt_angle(tilt)} deg, Azim. {_fmt_angle(azim)} deg",
+        "Sheds": f"Unlimited sheds, Tilt {_fmt_angle(tilt)} deg, Azim. {_fmt_angle(azim)} deg",
         "UnlimTracking": "Unlimited trackers, horizontal axis N-S",
         "TrackHorizNSAxis": "Tracking, horizontal axis N-S",
     }[field_type]
@@ -473,14 +491,14 @@ def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) 
     ]
     if ft == "FixedPlane":
         lines.extend([
-            f"    FieldTilt={_fmt(spec['tilt_deg'])}",
-            f"    FieldAzim={_fmt(spec['azimuth_deg'])}",
-            f"    BaseSlope={_fmt(spec['base_slope_deg'])}",
+            f"    FieldTilt={_fmt_angle(spec['tilt_deg'])}",
+            f"    FieldAzim={_fmt_angle(spec['azimuth_deg'])}",
+            f"    BaseSlope={_fmt_angle(spec['base_slope_deg'])}",
         ])
     elif ft == "Sheds":
         lines.extend([
-            f"    FieldTilt={_fmt(spec['tilt_deg'])}",
-            f"    FieldAzim={_fmt(spec['azimuth_deg'])}",
+            f"    FieldTilt={_fmt_angle(spec['tilt_deg'])}",
+            f"    FieldAzim={_fmt_angle(spec['azimuth_deg'])}",
             f"    Pitch={spec['pitch_m']:.3f}",
             f"    CollectorWidth={spec['collector_width_m']:.3f}",
             f"    InactiveBandWidth1={spec['inactive_band_width_1_m']:.3f}",
@@ -493,9 +511,9 @@ def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) 
         ])
     elif ft == "UnlimTracking":
         lines.extend([
-            f"    AxisAzim={_fmt(spec['axis_azimuth_deg'])}",
-            f"    MinPhi={_fmt(spec['min_phi_deg'])}",
-            f"    MaxPhi={_fmt(spec['max_phi_deg'])}",
+            f"    AxisAzim={_fmt_angle(spec['axis_azimuth_deg'])}",
+            f"    MinPhi={_fmt_angle(spec['min_phi_deg'])}",
+            f"    MaxPhi={_fmt_angle(spec['max_phi_deg'])}",
             f"    UsesBacktracking={'True' if spec['backtracking'] else 'False'}",
             f"    UsesIrradOptimiz={'True' if spec['irrad_optimiz'] else 'False'}",
             f"    Pitch={spec['pitch_m']:.3f}",
@@ -510,11 +528,11 @@ def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) 
         ])
     elif ft == "TrackHorizNSAxis":
         lines.extend([
-            f"    AxisAzim={_fmt(spec['axis_azimuth_deg'])}",
-            f"    MinPhi={_fmt(spec['min_phi_deg'])}",
-            f"    MaxPhi={_fmt(spec['max_phi_deg'])}",
+            f"    AxisAzim={_fmt_angle(spec['axis_azimuth_deg'])}",
+            f"    MinPhi={_fmt_angle(spec['min_phi_deg'])}",
+            f"    MaxPhi={_fmt_angle(spec['max_phi_deg'])}",
             f"    CentralGap={spec['central_gap_m']:.2f}",
-            f"    PitchSlope={_fmt(spec['pitch_slope_deg'])}",
+            f"    PitchSlope={_fmt_angle(spec['pitch_slope_deg'])}",
             f"    UsesBacktracking={'True' if spec['backtracking'] else 'False'}",
             "    PartialSystemNoRefField=-1",
             "    PartialSystemNoSubField=1",
@@ -583,8 +601,16 @@ def _normalize_subarray(item: dict, *, default_pan: str, default_ond: str) -> di
             raise ValueError(f"subarray {sid}: n_string_ch ({n_string_ch}) must be divisible by n_inverter ({n_inverter})")
     pnom_ac_in_mppt = _finite(item.get("pnom_ac_in_mppt", 7.5), f"subarray {sid} pnom_ac_in_mppt", minimum=0.0)
     lid_loss = _finite(item.get("lid_loss", 0.0), f"subarray {sid} lid_loss", minimum=0.0, maximum=100.0)
-    pmism_mpp = _finite(item.get("pmism_mpp", 2.0), f"subarray {sid} pmism_mpp", minimum=0.0, maximum=100.0)
-    pqual = _finite(item.get("module_quality_loss", 3.0), f"subarray {sid} module_quality_loss", minimum=-5.0, maximum=20.0)
+    pmism_raw = item.get("pmism_mpp")
+    pqual_raw = item.get("module_quality_loss")
+    pmism_explicit = item.get("pmism_mpp_explicit")
+    if pmism_explicit is None:
+        pmism_explicit = pmism_raw is not None
+    pqual_explicit = item.get("module_quality_loss_explicit")
+    if pqual_explicit is None:
+        pqual_explicit = pqual_raw is not None
+    pmism_mpp = _finite(2.0 if pmism_raw is None else pmism_raw, f"subarray {sid} pmism_mpp", minimum=0.0, maximum=100.0)
+    pqual = _finite(3.0 if pqual_raw is None else pqual_raw, f"subarray {sid} module_quality_loss", minimum=-5.0, maximum=20.0)
     dc_loss_pct = _finite(item.get("dc_wiring_loss_pct", 1.5), f"subarray {sid} dc_wiring_loss_pct", minimum=0.0, maximum=100.0)
     dc_res_mohm = _finite(item.get("dc_wiring_resistance_mohm", 0.0), f"subarray {sid} dc_wiring_resistance_mohm", minimum=0.0)
     return {
@@ -602,7 +628,9 @@ def _normalize_subarray(item: dict, *, default_pan: str, default_ond: str) -> di
         "pnom_ac_in_mppt": pnom_ac_in_mppt,
         "lid_loss": lid_loss,
         "pmism_mpp": pmism_mpp,
+        "pmism_mpp_explicit": bool(pmism_explicit),
         "module_quality_loss": pqual,
+        "module_quality_loss_explicit": bool(pqual_explicit),
         "dc_wiring_loss_pct": dc_loss_pct,
         "dc_wiring_resistance_mohm": dc_res_mohm,
     }
@@ -737,11 +765,16 @@ def synthesize_circuit_and_subarrays(subarrays: list[dict], *,
     subarray_lines = ["  SubArrays=Start"]
     for sub in normalized:
         if sub["power_sharing_inverter_id"] >= 0:
-            flags = "$001E0502"
+            flags_int = 0x001E0502
         elif sub["independent_mppt"]:
-            flags = "$001E0402"
+            flags_int = 0x001E0402
         else:
-            flags = "$001E0002"
+            flags_int = 0x001E0002
+        if sub["pmism_mpp_explicit"]:
+            flags_int &= ~0x00040000
+        if sub["module_quality_loss_explicit"]:
+            flags_int &= ~0x00100000
+        flags = f"${flags_int:08X}"
         subarray_lines.extend([
             "    PVObject_=pvSubArray",
             f"      Comment={sub['comment']}",

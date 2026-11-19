@@ -89,6 +89,24 @@ CONTROL_UPDATE_KEYS = frozenset({
     "discharge_start_hour",
     "discharge_end_hour",
 })
+PEAK_SHAVING_LOAD_ERROR = (
+    "PVsyst cannot run PeakShaving storage with a self-consumption load (pvLoad); "
+    "use a source variant without a self-consumption load"
+)
+
+
+def has_user_load(lines) -> bool:
+    """Return True when the variant declares a self-consumption pvLoad object."""
+    return any(re.fullmatch(r"\s*PVObject_\w*\s*=\s*pvLoad\s*", line) for line in lines)
+
+
+def has_peak_shaving_storage(lines) -> bool:
+    """Return True when the variant declares a pvGridStorage object with Strategy=PeakShaving."""
+    return any(
+        block.object_type == "pvGridStorage"
+        and any(value == "PeakShaving" for _, value in block.fields.get("Strategy", ()))
+        for block in objects("".join(lines))
+    )
 
 
 def decimal_text(value):
@@ -692,6 +710,8 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
                 merged_state[name] = num
 
         structural = bool(CONTROL_UPDATE_KEYS & set(clean_updates))
+        if clean_updates.get("strategy") == "peak_shaving" and has_user_load(lines):
+            raise ValueError(PEAK_SHAVING_LOAD_ERROR)
         if not structural:
             for key, value in scalar_edits.items():
                 index, _ = one(fields, key)
@@ -729,12 +749,14 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
             after, bounds, _ = storage_state(lines, system)
             validate_storage(after, allow_weak=weak and availability is not None)
 
+        if after["strategy"] == "PeakShaving" and has_user_load(lines):
+            raise ValueError(PEAK_SHAVING_LOAD_ERROR)
+
         if (availability is not None) != weak:
             raise ValueError("Supply a fresh complete availability declaration exactly when configuring WeakGrid")
 
-        if any(line.strip().startswith(("VarList,", "Histogram=THistogramme")) for line in lines):
-            strip_result_cache(lines)
-            _, bounds, _ = storage_state(lines, store._sections(lines)[1])
+        strip_result_cache(lines)
+        _, bounds, _ = storage_state(lines, store._sections(lines)[1])
 
         candidate_text = "".join(lines)
         if weak:

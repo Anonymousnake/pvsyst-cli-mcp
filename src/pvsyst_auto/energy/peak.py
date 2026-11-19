@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, require_flat, root_block
 from pvsyst_auto.components.generator import direct_fields, one
-from pvsyst_auto.energy.storage import storage_state, validate_storage
+from pvsyst_auto.energy.storage import PEAK_SHAVING_LOAD_ERROR, has_user_load, storage_state, validate_storage
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
@@ -85,6 +85,8 @@ def peak_block(lines):
             raise ValueError("Discharge controls must exist only in the owning pvGridStorage record")
     if block.one("Flags")[1] != "$00" or block.one("Strategy")[1] != "PeakShaving":
         raise ValueError("Source pvGridStorage must declare Strategy=PeakShaving and Flags=$00")
+    if has_user_load(lines):
+        raise ValueError(PEAK_SHAVING_LOAD_ERROR)
     charging = block.one("ChargingStrategy")[1]
     if charging not in STORAGE_CHARGING:
         raise ValueError(f"Unsupported PeakShaving ChargingStrategy {charging!r}")

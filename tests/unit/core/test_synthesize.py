@@ -331,6 +331,264 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
                          [-90.0, 90.0])
         self.assertAlmostEqual(dry_dual["plan"]["nominal_dc_kw"], 24 * 0.440, places=6)
 
+    def test_zero_template_mixed_pan_sizes_require_table_geometry(self):
+        wider_pan = (PAN.replace("Model=440W", "Model=480W").replace("PNom=440", "PNom=480")
+                     .replace("LargApp=1.032", "LargApp=1.150").replace("LongApp=1.996", "LongApp=2.200"))
+        (self.root / "ComposPV/PVmodules/Lab480.PAN").write_bytes(
+            wider_pan.replace("\n", "\r\n").encode("utf-8-sig")
+        )
+        house = {"kind": "mesh", "meshes": [
+            _roof_mesh("EastRoof", 0.0, 0.0, 25.0, 0.0),
+            _roof_mesh("WestRoof", 30.0, 0.0, 25.0, 180.0),
+        ]}
+        z = 4.0 + math.tan(math.radians(25.0)) + 0.1
+        tables = [
+            {"name": name + "Table", "orientation_id": i, "module_rows": 2, "module_columns": 6,
+             "orientation": "portrait", "row_spacing_m": 0.02, "column_spacing_m": 0.02,
+             "origin_m": origin, "roof_mesh": name + "Roof"}
+            for i, name, origin in ((1, "East", [1.0, 1.0, z]), (2, "West", [29.0, -1.0, z]))
+        ]
+        request = HouseTaskRequest(
+            site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET", ond_name="Lab50.OND",
+            anchor_azimuth_deg=-90.0, new_project="MixedHouse.PRJ", variant_name="Mixed PANs",
+            year=1990, house=house, layout={"tables": tables}, report_pdf=False,
+            subarrays=[{"subarray_id": i, "orientation_id": i, "pan_name": pan,
+                        "n_mod_serie": 12, "n_string_ch": 1}
+                       for i, pan in ((1, "Lab440.PAN"), (2, "Lab480.PAN"))],
+        ).model_dump(exclude_none=True)
+        cli = FakeCLI(self.root / "PVsystCLI.exe", self.root)
+        before = set(self.root.rglob("*"))
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                blocked = run_house_task(self.store, self.components, cli, request=request,
+                                         dry_run=dry_run, confirm=not dry_run)
+                self.assertEqual(blocked["status"], "blocked", blocked["issues"])
+                self.assertRegex(blocked["issues"][0], r"WestTable.*module_geometry")
+                self.assertEqual(set(self.root.rglob("*")), before)
+
+        west = dict(tables[1], module_geometry={"model_name": "480W", "nom_power_wp": 480.0,
+                                               "width_m": 1.150, "length_m": 2.200,
+                                               "geometry_depth_m": DEFAULT_MODULE_DEPTH_M})
+        explicit = dict(request, new_project="ExplicitGeometryHouse.PRJ", layout={"tables": [tables[0], west]})
+        ready = run_house_task(self.store, self.components, cli, request=explicit, dry_run=True)
+        self.assertEqual(ready["status"], "ready", ready["issues"])
+
+    def test_zero_template_preserves_embedded_sitemet_and_cp1252_met_headers(self):
+        # 1. Embedded PVObject_SiteMet in the .MET must stay distinct from the project .SIT.
+        hawaii_sit = (
+            "PVObject_=pvSite\n"
+            "  Comment=Hawaii_2020;United States;North_America;\n"
+            "  Version=8.0.0\n"
+            "  Flags=$0037\n"
+            "  NomF=Hawaii_2020.SIT\n"
+            "  Site=Hawaii_2020\n"
+            "  Latitude=19.7281\n"
+            "  Longitude=-156.0589\n"
+            "  Altitude=4\n"
+            "  TimeZone=-10.0\n"
+            "  HLeg=True\n"
+            "  DateBeg=01/01/20 00:00\n"
+            "  DateEnd=31/12/20 23:00\n"
+            "  GlobalH=140.2,156.1,166.8,199.6,209.2,200.4,204.6,209.1,199.3,177.3,128.6,145.0,2136.1,\n"
+            "End of PVObject pvSite\n"
+        )
+        hawaii_met = (
+            "PVObject_=pvMeteo\n"
+            "  Comment=Hawaii_2020;Custom file;Imported\n"
+            "  Version=8.0.0\n"
+            "  Flags=$04000043\n"
+            "  NomF=Hawaii_2020_1min_ClipCorr.MET\n"
+            "  SiteM=Hawaii_2020\n"
+            "  TypeM=Imported\n"
+            "  UsesPerez=True\n"
+            "  DateDebF=01/01/22 00:00\n"
+            "  DateFinF=31/12/22 23:00\n"
+            "  PasAccum=1\n"
+            "  PVObject_SiteMet=pvSite\n"
+            "    Comment=Hawaii_2020;United States;North_America;\n"
+            "    Version=8.0.0\n"
+            "    Flags=$0037\n"
+            "    Site=Hawaii_2020\n"
+            "    Latitude=19.7281\n"
+            "    Longitude=-156.0589\n"
+            "    Altitude=4\n"
+            "    TimeZone=-10.0\n"
+            "    HLeg=True\n"
+            "    DateBeg=01/01/22 00:00\n"
+            "    DateEnd=31/12/22 23:00\n"
+            "    GlobalH=140.2,149.5,170.3,197.6,207.0,200.1,207.7,206.6,199.3,178.3,129.2,146.4,2132.4,\n"
+            "  End of PVObject pvSite\n"
+            "  VarMeteo, list of=1 TVarSimul\n"
+            "End of PVObject pvMeteo\n"
+        )
+        (self.root / "Sites" / "Hawaii_2020.SIT").write_bytes(
+            b"\xef\xbb\xbf" + hawaii_sit.replace("\n", "\r\n").encode("utf-8")
+        )
+        (self.root / "Meteo" / "Hawaii_2020_1min_ClipCorr.MET").write_bytes(
+            b"\xef\xbb\xbf" + hawaii_met.replace("\n", "\r\n").encode("utf-8")
+        )
+        synth = synthesize_project_and_variant(
+            self.store,
+            site_name="Hawaii_2020.SIT",
+            met_name="Hawaii_2020_1min_ClipCorr.MET",
+        )
+        vc0 = synth["vc0_text"]
+        site_simul = vc0.split("PVObject_SiteSimul=pvSite", 1)[1].split("End of PVObject pvSite", 1)[0]
+        site_met = vc0.split("PVObject_SiteMet=pvSite", 1)[1].split("End of PVObject pvSite", 1)[0]
+        self.assertIn("DateBeg=01/01/20 00:00", site_simul)
+        self.assertIn("DateEnd=31/12/20 23:00", site_simul)
+        self.assertIn("2136.1,", site_simul)
+        self.assertIn("DateBeg=01/01/22 00:00", site_met)
+        self.assertIn("DateEnd=31/12/22 23:00", site_met)
+        self.assertIn("2132.4,", site_met)
+        self.assertIn("DateBeg=01/01/20 00:00", synth["prj_text"])
+
+        # 2. Legacy CP1252 bytes in a .MET header must not erase readable declarations.
+        cp1252_met = (
+            "PVObject_=pvMeteo\n"
+            "  Comment=Geneva;M\u00e9t\u00e9onorm;Synthetic\n"
+            "  Version=8.1.0\n"
+            "  Flags=$010084E1\n"
+            "  NomF=Geneva_CP1252.MET\n"
+            "  SiteM=Geneva\n"
+            "  TypeM=Synthetic\n"
+            "  DateDebF=01/01/90 00:00\n"
+            "  DateFinF=31/12/90 23:00\n"
+            "  UsesPerez=True\n"
+            "  PasAccum=60\n"
+            "  PVObject_SiteMet=pvSite\n"
+            "    NomF=Geneva_MN90.SIT\n"
+            "    Site=Gen\u00e8ve\n"
+            "    Latitude=46.2400\n"
+            "    Longitude=6.1100\n"
+            "    Altitude=425\n"
+            "    TimeZone=1.0\n"
+            "    HLeg=True\n"
+            "  End of PVObject pvSite\n"
+            "  VarMeteo, list of=1 TVarSimul\n"
+            "End of PVObject pvMeteo\n"
+        )
+        (self.root / "Meteo" / "Geneva_CP1252.MET").write_bytes(
+            cp1252_met.replace("\n", "\r\n").encode("cp1252")
+        )
+        synth_cp = synthesize_project_and_variant(
+            self.store,
+            site_name="Geneva_MN90.SIT",
+            met_name="Geneva_CP1252.MET",
+        )
+        meteo_section = synth_cp["vc0_text"].split("PVObject_MeteoSimul=pvMeteo", 1)[1].split(
+            "End of PVObject pvMeteo", 1
+        )[0]
+        for expected in (
+            "TypeM=Synthetic",
+            "DateDebF=01/01/90 00:00",
+            "DateFinF=31/12/90 23:00",
+            "PasAccum=60",
+            "Site=Gen\u00e8ve",
+        ):
+            self.assertIn(expected, meteo_section)
+
+    def test_zero_template_preserves_sub_tenth_tilt_and_explicit_loss_flags(self):
+        cli = FakeCLI(self.root / "PVsystCLI.exe", self.root)
+
+        # 3. Sub-tenth tilts (25.049 deg and 89.96 deg) stay precise to 3 decimals and pass house preflight.
+        for label, tilt, origin in (
+            ("Near25", 25.049, [1.0, 0.0, 4.001]),
+            ("Near90", 89.96, [1.0, 0.0, 4.001]),
+        ):
+            house = {"kind": "mesh", "meshes": [_roof_mesh("SouthRoof", 0.0, 0.0, tilt, 0.0)]}
+            layout = {
+                "tables": [{
+                    "name": "SouthArray", "module_rows": 2, "module_columns": 6,
+                    "orientation": "portrait", "row_spacing_m": 0.02, "column_spacing_m": 0.02,
+                    "origin_m": origin, "roof_mesh": "SouthRoof",
+                }]
+            }
+            for explicit_orient in (True, False):
+                with self.subTest(label=label, explicit_orient=explicit_orient):
+                    kwargs = dict(
+                        site_name="Geneva_MN90.SIT",
+                        met_name="Geneva_MN90_SYN.MET",
+                        pan_name="Lab440.PAN",
+                        ond_name="Lab50.OND",
+                        new_project=f"ZeroTilt_{label}_{explicit_orient}.PRJ",
+                        variant_name=f"Tilt {tilt}",
+                        year=1990,
+                        house=house,
+                        layout=layout,
+                        report_pdf=False,
+                        shading_mode="linear",
+                        scene_import_method="native",
+                    )
+                    if explicit_orient:
+                        kwargs["orientations"] = [{"id": 1, "tilt_deg": tilt, "azimuth_deg": 0.0}]
+                    req = HouseTaskRequest(**kwargs).model_dump(exclude_none=True)
+                    dry = run_house_task(self.store, self.components, cli, request=req, dry_run=True)
+                    self.assertEqual(dry["status"], "ready", dry["issues"])
+                    self.assertAlmostEqual(dry["plan"]["source"]["tilt_deg"], tilt, places=3)
+
+        # 4. Explicit pmism_mpp and module_quality_loss clear their default bits; omitted fields keep them.
+        house = {"kind": "mesh", "meshes": [_roof_mesh("SouthRoof", 0.0, 0.0, 25.0, 0.0)]}
+        layout = {
+            "tables": [{
+                "name": "SouthArray", "module_rows": 2, "module_columns": 6,
+                "orientation": "portrait", "row_spacing_m": 0.02, "column_spacing_m": 0.02,
+                "origin_m": [1.0, 1.0, 4.0 + math.tan(math.radians(25.0)) + 0.1],
+                "roof_mesh": "SouthRoof",
+            }]
+        }
+        cases = (
+            ("both_omitted", {}, "$001E0002", True, True),
+            ("only_mism", {"pmism_mpp": 5.0}, "$001A0002", False, True),
+            ("only_qual", {"module_quality_loss": -2.0}, "$000E0002", True, False),
+            ("both_explicit", {"pmism_mpp": 5.0, "module_quality_loss": -2.0}, "$000A0002", False, False),
+        )
+        for name, overrides, expected_flags, mism_default_before, qual_default_before in cases:
+            with self.subTest(case=name):
+                from pvsyst_auto.project.synthesize import synthesize_house_source
+
+                sub_spec = {
+                    "subarray_id": 1, "orientation_id": 1,
+                    "n_mod_serie": 12, "n_string_ch": 1,
+                    **overrides,
+                }
+                req = HouseTaskRequest(
+                    site_name="Geneva_MN90.SIT",
+                    met_name="Geneva_MN90_SYN.MET",
+                    pan_name="Lab440.PAN",
+                    ond_name="Lab50.OND",
+                    new_project=f"LossFlags_{name}.PRJ",
+                    variant_name=f"Loss {name}",
+                    year=1990,
+                    house=house,
+                    layout=layout,
+                    subarrays=[sub_spec],
+                    report_pdf=False,
+                    shading_mode="linear",
+                    scene_import_method="native",
+                ).model_dump(exclude_none=True)
+                synth = synthesize_house_source(self.store, self.components, req)
+                self.store.create_project(f"LossFlags_{name}.PRJ", synth["prj_text"], {"VC0": synth["vc0_text"]})
+                params = self.store.inspect_parameters(f"LossFlags_{name}.PRJ", "VC0")
+                sub_params = params["subarrays"][0]["values"]
+                self.assertEqual(sub_params["Flags"], expected_flags)
+                if "pmism_mpp" in overrides:
+                    self.assertEqual(sub_params["PMismMPP"], "5.00")
+                if "module_quality_loss" in overrides:
+                    self.assertEqual(sub_params["PQualityModU"], "-2.00")
+                    self.assertEqual(sub_params["PQualityModI"], "-2.00")
+
+                upd = self.store.update_parameters(
+                    f"LossFlags_{name}.PRJ", "VC0",
+                    subarray_id=1,
+                    subarray_updates={"PMismMPP": 5.0, "ModuleQualityLoss": -2.0},
+                    dry_run=True,
+                )
+                self.assertEqual(upd["mismatch"]["default_before"], mism_default_before)
+                self.assertFalse(upd["mismatch"]["default_after"])
+                self.assertEqual(upd["module_quality"]["default_before"], qual_default_before)
+                self.assertFalse(upd["module_quality"]["default_after"])
+
 
 if __name__ == "__main__":
     unittest.main()

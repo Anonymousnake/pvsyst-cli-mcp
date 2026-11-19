@@ -466,7 +466,7 @@ def update_parameters(store, project: str, variant: str, expected_sha256: str | 
             or power_sharing_enabled is not None or independent_mppt_enabled is not None
             or control_params
         ) and "".join(lines).encode("utf-8") != (data[3:] if data.startswith(b"\xef\xbb\xbf") else data)
-        if uv_changed or (non_title_changed and any(line.strip().startswith("VarList, list of=") for line in lines)):
+        if uv_changed or non_title_changed:
             from pvsyst_auto.native.headless import strip_result_cache
             lines, cache_clear = strip_result_cache(lines)
 
@@ -486,7 +486,7 @@ def update_parameters(store, project: str, variant: str, expected_sha256: str | 
             "diff": diff[:32000],
             "diff_truncated": len(diff) > 32000 or len(diff.splitlines()) > 500,
         }
-        if cache_clear is not None:
+        if cache_clear and any(cache_clear.values()):
             result["derived_cache"] = cache_clear
         result.update(control_extras)
         if name_change is not None:

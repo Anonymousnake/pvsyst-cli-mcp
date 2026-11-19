@@ -379,6 +379,14 @@ class StandardTemplateTests(unittest.TestCase):
         self.assertEqual(sum(1 for item in derived["changes"] if item["field"] == "NElements"), 1)
         self.assertNotIn("NElements=1\r\n            NElements=1", derived["vc0_text"])
 
+    def test_synthesized_template_writes_power_per_mppt_input(self):
+        result = self.prepare(mppt=4, dry_run=False, allow_synthesize=True)
+        self.assertEqual(result["status"], "created", result)
+        variant = self.projects / "Seed_template.VC0"
+        _, _, checked = self.structure(variant.read_text(encoding="utf-8-sig"))
+        declared = checked["subarrays"][0]["declared"]
+        self.assertEqual((declared["NInvMPPT"], declared["PNomAC_InMPPT"]), ("4", "1.88"))
+
     def test_input_validation_missing_component_and_existing_destination(self):
         for kwargs, field in (({"new_project": "Seed.VC0"}, "new_project"),
                               ({"pan_name": ""}, "pan_name"),

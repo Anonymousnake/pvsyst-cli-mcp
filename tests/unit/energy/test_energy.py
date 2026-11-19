@@ -235,6 +235,27 @@ class WorkspaceTests(unittest.TestCase):
             self.assertIn("    " + line + "\r\n", text)
         self.assertEqual(result["after"]["soc_min"], 0.00001)
 
+    def test_storage_edits_invalidate_plot_only_saved_results(self):
+        plot = ("  SimulPlots=Start\n    PVObject_=pvSimulPlot\n      VarY=E_Grid\n"
+                "      NValRes=2\n      ValuesY=1,2,\n    End of PVObject pvSimulPlot\n  EndTags\n")
+        existing = STORAGE_SYSTEM + GRID_STORAGE.format(strategy="SelfConsumption", unavail="")
+        for target, system, edit, inputs in (
+            ("VC1", PV_SYSTEM, create_grid_storage_system,
+             {"battery": BATTERY, "storage": STORAGE, "load_manifest_name": "load_load.json"}),
+            ("VC2", existing, create_grid_storage_variant, {"updates": {"max_charge_ac_kw": 999}}),
+        ):
+            with self.subTest(edit=edit.__name__):
+                self.source(ROOT.format(root_flags="$00100001") + ARRAY + system + plot + CLOSE)
+                before = self.store.inspect_parameters("Fixture.PRJ", "VC0", include_saved_results=True)["saved_results"]
+                self.assertTrue(before["present"])
+
+                result = edit(self.store, project="Fixture.PRJ", source_variant="VC0", new_variant=target,
+                              dry_run=False, **inputs)
+                self.assertEqual(result["status"], "created", result)
+                after = self.store.inspect_parameters("Fixture.PRJ", target, include_saved_results=True)["saved_results"]
+                self.assertFalse(after["present"])
+                self.assertEqual(int(after["root_flags"][1:], 16) & 1, 0)
+
     def test_weak_grid_rebinding_replaces_only_the_availability_lines(self):
         source = (ROOT.format(root_flags="$00080000") + ARRAY + STORAGE_SYSTEM + SNAPSHOT_LOAD
                   + GRID_STORAGE.format(strategy="WeakGrid", unavail=OLD_UNAVAIL) + CLOSE)
@@ -303,11 +324,12 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(text.endswith("  End of PVObject pvLoad\r\nEnd of PVObject pvVCalcul\r\n"))
 
         (self.root / "Projects/Fixture.VC1").unlink()
-        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + "  " + CLOSE)
+        self.source(ROOT.format(root_flags="$00100020") + ARRAY + PV_SYSTEM + "  " + CLOSE)
         inserted = self.created(create_native_load_variant(
             self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
             load={"mode": "hourly", "load_manifest_name": "load_load.json"}, dry_run=False,
         ))
+        self.assertEqual(inserted.splitlines()[3], "  Flags=$00180020")
         self.assertIn("  End of PVObject pvSystem\r\n  PVObject_UserNeeds=pvLoad\r\n", inserted)
         self.assertTrue(inserted.endswith("  End of PVObject pvLoad\r\n  End of PVObject pvVCalcul\r\n"))
         with self.assertRaisesRegex(ValueError, "hourly load accepts only"):
@@ -944,6 +966,155 @@ class WorkspaceTests(unittest.TestCase):
         )
         cleared = replace_system_unavailability(rand_lines, (0, len(rand_lines) - 1), {"mode": "none"})
         self.assertFalse(cleared["after"]["configured"])
+
+    def test_peak_shaving_rejects_self_consumption_load_across_all_paths(self):
+        from pvsyst_auto.energy.peak import create_peak_shaving_variant
+        from pvsyst_auto.native.load import create_native_load_variant
+
+        target = self.root / "Projects/Fixture.VC1"
+        source_path = self.root / "Projects/Fixture.VC0"
+        system_kw = STORAGE_SYSTEM.replace(
+            "    SystemType=Grid\n",
+            "    SystemType=Grid\n    PLimGrid=210.0\n    LimGrSeparLoss=True\n",
+        ).replace("$10010040", "$15158040")
+
+        # 1. SelfConsumption (with bit 19 set OR cleared, still carrying pvLoad) -> PeakShaving is blocked.
+        for root_flags in ("$01080000", "$01000000"):
+            vc_text = (ROOT.format(root_flags=root_flags) + ARRAY + system_kw + OLD_LOAD
+                       + GRID_STORAGE.format(strategy="SelfConsumption", unavail="") + CLOSE)
+            self.source(vc_text)
+            before_bytes = source_path.read_bytes()
+            for dry_run in (True, False):
+                with self.subTest(case="self_consumption_to_peak", root_flags=root_flags, dry_run=dry_run):
+                    res = create_grid_storage_variant(
+                        self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                        updates={"strategy": "peak_shaving", "grid_limit_kw": 210.0}, dry_run=dry_run,
+                    )
+                    self.assertEqual(res["status"], "blocked", res)
+                    self.assertRegex(res["issues"][0], r"PeakShaving.*self-consumption load")
+                    self.assertFalse(target.exists())
+                    self.assertEqual(source_path.read_bytes(), before_bytes)
+
+        # 2. PowerShift carrying pvLoad -> PeakShaving is blocked; SelfConsumption with pvLoad -> PowerShift still works.
+        ps_with_load = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC2",
+            updates={
+                "strategy": "power_shift",
+                "charging_strategy": "pv_prod_fraction",
+                "charging_pv_fraction": 0.3,
+                "discharging_strategy": "night",
+                "discharging_power_kw": 5.0,
+            },
+            dry_run=False,
+        )
+        self.assertEqual(ps_with_load["status"], "created", ps_with_load)
+        vc2_bytes = (self.root / "Projects/Fixture.VC2").read_bytes()
+        blocked_ps = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC2", new_variant="VC1",
+            updates={"strategy": "peak_shaving", "grid_limit_kw": 210.0}, dry_run=False,
+        )
+        self.assertEqual(blocked_ps["status"], "blocked", blocked_ps)
+        self.assertRegex(blocked_ps["issues"][0], r"PeakShaving.*self-consumption load")
+        self.assertFalse(target.exists())
+        self.assertEqual((self.root / "Projects/Fixture.VC2").read_bytes(), vc2_bytes)
+
+        # 3. Existing PeakShaving variant carrying pvLoad rejects scalar edits and peak-shaving discharge edits.
+        full_peak_with_load = (
+            "PVObject_=pvVCalcul\n  Comment=Fixture\n  Version=8.1.7\n  Flags=$01080000\n"
+            + "  PVObject_PVMainArray=pvMainArray\n    Flags=$01900400\n    Flags2=$082A\n"
+            + "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.7\n      Flags=$00\n"
+            + "      InjectionPointNode Start;\n        Children=Start\n          InverterNode Start;\n"
+            + "            NElements=1\n            SubArrayId=1\n            SubArrayName=PV Array\n"
+            + "            Children=Start\n              MPPTNode Start;\n                NElements=1\n"
+            + "                SubArrayId=1\n                SubArrayName=PV Array\n"
+            + "                Children=Start\n                  StringNode Start;\n"
+            + "                    NElements=2\n                    SubArrayId=1\n"
+            + "                    SubArrayName=PV Array\n                  StringNode End;\n"
+            + "                Children=End\n              MPPTNode End;\n            Children=End\n"
+            + "          InverterNode End;\n        Children=End\n      InjectionPointNode End;\n"
+            + "    End of PVObject pvCircuit\n"
+            + "    PVObject_=pvSubArray\n      Comment=PV Array\n      Version=8.1.7\n      Flags=$019E1002\n"
+            + "      Flags2=$20\n      SubArrayId=1\n      NModSerie=10\n      NStringCh=2\n"
+            + "      NInverter=1\n      NInvMPPT=1\n      NoOrientation=1\n      NStrOrient1=2\n"
+            + "    End of PVObject pvSubArray\n  End of PVObject pvMainArray\n"
+            + "  Orientations, list of=1 TOrientGroup\n"
+            + "    PVObject_=pvOrient\n      Version=8.1.7\n      Flags=$00\n      NoOrient=1\n"
+            + "      FieldType=FixedPlane\n      FieldTilt=20.0\n      FieldAzim=0.0\n"
+            + "    End of TOrientGroup\n  End of Orientations\n"
+            + system_kw + OLD_LOAD
+            + GRID_STORAGE.format(strategy="PeakShaving", unavail="").replace("PVAvailable", "PVToGridMin")
+            + CLOSE
+        )
+        self.source(full_peak_with_load)
+        before_bytes = source_path.read_bytes()
+        blocked_scalar = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+            updates={"initial_soc": 0.55}, dry_run=False,
+        )
+        self.assertEqual(blocked_scalar["status"], "blocked", blocked_scalar)
+        self.assertRegex(blocked_scalar["issues"][0], r"PeakShaving.*self-consumption load")
+        self.assertFalse(target.exists())
+        self.assertEqual(source_path.read_bytes(), before_bytes)
+
+        blocked_peak_edit = create_peak_shaving_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+            discharge={"mode": "after_sunset"}, dry_run=False,
+        )
+        self.assertEqual(blocked_peak_edit["status"], "blocked", blocked_peak_edit)
+        self.assertRegex(blocked_peak_edit["issues"][0], r"PeakShaving.*self-consumption load")
+        self.assertFalse(target.exists())
+        self.assertEqual(source_path.read_bytes(), before_bytes)
+
+        # 4. Binding an hourly load onto an existing PeakShaving variant is blocked.
+        clean_peak = (
+            ROOT.format(root_flags="$00") + ARRAY + system_kw
+            + GRID_STORAGE.format(strategy="PeakShaving", unavail="").replace("PVAvailable", "PVToGridMin")
+            + CLOSE
+        )
+        self.source(clean_peak)
+        before_bytes = source_path.read_bytes()
+        for call in (
+            lambda: create_load_variant(
+                self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                load_manifest_name="load_load.json", dry_run=False,
+            ),
+            lambda: create_native_load_variant(
+                self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                load={"mode": "hourly", "load_manifest_name": "load_load.json"}, dry_run=False,
+            ),
+        ):
+            blocked_load = call()
+            self.assertEqual(blocked_load["status"], "blocked", blocked_load)
+            self.assertRegex(blocked_load["issues"][0], r"PeakShaving.*self-consumption load")
+            self.assertFalse(target.exists())
+            self.assertEqual(source_path.read_bytes(), before_bytes)
+
+        # 5. Creating PeakShaving from scratch with explicit load_manifest_name OR on a source with pvLoad is blocked.
+        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + CLOSE)
+        before_bytes = source_path.read_bytes()
+        blocked_sys_manifest = create_grid_storage_system(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+            battery=BATTERY,
+            storage={**STORAGE, "strategy": "peak_shaving", "grid_limit_kw": 210.0},
+            load_manifest_name="load_load.json", dry_run=False,
+        )
+        self.assertEqual(blocked_sys_manifest["status"], "blocked", blocked_sys_manifest)
+        self.assertRegex(blocked_sys_manifest["issues"][0], r"PeakShaving.*self-consumption load")
+        self.assertFalse(target.exists())
+        self.assertEqual(source_path.read_bytes(), before_bytes)
+
+        self.source(ROOT.format(root_flags="$00080000") + ARRAY + PV_SYSTEM + OLD_LOAD + CLOSE)
+        before_bytes = source_path.read_bytes()
+        blocked_sys_source_load = create_grid_storage_system(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+            battery=BATTERY,
+            storage={**STORAGE, "strategy": "peak_shaving", "grid_limit_kw": 210.0},
+            load_manifest_name=None, dry_run=False,
+        )
+        self.assertEqual(blocked_sys_source_load["status"], "blocked", blocked_sys_source_load)
+        self.assertRegex(blocked_sys_source_load["issues"][0], r"PeakShaving.*self-consumption load")
+        self.assertFalse(target.exists())
+        self.assertEqual(source_path.read_bytes(), before_bytes)
 
 
 if __name__ == "__main__":
