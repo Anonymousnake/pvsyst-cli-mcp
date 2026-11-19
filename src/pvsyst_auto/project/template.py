@@ -26,6 +26,7 @@ from pvsyst_auto.components.editor import root_block
 from pvsyst_auto.project.circuit import circuit_nodes, inventory as grid_inventory, positive_integer, resize_capacity, set_independent_mppt
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
 from pvsyst_auto.project.paths import project_path
+from pvsyst_auto.project.synthesize import SYNTH_VERSION, synthesize_project_and_variant
 from pvsyst_auto.engineering.sizing import plan_capacity
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
@@ -344,10 +345,114 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
             ]}
 
 
+def synthesized_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
+                           capacity=None, pan_fields=None, site_name=None, met_name=None,
+                           allow_window_creation=None) -> dict:
+    """Build a derived PRJ/VC0 pair purely in memory via project/synthesize.py (zero DataRO seed)."""
+    profile = _cli_profile(cli, allow_window_creation=allow_window_creation)
+    mppt_inputs = _mppt_inputs(ond_electrical)
+    # Validate loose PAN/OND existence & syntax just like the DataRO seed path.
+    _component_path(store, "PAN", pan_name)
+    _component_path(store, "OND", ond_name)
+    pnom_ac = 7.5
+    pnom_field = (ond_electrical.get("fields") or {}).get("PNomConv")
+    if isinstance(pnom_field, dict) and pnom_field.get("status") == "declared":
+        try:
+            val = float(pnom_field["value"])
+            if val > 0:
+                pnom_ac = val
+        except (TypeError, ValueError):
+            pass
+
+    synth = synthesize_project_and_variant(
+        store=store if (site_name or met_name) else None,
+        project_comment="Synthesized Grid Template",
+        variant_comment="First simulation",
+        site_name=site_name,
+        met_name=met_name,
+        pan_name=pan_name,
+        ond_name=ond_name,
+        n_mod_serie=15,
+        n_string_ch=mppt_inputs,
+        n_inverter=1,
+        n_inv_mppt=mppt_inputs,
+        independent_mppt=True,
+        pnom_ac_in_mppt=pnom_ac,
+        tilt_deg=25.0,
+        azimuth_deg=0.0,
+        with_bom=True,
+    )
+    prj_bytes = synth["prj_text"].encode("utf-8")
+    vc0_bytes = synth["vc0_text"].encode("utf-8")
+    store._project_text(prj_bytes)
+    _, final_lines = store._text(vc0_bytes)
+    store._require_no_geometry(final_lines, require_shading_section=True)
+    final_arrays, _ = store._sections(final_lines)
+    rechecked = grid_inventory(final_lines, final_arrays)
+    if rechecked["counts_valid"] is not True:
+        raise ValueError("The synthesized template has incomplete or inconsistent grid counts: "
+                         + "; ".join(rechecked["issues"] + rechecked["unchecked_checks"]))
+    store._ordinary_fixed_plane(final_lines, store._orientation(final_lines, 1))
+    block = root_block(final_lines, final_arrays[SEED_SUBARRAY])
+
+    plan = None
+    if capacity is not None:
+        if pan_fields is None:
+            pan_fields = pan_validation_fields(
+                store.components._read(_component_path(store, "PAN", pan_name)).decode("utf-8-sig"))
+        plan = plan_capacity(store, final_lines, SEED_SUBARRAY, pan_fields, ond_electrical, capacity)
+
+    changes = [
+        {"object": "pvProject/pvVCalcul", "field": "synthesis", "before": None, "after": SYNTH_VERSION,
+         "reason": "Synthesized pure-text PRJ/VC0 directly without any DataRO demo seed"},
+        {"object": "pvSubArray", "field": "NInvMPPT", "before": None, "after": mppt_inputs,
+         "reason": "Populate every declared hardware MPPT input"},
+        {"object": "pvSubArray", "field": "PVModule/GInverter", "before": None, "after": f"{pan_name}/{ond_name}",
+         "reason": "Reference the resolved loose components"},
+    ]
+    retained = [{"field": "PRCorrTemp", "value": "False",
+                 "reason": "Standard annual-PR requirement declared on synthesized root"}]
+    retained.extend({"field": key, "value": block.one(key)[1],
+                     "reason": "Standard PVsyst 8.1 grid default emitted by pure-text synthesizer"}
+                    for key in RETAINED_FIELDS if key in block.fields)
+    return {
+        "prj_text": synth["prj_text"],
+        "vc0_text": synth["vc0_text"],
+        "profile": profile,
+        "mppt_inputs": mppt_inputs,
+        "capacity_plan": plan,
+        "source": {
+            "mode": "synthesized",
+            "library": None,
+            "project": None,
+            "variant": None,
+            "subarray": SEED_SUBARRAY,
+            "orientation": 1,
+            "version": SYNTH_VERSION,
+            "flags_before": None,
+            "flags_after": "$001E0402",
+            "mppt_inputs_before": None,
+            "strings_before": None,
+            "strings_after": str(mppt_inputs),
+            "project_bom_preserved": True,
+            "variant_bom_preserved": True,
+        },
+        "changes": changes,
+        "retained_defaults": retained,
+        "read_only_seed": False,
+        "warnings": [
+            "PRJ/VC0 were synthesized directly in pure text without reading any DataRO _DEMO_* seed files.",
+            "The synthesized texts are validated through the adapter's own parsers and count checks; native "
+            "PVsyst structural and simulation validation remains outstanding.",
+        ],
+    }
+
+
 def prepare_standard_template(cli, store, *, ond_electrical, pan_name, ond_name, new_project,
                               dry_run=True, capacity=None, pan_fields=None,
-                              allow_window_creation=None) -> dict:
-    """Create a new workspace PRJ/VC0 from the installed 8.1 demo seed, or preview it.
+                              allow_window_creation=None, allow_synthesize=False) -> dict:
+    """Create a new workspace PRJ/VC0 from pure-text synthesis (when ``allow_synthesize=True``)
+    or from the installed 8.1 demo seed, or preview it.
 
     ``dry_run`` previews the derived structure and, with ``capacity`` and optional
     ``pan_fields``, the selected capacity without writing anything. ``dry_run=False`` writes
@@ -360,11 +465,12 @@ def prepare_standard_template(cli, store, *, ond_electrical, pan_name, ond_name,
     """
     with store.lock:
         return _prepare(cli, store, ond_electrical, pan_name, ond_name, new_project,
-                        dry_run, capacity, pan_fields, allow_window_creation)
+                        dry_run, capacity, pan_fields, allow_window_creation,
+                        allow_synthesize=allow_synthesize)
 
 
 def _prepare(cli, store, ond_electrical, pan_name, ond_name, new_project, dry_run, capacity, pan_fields,
-             allow_window_creation=None):
+             allow_window_creation=None, *, allow_synthesize=False):
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
               "request": {"project": new_project, "module": pan_name, "inverter": ond_name,
                           "capacity": capacity is not None},
@@ -394,9 +500,10 @@ def _prepare(cli, store, ond_electrical, pan_name, ond_name, new_project, dry_ru
         return result
 
     try:
-        derived = standard_seed_texts(cli, store, ond_electrical=ond_electrical, pan_name=pan_name,
-                                      ond_name=ond_name, capacity=capacity, pan_fields=pan_fields,
-                                      allow_window_creation=allow_window_creation)
+        builder = synthesized_seed_texts if allow_synthesize else standard_seed_texts
+        derived = builder(cli, store, ond_electrical=ond_electrical, pan_name=pan_name,
+                          ond_name=ond_name, capacity=capacity, pan_fields=pan_fields,
+                          allow_window_creation=allow_window_creation)
     except (ValueError, OSError, KeyError, PVsystError, StopIteration) as exc:
         _issue(result, "seed", cli._redact(str(exc)))
         return result

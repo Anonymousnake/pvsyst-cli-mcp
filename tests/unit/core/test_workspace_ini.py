@@ -129,10 +129,12 @@ except ini.WorkspaceSettingsError as exc:
 with ini._profile_lock(path.with_name('another-profile.ini')):
     pass
 """
+            env = dict(os.environ, PYTHONPATH=str(Path(ini.__file__).resolve().parents[2]))
             with patch.object(ini, "_profile_ini", return_value=profile):
                 for version in ((8, 1, 6, 49278), (8, 1, 7, 49382)):
                     with self.subTest(version=version), patch.object(ini, "_file_version", return_value=version):
                         with ini.preserve_workspace_settings(fake, restore=False):
-                            subprocess.run([sys.executable, "-c", child, str(profile)], check=True, timeout=10)
+                            subprocess.run([sys.executable, "-c", child, str(profile)], check=True, timeout=10,
+                                           env=env)
             with ini._profile_lock(profile):
                 self.assertFalse(profile.exists())

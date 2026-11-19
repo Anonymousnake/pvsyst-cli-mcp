@@ -203,6 +203,26 @@ class WorkspaceTests(unittest.TestCase):
                                           new_variant="VC1", load_manifest_name="load_load.json",
                                           dry_run=False, **{"battery": BATTERY, "storage": STORAGE, **changes})
 
+    def test_storage_and_component_swaps_reject_leading_space_battery_bindings(self):
+        name = " Fixture.BTR"
+        (self.root / "ComposPV/Batteries" / name).write_text(BTR, encoding="utf-8")
+        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + CLOSE)
+        for library in ("workspace", "builtin"):
+            result = self.build_storage(battery={**BATTERY, "file_name": name, "library": library})
+            self.assertEqual(result["status"], "blocked", result)
+            self.assertIn("Battery references cannot start with whitespace", result["issues"][0])
+            self.assertFalse((self.root / "Projects/Fixture.VC1").exists())
+
+        self.created(self.build_storage())
+        variant = self.root / "Projects/Fixture.VC1"
+        variant.write_bytes(variant.read_bytes().replace(b"BatteryFile=Fixture.BTR", b"BatteryFile= Fixture.BTR"))
+        before = variant.read_bytes()
+        with self.assertRaisesRegex(ValueError, "Battery references cannot start with whitespace"):
+            self.store.update("Fixture.PRJ", "VC1", {"BTR": name})
+        self.assertEqual(variant.read_bytes(), before)
+        self.store.update("Fixture.PRJ", "VC1", {"BTR": "Fixture.BTR"})
+        self.assertIn(b"BatteryFile=Fixture.BTR\r\n", variant.read_bytes())
+
     def test_storage_scalars_never_use_exponent_notation(self):
         self.source(ROOT.format(root_flags="$00") + ARRAY + STORAGE_SYSTEM
                     + GRID_STORAGE.format(strategy="SelfConsumption", unavail="") + CLOSE)
@@ -482,6 +502,64 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("PVObject_Ombrage=pvShading", vc0_after)
         self.assertNotIn("VarList, list of=", vc0_after)
         self.assertIn("Flags=$00100000", vc0_after)
+
+    def test_power_shift_schedule_preserves_small_slots_with_a_large_peak(self):
+        slots = [3000.0, 0.02] + [0.0] * 45 + [3000.0]
+        encoded = encode_subhour_schedule(slots)
+        self.assertEqual(decode_subhour_schedule(encoded), slots)
+        self.assertTrue(encoded.startswith("48+50+"))
+        self.assertTrue(all(len(token) <= 3 for token in encoded.split("+")[2:]))
+
+    def test_power_shift_schedule_accepts_six_decimal_values_and_float_noise(self):
+        for value, expected, scale in ((0.333333, 0.333333, 270000), (0.1 + 0.2, 0.3, 300000),
+                                       (0.000001, 0.000001, 1000000)):
+            with self.subTest(value=value):
+                encoded = encode_subhour_schedule([value] * 48, maximum=1.0)
+                self.assertTrue(encoded.startswith(f"48+{scale}+"))
+                self.assertEqual(decode_subhour_schedule(encoded), [expected] * 48)
+
+    def test_power_shift_schedule_warns_when_using_native_approximation(self):
+        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + CLOSE)
+        slots = [2500.123] + [0.0] * 47
+        result = create_grid_storage_system(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+            battery=BATTERY, storage={**STORAGE, "strategy": "power_shift",
+                                     "charging_pv_fraction": 0.3, "discharging_schedule_48": slots},
+            dry_run=False,
+        )
+        self.assertEqual(result["status"], "created", result["issues"])
+        updated = create_grid_storage_variant(
+            self.store, project="Fixture.PRJ", source_variant="VC1", new_variant="VC2",
+            updates={"discharging_schedule_48": slots}, dry_run=True,
+        )
+        self.assertEqual(updated["status"], "ready", updated["issues"])
+        for response, key in ((result, "configuration"), (updated, "after")):
+            with self.subTest(key=key):
+                self.assertEqual(response[key]["discharging_schedule_48"], [2500.111111] + [0.0] * 47)
+                self.assertTrue(any("discharging_schedule_48" in warning and "0.011889" in warning
+                                    for warning in response["warnings"]), response["warnings"])
+
+    def test_power_shift_schedule_rejects_positive_slots_that_become_zero(self):
+        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + CLOSE)
+        result = create_grid_storage_system(
+            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+            battery=BATTERY, storage={**STORAGE, "strategy": "power_shift",
+                                     "charging_pv_fraction": 0.3, "discharging_power_kw": 3000.0},
+            dry_run=False,
+        )
+        self.assertEqual(result["status"], "created", result)
+        for target, slots, issue in (
+            ("VC2", [3000.0, 0.001] + [0.0] * 46, "would encode as zero"),
+            ("VC3", [5e-324] * 48, "rounds to zero at six decimal places"),
+        ):
+            with self.subTest(slot=slots[1]):
+                invalid = create_grid_storage_variant(
+                    self.store, project="Fixture.PRJ", source_variant="VC1", new_variant=target,
+                    updates={"discharging_schedule_48": slots}, dry_run=False,
+                )
+                self.assertEqual(invalid["status"], "blocked", invalid.get("issues"))
+                self.assertIn(issue, invalid["issues"][0])
+                self.assertFalse((self.root / "Projects" / f"Fixture.{target}").exists())
 
     def test_powershift_peakshaving_from_scratch_and_builtin_li_btr(self):
         from pvsyst_auto.energy.peak import create_peak_shaving_variant
