@@ -632,7 +632,11 @@ class PVsystCLI:
                 or (log_level in (None, 3) and "Simulation done in " not in text)
                 or (csv_target and not csv_target.is_file())
                 or (pdf_target and not pdf_target.is_file())):
-            raise PVsystError("Simulation did not complete or produce requested output: " + self._redact(text)[-3000:])
+            code_note = f" (exit code {result.returncode})" if result.returncode != 0 else ""
+            raise PVsystError(
+                f"Simulation did not complete or produce requested output{code_note}: "
+                + self._redact(text)[-3000:]
+            )
         summary = None
         hourly = []
         runs = None
