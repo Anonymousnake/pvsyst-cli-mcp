@@ -382,7 +382,7 @@ class BifacialAndUtilityTests(unittest.TestCase):
             inverter={"file_name": "Lab50.OND"},
             weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
             capacity=_capacity_spec(),
-            ground_layout={"model_mode": "3d", "pitch_m": 11.0, "shed_count": 6, "module_rows": 2, "module_columns": 20},
+            ground_layout={"model_mode": "3d", "pitch_m": 11.0, "shed_count": 6, "module_rows": 2, "module_columns": 19},
             bifacial={"ground_albedo": 0.30, "bifaciality_factor": 0.80, "height_above_ground_m": 1.2},
         )
         with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
@@ -416,7 +416,7 @@ class BifacialAndUtilityTests(unittest.TestCase):
             weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
             capacity=_capacity_spec(),
             ground_layout={
-                "model_mode": "3d", "pitch_m": 12.0, "shed_count": 8,
+                "model_mode": "3d", "pitch_m": 12.0, "shed_count": 6, "module_columns": 19,
                 "min_phi_deg": -55.0, "max_phi_deg": 55.0, "backtracking": True,
             },
             bifacial={"ground_albedo": 0.28, "bifaciality_factor": 0.78, "height_above_ground_m": 2.4},
@@ -455,6 +455,116 @@ class BifacialAndUtilityTests(unittest.TestCase):
                         self.assertFalse(list((self.root / "Projects").iterdir()))
                         self.assertFalse(list((self.root / "Results").iterdir()))
         self.assertEqual(cli.runs, [])
+
+    def test_partial_bifacial_edit_preserves_native_omissions_and_flags(self):
+        # 1. Commercial-style shed pvBiFacial: PitchUser absent, NShedsUser=-9999, ShedTransparentFrac=0.005.
+        shed_synth = synthesize_utility_project(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            field_type="RegularSheds", pan_name="Lab440.PAN", ond_name="Lab50.OND",
+            bifacial={"ground_albedo": 0.30, "bifaciality_factor": 0.80, "height_above_ground_m": 0.5},
+        )
+        comm_vc = (
+            shed_synth["vc0_text"]
+            .replace("      MismatchLossFactor=0.100\r\n",
+                     "      MismatchLossFactor=0.150\r\n      ShedTransparentFrac=0.005\r\n")
+            .replace("        PitchUser=-1.000\r\n", "")
+            .replace("        NShedsUser=-1\r\n", "        NShedsUser=-9999\r\n")
+        )
+        self.store.create_project("CommBifi.PRJ", shed_synth["prj_text"], {"VC0": comm_vc})
+        info_c = self.store.inspect_parameters("CommBifi.PRJ", "VC0")
+        upd_c = self.store.update_parameters(
+            "CommBifi.PRJ", "VC0", expected_sha256=info_c["sha256"],
+            bifacial_updates={"ground_albedo": 0.35}, dry_run=False,
+        )
+        self.assertEqual(upd_c["bifacial"]["action"], "updated")
+        saved_c = (self.root / "Projects/CommBifi.VC0").read_text(encoding="utf-8-sig")
+        self.assertIn("GroundAlbedo=0.350", saved_c)
+        self.assertNotIn("PitchUser=", saved_c)
+        self.assertIn("NShedsUser=-9999", saved_c)
+        self.assertIn("ShedTransparentFrac=0.005", saved_c)
+
+        # 2. Utility-style tracker pvBiFacial: tracker model Flags=$02 must stay $02.
+        trk_synth = synthesize_utility_project(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            field_type="TrackHorizNSAxis", pan_name="Lab440.PAN", ond_name="Lab50.OND",
+            bifacial={"ground_albedo": 0.30, "bifaciality_factor": 0.80, "height_above_ground_m": 2.5},
+        )
+        util_vc = trk_synth["vc0_text"].replace(
+            "      PVObject_BiFacialTrackerModel=pvBiFacialTrackers\r\n        Flags=$00\r\n",
+            "      PVObject_BiFacialTrackerModel=pvBiFacialTrackers\r\n        Flags=$02\r\n",
+        )
+        self.store.create_project("UtilBifi.PRJ", trk_synth["prj_text"], {"VC0": util_vc})
+        info_u = self.store.inspect_parameters("UtilBifi.PRJ", "VC0")
+        upd_u = self.store.update_parameters(
+            "UtilBifi.PRJ", "VC0", expected_sha256=info_u["sha256"],
+            bifacial_updates={"ground_albedo": 0.35}, dry_run=False,
+        )
+        self.assertEqual(upd_u["bifacial"]["action"], "updated")
+        saved_u = (self.root / "Projects/UtilBifi.VC0").read_text(encoding="utf-8-sig")
+        self.assertIn("GroundAlbedo=0.350", saved_u)
+        self.assertIn("PVObject_BiFacialTrackerModel=pvBiFacialTrackers\n        Flags=$02\n", saved_u)
+
+    def test_ground_3d_rejects_chord_override_pitch_overlap_and_module_count_mismatch(self):
+        cli = _FakeUtilityCLI(self.root, year=2024)
+        fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
+
+        # 1. Tracker pitch smaller than 3D scene chord (4.012 m) even when collector_width_m=3.0 is passed.
+        trk_req = SingleDesignRequest(
+            scope="ground_tracker", new_project="TightPitch.PRJ", year=2024, target_dc_kw=100.0,
+            module={"file_name": "Lab440.PAN"}, inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            capacity=_capacity_spec(),
+            ground_layout={"model_mode": "3d", "shed_count": 6, "module_columns": 19,
+                           "collector_width_m": 3.0, "pitch_m": 3.5},
+        ).model_dump(exclude_none=True)
+        with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
+            for dry_run in (True, False):
+                res = simulate_design(cli, self.store, spec=trk_req, dry_run=dry_run)
+                self.assertEqual(res["status"], "blocked", res)
+                self.assertTrue(any("4.012" in i["message"] for i in res["issues"]), res["issues"])
+            self.assertEqual(list((self.root / "Projects").iterdir()), [])
+
+        # 2. Regular 3D shed scene module count (500) vs electrical count (228) is blocked with both counts.
+        shed_req = SingleDesignRequest(
+            scope="ground_sheds", new_project="CountMismatch.PRJ", year=2024, target_dc_kw=100.0,
+            tilt=20.0, azimuth=0.0,
+            module={"file_name": "Lab440.PAN"}, inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            capacity=_capacity_spec(),
+            ground_layout={"model_mode": "3d"},
+        ).model_dump(exclude_none=True)
+        with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
+            for dry_run in (True, False):
+                res = prepare_design_project(cli, self.store, spec=shed_req, dry_run=dry_run)
+                self.assertEqual(res["status"], "blocked", res)
+                msg = " ".join(i["message"] for i in res["issues"])
+                self.assertIn("500", msg)
+                self.assertIn("228", msg)
+            self.assertEqual(list((self.root / "Projects").iterdir()), [])
+
+    def test_variant_update_rejects_mounting_bifacial_on_monofacial_pan(self):
+        (self.root / "ComposPV/PVmodules/Mono440.PAN").write_bytes(
+            b"\xef\xbb\xbf" + UTILITY_MONO_PAN.replace("\n", "\r\n").encode("utf-8")
+        )
+        cli = _FakeUtilityCLI(self.root, year=2024)
+        fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
+        req = SingleDesignRequest(
+            scope="ground_sheds", new_project="MonoShed.PRJ", year=2024, target_dc_kw=100.0,
+            tilt=20.0, azimuth=0.0,
+            module={"file_name": "Mono440.PAN"}, inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            capacity=_capacity_spec(),
+            ground_layout={"model_mode": "unlimited"},
+        ).model_dump(exclude_none=True)
+        with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
+            prep = prepare_design_project(cli, self.store, spec=req, dry_run=False)
+        self.assertEqual(prep["status"], "prepared", prep)
+        info = self.store.inspect_parameters("MonoShed.PRJ", "VC0")
+        with self.assertRaisesRegex(ValueError, "monofacial.*bit 23"):
+            self.store.update_parameters(
+                "MonoShed.PRJ", "VC0", expected_sha256=info["sha256"],
+                bifacial_updates={"ground_albedo": 0.30}, dry_run=True,
+            )
 
 
 if __name__ == "__main__":

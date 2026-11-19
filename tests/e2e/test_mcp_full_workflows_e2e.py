@@ -527,7 +527,7 @@ End of PVObject pvModule
                             "pitch_m": 6.5,
                             "shed_count": 6,
                             "module_rows": 2,
-                            "module_columns": 20,
+                            "module_columns": 21,
                             "module_orientation": "portrait",
                             "axis_azimuth_deg": 0.0,
                             "min_phi_deg": -55.0,
