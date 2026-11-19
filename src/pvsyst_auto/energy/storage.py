@@ -221,7 +221,7 @@ def set_grid_export(lines, system, allow_grid_export):
 
 
 def set_system_grid_limit(lines, system, grid_limit_kw: float) -> float:
-    """Update an enabled kW limit's value, or enable a new kW limit at the inverter."""
+    """Update an enabled kW limit's value, or enable a new kW limit at injection."""
     limit = finite(grid_limit_kw, "grid_limit_kw", 0, math.inf, positive=True)
     fields = direct_fields(lines, system)
     flag_idx, raw_flags = one(fields, "Flags")
@@ -233,7 +233,8 @@ def set_system_grid_limit(lines, system, grid_limit_kw: float) -> float:
         if flags & APPARENT:
             raise ValueError("Native apparent grid limits use kVA and cannot be set with grid_limit_kw")
     else:
-        flags = (flags & ~(APPARENT | INJECTION)) | ENABLED
+        # Keep the legacy injection default: the 8.1.7 PeakShaving fixture does not charge at the inverter limit.
+        flags = (flags & ~APPARENT) | ENABLED | INJECTION
         lines[flag_idx] = replace_value(lines[flag_idx], f"${flags:08X}")
         edits["LimGrSeparLoss"] = "False"
     newline = "\r\n" if any("\r\n" in line for line in lines) else "\n"

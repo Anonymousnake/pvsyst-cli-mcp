@@ -50,10 +50,10 @@ class StorageGridLimitTests(unittest.TestCase):
                         self.assertEqual({k: v for k, v in state.items() if k.startswith("grid_limit_")},
                                          {key: float(value)})
 
-    def test_explicit_kw_edits_preserve_active_limit_or_start_at_inverter(self):
+    def test_explicit_kw_edits_preserve_active_limit_or_start_at_injection(self):
         for flags, expected_flags, separate_loss in (("$11100040", "$11100040", "True"),
                                                       ("$15100040", "$15100040", "True"),
-                                                      ("$16100040", "$11100040", "False")):
+                                                      ("$12100040", "$15100040", "False")):
             with self.subTest(flags=flags):
                 store, target, _ = self.fixture(flags, "    PLimGrid=330.000\n    LimGrSeparLoss=True\n")
                 result = self.edit(store, grid_limit_kw=331)
