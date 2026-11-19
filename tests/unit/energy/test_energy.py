@@ -808,11 +808,11 @@ class WorkspaceTests(unittest.TestCase):
         _, sys3 = self.store._sections(vc3_lines)
         st3 = grid_storage_state(vc3_lines, sys3)
         self.assertEqual(st3["grid_limit_kw"], 120.0)
-        self.assertIn("    LimGrSeparLoss=False\n", "".join(vc3_lines))
-        # Ensure Constant PF bit 20 (0x00100000) was NOT set
+        self.assertIn("    LimGrSeparLoss=True\n", "".join(vc3_lines))
+        # Inherit the injection-point limit without enabling constant PF.
         sys_flag_line = next(l for l in vc3_lines[sys3[0]:sys3[1]] if l.strip().startswith("Flags=$"))
         sys_flag_int = int(sys_flag_line.split("$")[1].strip(), 16)
-        self.assertTrue(sys_flag_int & 0x01000000)
+        self.assertEqual(sys_flag_int & 0x07000000, 0x05000000)
         self.assertEqual(sys_flag_int & 0x00100000, 0)
 
         # 5. Sub-cent PowerShift scalar (0.004) survives roundtrip via decimal_text

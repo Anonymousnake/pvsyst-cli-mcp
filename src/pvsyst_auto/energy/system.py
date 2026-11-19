@@ -69,11 +69,8 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             raise ValueError("Supply complete availability exactly when creating WeakGrid")
         if strat_key in ("self_consumption", "weak_grid") and not load_manifest_name:
             raise ValueError(f"{strat_key} requires an explicit load_manifest_name")
-        # For peak_shaving, grid_limit_kw may live in storage_clean or already exist as PLimGrid on source pvSystem.
-        preview_controls = resolve_storage_controls(
-            storage_clean,
-            system_grid_limit=1.0 if strat_key == "peak_shaving" and "grid_limit_kw" not in storage_clean else None,
-        )
+        # Check the inherited PeakShaving limit once the source pvSystem is available.
+        preview_controls = resolve_storage_controls(storage_clean, inherited_limit={"grid_limit_kw": 1.0})
         state = {
             "strategy": preview_controls["strategy"],
             "charging_strategy": preview_controls["charging_strategy"],
@@ -113,7 +110,10 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
         if weak and any(line.strip().startswith("PVObject_GridUnavail=") for line in lines):
             raise ValueError("Preserve the source's existing grid-unavailability object instead of adding a duplicate")
 
-        controls = resolve_storage_controls(storage_clean, system_grid_limit=_system_grid_limit(lines, system))
+        inherited_limit = None
+        if base_state["strategy"] == "PeakShaving" and "grid_limit_kw" not in storage_clean:
+            inherited_limit = _system_grid_limit(system_fields)
+        controls = resolve_storage_controls(storage_clean, inherited_limit=inherited_limit)
         state = {**base_state, **controls}
         validate_storage(state, allow_weak=weak)
 
@@ -155,7 +155,7 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
         # Enable native centralized AC grid storage and leave SystemUnavail (bit 16) untouched.
         lines[system_index] = replace_value(lines[system_index], f"${int(system_flags[1:], 16) | 0x10000040:08X}")
         set_grid_export(lines, system, allow_grid_export)
-        if "grid_limit_kw" in controls and ("grid_limit_kw" in storage_clean or controls["strategy"] == "PeakShaving"):
+        if "grid_limit_kw" in storage_clean:
             set_system_grid_limit(lines, system, controls["grid_limit_kw"])
             _, system = store._sections(lines)
             system_fields = direct_fields(lines, system)

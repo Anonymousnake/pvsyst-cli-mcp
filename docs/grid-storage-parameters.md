@@ -104,5 +104,5 @@
 ## 5. `PowerShift`（分时移峰）与 `PeakShaving`（削峰）从零构建
 
 当 `strategy="power_shift"` 或 `strategy="peak_shaving"` 时，`pvsyst_create_grid_storage_system` **不强制** `load_manifest_name`（仅在需要同时自发自用时传入），并支持 `battery.library="builtin"` 直接引用 PVsyst 内置加密锂电模型（如 `Generic_LI_Module_180Ah.BTR`）：
-- **`peak_shaving`**：需提供正数 `grid_limit_kw`（或源变体已配置 `PLimGrid`），支持 `charging_strategy="pv_above_thresh" | "pv_to_grid_min"` 与 `discharging_strategy="immediate" | "after_sunset" | "hour_window"`（`hour_window` 需配合 `discharge_start_hour` / `discharge_end_hour`）。
+- **`peak_shaving`**：需提供正数 `grid_limit_kw`（或沿用源变体已启用的 kW 限值）。新启用的限值默认为并网注入点；更新现有 kW 限值时保留测点与损耗选项，`grid_limit_kw` 不得覆盖已启用的 kVA 限值。支持 `charging_strategy="pv_above_thresh" | "pv_to_grid_min"` 与 `discharging_strategy="immediate" | "after_sunset" | "hour_window"`（`hour_window` 需配合 `discharge_start_hour` / `discharge_end_hour`）。
 - **`power_shift`**：支持 `charging_strategy` 为 `pv_prod_fraction`（`charging_pv_fraction` 0..1 与可选 48 槽 `charging_schedule_48`，写入 `TParSimulSeries` `FPVChMx`）、`spec_charg_power`（`charging_power_kw` 与可选 48 槽 `EChgMax`）或 `pv_to_grid_min`（固定上网阈值 `charging_power_kw` 与可选 48 槽 `EChgMax`）；放电支持 `specified_hours`（`discharging_power_kw` 与可选 48 槽 `EDisMax`）、`night`（标量 `discharging_power_kw`）或 `hour_window`。注意 PVsyst 8.1.7 不支持在 `PowerShift` 下使用 `after_sunset`。
