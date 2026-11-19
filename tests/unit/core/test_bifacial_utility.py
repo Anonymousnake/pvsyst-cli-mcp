@@ -77,7 +77,7 @@ def _write_fake_annual_csv(csv_path: Path, *, project: str, variant: str, site: 
             ge = 480.0
             egrid = (gi * 0.001) * nominal_dc_kw * pr_val
             earr = egrid * 1.02
-            row = [stamp, f"{gi:.2f}", f"{ge:.2f}", f"{earr:.3f}", f"{egrid:.3f}", f"{pr_val:.4f}", "0.000", "10.00"]
+            row = [stamp, f"{gi:.2f}", f"{ge:.2f}", f"{earr:.3f}", f"{egrid:.3f}", f"{pr_val:.4f}", "0.000", "490.00"]
             if bifacial:
                 row.extend(["400.00", "150.00", "50.00", "20.00", "30.00", "0.800", "0.100", "0.8200"])
         else:

@@ -64,6 +64,7 @@ def _solar_rows(
         ("IL_Pmax", "kW"),
         ("IL_Vmin", "kW"),
         ("IL_Imax", "kW"),
+        ("GlobHrz", "W/m2"),
         ("GlobShd", "W/m2"),
         ("ShdElec", "kW"),
         ("SlgLoss", "W/m2"),
@@ -118,7 +119,8 @@ def _solar_rows(
             il_pmax if gi > 0 else 0.0,
             il_vmin if gi > 0 else 0.0,
             il_imax if gi > 0 else 0.0,
-            glob_shd if gi > 0 else 0.0,
+            round(gi, 3),
+            round(max(gi - glob_shd, 0.0), 3),
             shd_elec if gi > 0 else 0.0,
             slg_loss if gi > 0 else 0.0,
             e_grd_lim if gi > 0 else 0.0,
@@ -220,6 +222,16 @@ class DiagnosticsEngineTests(unittest.TestCase):
         compact = compact_diagnostics_summary(diag, max_findings=3)
         self.assertEqual(len(compact["top_findings"]), 3)
         self.assertEqual(compact["finding_count"], diag["finding_count"])
+
+    def test_near_shading_uses_loss_between_native_irradiance_stages(self):
+        with_hrz = [("GlobInc", "W/m2"), ("GlobHrz", "W/m2"), ("GlobShd", "W/m2")]
+        without_hrz = [("GlobInc", "W/m2"), ("GlobShd", "W/m2")]
+        for cols, before in ((with_hrz, [720, 700]), (without_hrz, [700])):
+            for after, expected in ((690, []), (490, ["SHADING_LOSS_HIGH"])):
+                with self.subTest(columns=[c for c, _ in cols], after=after):
+                    rows = [[stamp, *before, after] for stamp in ("07/08/90 11:00", "07/08/90 12:00")]
+                    path = _write_csv(self.root / "native_shading.csv", cols, rows)
+                    self.assertEqual([f["code"] for f in diagnose_simulation_csv(path)["findings"]], expected)
 
     def test_time_series_anomalies_and_subhourly_step_awareness(self):
         # 15-minute data with 30 hours of daytime zero output, nighttime export, E_Grid > EArray
