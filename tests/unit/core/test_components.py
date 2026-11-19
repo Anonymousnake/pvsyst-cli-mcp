@@ -460,6 +460,43 @@ class ComponentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unmatched object closing tag"):
             objects(text.replace("  EndTags  \n", ""))
 
+    def test_class_name_as_commercial_model_is_an_ordinary_field(self):
+        self.files["PAN"].write_text(PAN.replace("Model=440W", "Model=TPrintSettings"), encoding="utf-8")
+        report = self.store.validate("PAN", "sample.PAN")
+        self.assertEqual(report["known_value_errors"], [])
+        commercial = self.store.inspect("PAN", "sample.PAN")["commercial"]
+        self.assertTrue(commercial["editable"], commercial)
+        self.assertEqual(commercial["fields"]["Model"]["value"], "TPrintSettings")
+
+    def test_native_private_frames_keep_their_owners(self):
+        with self.subTest(record="PrintSettings"):
+            text = ("PVObject_=pvProject\nPrintSettings=TPrintSettings\n  PCNDec=1\nEndTags\n"
+                    "MeteoFileName=Demo.MET\nEnd of PVObject pvProject\n")
+            project, = objects(text)
+            self.assertNotIn("PCNDec", project.fields)
+            self.assertEqual(project.one("MeteoFileName")[1], "Demo.MET")
+
+        with self.subTest(record="HouseHoldUses"):
+            text = ("PVObject_UserNeeds=pvLoad\n  UsesModul=Seasonal\n"
+                    "  HouseHoldUses=THouseHoldUses\n    UsesModul=Seasonal\n  End of HouseHoldUses\n"
+                    "End of PVObject pvLoad\n")
+            load, = objects(text)
+            self.assertEqual(load.one("UsesModul"), (1, "Seasonal"))
+
+        with self.subTest(record="WaterUse"):
+            text = ("PVObject_UserNeeds=pvLoad\n  WaterUse=TWaterUse\n    FlowModul=Yearly\n"
+                    "    PVObject_HydroCircuit=pvHydrCircuit\n      Version=8.1.7\n      Flags=$01\n"
+                    "      Fluide=TFluide\n        FluidType=Water\n      End of TFluide\n"
+                    "      CircElement, list of=1 tPipe\n        Pipe=1\n          Version=8.1.7\n"
+                    "          PipeName=PE50\n        End of TPipe\n      End of List CircElement\n"
+                    "    End of PVObject pvHydrCircuit\n  End of WaterUse\nEnd of PVObject pvLoad\n")
+            load, circuit = objects(text)
+            self.assertEqual(circuit.one("Version"), (4, "8.1.7"))
+            self.assertEqual(circuit.one("Flags")[1], "$01")
+            self.assertNotIn("PipeName", circuit.fields)
+            self.assertNotIn("FluidType", circuit.fields)
+            self.assertNotIn("FlowModul", load.fields)
+
     def test_pathless_object_field_error_names_type_line_and_occurrences(self):
         missing_text = "PVObject_=pvVCalcul\n  Version=8.1.6\nEnd of PVObject pvVCalcul\n"
         with self.assertRaises(ValueError) as missing:

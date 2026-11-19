@@ -31,6 +31,41 @@ OBJECT_CLOSE_ALIAS = {"TAgeing": "pvAgeing", "TOrientGroup": "pvOrient",
                       "TDomeOrientGroup": "pvDomeOrient", "TSimulFich": "pvSimulFile"}
 OBJECT_CLOSE = re.compile(r"\s*End of (?:PVObject )?(pv\w+|TConverter|TCubicProfile|%s)\s*"
                           % "|".join(map(re.escape, OBJECT_CLOSE_ALIAS)))
+# Saved owner/key/type triples from the PR fixtures, writers and installed DataRO examples.
+# A class name alone can also be ordinary text (e.g. Model=TPrintSettings).
+PRIVATE_OPEN = {
+    ("pvProject", "PrintSettings", "TPrintSettings"),
+    ("pvVCalcul", "BatchSimul", "TBatchSimul"),
+    ("pvVCalcul", "EconomicEval", "TEcoEvaluation"),
+    ("pvVCalcul", "P50_P90", "TP50_P90"),
+    ("pvVCalcul", "Histogram", "THistogramme"),
+    ("pvSimulPlot", "Histogram", "THistogramme"),
+    ("pvCarbonBalance", "Custom_Fractions", "TEnergyMixSet"),
+    ("pvCarbonBalance", "Custom_LCE_Definitions", "TEnergyMixSet"),
+    ("pvSubArray", "WiringResistance", "TWiringResistance"),
+    ("pvShdFTable", "SFTable", "TInterpole2D"),
+    *(("pvMeteoTransp", "TransposTable_" + month, "TInterpole2D")
+      for month in "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()),
+    ("pvLoad", "HouseHoldUses", "THouseHoldUses"),
+    ("pvLoad", "WaterUse", "TWaterUse"),
+    ("pvLoad", "HourlyLoad", "THourlyParams"),
+    ("pvHydrCircuit", "Fluide", "TFluide"),
+    ("TEcoEvaluation", "HourlyTariff", "THourlyParams"),
+    ("TEcoEvaluation", "HourlyCSVTariff", "TVarSimul"),
+    ("TEcoEvaluation", "ConsumptionHourlyCSVTariff", "TVarSimul"),
+    ("THourlyParams", "ParSimulH", "TVarSimul"),
+    ("pvGridStorage", "ChargingPVFracParSim", "TParSimulSeries"),
+    ("pvGridStorage", "ChargingPowerParSim", "TParSimulSeries"),
+    ("pvGridStorage", "DischargingPowerParSim", "TParSimulSeries"),
+    ("TParSimulSeries", "fVarSimul", "TVarSimul"),
+}
+PRIVATE_CLOSE = {
+    **dict.fromkeys(("TBatchSimul", "TEnergyMixSet", "TP50_P90", "TPrintSettings", "TWiringResistance"), "EndTags"),
+    "THouseHoldUses": "End of HouseHoldUses", "TWaterUse": "End of WaterUse",
+    "TVarSimul": "End of VarSimul=",
+    **{kind: f"End of {kind}" for kind in ("TEcoEvaluation", "TFluide", "THistogramme",
+                                          "THourlyParams", "TInterpole2D", "TParSimulSeries", "TPipe")},
+}
 
 
 def replace_value(line: str, value: str) -> str:
@@ -109,39 +144,40 @@ class Profile(ObjectBlock):
         return points
 
 
-def objects(text: str) -> list[ObjectBlock]:
+def objects(text: str, *, include_private: bool = False) -> list[ObjectBlock]:
     """Keep each field in its owning object, including root and nested Flags.
 
-    Read native closing tags as saved, including the class aliases and TBatchSimul's
-    `EndTags`. Other records' `EndTags` are not object closers here.
+    Private records share the scope stack and are excluded by default.
     """
     stack: list[tuple[str, ObjectBlock]] = []
     result = []
     for index, line in enumerate(text.splitlines()):
-        end = OBJECT_CLOSE.fullmatch(line)
-        if stack and stack[-1][1].object_type == "TBatchSimul" and line.strip() == "EndTags":
+        owner = stack[-1][1].object_type if stack else None
+        closer = PRIVATE_CLOSE.get(owner)
+        stripped = line.strip()
+        if closer and (stripped == closer or (owner == "TVarSimul" and stripped.startswith(closer))):
             stack.pop()[1].end_line = index + 1
             continue
+        end = OBJECT_CLOSE.fullmatch(line)
         if end:
             kind = OBJECT_CLOSE_ALIAS.get(end[1], end[1])
-            if not stack or stack[-1][1].object_type != kind:
+            if owner != kind:
                 raise ValueError(f"Unmatched object closing tag at line {index + 1}")
-            stack[-1][1].end_line = index + 1
-            stack.pop()
+            stack.pop()[1].end_line = index + 1
             continue
         match = ASSIGNMENT.fullmatch(line)
         if not match:
             continue
         name, value = match[2], match[4]
-        batch = (len(stack) == 1 and stack[-1][1].object_type == "pvVCalcul"
-                 and (name, value) == ("BatchSimul", "TBatchSimul"))
+        pipe = (owner, name) == ("pvHydrCircuit", "Pipe") and value.isdecimal()
+        private = pipe or ((owner, name, value) in PRIVATE_OPEN and (value != "TBatchSimul" or len(stack) == 1))
+        if pipe:
+            value = "TPipe"
         opens_object = ((name.startswith("PVObject_") and re.fullmatch(r"pv\w+", value))
                         or value in ("TConverter", "TCubicProfile"))
-        if stack and stack[-1][1].object_type == "TBatchSimul":
-            if opens_object or (name, value) == ("BatchSimul", "TBatchSimul"):
-                raise ValueError(f"Unclosed BatchSimul before line {index + 1}")
-            continue
-        if opens_object or batch:
+        if owner == "TBatchSimul" and (opens_object or private or (name, value) == ("BatchSimul", "TBatchSimul")):
+            raise ValueError(f"Unclosed BatchSimul before line {index + 1}")
+        if opens_object or private:
             if len(stack) >= 64:
                 raise ValueError("Object nesting exceeds 64 supported levels")
             if stack and isinstance(stack[-1][1], Profile):
@@ -149,7 +185,7 @@ def objects(text: str) -> list[ObjectBlock]:
             path = "/".join([item[0] for item in stack[1:]] + [name]) if stack else ""
             cls = Profile if value == "TCubicProfile" else ObjectBlock
             block = cls(path, index + 1, value)
-            if not batch:
+            if not private or include_private:
                 result.append(block)
             stack.append((name, block))
         elif stack:

@@ -29,6 +29,7 @@ PLACED_LAYOUT_KEYS = ("module_rows", "module_columns", "orientation", "row_spaci
 MAX_PARTS, MAX_VERTICES, MAX_TRIANGLES = 128, 50000, 100000
 MAX_OBSTACLES = 64
 MAX_TABLES = 64
+DEFAULT_MODULE_DEPTH_M = 0.035
 AUTHORING_TOOL = "pvsyst-cli-mcp/house-scene/1"
 
 
@@ -132,7 +133,7 @@ def module_profile(fields, explicit=None):
     if not math.isfinite(nom_power) or nom_power <= 0:
         raise ValueError("PAN nom_power must be a finite positive number")
     name = _pick(fields, ("Model",), "Model")
-    depth = _explicit_depth(explicit)
+    depth, depth_source = _resolve_depth(fields, explicit)
     if explicit is not None:
         if explicit["name"] != name:
             raise ValueError("module_geometry.model_name disagrees with the loose PAN")
@@ -142,15 +143,22 @@ def module_profile(fields, explicit=None):
             if abs(actual - wanted) > TOL * max(1.0, abs(actual)):
                 raise ValueError(f"module_geometry.{label} disagrees with the loose PAN")
     return {"length_m": long_side, "width_m": short_side, "nom_power": nom_power,
-            "name": name, "depth_m": depth, "depth_source": "caller-provided",
+            "name": name, "depth_m": depth, "depth_source": depth_source,
             "metadata_source": "source-pan"}
 
 
-def _explicit_depth(explicit):
-    if explicit is None:
-        raise ValueError("module_geometry.geometry_depth_m is required: the table geometry needs a module "
-                         "depth and no verified source field provides one")
-    return explicit["depth_m"]
+def _resolve_depth(fields, explicit):
+    if explicit is not None:
+        return explicit["depth_m"], "caller-provided"
+    entries = fields.get("Depth")
+    if entries and len(entries) == 1:
+        try:
+            parsed = float(entries[0])
+            if math.isfinite(parsed) and parsed > 0:
+                return parsed, "pan-commercial-depth"
+        except ValueError:
+            pass
+    return DEFAULT_MODULE_DEPTH_M, "default-frame-depth"
 
 
 def caller_geometry(geometry):
@@ -597,7 +605,7 @@ def layout_profile(layout, modules, total, source_tilt, *, placed=False):
             raise ValueError(f"Derived {name} must be finite and positive")
     return {"module_rows": rows, "module_columns": columns, "orientation": layout["orientation"],
             **spacing,
-            "geometry_depth_m": depth, "depth_source": "caller-provided",
+            "geometry_depth_m": depth, "depth_source": modules.get("depth_source", "caller-provided"),
             "tilt_deg": source_tilt, "column_span_m": column_span, "slope_span_m": slope_span}
 
 
@@ -1199,7 +1207,8 @@ def build_scene(house, tables, modules, source, created, recipe=None, obstacles=
 
 
 def create_house_pv_scene(store, components, *, project, variant, output_name, house, layout,
-                          dry_run=True, module_geometry=None, string_layout=None, obstacles=None):
+                          dry_run=True, module_geometry=None, string_layout=None, obstacles=None,
+                          source_variant_bytes=None):
     """Preview or write one new .pvc2; the project, variant and PAN are never written."""
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
               "diagnostics": [], "warnings": [], "artifacts": {},
@@ -1209,9 +1218,15 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             if type(dry_run) is not bool:
                 raise ValueError("Use a strict boolean")
             name = safe_filename(output_name, ".pvc2")
-            store._check_project(project)
-            source_path = store._path(project, variant)
-            original = store._read(source_path)
+            if source_variant_bytes is not None:
+                if not dry_run:
+                    raise ValueError("In-memory source_variant_bytes is only permitted during dry_run preview")
+                source_path = None
+                original = bytes(source_variant_bytes)
+            else:
+                store._check_project(project)
+                source_path = store._path(project, variant)
+                original = store._read(source_path)
             text, lines = store._text(original)
             arrays, system = store._sections(lines)
             source = source_profile(store, lines, arrays, system, allow_groups=True)
@@ -1289,7 +1304,7 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
                 "Azimuth uses the COLLADA convention (north = 0, clockwise) and is only verified for a "
                 "northern-hemisphere site. House and table share one parent rotation, so the table translation "
                 "is expressed in the house local frame.")
-            if store._read(source_path) != original:
+            if source_path is not None and store._read(source_path) != original:
                 raise ValueError("Source variant changed while preparing the scene file")
             for pan_path, pan_bytes in pan_snapshots:
                 if components._read(pan_path) != pan_bytes:

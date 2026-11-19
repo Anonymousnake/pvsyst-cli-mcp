@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from textwrap import indent
 from unittest.mock import Mock, patch
 
 from pvsyst_auto.components.editor import objects
@@ -242,6 +243,54 @@ class EngineeringTests(unittest.TestCase):
         self.assertEqual(record["omitted_cache_fields"], ["Day_1"])
         self.assertFalse(load["hourly_cache_contents_included"])
 
+    def test_handoff_uses_the_unique_hourly_source_not_nested_cache_fields(self):
+        root = self.workspace()
+        load_dir = root / "UserHourlyParams"
+        load_dir.mkdir()
+        (load_dir / "Load.csv").write_text("sample", encoding="utf-8")
+        project = root / "Projects" / "Work.PRJ"
+        project.write_text("PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
+        store = VariantStore(root, ComponentStore(root))
+        cache = ("      ParSimulH=TVarSimul\n        Varident=ELoadIN\n"
+                 "        Day_0101=+0+0\n      End of VarSimul=viELoadIN\n")
+        source = f"      FileName=Load.csv\n      PathName={load_dir}\n"
+        template = "    HourlyLoad=THourlyParams\n{}{}    End of THourlyParams\n"
+        hourly = template.format(source, cache)
+        decoy = "FileName=Decoy.csv\nPathName=C:\\Other\n"
+        decoy_cache = cache.replace("        Day_", indent(decoy, "        ") + "        Day_")
+        cases = (
+            ("valid", hourly),
+            ("nested decoy", template.format(source, decoy_cache)),
+            ("missing source", indent(decoy, "    ") + template.format("", decoy_cache)),
+            ("duplicate typed HourlyLoad", hourly + hourly.replace("Load.csv", "Decoy.csv")),
+        )
+        for label, body in cases:
+            with self.subTest(case=label):
+                text = grouped_variant().replace("End of PVObject pvVCalcul\n", (
+                    f"  PVObject_UserNeeds=pvLoad\n{body}  End of PVObject pvLoad\nEnd of PVObject pvVCalcul\n"))
+                project.with_suffix(".VC0").write_text(text, encoding="utf-8-sig")
+                result = build_project_handoff(store, project=project.name, variant="VC0")
+                if label == "duplicate typed HourlyLoad":
+                    self.assertEqual(result["status"], "blocked", result)
+                    self.assertIn("HourlyLoad", result["issues"][0])
+                    self.assertEqual(result["external_dependencies"], [])
+                    continue
+                self.assertNotEqual(result["status"], "blocked", result)
+                load, = result["saved"]["load"]["objects"]
+                dep, = [item for item in result["external_dependencies"] if item["kind"] == "load"]
+                has_source = label != "missing source"
+                expected_name, expected_path = ("Load.csv", str(load_dir)) if has_source else (None, None)
+                self.assertEqual((dep["name"], dep["saved_path"], dep["path_matches_workspace"]),
+                                 (expected_name, expected_path, has_source))
+                self.assertEqual(load["hourly_source"], {"file_name": expected_name, "saved_path": expected_path,
+                    "workspace_folder": "UserHourlyParams", "workspace_file": has_source,
+                    "runtime_binding_verified": False})
+                values = {"HourlyLoad": "THourlyParams", "ParSimulH": "TVarSimul", "Varident": "ELoadIN"}
+                if has_source:
+                    values.update(FileName=expected_name, PathName=expected_path)
+                self.assertEqual(load["values"], values)
+                self.assertEqual(load["omitted_cache_fields"], ["Day_0101"])
+
     @unittest.skipUnless(os.name == "nt", "Windows path aliases require Windows")
     def test_handoff_recognizes_workspace_path_with_short_name_components(self):
         root = self.workspace()
@@ -465,8 +514,9 @@ class EngineeringTests(unittest.TestCase):
                 "source": {"module_total": 1}, "shading_mode": "linear"}
         scene = {"status": "ready", "create_arguments": {"project": "Out.PRJ", "variant": "VC0",
                  "house": house_profile(request["house"]), "layout": request["layout"]}}
-        for phase in ("simulated", "completed", "gui_closed"):
-            with self.subTest(phase=phase):
+        for phase, corrupt in (("simulated", False), ("completed", False),
+                               ("completed", True), ("gui_closed", False)):
+            with self.subTest(phase=phase, corrupt=corrupt):
                 current = {**request, "allow_window_creation": phase == "gui_closed"}
                 child = {key: value for key, value in current.items() if key not in ("prepare_mode", "design")}
                 child["year"] = 2024
@@ -486,7 +536,8 @@ class EngineeringTests(unittest.TestCase):
                 guards = {key: fingerprint(path) for key, path in paths.items()}
                 manifest = paths["manifest"] = root / "Results" / "Out_house_task.json"
                 output = root / "Results" / "Out_house_run01.csv"
-                record = {"schema": 1, "request": child, "phase": phase, "status": "needs_attention",
+                record = {"schema": 1, "request": child, "phase": phase,
+                           "status": "completed" if phase == "completed" else "needs_attention",
                           "issues": [], "guards": guards, "artifacts": {}, "warnings": [], "variant": "VC1",
                           "runs": [{"number": 1, "status": "running", "csv": output.name}]}
                 if phase != "gui_closed":
@@ -494,6 +545,9 @@ class EngineeringTests(unittest.TestCase):
                     record["runs"][0].update(status="returned", native={"warnings": []})
                     record["output_guards"] = {"csv": fingerprint(output)}
                 manifest.write_text(json.dumps(record), encoding="utf-8")
+                before = manifest.read_bytes()
+                if corrupt:
+                    output.write_text("changed output", encoding="utf-8")
                 with patch.object(house_flow, "_prepare", return_value=(paths, plan)), \
                         patch.object(house_flow, "read_house_pv_scene", return_value=scene), \
                         patch.object(house_flow, "_verify_new"), \
@@ -510,11 +564,20 @@ class EngineeringTests(unittest.TestCase):
                     cli.license_info.assert_called_once_with(allow_window_creation=True)
                     annual.assert_not_called()
                 else:
-                    self.assertEqual((result["status"], result["stage"]), ("completed", "completed"), result)
-                    self.assertTrue(result["native_consumption_verified"])
                     cli.version.assert_not_called()
                     cli.license_info.assert_not_called()
-                    annual.assert_called_once_with(output, output.with_suffix(".pdf"), child, plan, "VC1", require_pdf=False)
+                    if phase == "completed":
+                        self.assertEqual(manifest.read_bytes(), before)
+                    else:
+                        self.assertEqual(json.loads(manifest.read_bytes())["phase"], "completed")
+                    if corrupt:
+                        self.assertFalse(result["native_consumption_verified"])
+                        self.assertIn("Recorded native outputs changed", result["house"]["issues"][0])
+                        annual.assert_not_called()
+                    else:
+                        self.assertEqual((result["status"], result["stage"]), ("completed", "completed"), result)
+                        self.assertTrue(result["native_consumption_verified"])
+                        annual.assert_called_once_with(output, output.with_suffix(".pdf"), child, plan, "VC1", require_pdf=False)
 
 
 if __name__ == "__main__":

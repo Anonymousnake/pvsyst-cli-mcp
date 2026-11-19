@@ -994,8 +994,16 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
         raise ValueError("Explicit module layout requires complete, consistent source circuit counts")
 
 
-def _support_gate(source, tables, source_text, mode="linear", string_layout=None):
+def _support_gate(source, tables, source_text, mode="linear", string_layout=None, *, check_spacing=True):
     """Validate supported native recipes across portrait/landscape, spacing, multi-roof, and PowerSharing."""
+    if check_spacing:
+        for index, table in enumerate(tables, 1):
+            for field in ("row_spacing_m", "column_spacing_m"):
+                value = table[field]
+                if float(_n3(value)) != value:
+                    name = table.get("name", f"PVTable{index}")
+                    raise ValueError(f"Native table {name!r}: {field}={value} m cannot be represented "
+                                     "at millimetre precision; use a multiple of 0.001 m.")
     if string_layout is not None:
         _explicit_gate(source, tables, source_text, mode, string_layout)
         return
@@ -1092,13 +1100,6 @@ def _preflight(store, components, scene_name, shading_mode, string_layout=None):
     house = prepared["house"]
     obstacles = prepared["obstacles"]
     tables = prepared["table_profiles"]
-    for index, table in enumerate(tables, 1):
-        for field in ("row_spacing_m", "column_spacing_m"):
-            value = table[field]
-            if float(_n3(value)) != value:
-                name = table.get("name", f"PVTable{index}")
-                raise ValueError(f"Native table {name!r}: {field}={value} m cannot be represented "
-                                 "at millimetre precision; use a multiple of 0.001 m.")
     source = snap["source"]
     source_text = snap["bytes"].decode("utf-8-sig")
     _support_gate(source, tables, source_text, shading_mode, string_layout)

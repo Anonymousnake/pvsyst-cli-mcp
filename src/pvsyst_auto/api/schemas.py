@@ -334,11 +334,48 @@ class StringLayoutBinding(BaseModel):
     model_config = _STRICT_CONFIG
     tables: Annotated[list[TableStringBinding], Field(min_length=1, max_length=64)]
 
-class HouseTaskRequest(BaseModel):
-    """3D house task specification: authored house mesh, PV layout, source variant, and run options."""
+class SynthesisOrientationSpec(BaseModel):
+    """Optional fixed-plane orientation for zero-template house synthesis."""
     model_config = _STRICT_CONFIG
-    source_project: StrictStr
-    source_variant: StrictStr
+    id: Annotated[StrictInt, Field(ge=1)]
+    tilt_deg: StrictNum
+    azimuth_deg: StrictNum
+    base_slope_deg: StrictNum = 0.0
+    comment: StrictStr | None = None
+
+class SynthesisSubArraySpec(BaseModel):
+    """Optional subarray electrical declaration for zero-template house synthesis."""
+    model_config = _STRICT_CONFIG
+    subarray_id: Annotated[StrictInt, Field(ge=1)]
+    orientation_id: Annotated[StrictInt, Field(ge=1)]
+    comment: StrictStr | None = None
+    pan_name: StrictStr | None = None
+    ond_name: StrictStr | None = None
+    n_mod_serie: Annotated[StrictInt, Field(ge=1)]
+    n_string_ch: Annotated[StrictInt, Field(ge=1)]
+    n_inverter: Annotated[StrictInt, Field(ge=1)] = 1
+    n_inv_mppt: Annotated[StrictInt, Field(ge=1)] | None = None
+    independent_mppt: StrictBool | None = None
+    power_sharing_inverter_id: StrictInt = -1
+    pnom_ac_in_mppt: StrictNum = 7.5
+    lid_loss: StrictNum = 0.0
+    pmism_mpp: StrictNum = 2.0
+    module_quality_loss: StrictNum = 3.0
+    dc_wiring_loss_pct: StrictNum = 1.5
+    dc_wiring_resistance_mohm: StrictNum = 0.0
+
+class HouseTaskRequest(BaseModel):
+    """3D house task specification: authored house mesh, PV layout, optional source variant (or zero-template synthesis), and run options."""
+    model_config = _STRICT_CONFIG
+    source_project: StrictStr | None = None
+    source_variant: StrictStr | None = None
+    site_name: StrictStr | None = None
+    met_name: StrictStr | None = None
+    pan_name: StrictStr | None = None
+    ond_name: StrictStr | None = None
+    anchor_azimuth_deg: StrictNum | None = None
+    orientations: Annotated[list[SynthesisOrientationSpec], Field(min_length=1, max_length=64)] | None = None
+    subarrays: Annotated[list[SynthesisSubArraySpec], Field(min_length=1, max_length=64)] | None = None
     new_project: StrictStr
     variant_name: StrictStr
     year: StrictInt
@@ -352,6 +389,25 @@ class HouseTaskRequest(BaseModel):
     shading_mode: Literal["linear", "module_layout"] | None = None
     scene_import_method: Literal["gui", "native"] | None = None
     allow_window_creation: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def _validate_source_or_zero_template(self):
+        has_proj = self.source_project is not None
+        has_var = self.source_variant is not None
+        synth_fields = [name for name in ("site_name", "met_name", "pan_name", "ond_name",
+                                          "anchor_azimuth_deg", "orientations", "subarrays")
+                        if getattr(self, name) is not None]
+        if has_proj != has_var:
+            raise ValueError("Provide both source_project and source_variant, or omit both for zero-template synthesis")
+        if has_proj:
+            if synth_fields:
+                raise ValueError("Zero-template synthesis fields cannot be combined with source_project/source_variant: "
+                                 + ", ".join(synth_fields))
+        else:
+            if not (self.site_name or "").strip() or not (self.met_name or "").strip():
+                raise ValueError("Zero-template house task requires non-empty site_name (.SIT) and met_name (.MET) "
+                                 "when source_project/source_variant are omitted")
+        return self
 
 class ConstantNativeLoad(BaseModel):
     """Native fixed constant consumption in kW; unknown fields stop at the boundary."""
