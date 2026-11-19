@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from pvsyst_auto.api.context import resolve_tool_groups, tool_names_for_groups
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -140,6 +142,44 @@ class PackageEntrypointTests(unittest.TestCase):
 class ToolGroupsTests(unittest.TestCase):
     def test_explicit_groups_preserve_default_and_strict_calls(self):
         asyncio.run(self._check())
+
+    def test_documented_tool_surface_matches_registration(self):
+        reference = (REPO / "docs" / "tool-reference.md").read_text(encoding="utf-8")
+        start = reference.index("## Tools by workflow group")
+        end = reference.find("\n## ", start + 1)
+        section = reference[start:end if end >= 0 else None]
+        all_names = tool_names_for_groups(resolve_tool_groups("all"))
+        self.assertEqual(set(re.findall(r"\bpvsyst_\w+\b", section)), set(all_names))
+        headings = re.finditer(
+            r"^### .+? \(`(?P<group>\w+)`, (?:default|opt-in): (?P<count>\d+)\)$",
+            section, re.MULTILINE)
+        heading_count = 0
+        for heading in headings:
+            heading_count += 1
+            expected = len(tool_names_for_groups((heading["group"],)))
+            self.assertEqual(int(heading["count"]), expected, heading.group(0))
+        self.assertGreater(heading_count, 0)
+
+        default_count = len(tool_names_for_groups(resolve_tool_groups(None)))
+        counts = {default_count, len(all_names)}
+        def documented_counts(text):
+            values = []
+            for fragment in re.findall(r"\*\*([^*]+)\*\*", text):
+                if "tool" not in fragment.lower() and "工具" not in fragment:
+                    continue
+                values.extend(int(value) for value in re.findall(
+                    r"(?<!\w)(\d+)(?=[^0-9]*(?:\btools?\b|工具))", fragment, re.I))
+            return values
+
+        for path in (REPO / "README.md", REPO / "README.zh-CN.md"):
+            values = documented_counts(path.read_text(encoding="utf-8"))
+            self.assertTrue(values, path)
+            self.assertTrue(set(values) <= counts, (path, values))
+            self.assertIn(default_count, values, path)
+            self.assertIn(len(all_names), values, path)
+        intro = documented_counts(reference[:start])
+        self.assertTrue(intro)
+        self.assertTrue(set(intro) <= counts, intro)
 
     async def _check(self):
         directory = Path(tempfile.mkdtemp(prefix="pvsyst-groups-"))
