@@ -779,7 +779,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             pan_name=Path(components["PAN"]["name"]).name,
             ond_name=Path(components["OND"]["name"]).name,
             new_project=seed_project, dry_run=True, capacity=flat_capacity,
-            allow_window_creation=allow_window_creation))
+            allow_window_creation=allow_window_creation, allow_synthesize=True))
         if stopped is not None:
             return stopped
         result["preview"]["template_seed"] = seed_preview
@@ -905,7 +905,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         seed, stopped = _phase(result, "template_seed", lambda: prepare_standard_template(
             cli, store, ond_electrical=components["OND"]["electrical"], pan_name=pan_name,
             ond_name=ond_name, new_project=seed_project, dry_run=False, capacity=flat_capacity,
-            allow_window_creation=allow_window_creation))
+            allow_window_creation=allow_window_creation, allow_synthesize=True))
         if stopped is not None:
             return stopped
         result["preview"]["template_seed_write"] = seed
