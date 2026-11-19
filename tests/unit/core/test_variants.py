@@ -49,6 +49,12 @@ VARIANT = """PVObject_=pvVCalcul
   End of PVObject pvSystem
 End of PVObject pvVCalcul
 """
+RESULT_PLOTS = (b"  SimulPlots=Start\r\n"
+                b"    PVObject_=pvSimulPlot\r\n      Flags=$000F\r\n      VarY=E_Grid\r\n"
+                b"      BinLarg=20.0000\r\n      ShowOnReport=False\r\n      NValAcc = 0 \r\n      NValRes=0\r\n"
+                b"    End of PVObject pvSimulPlot\r\n  EndTags\r\n")
+RESULT_EXPORT = (b"  PVObject_Simul=pvSimulFile\r\n    FileNameWr=Output.CSV\r\n"
+                 b"    VarIdentWr=viE_Grid\r\n    Units=uikWh\r\n    TypeValW=Hour\r\n  End of TSimulFich\r\n")
 
 
 class VariantTests(unittest.TestCase):
@@ -124,25 +130,20 @@ class VariantTests(unittest.TestCase):
                          cold.replace(b"GInverter = original.OND", b"GInverter = new.OND", 1))
 
         root = b"\tFlags = $00A0 \r\n"
-        plots = (b"  SimulPlots=Start\r\n"
-                 b"    PVObject_=pvSimulPlot\r\n      Flags=$000F\r\n      VarY=E_Grid\r\n"
-                 b"      BinLarg=20.0000\r\n      ShowOnReport=False\r\n      NValAcc = 0 \r\n      NValRes=0\r\n"
-                 b"    End of PVObject pvSimulPlot\r\n  EndTags\r\n")
-        warm_plots = plots.replace(b"NValAcc = 0 \r\n      NValRes=0\r\n",
-                                   b"NValAcc = 2 \r\n      NValRes=2\r\n"
-                                   b"      ValuesX=1,2,\r\n      ValuesY_contd=3,4,\r\n"
-                                   b"      ValuesZ = 0,1,\r\n      ValuesU_contd=9,5,\r\n"
-                                   b"      Histogram=THistogramme\r\n        ValuesY=1,2,\r\n      End of THistogramme\r\n")
-        export = (b"  PVObject_Simul=pvSimulFile\r\n    FileNameWr=Output.CSV\r\n"
-                  b"    VarIdentWr=viE_Grid\r\n    Units=uikWh\r\n    TypeValW=Hour\r\n  End of TSimulFich\r\n")
+        warm_plots = RESULT_PLOTS.replace(
+            b"NValAcc = 0 \r\n      NValRes=0\r\n",
+            b"NValAcc = 2 \r\n      NValRes=2\r\n"
+            b"      ValuesX=1,2,\r\n      ValuesY_contd=3,4,\r\n"
+            b"      ValuesZ = 0,1,\r\n      ValuesU_contd=9,5,\r\n"
+            b"      Histogram=THistogramme\r\n        ValuesY=1,2,\r\n      End of THistogramme\r\n")
         cold = cold.replace(b"  Version=8.1.6\r\n", b"  Version=8.1.6\r\n" + root, 1).replace(
-            b"End of PVObject pvVCalcul", plots + export + b"End of PVObject pvVCalcul").replace(
+            b"End of PVObject pvVCalcul", RESULT_PLOTS + RESULT_EXPORT + b"End of PVObject pvVCalcul").replace(
             b"    SystemType=Battery\r\n", b"    SystemType=Battery\r\n    ValuesX=unrelated\r\n    NValRes=17\r\n")
         cache = (b"  VarList, list of=1 TVarSimul\r\n"
                  b"    VarSimul_1=E_Grid\r\n      ValMonth=1.5,2.25\r\n    End of VarSimul=E_Grid\r\n"
                  b"  End of the List VarList\r\n"
                  b"  Histogram=THistogramme\r\n    Ident=E_Grid\r\n  End of THistogramme\r\n")
-        cached = cold.replace(root, root.replace(b"00A0", b"00A1")).replace(plots, warm_plots).replace(
+        cached = cold.replace(root, root.replace(b"00A0", b"00A1")).replace(RESULT_PLOTS, warm_plots).replace(
             b"End of PVObject pvVCalcul", cache + b"End of PVObject pvVCalcul")
         self.original.write_bytes(cached)
         before = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)
@@ -167,6 +168,28 @@ class VariantTests(unittest.TestCase):
         after = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)
         self.assertFalse(after["saved_results"]["present"])
         self.assertEqual(after["saved_results"]["pv_simul_file"]["file_name_written"], "Output.CSV")
+
+    def test_parameter_edit_invalidates_plot_only_saved_results(self):
+        warm_plots = RESULT_PLOTS.replace(b"NValRes=0\r\n", b"NValRes=2\r\n      ValuesY=1,2,\r\n")
+        source = self.original.read_bytes().replace(b"  Version=8.1.6\r\n", b"  Version=8.1.6\r\n  Flags=$00A1\r\n")
+        self.original.write_bytes(source.replace(
+            b"End of PVObject pvVCalcul", warm_plots + RESULT_EXPORT + b"End of PVObject pvVCalcul"))
+        before = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)["saved_results"]
+        self.assertTrue(before["present"])
+
+        updated = self.store.update_parameters("Example.PRJ", "VC0", subarray_updates={"NModSerie": 15})
+        after = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)["saved_results"]
+        self.assertFalse(after["present"])
+        self.assertEqual(after["root_flags"], "$00A0")
+        self.assertEqual(after["pv_simul_file"], before["pv_simul_file"])
+        written = self.original.read_bytes()
+        self.assertIn(RESULT_PLOTS + RESULT_EXPORT, written)
+        self.assertIn(b"NModSerie=15\r\n", written)
+        self.assertEqual(updated["derived_cache"]["plot_sample_rows_removed"], 1)
+
+        clean_edit = self.store.update_parameters("Example.PRJ", "VC0", subarray_updates={"NModSerie": 16}, dry_run=True)
+        self.assertTrue(clean_edit["changed"])
+        self.assertNotIn("derived_cache", clean_edit)
 
     def test_malformed_plot_scope_refuses_component_clone(self):
         plot = (b"  SimulPlots=Start\r\n    PVObject_=pvSimulPlot\r\n"

@@ -180,8 +180,7 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             else:
                 new_fields.append("    " + key + "=" + value + newline)
         lines[system[1]:system[1]] = new_fields
-        if any(line.strip().startswith("VarList,") for line in lines):
-            strip_result_cache(lines)
+        strip_result_cache(lines)
         candidate_text = "".join(lines)
 
         load = ""
