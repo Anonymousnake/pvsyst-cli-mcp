@@ -18,8 +18,11 @@
 | 功能模块 | 对应工具 | 实现说明与相关文档 |
 |---|---|---|
 | 工程与变体生命周期 | `inspect`、`create`、`clone_variant`、标题更新、气象源切换（部分位于 `expert` 组） | 见[工程文件与事务](project-source-verification.md)、[项目显示标题](project-title.md) |
-| 站点与气象准备 | `create_site`、`convert_meteo`、`prepare_weather`、`acquire_weather`、`review_weather` | 见[天气准备](weather-preparation.md)；支持 Open-Meteo ERA5 下载、当地标准时（`LegalTime`）对齐与 `.SIT`/`.MET` 转换 |
-| 单方案设计与源工程准备 | `simulate_design`、`prepare_design_project`、`prepare_sourced_design` | 见[单方案设计输入](single-design-inputs.md)、[源工程准备](design-project-preparation.md) |
+| 站点与气象准备 | `create_site`、`convert_meteo`、`prepare_weather`、`acquire_weather`、`review_weather` | 见[天气准备](weather-preparation.md)；支持 Open-Meteo ERA5 下载、当地标准时（`LegalTime`）对齐与逐时/亚小时（`5/10/15/30/60 min`）`.SIT`/`.MET` 转换 |
+| 单方案设计与源工程准备 | `simulate_design`、`prepare_design_project`、`suggest_sizing`、`prepare_sourced_design` | 见[单方案设计输入](single-design-inputs.md)、[源工程准备](design-project-preparation.md)；支持零模板 `fixed_unshaded_grid` / `ground_sheds` / `ground_tracker` + `pvBiFacial` 与 `auto_from_components` 自动选型 |
+| 参数化批量扫描（Batch Sweep） | `pvsyst_run_batch_sweep`、`pvsyst_read_batch_results` | 自动生成 UTF-8 BOM + CRLF `UserBatch/<name>_BatchParams.CSV` 与 `_BatchVariables.RVT`，单次 CLI 跑完最多 100 组参数并返回按目标指标排序与基线差值 |
+| 物理结果诊断与归因 | `pvsyst_diagnose_results` | 纯 Python 对 SFI 逐时/亚小时结果执行损失链、剪峰、电压限幅、阴影、双面增益与储能循环异常诊断（可选 `.VC0` 根因归因）；`simulate_design` 与 `run_house_task` 自动附带轻量摘要 |
+| 亚小时仿真与结果积分 | `pvsyst_prepare_weather(step_minutes=...)`、`pvsyst_build_sfi(time_step="subhour")`、`pvsyst_run_simulation(time_step="subhour")` | 支持 `5/10/15/30 min` 气象 CSV -> `.MEF`（`MeasureStep`）-> `.MET`（`VarMeteoVarAcc=SubHour`）-> `TypeValW=SubHour` SFI 与 `-ts:subhour` 仿真及步长精确能量积分；原生 `pvLoad` 嵌入式快照仍为逐时（60 min）并在仿真步长内保持恒定功率 |
 | 固定分块工程拼装 | `prepare_block_project` | 见[分块工程准备](block-project-preparation.md)；按模板子阵分块的整数倍批量复制组装新工程 |
 | 工程改参、多方案对比与交付 | `project_handoff`、`run_engineering_task`、`compare_engineering_scenarios`、`export_engineering_delivery` | 见[工程修订与交付](engineering-delivery.md)、[多方案对比](engineering-scenarios.md) |
 | 经济性输入读取（只读，可选） | `pvsyst_get_variant_parameters(include_economics=True)` | 读出变体自身持久化的原生 `EconomicEval=TEcoEvaluation` 输入块（原文、去重标量、`InvestmentCosts`/`OperatingCosts`/`Loans` 列表声明）；默认不返回、保持旧响应；不做货币换算或 IRR/LCOE/现金流计算，原生加载/计算未验证 |

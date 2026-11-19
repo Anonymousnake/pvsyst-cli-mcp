@@ -10,12 +10,14 @@ You need your own PVsyst installation and license on the host machine.
 
 | What you want to do | Main entry point | Guide |
 |---|---|---|
-| Run a single fixed-plane PV design + simulation end-to-end | `pvsyst_simulate_design` | [Single-design inputs](docs/single-design-inputs.md) |
-| Inspect an existing project, apply an isolated change, and run a full year | `pvsyst_run_engineering_task` | [Engineering delivery](docs/engineering-delivery.md) |
+| Run a zero-template fixed-plane or utility ground sheds/tracker PV design (mono or bifacial, optional auto-sizing) | `pvsyst_simulate_design`, `pvsyst_suggest_sizing` | [Single-design inputs](docs/single-design-inputs.md) |
+| Run a parametric sweep (tilt, pitch, albedo, soiling, grid limit) in one CLI call and rank results | `pvsyst_run_batch_sweep` | [Tool reference](docs/tool-reference.md) |
+| Audit completed simulation CSVs (+ optional `.VC0` attribution) for clipping, shading, voltage, or storage anomalies | `pvsyst_diagnose_results` | [Tool reference](docs/tool-reference.md) |
+| Inspect an existing project, apply an isolated change, and run a full year | `pvsyst_project_handoff`, `pvsyst_run_engineering_task` | [Engineering delivery](docs/engineering-delivery.md) |
 | Build a 3D house + obstacles scene, bind roof orientations, and run annual shading | `pvsyst_run_house_task` | [House task](docs/native-house-task.md) |
-| Evaluate centralized AC-coupled storage against an hourly load profile | `pvsyst_create_grid_storage_system`, `pvsyst_run_engineering_task` | [Storage engineering](docs/engineering-storage.md) |
-| Diff two or three simulation runs | `pvsyst_compare_engineering_scenarios` | [Scenario comparison](docs/engineering-scenarios.md) |
-| Check feasibility briefs, handoffs, block assembly, or ZIP bundles (requires `expert`) | `pvsyst_review_engineering_brief`, `pvsyst_project_handoff`, `pvsyst_prepare_block_project`, `pvsyst_export_engineering_delivery` | [Brief review](docs/engineering-brief.md) |
+| Prepare hourly or sub-hourly (`5/10/15/30 min`) weather and evaluate AC-coupled storage | `pvsyst_prepare_weather`, `pvsyst_create_grid_storage_system`, `pvsyst_run_simulation` | [Storage engineering](docs/engineering-storage.md) |
+| Diff scenarios and bundle engineering deliverables | `pvsyst_compare_engineering_scenarios`, `pvsyst_export_engineering_delivery` | [Scenario comparison](docs/engineering-scenarios.md) |
+| Check feasibility briefs or block assembly (requires `expert`) | `pvsyst_review_engineering_brief`, `pvsyst_prepare_block_project` | [Brief review](docs/engineering-brief.md) |
 
 By default the server registers **40 core tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **69 tools**; to keep the defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`. For migrating from `v0.1.0`, see [Upgrading from v0.1.0](docs/tool-reference.md#upgrading-from-v010).
 
@@ -59,14 +61,14 @@ Point your MCP client at the virtualenv Python executable. Launching via `-m pvs
 
 `pvsyst_mcp_server.py` at the repo root is kept as a thin wrapper so older client configs still boot. Restart your MCP client after changing environment variables or pulling code updates.
 
-Once connected, run `pvsyst_capabilities` first to see which CLI flags your PVsyst version supports (enable `admin` or `all` in `PVSYST_TOOL_GROUPS` to query/manage CLI licenses via `pvsyst_license_info`; note that PVsyst tracks CLI and GUI licenses separately).
+Once connected, the server exposes MCP protocol `instructions`, 4 built-in workflow prompts (`design_fixed_or_utility_pv`, `design_rooftop_3d_pv`, `design_pv_with_storage`, `diagnose_and_optimize_simulation`), and 2 on-demand reference resources (`pvsyst://guide/workflows`, `pvsyst://guide/variables`). Run `pvsyst_capabilities` and `pvsyst_license_info` first to confirm CLI flags and remaining license quota (note that PVsyst tracks CLI and GUI licenses separately; license mutation commands remain opt-in under `admin`).
 
 ### Filtering exposed tool groups
 
 By default (when `PVSYST_TOOL_GROUPS` is unset), the server exposes only the **40 core workflow tools** (`setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`) so LLM context stays compact. Set `PVSYST_TOOL_GROUPS` in `env` to customize; an explicit list replaces the defaults:
 
 - `"PVSYST_TOOL_GROUPS": "all"` exposes all **69 tools** (the 8 default groups plus `admin` and `expert`).
-- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"` keeps the defaults and adds `expert` (64 tools).
+- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"` keeps the defaults and adds `expert` (65 tools).
 - `"PVSYST_TOOL_GROUPS": "setup,engineering,results"` exposes only those 11 tools.
 - Valid group keys (case-sensitive): `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`, `admin`, `expert` (or `all`). Unknown, empty, or duplicate group names raise an error at startup so typos fail fast.
 

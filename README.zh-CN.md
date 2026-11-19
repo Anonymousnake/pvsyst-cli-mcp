@@ -10,12 +10,14 @@ Windows 下配合本地 PVsyst 8 使用的 MCP 服务端与 Python 封装库。�
 
 | 要做的事 | 入口工具 | 详细文档 |
 |---|---|---|
-| 一站式执行固定倾角单方案选型与全年仿真 | `pvsyst_simulate_design` | [单方案设计输入](docs/single-design-inputs.md) |
-| 读取现有工程参数，隔离改参并跑全年仿真 | `pvsyst_run_engineering_task` | [工程修订与交付](docs/engineering-delivery.md) |
+| 零模板执行固定倾角或地面光伏棚架/跟踪器设计（单/双面、可选自动电气选型） | `pvsyst_simulate_design`、`pvsyst_suggest_sizing` | [单方案设计输入](docs/single-design-inputs.md) |
+| 单次 CLI 批量参数扫描（倾角、间距、反照率、积灰、限发）并自动排序 | `pvsyst_run_batch_sweep` | [工具参考](docs/tool-reference.md) |
+| 对仿真结果 CSV（及可选 `.VC0` 归因）执行物理损失链与异常诊断 | `pvsyst_diagnose_results` | [工具参考](docs/tool-reference.md) |
+| 读取现有工程参数，隔离改参并跑全年仿真 | `pvsyst_project_handoff`、`pvsyst_run_engineering_task` | [工程修订与交付](docs/engineering-delivery.md) |
 | 生成屋顶光伏与周边遮挡 3D 场景、原生导入并跑全年阴影仿真 | `pvsyst_run_house_task` | [住宅建模任务](docs/native-house-task.md) |
-| 绑定全年逐时负荷，评估集中式 AC 耦合光储方案 | `pvsyst_create_grid_storage_system`、`pvsyst_run_engineering_task` | [AC 光储评估](docs/engineering-storage.md) |
-| 对比两到三个方案的仿真结果 | `pvsyst_compare_engineering_scenarios` | [多方案对比](docs/engineering-scenarios.md) |
-| 可研简报核对、交接读参、分块拼装与交付打包（需 `expert` 组） | `pvsyst_review_engineering_brief`、`pvsyst_project_handoff`、`pvsyst_prepare_block_project`、`pvsyst_export_engineering_delivery` | [工程简报预审](docs/engineering-brief.md) |
+| 准备逐时或亚小时（`5/10/15/30 min`）气象并评估 AC 耦合光储方案 | `pvsyst_prepare_weather`、`pvsyst_create_grid_storage_system`、`pvsyst_run_simulation` | [AC 光储评估](docs/engineering-storage.md) |
+| 多方案结果对比与工程交付 ZIP 打包 | `pvsyst_compare_engineering_scenarios`、`pvsyst_export_engineering_delivery` | [多方案对比](docs/engineering-scenarios.md) |
+| 可研简报核对与固定分块拼装（需 `expert` 组） | `pvsyst_review_engineering_brief`、`pvsyst_prepare_block_project` | [工程简报预审](docs/engineering-brief.md) |
 
 服务默认仅注册 **8 个默认核心组共 40 个高频工具**以降低模型上下文开销；`PVSYST_TOOL_GROUPS` 显式列出的组会替换这 8 个默认组，单独设置 `admin` 或 `expert` 只加载对应组。设置 `PVSYST_TOOL_GROUPS=all` 可加载全部 **69 个工具**；若要保留默认组并追加 `expert`，请完整写成 `setup,projects,components,weather,storage,simulation,results,engineering,expert`。从 `v0.1.0` 升级的完整迁移说明见[工具参考中的升级小节](docs/tool-reference.md#upgrading-from-v010)。
 
@@ -59,14 +61,14 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 
 仓库根目录保留了 `pvsyst_mcp_server.py` 兼容壳，老配置直接指向该脚本也能正常启动。改了环境变量或更新代码后记得重启 MCP 客户端。
 
-连上之后建议先调一次 `pvsyst_capabilities` 确认本机 CLI 版本支持的命令行选项（若需查询或管理 CLI 许可配额，请在 `PVSYST_TOOL_GROUPS` 中开启 `admin` 或 `all` 后调用 `pvsyst_license_info`；注意 PVsyst 的 GUI 许可和 CLI 许可是分开计数的）。
+连上后，服务端会向 MCP 客户端提供 `instructions`、4 个标准工作流 Prompt（`design_fixed_or_utility_pv`、`design_rooftop_3d_pv`、`design_pv_with_storage`、`diagnose_and_optimize_simulation`）和 2 个按需参考资源（`pvsyst://guide/workflows`、`pvsyst://guide/variables`）。建议先调用 `pvsyst_capabilities` 与 `pvsyst_license_info` 确认本机 CLI 能力与剩余许可配额（PVsyst 的 GUI 许可与 CLI 许可分开计数；激活/停用等写操作仍在 `admin` 组按需开启）。
 
 ### 按需调整暴露的工具组
 
 未配置 `PVSYST_TOOL_GROUPS` 时，服务默认仅暴露 **40 个高频核心工具**（涵盖 `setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering` 八个默认组），大幅减少 LLM 上下文占用。可通过 `env` 中的 `PVSYST_TOOL_GROUPS` 精确控制；显式列出的组会替换默认组：
 
 - `"PVSYST_TOOL_GROUPS": "all"`：加载全部 **69 个工具**（包含默认组及 `admin`、`expert`）。
-- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"`：保留默认组并追加 `expert`，共 64 个工具。
+- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"`：保留默认组并追加 `expert`，共 65 个工具。
 - `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`：只加载这三组的 11 个工具。
 
 合法的组名（区分大小写）：`setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering`、`admin`、`expert`（或单独传入 `all`）。传了空项、重复项或拼错的组名会在启动时直接报错退出，免得静默漏挂工具。
