@@ -465,8 +465,9 @@ class EngineeringTests(unittest.TestCase):
                 "source": {"module_total": 1}, "shading_mode": "linear"}
         scene = {"status": "ready", "create_arguments": {"project": "Out.PRJ", "variant": "VC0",
                  "house": house_profile(request["house"]), "layout": request["layout"]}}
-        for phase in ("simulated", "completed", "gui_closed"):
-            with self.subTest(phase=phase):
+        for phase, corrupt in (("simulated", False), ("completed", False),
+                               ("completed", True), ("gui_closed", False)):
+            with self.subTest(phase=phase, corrupt=corrupt):
                 current = {**request, "allow_window_creation": phase == "gui_closed"}
                 child = {key: value for key, value in current.items() if key not in ("prepare_mode", "design")}
                 child["year"] = 2024
@@ -486,7 +487,8 @@ class EngineeringTests(unittest.TestCase):
                 guards = {key: fingerprint(path) for key, path in paths.items()}
                 manifest = paths["manifest"] = root / "Results" / "Out_house_task.json"
                 output = root / "Results" / "Out_house_run01.csv"
-                record = {"schema": 1, "request": child, "phase": phase, "status": "needs_attention",
+                record = {"schema": 1, "request": child, "phase": phase,
+                           "status": "completed" if phase == "completed" else "needs_attention",
                           "issues": [], "guards": guards, "artifacts": {}, "warnings": [], "variant": "VC1",
                           "runs": [{"number": 1, "status": "running", "csv": output.name}]}
                 if phase != "gui_closed":
@@ -494,6 +496,9 @@ class EngineeringTests(unittest.TestCase):
                     record["runs"][0].update(status="returned", native={"warnings": []})
                     record["output_guards"] = {"csv": fingerprint(output)}
                 manifest.write_text(json.dumps(record), encoding="utf-8")
+                before = manifest.read_bytes()
+                if corrupt:
+                    output.write_text("changed output", encoding="utf-8")
                 with patch.object(house_flow, "_prepare", return_value=(paths, plan)), \
                         patch.object(house_flow, "read_house_pv_scene", return_value=scene), \
                         patch.object(house_flow, "_verify_new"), \
@@ -510,11 +515,20 @@ class EngineeringTests(unittest.TestCase):
                     cli.license_info.assert_called_once_with(allow_window_creation=True)
                     annual.assert_not_called()
                 else:
-                    self.assertEqual((result["status"], result["stage"]), ("completed", "completed"), result)
-                    self.assertTrue(result["native_consumption_verified"])
                     cli.version.assert_not_called()
                     cli.license_info.assert_not_called()
-                    annual.assert_called_once_with(output, output.with_suffix(".pdf"), child, plan, "VC1", require_pdf=False)
+                    if phase == "completed":
+                        self.assertEqual(manifest.read_bytes(), before)
+                    else:
+                        self.assertEqual(json.loads(manifest.read_bytes())["phase"], "completed")
+                    if corrupt:
+                        self.assertFalse(result["native_consumption_verified"])
+                        self.assertIn("Recorded native outputs changed", result["house"]["issues"][0])
+                        annual.assert_not_called()
+                    else:
+                        self.assertEqual((result["status"], result["stage"]), ("completed", "completed"), result)
+                        self.assertTrue(result["native_consumption_verified"])
+                        annual.assert_called_once_with(output, output.with_suffix(".pdf"), child, plan, "VC1", require_pdf=False)
 
 
 if __name__ == "__main__":
