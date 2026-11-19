@@ -431,5 +431,31 @@ class BifacialAndUtilityTests(unittest.TestCase):
             self.assertEqual(info_t["orientations"][0]["bifacial"]["model"], "Trackers2D")
 
 
+    def test_utility_rejects_options_unavailable_in_model_mode(self):
+        cli = _FakeUtilityCLI(self.root)
+        req = SingleDesignRequest(
+            scope="ground_tracker", new_project="Geometry.PRJ", year=2024, target_dc_kw=100.0,
+            module={"file_name": "Lab440.PAN"}, inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            capacity=_capacity_spec(),
+            ground_layout={"model_mode": "3d", "shed_count": 6, "module_columns": 19},
+        ).model_dump(exclude_none=True)
+        checks = (
+            ({"electrical_effect": True}, "requires model_mode='unlimited'"),
+            ({"model_mode": "unlimited", "wind_stow": True}, "requires model_mode='3d'"),
+        )
+        for overrides, error in checks:
+            spec = {**req, "ground_layout": {**req["ground_layout"], **overrides}}
+            for tool in (prepare_design_project, simulate_design):
+                for dry_run in (True, False):
+                    with self.subTest(overrides=overrides, tool=tool.__name__, dry_run=dry_run):
+                        result = tool(cli, self.store, spec=spec, dry_run=dry_run)
+                        self.assertEqual(result["status"], "blocked")
+                        self.assertIn(error, str(result["issues"]))
+                        self.assertFalse(list((self.root / "Projects").iterdir()))
+                        self.assertFalse(list((self.root / "Results").iterdir()))
+        self.assertEqual(cli.runs, [])
+
+
 if __name__ == "__main__":
     unittest.main()
