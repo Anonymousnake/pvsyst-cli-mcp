@@ -278,6 +278,22 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(blocked["issues"], ["Every prepared load row must be one Date;P Load pair"])
         self.assertFalse((self.root / "Projects/Fixture.VC1").exists())
 
+    def test_system_unavailability_rejects_duration_rounding_to_zero(self):
+        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+
+        lines = crlf(SYSTEM)
+        original = list(lines)
+        period = {"date_beg": "01/01/23 12:00", "duration_hours": 0.0001}
+        updates = {"mode": "periods", "periods": [period]}
+        with self.assertRaisesRegex(ValueError, "rounds to 0.000"):
+            replace_system_unavailability(lines, (2, 5), updates)
+        self.assertEqual(lines, original)
+
+        period["duration_hours"] = 0.0006
+        result = replace_system_unavailability(lines, (2, 5), updates)
+        self.assertEqual(result["after"]["periods"], [{"date_beg": "01/01/23 12:00", "duration": "0.001"}])
+        self.assertIn("        Duration=0.001\r\n", lines)
+
     def test_system_unavailability_authoring_and_geometry_combo(self):
         from pvsyst_auto.energy.unavailability import replace_system_unavailability
         from pvsyst_auto.native.load import create_native_load_variant

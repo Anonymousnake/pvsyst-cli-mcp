@@ -97,6 +97,8 @@ def _validate_periods(raw_periods) -> list[tuple[str, float]]:
         dur = float(duration)
         if not math.isfinite(dur) or dur <= 0.0 or dur > 8784.0:
             raise ValueError("Period duration_hours must be within (0, 8784]")
+        if f"{dur:.3f}" == "0.000":
+            raise ValueError("Period duration_hours rounds to 0.000 hours at native precision")
         normalized.append((date_beg, dur))
     return normalized
 
