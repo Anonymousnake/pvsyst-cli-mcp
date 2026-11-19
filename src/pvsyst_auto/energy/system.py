@@ -12,9 +12,11 @@ from pvsyst_auto.energy.load import hourly_load_block, load_snapshot, upsert_loa
 from pvsyst_auto.energy.storage import (
     CONTROL_UPDATE_KEYS,
     NUMERIC_FIELDS,
+    PEAK_SHAVING_LOAD_ERROR,
     STRATEGIES,
     _system_grid_limit,
     decimal_text,
+    has_user_load,
     render_grid_storage_block,
     resolve_storage_controls,
     set_grid_export,
@@ -72,6 +74,8 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             raise ValueError("Supply complete availability exactly when creating WeakGrid")
         if strat_key in ("self_consumption", "weak_grid") and not load_manifest_name:
             raise ValueError(f"{strat_key} requires an explicit load_manifest_name")
+        if strat_key == "peak_shaving" and load_manifest_name is not None:
+            raise ValueError(PEAK_SHAVING_LOAD_ERROR)
         # Check the inherited PeakShaving limit once the source pvSystem is available.
         preview_controls = resolve_storage_controls(storage_clean, inherited_limit={"grid_limit_kw": 1.0})
         state = {
@@ -112,6 +116,8 @@ def create_grid_storage_system(store, *, project, source_variant, new_variant, b
             raise ValueError("Use the existing-storage editor for a template that already declares battery/storage hardware")
         if weak and any(line.strip().startswith("PVObject_GridUnavail=") for line in lines):
             raise ValueError("Preserve the source's existing grid-unavailability object instead of adding a duplicate")
+        if base_state["strategy"] == "PeakShaving" and has_user_load(lines):
+            raise ValueError(PEAK_SHAVING_LOAD_ERROR)
 
         inherited_limit = None
         if base_state["strategy"] == "PeakShaving" and "grid_limit_kw" not in storage_clean:
