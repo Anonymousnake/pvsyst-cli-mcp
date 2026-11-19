@@ -322,6 +322,86 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(blocked["status"], "blocked")
                 self.assertEqual(lock_states, [True])
 
+    async def test_bifacial_and_utility_design_mcp_roundtrip(self):
+        from tests.unit.core.test_bifacial_utility import UTILITY_OND, UTILITY_PAN, _capacity_spec
+        from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "PVsyst8.1_Data"
+            for folder in ("Projects", "Results", "Models", "Meteo", "Sites", "UserData",
+                           "ComposPV/PVmodules", "ComposPV/Inverters"):
+                (root / folder).mkdir(parents=True)
+            cli_exe = Path(tmp) / "PVsystCLI.exe"
+            cli_exe.write_bytes(b"fake")
+            (root / "Sites" / "Geneva_MN90.SIT").write_bytes(
+                b"\xef\xbb\xbf" + SITE_TEXT.replace("\n", "\r\n").encode("utf-8"))
+            (root / "Meteo" / "Geneva_MN90_SYN.MET").write_bytes(
+                b"\xef\xbb\xbf" + MET_TEXT.replace("\n", "\r\n").encode("utf-8"))
+            (root / "ComposPV/PVmodules/Lab440.PAN").write_bytes(
+                b"\xef\xbb\xbf" + UTILITY_PAN.replace("\n", "\r\n").encode("utf-8"))
+            (root / "ComposPV/Inverters/Lab50.OND").write_bytes(
+                b"\xef\xbb\xbf" + UTILITY_OND.replace("\n", "\r\n").encode("utf-8"))
+
+            async with mcp_session(root, cli_exe) as session:
+                # 1) Build bifacial SFI via default tool set
+                err, sfi = decode_reply(await session.call_tool("pvsyst_build_sfi", {
+                    "filename": "bifi_mcp.sfi", "variables": "bifacial",
+                }))
+                self.assertFalse(err, sfi)
+                self.assertIn("viGlobBak", sfi["variables"])
+
+                # 2) Prepare a zero-template 3D ground_tracker + bifacial project via MCP
+                fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
+                with patch("pvsyst_auto.native.cli.PVsystCLI.version", return_value="8.1.7"), \
+                     patch("pvsyst_auto.native.cli.PVsystCLI.license_info", return_value={"status": "LICENSED"}), \
+                     patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
+                    err, prep = decode_reply(await session.call_tool("pvsyst_prepare_design_project", {
+                        "spec": {
+                            "scope": "ground_tracker",
+                            "new_project": "McpTracker.PRJ",
+                            "year": 2024,
+                            "target_dc_kw": 100.0,
+                            "module": {"file_name": "Lab440.PAN"},
+                            "inverter": {"file_name": "Lab50.OND"},
+                            "weather": {"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+                            "capacity": _capacity_spec(),
+                            "ground_layout": {"model_mode": "3d", "pitch_m": 12.0, "shed_count": 6,
+                                              "min_phi_deg": -55.0, "max_phi_deg": 55.0, "backtracking": True},
+                            "bifacial": {"ground_albedo": 0.30, "bifaciality_factor": 0.80, "height_above_ground_m": 2.4},
+                        },
+                        "dry_run": False,
+                    }))
+                self.assertFalse(err, prep)
+                self.assertEqual((prep["status"], prep["stage"], prep["prepared"]), ("prepared", "prepared", True))
+                self.assertEqual(prep["utility_summary"]["field_type"], "TrackHorizNSAxis")
+
+                # 3) Inspect and update bifacial parameters via MCP
+                err, info = decode_reply(await session.call_tool("pvsyst_get_variant_parameters", {
+                    "project": "McpTracker.PRJ", "variant": "VC0",
+                }))
+                self.assertFalse(err, info)
+                self.assertEqual(info["orientations"][0]["bifacial"]["model"], "Trackers2D")
+
+                err, upd = decode_reply(await session.call_tool("pvsyst_update_variant_parameters", {
+                    "project": "McpTracker.PRJ", "variant": "VC0",
+                    "expected_sha256": info["sha256"],
+                    "bifacial_updates": {"ground_albedo": 0.42},
+                    "dry_run": False,
+                }))
+                self.assertFalse(err, upd)
+                self.assertEqual(upd["bifacial"]["after"]["ground_albedo"], 0.42)
+
+                # 4) Reject unknown ground_layout keys at strict MCP boundary
+                err, bad = decode_reply(await session.call_tool("pvsyst_simulate_design", {
+                    "spec": {
+                        "scope": "ground_sheds", "new_project": "Bad.PRJ", "year": 2024,
+                        "target_dc_kw": 100.0, "tilt": 20.0, "azimuth": 0.0,
+                        "ground_layout": {"unknown_key": 1},
+                    },
+                    "dry_run": True,
+                }))
+                self.assertTrue(err, bad)
+
 
 if __name__ == "__main__":
     unittest.main()

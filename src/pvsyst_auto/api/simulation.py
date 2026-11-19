@@ -13,7 +13,7 @@ from pvsyst_auto.components.identity import sourced_component
 @categorized_tool()
 def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
     """Create a new hourly export definition (.SFI) in workspace/Models from a preset group
-    (energy, inverter_losses, all_common, shading, soiling, grid_limit, grid_storage) or comma-separated vi* variables."""
+    (energy, inverter_losses, all_common, shading, soiling, grid_limit, grid_storage, bifacial) or comma-separated vi* variables."""
     with cli()._lock:
         target = workspace_path("Models", filename, ".sfi")
         names = (VAR_GROUPS[variables] if variables in VAR_GROUPS
@@ -74,7 +74,8 @@ def pvsyst_run_simulation(project: str, variant: str,
 
 @categorized_tool()
 def pvsyst_simulate_design(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
-    """Run a unified fixed_unshaded_grid design workflow: component lookup, template matching,
+    """Run a unified grid design workflow (fixed_unshaded_grid, ground_sheds, or ground_tracker,
+    with optional ground_layout and pvBiFacial): component lookup, zero-template synthesis,
     capacity sizing, weather preparation/acquisition, and full-year simulation."""
     return simulate_design(cli(), variant_store(), spec=spec.model_dump(exclude_none=True), dry_run=dry_run)
 

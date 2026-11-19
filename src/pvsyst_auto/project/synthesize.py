@@ -11,6 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from pvsyst_auto.components.store import FIELD
+from pvsyst_auto.project.bifacial import render_bifacial_block
 from pvsyst_auto.project.circuit import MAX_COUNT, inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 
@@ -379,40 +380,157 @@ def _normalize_orientation(item: dict) -> dict:
     if not isinstance(item, dict):
         raise ValueError("Each orientation specification must be an object")
     oid = _pos_int(item.get("id", 1), "orientation.id")
-    field_type = item.get("field_type", "FixedPlane")
-    if field_type not in ("FixedPlane", "UnlimSheds", "RegularSheds", "UnlimTracking", "TrackHorizNSAxis"):
-        raise ValueError(f"Unsupported orientation field_type: {field_type!r}")
+    raw_ft = item.get("field_type", "FixedPlane")
+    # Map friendly aliases to native PVsyst 8.1 FieldType tokens.
+    if raw_ft == "UnlimSheds":
+        field_type = "Sheds"
+    elif raw_ft == "RegularSheds":
+        field_type = "FixedPlane"
+    else:
+        field_type = raw_ft
+    if field_type not in ("FixedPlane", "Sheds", "UnlimTracking", "TrackHorizNSAxis"):
+        raise ValueError(f"Unsupported orientation field_type: {raw_ft!r}")
     tilt = _finite(item.get("tilt_deg", 25.0), "orientation.tilt_deg", minimum=0.0, maximum=90.0)
     azim = _finite(item.get("azimuth_deg", 0.0), "orientation.azimuth_deg", minimum=-180.0, maximum=180.0)
     base_slope = _finite(item.get("base_slope_deg", 0.0), "orientation.base_slope_deg", minimum=-90.0, maximum=90.0)
     extra = dict(item.get("extra_fields") or {})
-    return {
+
+    default_comment = {
+        "FixedPlane": f"Fixed, Tilt {_fmt(tilt)} deg, Azim. {_fmt(azim)} deg",
+        "Sheds": f"Unlimited sheds, Tilt {_fmt(tilt)} deg, Azim. {_fmt(azim)} deg",
+        "UnlimTracking": "Unlimited trackers, horizontal axis N-S",
+        "TrackHorizNSAxis": "Tracking, horizontal axis N-S",
+    }[field_type]
+
+    spec = {
         "id": oid,
         "field_type": field_type,
         "tilt_deg": tilt,
         "azimuth_deg": azim,
         "base_slope_deg": base_slope,
-        "comment": item.get("comment") or f"Fixed, Tilt {_fmt(tilt)} deg, Azim. {_fmt(azim)} deg",
+        "comment": item.get("comment") or default_comment,
         "extra_fields": extra,
+        "bifacial": item.get("bifacial"),
     }
+    if field_type == "Sheds":
+        spec.update({
+            "pitch_m": _finite(item.get("pitch_m", 10.0), "orientation.pitch_m", minimum=0.1),
+            "collector_width_m": _finite(item.get("collector_width_m", 4.28), "orientation.collector_width_m", minimum=0.1),
+            "inactive_band_width_1_m": _finite(item.get("inactive_band_width_1_m", 0.02), "orientation.inactive_band_width_1_m", minimum=0.0),
+            "inactive_band_width_2_m": _finite(item.get("inactive_band_width_2_m", 0.02), "orientation.inactive_band_width_2_m", minimum=0.0),
+            "shed_count": _pos_int(item.get("shed_count", 10), "orientation.shed_count"),
+            "electrical_effect": bool(item.get("electrical_effect", True)),
+            "shading_factor": _finite(item.get("shading_factor", 1.0), "orientation.shading_factor", minimum=0.0, maximum=1.0),
+            "module_columns": _pos_int(item.get("module_columns", 4), "orientation.module_columns"),
+            "cell_width_m": _finite(item.get("cell_width_m", 0.156), "orientation.cell_width_m", minimum=0.01),
+        })
+    elif field_type in ("UnlimTracking", "TrackHorizNSAxis"):
+        min_phi = _finite(item.get("min_phi_deg", -60.0), "orientation.min_phi_deg", minimum=-90.0, maximum=0.0)
+        max_phi = _finite(item.get("max_phi_deg", 60.0), "orientation.max_phi_deg", minimum=0.0, maximum=90.0)
+        if not min_phi < max_phi:
+            raise ValueError("orientation.min_phi_deg must be less than max_phi_deg")
+        spec.update({
+            "axis_azimuth_deg": _finite(item.get("axis_azimuth_deg", 0.0), "orientation.axis_azimuth_deg", minimum=-180.0, maximum=180.0),
+            "min_phi_deg": min_phi,
+            "max_phi_deg": max_phi,
+            "backtracking": bool(item.get("backtracking", True)),
+            "irrad_optimiz": bool(item.get("irrad_optimiz", False)),
+            "pitch_m": _finite(item.get("pitch_m", 12.0), "orientation.pitch_m", minimum=0.1),
+            "collector_width_m": _finite(item.get("collector_width_m", 4.282), "orientation.collector_width_m", minimum=0.1),
+            "inactive_band_width_1_m": _finite(item.get("inactive_band_width_1_m", 0.02 if field_type == "UnlimTracking" else 0.0), "orientation.inactive_band_width_1_m", minimum=0.0),
+            "inactive_band_width_2_m": _finite(item.get("inactive_band_width_2_m", 0.02 if field_type == "UnlimTracking" else 0.0), "orientation.inactive_band_width_2_m", minimum=0.0),
+        })
+        if field_type == "UnlimTracking":
+            spec.update({
+                "shed_count": _pos_int(item.get("shed_count", 10), "orientation.shed_count"),
+                "electrical_effect": bool(item.get("electrical_effect", False)),
+                "shading_factor": _finite(item.get("shading_factor", 1.0), "orientation.shading_factor", minimum=0.0, maximum=1.0),
+                "module_columns": _pos_int(item.get("module_columns", 3), "orientation.module_columns"),
+                "cell_width_m": _finite(item.get("cell_width_m", 0.156), "orientation.cell_width_m", minimum=0.01),
+            })
+        else:
+            spec.update({
+                "central_gap_m": _finite(item.get("central_gap_m", 0.0), "orientation.central_gap_m", minimum=0.0),
+                "pitch_slope_deg": _finite(item.get("pitch_slope_deg", 0.0), "orientation.pitch_slope_deg", minimum=-45.0, maximum=45.0),
+                "wind_stow": bool(item.get("wind_stow", False)),
+                "wind_stow_speed_ms": _finite(item.get("wind_stow_speed_ms", 12.0), "orientation.wind_stow_speed_ms", minimum=0.0),
+                "wind_stow_position_deg": _finite(item.get("wind_stow_position_deg", 0.0), "orientation.wind_stow_position_deg", minimum=-90.0, maximum=90.0),
+            })
+    return spec
 
 
 def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) -> list[str]:
-    """Serialize one TOrientGroup / pvOrient record."""
+    """Serialize one TOrientGroup / pvOrient record (including optional pvBiFacial)."""
     spec = _normalize_orientation(orient)
+    ft = spec["field_type"]
     lines = [
         "    PVObject_=pvOrient",
         f"      Comment={_clean_text(spec['comment'], 'orientation.comment')}",
         f"      Version={version}",
         "      Flags=$00",
         f"    NoOrient={spec['id']}",
-        f"    FieldType={spec['field_type']}",
+        f"    FieldType={ft}",
     ]
-    if spec["field_type"] in ("FixedPlane", "UnlimSheds", "RegularSheds"):
-        lines.append(f"    FieldTilt={_fmt(spec['tilt_deg'])}")
-        lines.append(f"    FieldAzim={_fmt(spec['azimuth_deg'])}")
+    if ft == "FixedPlane":
+        lines.extend([
+            f"    FieldTilt={_fmt(spec['tilt_deg'])}",
+            f"    FieldAzim={_fmt(spec['azimuth_deg'])}",
+            f"    BaseSlope={_fmt(spec['base_slope_deg'])}",
+        ])
+    elif ft == "Sheds":
+        lines.extend([
+            f"    FieldTilt={_fmt(spec['tilt_deg'])}",
+            f"    FieldAzim={_fmt(spec['azimuth_deg'])}",
+            f"    Pitch={spec['pitch_m']:.3f}",
+            f"    CollectorWidth={spec['collector_width_m']:.3f}",
+            f"    InactiveBandWidth1={spec['inactive_band_width_1_m']:.3f}",
+            f"    InactiveBandWidth2={spec['inactive_band_width_2_m']:.3f}",
+            f"    NSheds={spec['shed_count']}",
+            f"    UsesElectricalEffect={'True' if spec['electrical_effect'] else 'False'}",
+            f"    FracShadingFactor={spec['shading_factor']:.3f}",
+            f"    NModInWidth={spec['module_columns']}",
+            f"    CellWidth={spec['cell_width_m']:.3f}",
+        ])
+    elif ft == "UnlimTracking":
+        lines.extend([
+            f"    AxisAzim={_fmt(spec['axis_azimuth_deg'])}",
+            f"    MinPhi={_fmt(spec['min_phi_deg'])}",
+            f"    MaxPhi={_fmt(spec['max_phi_deg'])}",
+            f"    UsesBacktracking={'True' if spec['backtracking'] else 'False'}",
+            f"    UsesIrradOptimiz={'True' if spec['irrad_optimiz'] else 'False'}",
+            f"    Pitch={spec['pitch_m']:.3f}",
+            f"    CollectorWidth={spec['collector_width_m']:.3f}",
+            f"    InactiveBandWidth1={spec['inactive_band_width_1_m']:.3f}",
+            f"    InactiveBandWidth2={spec['inactive_band_width_2_m']:.3f}",
+            f"    NSheds={spec['shed_count']}",
+            f"    UsesElectricalEffect={'True' if spec['electrical_effect'] else 'False'}",
+            f"    FracShadingFactor={spec['shading_factor']:.3f}",
+            f"    NModInWidth={spec['module_columns']}",
+            f"    CellWidth={spec['cell_width_m']:.3f}",
+        ])
+    elif ft == "TrackHorizNSAxis":
+        lines.extend([
+            f"    AxisAzim={_fmt(spec['axis_azimuth_deg'])}",
+            f"    MinPhi={_fmt(spec['min_phi_deg'])}",
+            f"    MaxPhi={_fmt(spec['max_phi_deg'])}",
+            f"    CentralGap={spec['central_gap_m']:.2f}",
+            f"    PitchSlope={_fmt(spec['pitch_slope_deg'])}",
+            f"    UsesBacktracking={'True' if spec['backtracking'] else 'False'}",
+            "    PartialSystemNoRefField=-1",
+            "    PartialSystemNoSubField=1",
+            "    PartialSystemMode=psmUserAll",
+            "    PartialSystemInclObj=True",
+            f"    UsesIrradOptimiz={'True' if spec['irrad_optimiz'] else 'False'}",
+            f"    UsesWindStow={'True' if spec['wind_stow'] else 'False'}",
+            f"    WindStowSpeed={spec['wind_stow_speed_ms']:.3f}",
+            f"    WindStowPosition={spec['wind_stow_position_deg']:.3f}",
+            f"    Pitch={spec['pitch_m']:.3f}",
+            f"    CollectorWidth={spec['collector_width_m']:.3f}",
+            f"    InactiveBandWidth1={spec['inactive_band_width_1_m']:.3f}",
+            f"    InactiveBandWidth2={spec['inactive_band_width_2_m']:.3f}",
+        ])
+
     lines.extend([
-        f"    BaseSlope={_fmt(spec['base_slope_deg'])}",
         "    UsesTiltAver=False",
         "    UsesAzimAver=False",
         "    UsesSlopeAver=False",
@@ -420,6 +538,8 @@ def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) 
     ])
     for key, value in spec["extra_fields"].items():
         lines.append(f"    {key}={value}")
+    if spec["bifacial"] is not None:
+        lines.extend(render_bifacial_block(spec["bifacial"], field_type=ft, indent="    "))
     lines.append("    End of TOrientGroup")
     return lines
 
@@ -831,6 +951,7 @@ def synthesize_project_and_variant(
     shading_lines: list[str] | None = None,
     bifacial_lines: list[str] | None = None,
     storage_lines: list[str] | None = None,
+    version: str = SYNTH_VERSION,
     with_bom: bool = True,
 ) -> dict:
     """Synthesize a matched (.PRJ, .VC0) pair directly in memory with zero demo templates."""
@@ -890,6 +1011,7 @@ def synthesize_project_and_variant(
         project_comment=project_comment,
         met_name=resolved_met,
         site_body=site_body,
+        version=version,
         with_bom=with_bom,
     )
     vc0_text = synthesize_variant_text(
@@ -900,6 +1022,7 @@ def synthesize_project_and_variant(
         subarrays=subarrays,
         default_pan=resolved_pan,
         default_ond=resolved_ond,
+        version=version,
         u_factor=u_factor,
         shading_lines=shading_lines,
         bifacial_lines=bifacial_lines,
@@ -1080,3 +1203,420 @@ def synthesize_house_source(store, components, request: dict) -> dict:
     )
     synth["synthesized"] = True
     return synth
+
+
+def synthesize_ground_shed_shading(*, shed_count: int = 10, pitch_m: float = 10.0,
+                                   tilt_deg: float = 20.0, azimuth_deg: float = 0.0,
+                                   module_rows: int = 2, module_columns: int = 25,
+                                   module_width_m: float = 1.052, module_length_m: float = 2.131,
+                                   module_name: str = "PV Module",
+                                   module_orient: str = "moPortrait",
+                                   spacing_x_m: float = 0.020, spacing_y_m: float = 0.020,
+                                   origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                                   orientation_id: int = 1,
+                                   version: str = SYNTH_VERSION) -> list[str]:
+    """Synthesize a complete 3D PVObject_Ombrage=pvShading containing a pvShdArrayShed field."""
+    n_sheds = _pos_int(shed_count, "shed_count")
+    n_rows = _pos_int(module_rows, "module_rows")
+    n_cols = _pos_int(module_columns, "module_columns")
+    pitch = _finite(pitch_m, "pitch_m", minimum=0.1)
+    tilt = _finite(tilt_deg, "tilt_deg", minimum=0.0, maximum=90.0)
+    azim = _finite(azimuth_deg, "azimuth_deg", minimum=-180.0, maximum=180.0)
+    mw = _finite(module_width_m, "module_width_m", minimum=0.1)
+    ml = _finite(module_length_m, "module_length_m", minimum=0.1)
+    sx = _finite(spacing_x_m, "spacing_x_m", minimum=0.0)
+    sy = _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
+    if module_orient not in ("moPortrait", "moLandscape"):
+        raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
+    cell_w = mw if module_orient == "moPortrait" else ml
+    cell_h = ml if module_orient == "moPortrait" else mw
+    larg_shed = n_rows * cell_h + max(0, n_rows - 1) * sy
+    long_shed = n_cols * cell_w + max(0, n_cols - 1) * sx
+    name = _clean_text(module_name, "module_name")
+    return [
+        "  PVObject_Ombrage=pvShading",
+        "    Comment=Ground shed 3D shading scene",
+        "    Flags=$000A0300",
+        "    Precision=1",
+        "    FracOmbreMod=1.000",
+        "    FracOmbreThin=0.400",
+        "    GCROffset=1.0",
+        "    DisplayedRef=refGeographical",
+        "",
+        "    ListeObjets, list of=1 TShdObject",
+        "",
+        "      PVObject_1=pvShdArrayShed",
+        "        Comment=Shed field #1",
+        f"        Version={version}",
+        "        Flags=$02200074",
+        "        NoObjCreated=1",
+        "        ColorTechn=$00FF0000",
+        "        ColorSurf=$00FF9999",
+        "        ColorBord=$00505050",
+        f"        DOrigine={origin[0]:.6f},{origin[1]:.6f},{origin[2]:.6f}",
+        f"        DInclin={tilt:.6f}",
+        "        BaseSlope=0.000000",
+        f"        DAzimut={azim:.6f}",
+        "        Source=osPVsyst",
+        f"      NElemChamps={n_sheds}",
+        f"      NoOrient={_pos_int(orientation_id, 'orientation_id')}",
+        f"      PanneauPVName={name};{mw:.3f};{ml:.3f}",
+        f"      ModSpacingX={sx:.3f}",
+        f"      ModSpacingY={sy:.3f}",
+        f"      NModInHeight={n_rows}",
+        f"      NModInWidth={n_cols}",
+        f"      ModuleOrient={module_orient}",
+        f"      DXModule={cell_w + sx:.3f}",
+        f"      DYModule={cell_h + sy:.3f}",
+        f"        LongShed={long_shed:.6f}",
+        f"        LargShed={larg_shed:.6f}",
+        "        Cadre=0.000,0.000,0.000,0.000,",
+        "        TypeOrigine=2",
+        f"        PitchNS={pitch:.3f}",
+        "        PitchEW=0.000",
+        "      End of PVObject pvShdArrayShed",
+        "    End of ListeObjets",
+        "  End of PVObject pvShading",
+    ]
+
+
+def synthesize_ground_tracker_shading(*, tracker_count: int = 10, pitch_ew_m: float = 12.0,
+                                      axis_azimuth_deg: float = 0.0,
+                                      module_rows: int = 2, module_columns: int = 25,
+                                      module_width_m: float = 1.052, module_length_m: float = 2.131,
+                                      module_name: str = "PV Module",
+                                      module_orient: str = "moPortrait",
+                                      spacing_x_m: float = 0.020, spacing_y_m: float = 0.020,
+                                      origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                                      orientation_id: int = 1,
+                                      version: str = SYNTH_VERSION) -> list[str]:
+    """Synthesize a complete 3D PVObject_Ombrage=pvShading containing a pvShdArrayTracking field."""
+    n_trk = _pos_int(tracker_count, "tracker_count")
+    n_rows = _pos_int(module_rows, "module_rows")
+    n_cols = _pos_int(module_columns, "module_columns")
+    pitch = _finite(pitch_ew_m, "pitch_ew_m", minimum=0.1)
+    azim = _finite(axis_azimuth_deg, "axis_azimuth_deg", minimum=-180.0, maximum=180.0)
+    mw = _finite(module_width_m, "module_width_m", minimum=0.1)
+    ml = _finite(module_length_m, "module_length_m", minimum=0.1)
+    sx = _finite(spacing_x_m, "spacing_x_m", minimum=0.0)
+    sy = _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
+    if module_orient not in ("moPortrait", "moLandscape"):
+        raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
+    # In PVsyst pvShdArrayTracking (verified against _DEMO_Utility.VC7):
+    # LongShed = tracker cross-axis chord width (CollectorWidth), LargShed = tracker N-S length.
+    chord_mod = ml if module_orient == "moPortrait" else mw
+    length_mod = mw if module_orient == "moPortrait" else ml
+    long_shed = n_rows * chord_mod + max(0, n_rows - 1) * sy
+    larg_shed = n_cols * length_mod + max(0, n_cols - 1) * sx
+    name = _clean_text(module_name, "module_name")
+    return [
+        "  PVObject_Ombrage=pvShading",
+        "    Comment=Ground tracker 3D shading scene",
+        "    Flags=$000A0300",
+        "    Precision=1",
+        "    FracOmbreMod=1.000",
+        "    FracOmbreThin=0.400",
+        "    GCROffset=1.0",
+        "    DisplayedRef=refGeographical",
+        "",
+        "    ListeObjets, list of=1 TShdObject",
+        "",
+        "      PVObject_1=pvShdArrayTracking",
+        "        Comment=Array of trackers #1",
+        f"        Version={version}",
+        "        Flags=$02200074",
+        "        NoObjCreated=1",
+        "        ColorTechn=$00FF0000",
+        "        ColorSurf=$00FF9999",
+        "        ColorBord=$00505050",
+        f"        DOrigine={origin[0]:.6f},{origin[1]:.6f},{origin[2]:.6f}",
+        "        DInclin=0.000000",
+        "        BaseSlope=0.000000",
+        f"        DAzimut={azim:.6f}",
+        "        Source=osPVsyst",
+        f"      NElemChamps={n_trk}",
+        f"      NoOrient={_pos_int(orientation_id, 'orientation_id')}",
+        f"      PanneauPVName={name};{mw:.3f};{ml:.3f}",
+        f"      ModSpacingX={sx:.3f}",
+        f"      ModSpacingY={sy:.3f}",
+        f"      NModInHeight={n_rows}",
+        f"      NModInWidth={n_cols}",
+        f"      ModuleOrient={module_orient}",
+        f"      DXModule={length_mod + sx:.3f}",
+        f"      DYModule={larg_shed:.3f}",
+        f"        LongShed={long_shed:.6f}",
+        f"        LargShed={larg_shed:.6f}",
+        "        Cadre=0.000,0.000,0.000,0.000,",
+        "        TypeOrigine=2",
+        "        PitchNS=0.000",
+        f"        PitchEW={pitch:.3f}",
+        "        AxisOrig=2",
+        "      End of PVObject pvShdArrayTracking",
+        "    End of ListeObjets",
+        "  End of PVObject pvShading",
+    ]
+
+
+def _resolve_pan_module_dimensions(store, pan_name: str) -> dict | None:
+    """Auto-extract (width_m, length_m, model_name) from a readable workspace/builtin .PAN file."""
+    components = getattr(store, "components", None) if store is not None else None
+    if components is None:
+        return None
+    from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
+
+    for library in ("workspace", "builtin"):
+        if library == "builtin" and getattr(components, "builtin", None) is None:
+            continue
+        try:
+            path = components._path("PAN", pan_name, library)
+        except (ValueError, OSError):
+            continue
+        if not path.is_file():
+            continue
+        try:
+            raw = components._read(path)
+            info = components._inspect("PAN", raw)
+            if info.get("format") != "text" or info.get("structural_errors") or info.get("known_value_errors"):
+                continue
+            _, text = components._text("PAN", raw)
+            fields = pan_validation_fields(text)
+            widths = fields.get("Width") or fields.get("LargApp") or []
+            heights = fields.get("Height") or fields.get("LongApp") or []
+            if len(widths) != 1 or len(heights) != 1:
+                continue
+            width_m = float(widths[0])
+            length_m = float(heights[0])
+            if not (math.isfinite(width_m) and width_m > 0 and math.isfinite(length_m) and length_m > 0):
+                continue
+            models = fields.get("Model") or []
+            model_name = models[0].strip() if len(models) == 1 and models[0].strip() else None
+            return {
+                "width_m": width_m,
+                "length_m": length_m,
+                "model_name": model_name,
+                "library": library,
+                "path": str(path),
+            }
+        except (ValueError, OSError, KeyError):
+            continue
+    return None
+
+
+def synthesize_utility_project(
+    store, *,
+    project_comment: str = "Utility PV Project",
+    variant_comment: str = "Utility Variant",
+    site_name: str,
+    met_name: str,
+    field_type: str = "Sheds",
+    pan_name: str = "Generic_Mono_440W_Half_Bifacial.PAN",
+    ond_name: str = "Generic_50kW.OND",
+    n_mod_serie: int = 20,
+    n_string_ch: int = 6,
+    n_inverter: int = 1,
+    n_inv_mppt: int = 1,
+    independent_mppt: bool = False,
+    pnom_ac_in_mppt: float = 50.0,
+    tilt_deg: float = 20.0,
+    azimuth_deg: float = 0.0,
+    axis_azimuth_deg: float = 0.0,
+    min_phi_deg: float = -60.0,
+    max_phi_deg: float = 60.0,
+    backtracking: bool = True,
+    irrad_optimiz: bool = False,
+    central_gap_m: float = 0.0,
+    pitch_slope_deg: float = 0.0,
+    wind_stow: bool = False,
+    wind_stow_speed_ms: float = 12.0,
+    wind_stow_position_deg: float = 0.0,
+    pitch_m: float = 10.0,
+    collector_width_m: float | None = None,
+    shed_count: int = 4,
+    inactive_band_width_1_m: float | None = None,
+    inactive_band_width_2_m: float | None = None,
+    electrical_effect: bool | None = None,
+    shading_factor: float | None = None,
+    cell_width_m: float | None = None,
+    module_rows: int = 2,
+    module_columns: int = 15,
+    module_orient: str = "moPortrait",
+    spacing_x_m: float = 0.020,
+    spacing_y_m: float = 0.020,
+    module_width_m: float | None = None,
+    module_length_m: float | None = None,
+    module_name: str | None = None,
+    bifacial: dict | None = None,
+    include_3d_scene: bool | None = None,
+    u_factor: float = 29.0,
+    lid_loss: float = 0.0,
+    pmism_mpp: float = 2.0,
+    module_quality_loss: float = 3.0,
+    dc_wiring_loss_pct: float = 1.5,
+    dc_wiring_resistance_mohm: float = 0.0,
+    version: str = SYNTH_VERSION,
+    with_bom: bool = True,
+) -> dict:
+    """Zero-template synthesizer for utility ground sheds or single-axis trackers (mono or bifacial)."""
+    if field_type not in ("Sheds", "UnlimSheds", "RegularSheds", "UnlimTracking", "TrackHorizNSAxis"):
+        raise ValueError(f"Unsupported utility field_type: {field_type!r}")
+    if module_orient not in ("moPortrait", "moLandscape"):
+        raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
+
+    pan_dims = _resolve_pan_module_dimensions(store, pan_name)
+    if module_width_m is not None and module_length_m is not None:
+        mw = _finite(module_width_m, "module_width_m", minimum=0.1)
+        ml = _finite(module_length_m, "module_length_m", minimum=0.1)
+        dim_source = "caller"
+    elif pan_dims is not None:
+        mw = _finite(module_width_m, "module_width_m", minimum=0.1) if module_width_m is not None else pan_dims["width_m"]
+        ml = _finite(module_length_m, "module_length_m", minimum=0.1) if module_length_m is not None else pan_dims["length_m"]
+        dim_source = f"pan:{pan_dims['library']}"
+    else:
+        mw = _finite(module_width_m, "module_width_m", minimum=0.1) if module_width_m is not None else 1.052
+        ml = _finite(module_length_m, "module_length_m", minimum=0.1) if module_length_m is not None else 2.131
+        dim_source = "default"
+    resolved_mod_name = (
+        module_name
+        or (pan_dims["model_name"] if pan_dims and pan_dims.get("model_name") else None)
+        or "Mono 440 Wp Twin 144 half-cells bifacial"
+    )
+
+    n_rows = _pos_int(module_rows, "module_rows")
+    n_cols = _pos_int(module_columns, "module_columns")
+    sy = _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
+    sx = _finite(spacing_x_m, "spacing_x_m", minimum=0.0)
+    chord_mod = ml if module_orient == "moPortrait" else mw
+    resolved_collector_width = (
+        _finite(collector_width_m, "collector_width_m", minimum=0.1)
+        if collector_width_m is not None
+        else round(n_rows * chord_mod + max(0, n_rows - 1) * sy, 3)
+    )
+    resolved_pitch = _finite(pitch_m, "pitch_m", minimum=0.1)
+    if resolved_pitch <= resolved_collector_width:
+        raise ValueError(
+            f"pitch_m ({resolved_pitch:.3f}) must exceed collector_width_m ({resolved_collector_width:.3f}) "
+            "so adjacent ground rows do not overlap (GCR < 1.0)"
+        )
+
+    need_3d = (
+        include_3d_scene
+        if include_3d_scene is not None
+        else field_type in ("RegularSheds", "TrackHorizNSAxis")
+    )
+    orient_spec = {
+        "id": 1,
+        "field_type": field_type,
+        "tilt_deg": tilt_deg,
+        "azimuth_deg": azimuth_deg,
+        "axis_azimuth_deg": axis_azimuth_deg,
+        "min_phi_deg": min_phi_deg,
+        "max_phi_deg": max_phi_deg,
+        "backtracking": backtracking,
+        "irrad_optimiz": irrad_optimiz,
+        "central_gap_m": central_gap_m,
+        "pitch_slope_deg": pitch_slope_deg,
+        "wind_stow": wind_stow,
+        "wind_stow_speed_ms": wind_stow_speed_ms,
+        "wind_stow_position_deg": wind_stow_position_deg,
+        "pitch_m": resolved_pitch,
+        "collector_width_m": resolved_collector_width,
+        "shed_count": shed_count,
+        "module_columns": n_rows if field_type in ("Sheds", "UnlimSheds", "UnlimTracking") else n_cols,
+        "bifacial": bifacial,
+    }
+    if inactive_band_width_1_m is not None:
+        orient_spec["inactive_band_width_1_m"] = inactive_band_width_1_m
+    if inactive_band_width_2_m is not None:
+        orient_spec["inactive_band_width_2_m"] = inactive_band_width_2_m
+    if electrical_effect is not None:
+        orient_spec["electrical_effect"] = electrical_effect
+    if shading_factor is not None:
+        orient_spec["shading_factor"] = shading_factor
+    if cell_width_m is not None:
+        orient_spec["cell_width_m"] = cell_width_m
+
+    shading_lines = None
+    if need_3d:
+        if field_type in ("TrackHorizNSAxis", "UnlimTracking"):
+            shading_lines = synthesize_ground_tracker_shading(
+                tracker_count=shed_count,
+                pitch_ew_m=resolved_pitch,
+                axis_azimuth_deg=axis_azimuth_deg,
+                module_rows=n_rows,
+                module_columns=n_cols,
+                module_width_m=mw,
+                module_length_m=ml,
+                module_name=resolved_mod_name,
+                module_orient=module_orient,
+                spacing_x_m=sx,
+                spacing_y_m=sy,
+                version=version,
+            )
+        else:
+            shading_lines = synthesize_ground_shed_shading(
+                shed_count=shed_count,
+                pitch_m=resolved_pitch,
+                tilt_deg=tilt_deg,
+                azimuth_deg=azimuth_deg,
+                module_rows=n_rows,
+                module_columns=n_cols,
+                module_width_m=mw,
+                module_length_m=ml,
+                module_name=resolved_mod_name,
+                module_orient=module_orient,
+                spacing_x_m=sx,
+                spacing_y_m=sy,
+                version=version,
+            )
+
+    sub_mppt = n_inv_mppt if n_inv_mppt is not None else (n_string_ch if independent_mppt else 1)
+    subarrays = [{
+        "subarray_id": 1,
+        "orientation_id": 1,
+        "comment": "PV Array",
+        "pan_name": pan_name,
+        "ond_name": ond_name,
+        "n_mod_serie": n_mod_serie,
+        "n_string_ch": n_string_ch,
+        "n_inverter": n_inverter,
+        "n_inv_mppt": sub_mppt,
+        "independent_mppt": independent_mppt,
+        "pnom_ac_in_mppt": pnom_ac_in_mppt,
+        "lid_loss": lid_loss,
+        "pmism_mpp": pmism_mpp,
+        "module_quality_loss": module_quality_loss,
+        "dc_wiring_loss_pct": dc_wiring_loss_pct,
+        "dc_wiring_resistance_mohm": dc_wiring_resistance_mohm,
+    }]
+
+    result = synthesize_project_and_variant(
+        store,
+        project_comment=project_comment,
+        variant_comment=variant_comment,
+        site_name=site_name,
+        met_name=met_name,
+        orientations=[orient_spec],
+        subarrays=subarrays,
+        pan_name=pan_name,
+        ond_name=ond_name,
+        u_factor=u_factor,
+        shading_lines=shading_lines,
+        version=version,
+        with_bom=with_bom,
+    )
+    result["utility_summary"] = {
+        "field_type": field_type,
+        "include_3d_scene": need_3d,
+        "pitch_m": resolved_pitch,
+        "collector_width_m": resolved_collector_width,
+        "gcr": round(resolved_collector_width / resolved_pitch, 4),
+        "shed_count": shed_count,
+        "module_rows": n_rows,
+        "module_columns": n_cols,
+        "module_orient": module_orient,
+        "module_width_m": mw,
+        "module_length_m": ml,
+        "module_dimension_source": dim_source,
+        "bifacial_enabled": bool(bifacial and bifacial.get("enabled", True)),
+    }
+    return result

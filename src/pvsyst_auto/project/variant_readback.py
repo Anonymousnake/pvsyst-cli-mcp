@@ -25,6 +25,7 @@ from pvsyst_auto.native.grid_limit import grid_limit_state
 from pvsyst_auto.native.headless import _PLOT_SAMPLES, _result_histograms, _simul_plots
 from pvsyst_auto.native.horizon import horizon_state
 from pvsyst_auto.native.p50 import p50_state
+from pvsyst_auto.project.bifacial import bifacial_state
 from pvsyst_auto.project.circuit import topology_state, transformer_state
 from pvsyst_auto.project.sheds import TYPES as SHED_TYPES, WRITABLE as SHED_FIELDS
 from pvsyst_auto.project.tracking import WRITABLE as TRACKING_FIELDS
@@ -316,7 +317,11 @@ def inspect_parameters(store, project: str, variant: str,
             values.update(fields((index, end), TRACKING_FIELDS.get(values.get("FieldType"), ())))
             if values.get("FieldType") in SHED_TYPES:
                 values.update(fields((index, end), SHED_FIELDS.values()))
-            orientations.append({"id": int(number), "values": values})
+            orient_entry = {"id": int(number), "values": values}
+            bif = bifacial_state(lines, (index, end))
+            if bif.get("enabled") or bif.get("issue"):
+                orient_entry["bifacial"] = bif
+            orientations.append(orient_entry)
 
         main_array = store._main_array(lines)
         names = store._display_name_fields(lines)

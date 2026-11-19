@@ -8,7 +8,7 @@ from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.project.domes import create_dome_allocation_variant
 from pvsyst_auto.scene.author import create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, DCCablingUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, ObstacleSpec, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StrictNum, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
+from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, BifacialUpdates, DCCablingUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, ObstacleSpec, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StrictNum, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
 from pvsyst_auto.api.context import categorized_tool, cli, components, variant_call, variant_store
 
 
@@ -134,11 +134,12 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                      ageing_updates: AgeingUpdates | None = None,
                                       iam_updates: IamUpdates | None = None,
                                       ageing_enabled: StrictBool | None = None,
-                                       system_unavailability_updates: SystemUnavailabilityUpdates | None = None) -> dict:
+                                      system_unavailability_updates: SystemUnavailabilityUpdates | None = None,
+                                      bifacial_updates: BifacialUpdates | None = None) -> dict:
     """Update variant parameters (subarray/orientation/main_array scalars, generator, power sharing,
     independent MPPT, display name, soiling, grid limit, auxiliaries, seasonal tilt, horizon,
     inverter temperature, power factor, power controls, P50/P90, string mismatch, ageing, IAM,
-    or system unavailability periods/removal) with SHA-256 optimistic locking and rollback backup."""
+    system unavailability periods/removal, or bifacial pvBiFacial model) with SHA-256 optimistic locking and rollback backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
                         generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
@@ -156,7 +157,8 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         ageing_updates.model_dump(exclude_none=True) if ageing_updates is not None else None,
                         iam_updates.model_dump(exclude_none=True) if iam_updates is not None else None,
                         ageing_enabled,
-                        system_unavailability_updates.model_dump() if system_unavailability_updates is not None else None)
+                        system_unavailability_updates.model_dump() if system_unavailability_updates is not None else None,
+                        bifacial_updates.model_dump(exclude_none=True) if bifacial_updates is not None else None)
 
 @categorized_tool()
 def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr,
@@ -299,5 +301,6 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
 
 @categorized_tool()
 def pvsyst_prepare_design_project(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
-    """Run component lookup, weather preparation, and project configuration without launching an annual simulation."""
+    """Run component lookup, weather preparation, and project configuration (fixed_unshaded_grid,
+    ground_sheds, or ground_tracker with optional ground_layout/bifacial) without launching an annual simulation."""
     return prepare_design_project(cli(), variant_store(), spec=spec.model_dump(exclude_none=True), dry_run=dry_run)

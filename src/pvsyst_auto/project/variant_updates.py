@@ -23,6 +23,7 @@ from pvsyst_auto.native.grid_limit import replace_grid_limit
 from pvsyst_auto.native.horizon import replace_horizon
 from pvsyst_auto.native.p50 import replace_p50
 from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
+from pvsyst_auto.project.bifacial import replace_bifacial
 from pvsyst_auto.project.circuit import (
     inventory as grid_inventory,
     resize_capacity,
@@ -64,6 +65,7 @@ _EXCLUSIVE_CONTROLS = (
     ("ageing_updates", "Ageing model", "ageing", "updates require"),
     ("iam_updates", "IAM model", "iam", "updates require"),
     ("ageing_enabled", "Ageing enable", "ageing", "updates require"),
+    ("bifacial_updates", "Bifacial model", "bifacial", "updates require"),
 )
 
 
@@ -285,6 +287,10 @@ def _apply_single_control(store, lines, arrays, system, *, subarray_id, orientat
     ageing_tx = param_key in ("ageing_updates", "ageing_enabled")
     if param_key == "power_controls_updates":
         control = "Combined power controls"
+
+    if param_key == "bifacial_updates":
+        orient_bounds = store._orientation(lines, orientation_id)
+        return {result_key: replace_bifacial(lines, orient_bounds, payload)}
 
     main = store._main_array(lines)
     versions = [store._field_indices(lines, b, "Version") for b in arrays.values()]

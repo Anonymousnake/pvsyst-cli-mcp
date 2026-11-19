@@ -33,8 +33,15 @@ from pvsyst_auto.engineering.sizing import NUMBERS as CAPACITY_NUMBERS
 from pvsyst_auto.project.template import SEED_VARIANT, prepare_standard_template
 from pvsyst_auto.weather.acquisition import download_weather
 from pvsyst_auto.weather.preparation import prepare_weather
+from pvsyst_auto.workflows.utility import (
+    UTILITY_SCOPES,
+    plan_utility_capacity,
+    run_utility_design,
+    validate_utility_spec,
+)
 
 SCOPE = "fixed_unshaded_grid"
+SUPPORTED_SCOPES = (SCOPE, *UTILITY_SCOPES)
 TIME_BASIS = "local_standard_interval_start"
 # The verified PVsyst 8.1 workspace layout: 17 root folders plus 9 inside ComposPV. This 26-folder
 # superset is what a real bootstrap proved; it is not trimmed to a guessed minimum.
@@ -55,6 +62,7 @@ ISO_COUNTRY = re.compile(r"[A-Z]{2}")
 SPEC_KEYS = frozenset((
     "scope", "new_project", "year", "target_dc_kw", "tilt", "azimuth", "module", "inverter",
     "template_project", "variant", "capacity", "electrical_design", "losses", "weather", "report_pages",
+    "ground_layout", "bifacial",
 ))
 EQUIPMENT_KEYS = frozenset(("file_name", "manufacturer", "model"))
 WEATHER_KEYS = frozenset((
@@ -308,9 +316,10 @@ def _validate_spec(spec) -> list[dict]:
         validate_report_pages(spec.get("report_pages"))
     except ValueError as exc:
         bad("report_pages", exc)
-    if spec.get("scope", SCOPE) != SCOPE:
-        bad("scope", "Only fixed_unshaded_grid is supported; a roof or free-standing scope would need "
-                     "thermal and loss inputs this flow never infers")
+    scope = spec.get("scope", SCOPE)
+    if scope not in SUPPORTED_SCOPES:
+        bad("scope", "Only fixed_unshaded_grid, ground_sheds, and ground_tracker are supported; "
+                     "a roof or free-standing scope would need thermal and loss inputs this flow never infers")
 
     new_project = spec.get("new_project")
     if not _is_text(new_project):
@@ -331,34 +340,41 @@ def _validate_spec(spec) -> list[dict]:
     else:
         target = float(target)
 
-    for name, low, high in (("tilt", 0, 90), ("azimuth", -180, 180)):
-        value = spec.get(name)
-        note = ("Use a finite tilt in 0..90 degrees" if name == "tilt"
-                else "Use finite PVsyst azimuth in -180..180 degrees, zero south and west positive")
-        if value is None or not _is_number(value) or not low <= value <= high:
-            bad(name, note)
+    if scope in UTILITY_SCOPES:
+        validate_utility_spec(spec, scope, issues)
+    else:
+        if spec.get("ground_layout") is not None:
+            bad("ground_layout", "ground_layout requires scope='ground_sheds' or 'ground_tracker'")
+        if spec.get("bifacial") is not None:
+            bad("bifacial", "bifacial requires scope='ground_sheds' or 'ground_tracker'")
+        for name, low, high in (("tilt", 0, 90), ("azimuth", -180, 180)):
+            value = spec.get(name)
+            note = ("Use a finite tilt in 0..90 degrees" if name == "tilt"
+                    else "Use finite PVsyst azimuth in -180..180 degrees, zero south and west positive")
+            if value is None or not _is_number(value) or not low <= value <= high:
+                bad(name, note)
+
+        template_project = spec.get("template_project")
+        if template_project is not None:
+            if not _is_text(template_project):
+                bad("template_project", "Use one workspace PRJ filename")
+            else:
+                try:
+                    project_name(template_project)
+                except ValueError as exc:
+                    bad("template_project", exc)
+        variant = spec.get("variant")
+        if variant is not None:
+            if not _is_text(variant):
+                bad("variant", "Use one VC identifier or omit it")
+            else:
+                try:
+                    variant_id(variant)
+                except ValueError as exc:
+                    bad("variant", exc)
 
     _check_equipment(spec.get("module"), "module", issues)
     _check_equipment(spec.get("inverter"), "inverter", issues)
-
-    template_project = spec.get("template_project")
-    if template_project is not None:
-        if not _is_text(template_project):
-            bad("template_project", "Use one workspace PRJ filename")
-        else:
-            try:
-                project_name(template_project)
-            except ValueError as exc:
-                bad("template_project", exc)
-    variant = spec.get("variant")
-    if variant is not None:
-        if not _is_text(variant):
-            bad("variant", "Use one VC identifier or omit it")
-        else:
-            try:
-                variant_id(variant)
-            except ValueError as exc:
-                bad("variant", exc)
 
     capacity = spec.get("capacity")
     design = spec.get("electrical_design")
@@ -643,9 +659,11 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         result["issues"] = issues
         return result
 
+    scope = spec.get("scope", SCOPE)
+    is_utility = scope in UTILITY_SCOPES
     year = spec["year"]
-    tilt = float(spec["tilt"])
-    azimuth = float(spec["azimuth"])
+    tilt = float(spec["tilt"]) if spec.get("tilt") is not None else None
+    azimuth = float(spec["azimuth"]) if spec.get("azimuth") is not None else None
     target = float(spec["target_dc_kw"])
     losses = spec.get("losses")
     new_project = spec["new_project"]
@@ -692,7 +710,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             inverter_model=inverter.get("model") or "",
             template_project=spec.get("template_project") or project,
             variant=spec.get("variant") or member,
-            capacity=flat_capacity, tilt=tilt)
+            capacity=flat_capacity, tilt=tilt if tilt is not None else 20.0)
 
     basic, stopped = _phase(result, "discovery", lambda: discover(None))
     if stopped is not None:
@@ -700,26 +718,38 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     result["preview"]["discovery"] = basic
     resolved = basic.get("resolved_components") or {}
     seed_project = f"{stem}_template.PRJ"
-    # A workspace with no eligible template can still be seeded from the installed standard template,
-    # but only when both components resolved exactly and the caller pinned no template of its own.
-    fallback = (basic.get("status") != "ready" and {"PAN", "OND"} <= set(resolved)
-                and not (spec.get("template_project") or spec.get("variant")))
-    if fallback:
-        # Rejected candidates stay visible; their issues never become the reason for a fake success.
-        for item in basic.get("issues") or []:
-            message = item.get("message") if isinstance(item, dict) else item
-            result["warnings"].append("Rejected template candidate (no seed decision is taken from it): "
-                                      + str(message))
-        result["warnings"].extend(str(item) for item in basic.get("warnings") or [])
-        result["warnings"].append(
-            "No eligible workspace template was found; the flow falls back to the installed standard "
-            f"template derived as {seed_project}/{SEED_VARIANT} with the accepted capacity")
-    else:
-        _inherit(result, basic, "discovery")
-        if basic.get("status") != "ready" or not basic.get("selected"):
+    if is_utility:
+        fallback = False
+        if basic.get("selected") and {"PAN", "OND"} <= set(basic["selected"]):
+            components = {"PAN": basic["selected"]["PAN"], "OND": basic["selected"]["OND"]}
+            result["selected"] = components
+        elif {"PAN", "OND"} <= set(resolved):
+            components = {"PAN": resolved["PAN"], "OND": resolved["OND"]}
+            result["selected"] = components
+        else:
+            _inherit(result, basic, "discovery")
             return _stop(result, "discovery")
-    components = basic.get("selected") or resolved
-    result["selected"] = basic.get("selected")
+    else:
+        # A workspace with no eligible template can still be seeded from the installed standard template,
+        # but only when both components resolved exactly and the caller pinned no template of its own.
+        fallback = (basic.get("status") != "ready" and {"PAN", "OND"} <= set(resolved)
+                    and not (spec.get("template_project") or spec.get("variant")))
+        if fallback:
+            # Rejected candidates stay visible; their issues never become the reason for a fake success.
+            for item in basic.get("issues") or []:
+                message = item.get("message") if isinstance(item, dict) else item
+                result["warnings"].append("Rejected template candidate (no seed decision is taken from it): "
+                                          + str(message))
+            result["warnings"].extend(str(item) for item in basic.get("warnings") or [])
+            result["warnings"].append(
+                "No eligible workspace template was found; the flow falls back to the installed standard "
+                f"template derived as {seed_project}/{SEED_VARIANT} with the accepted capacity")
+        else:
+            _inherit(result, basic, "discovery")
+            if basic.get("status") != "ready" or not basic.get("selected"):
+                return _stop(result, "discovery")
+        components = basic.get("selected") or resolved
+        result["selected"] = basic.get("selected")
 
     label, label_issue = _identity(components)
     if label_issue is not None:
@@ -748,52 +778,63 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         flat_capacity = direct
         result["preview"]["envelope"] = {"status": "supplied", "capacity": dict(direct)}
 
-    confirm, stopped = _phase(result, "template_capacity", lambda: discover(flat_capacity))
-    if stopped is not None:
-        return stopped
-    result["preview"]["discovery_confirmed"] = confirm
-    if confirm.get("status") == "ready" and confirm.get("selected"):
-        drift = _identity_drift(components, confirm["selected"])
-        if drift is not None:
-            _issue(result, "discovery", drift)
-            return _stop(result, "discovery")
-        components = confirm["selected"]
-        result["selected"] = confirm["selected"]
-        if fallback:
-            # The capacity-aware discovery found an eligible workspace template, so the seed is
-            # neither previewed nor written and the run uses the confirmed template instead.
-            fallback = False
-            result["warnings"].append(
-                "The capacity-confirmed discovery selected an eligible workspace template; the "
-                "standard-template seed fallback is not used")
-        if confirm.get("warnings") != basic.get("warnings"):
-            result["warnings"].extend(item for item in (confirm.get("warnings") or [])
-                                      if item not in (basic.get("warnings") or []))
-    elif fallback:
-        conflicts = _seed_conflicts(cli, store, seed_project, targets, stem)
-        if conflicts:
-            result["issues"] = conflicts
-            return _stop(result, "outputs")
-        seed_preview, stopped = _phase(result, "template_seed", lambda: prepare_standard_template(
-            cli, store, ond_electrical=components["OND"]["electrical"],
-            pan_name=Path(components["PAN"]["name"]).name,
-            ond_name=Path(components["OND"]["name"]).name,
-            new_project=seed_project, dry_run=True, capacity=flat_capacity,
-            allow_window_creation=allow_window_creation, allow_synthesize=True))
+    utility_plan = None
+    if is_utility:
+        utility_plan, stopped = _phase(result, "template_capacity", lambda: plan_utility_capacity(
+            store, components["PAN"], components["OND"], flat_capacity))
         if stopped is not None:
             return stopped
-        result["preview"]["template_seed"] = seed_preview
-        _inherit(result, seed_preview, "template_seed")
-        if seed_preview.get("status") != "ready":
-            return _stop(result, "template_seed",
-                         "failed" if seed_preview.get("status") == "failed" else "blocked")
-        result["warnings"].append(
-            "The seed preview derives PRJ/VC0 in memory from the installed standard template with the "
-            "selected components and the accepted capacity; it retains every unlisted default and loss "
-            "mode and writes nothing yet")
+        result["preview"]["utility_capacity"] = utility_plan
+        _inherit(result, utility_plan, "template_capacity")
+        if utility_plan.get("status") != "ready":
+            return _stop(result, "template_capacity")
     else:
-        _inherit(result, confirm, "template_capacity")
-        return _stop(result, "template_capacity")
+        confirm, stopped = _phase(result, "template_capacity", lambda: discover(flat_capacity))
+        if stopped is not None:
+            return stopped
+        result["preview"]["discovery_confirmed"] = confirm
+        if confirm.get("status") == "ready" and confirm.get("selected"):
+            drift = _identity_drift(components, confirm["selected"])
+            if drift is not None:
+                _issue(result, "discovery", drift)
+                return _stop(result, "discovery")
+            components = confirm["selected"]
+            result["selected"] = confirm["selected"]
+            if fallback:
+                # The capacity-aware discovery found an eligible workspace template, so the seed is
+                # neither previewed nor written and the run uses the confirmed template instead.
+                fallback = False
+                result["warnings"].append(
+                    "The capacity-confirmed discovery selected an eligible workspace template; the "
+                    "standard-template seed fallback is not used")
+            if confirm.get("warnings") != basic.get("warnings"):
+                result["warnings"].extend(item for item in (confirm.get("warnings") or [])
+                                          if item not in (basic.get("warnings") or []))
+        elif fallback:
+            conflicts = _seed_conflicts(cli, store, seed_project, targets, stem)
+            if conflicts:
+                result["issues"] = conflicts
+                return _stop(result, "outputs")
+            seed_preview, stopped = _phase(result, "template_seed", lambda: prepare_standard_template(
+                cli, store, ond_electrical=components["OND"]["electrical"],
+                pan_name=Path(components["PAN"]["name"]).name,
+                ond_name=Path(components["OND"]["name"]).name,
+                new_project=seed_project, dry_run=True, capacity=flat_capacity,
+                allow_window_creation=allow_window_creation, allow_synthesize=True))
+            if stopped is not None:
+                return stopped
+            result["preview"]["template_seed"] = seed_preview
+            _inherit(result, seed_preview, "template_seed")
+            if seed_preview.get("status") != "ready":
+                return _stop(result, "template_seed",
+                             "failed" if seed_preview.get("status") == "failed" else "blocked")
+            result["warnings"].append(
+                "The seed preview derives PRJ/VC0 in memory from the installed standard template with the "
+                "selected components and the accepted capacity; it retains every unlisted default and loss "
+                "mode and writes nothing yet")
+        else:
+            _inherit(result, confirm, "template_capacity")
+            return _stop(result, "template_capacity")
 
     template = components.get("template") or {}
     template_project = spec.get("template_project") or template.get("project") or seed_project
@@ -938,26 +979,38 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             "counts; the annual simulation runs on the working copy named by new_project")
 
     phase_name = "project_preparation" if prepare_only else "simulation"
-    runner = prepare_template if prepare_only else simulate_template
     context = {"preparation_context": {"request": spec, "selected": result["selected"],
                "envelope": result["preview"]["envelope"], "review_required": inherited_review,
                "warnings": list(result["warnings"])}} if prepare_only else {}
     if prepare_only and source_context is not None:
         context["preparation_context"]["source_binding"] = source_context
         context["preparation_context"]["review_required"] |= bool(source_context.get("needs_review"))
-    runner_kwargs = {"allow_window_creation": allow_window_creation} if prepare_only else {}
-    simulation, stopped = _phase(result, phase_name, lambda: runner(
-        cli, store, template_project=template_project, variant=variant, new_project=new_project,
-        pan_name=pan_name, ond_name=ond_name, site_name=sit_name, met_name=met_name, tilt=tilt,
-        year=year, dry_run=dry_run, capacity=flat_capacity, weather_manifest_name=manifest_name,
-        azimuth=azimuth, losses=losses or None,
-        report_pages=spec.get("report_pages"), **context, **runner_kwargs))
+    if is_utility:
+        simulation, stopped = _phase(result, phase_name, lambda: run_utility_design(
+            cli, store, spec=spec, pan_info=components["PAN"], ond_info=components["OND"],
+            capacity_plan=utility_plan, sit_name=sit_name, met_name=met_name,
+            weather_manifest_name=manifest_name, dry_run=dry_run, prepare_only=prepare_only,
+            preparation_context=context.get("preparation_context"),
+            allow_window_creation=allow_window_creation))
+    else:
+        runner = prepare_template if prepare_only else simulate_template
+        runner_kwargs = {"allow_window_creation": allow_window_creation} if prepare_only else {}
+        simulation, stopped = _phase(result, phase_name, lambda: runner(
+            cli, store, template_project=template_project, variant=variant, new_project=new_project,
+            pan_name=pan_name, ond_name=ond_name, site_name=sit_name, met_name=met_name, tilt=tilt,
+            year=year, dry_run=dry_run, capacity=flat_capacity, weather_manifest_name=manifest_name,
+            azimuth=azimuth, losses=losses or None,
+            report_pages=spec.get("report_pages"), **context, **runner_kwargs))
     if stopped is not None:
         result["warnings"].append(RETAINED_NOTE)
         return stopped
     result["preview"][phase_name] = simulation
     result["artifacts"]["project_preparation" if prepare_only else "simulate"] = dict(simulation.get("artifacts") or {})
     result["metrics"] = simulation.get("metrics")
+    if simulation.get("bifacial_metrics") is not None:
+        result["bifacial_metrics"] = simulation["bifacial_metrics"]
+    if simulation.get("utility_summary") is not None:
+        result["utility_summary"] = simulation["utility_summary"]
     result["recovery"] = list(simulation.get("recovery") or [])
     _inherit(result, simulation, phase_name)
     accepted = ("prepared", "needs_review") if prepare_only else SIMULATE_SUCCESS
@@ -975,6 +1028,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         result["prepared_project"] = {"project": new_project, "variant": variant, "year": year,
                                       "site": sit_name, "met": met_name,
                                       "manifest": simulation["artifacts"].get("manifest")}
+    elif is_utility:
+        result["native_consumption_verified"] = bool(simulation.get("native_consumption_verified", False))
     result["status"] = "needs_review" if inherited_review or simulation["status"] == "needs_review" else ("prepared" if prepare_only else "completed")
     result["stage"] = simulation.get("stage") or ("prepared" if prepare_only else "completed")
     return result

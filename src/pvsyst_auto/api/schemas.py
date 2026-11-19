@@ -28,6 +28,22 @@ class UnavailabilityPeriod(BaseModel):
     date_beg: StrictStr
     duration_hours: StrictNum
 
+class BifacialUpdates(BaseModel):
+    """Mount, update, or remove PVObject_Bifacial=pvBiFacial on an orientation."""
+    model_config = _STRICT_CONFIG
+    enabled: StrictBool = True
+    model: Literal["Sheds2D", "Trackers2D"] | None = None
+    param_origin: Literal["UnlimSheds", "RegularSheds"] | None = None
+    ground_albedo: StrictNum | None = None
+    bifaciality_factor: StrictNum | None = None
+    rear_shading_factor: StrictNum | None = None
+    mismatch_loss_factor: StrictNum | None = None
+    height_above_ground_m: StrictNum | None = None
+    pitch_user_m: StrictNum | None = None
+    n_sheds_user: StrictInt | None = None
+    shed_pitch_from_user: StrictBool | None = None
+
+
 class SystemUnavailabilityUpdates(BaseModel):
     """Configure explicit outage periods or remove existing native PV-system outages."""
     model_config = _STRICT_CONFIG
@@ -658,10 +674,41 @@ class DesignEnvelopeRequest(BaseModel):
     effective_irradiance: EffectiveIrradianceRequest | None = None
     design_basis_extra: StrictStr | None = None
 
+class GroundLayoutRequest(BaseModel):
+    """Ground multi-row fixed sheds or horizontal N-S single-axis tracker geometry."""
+    model_config = _STRICT_CONFIG
+    model_mode: Literal["unlimited", "3d"] = "unlimited"
+    pitch_m: StrictNum | None = None
+    collector_width_m: StrictNum | None = None
+    shed_count: Annotated[StrictInt, Field(ge=1, le=1000)] = 10
+    module_rows: Annotated[StrictInt, Field(ge=1, le=20)] = 2
+    module_columns: Annotated[StrictInt, Field(ge=1, le=500)] = 25
+    module_orientation: Literal["portrait", "landscape"] = "portrait"
+    spacing_x_m: StrictNum = 0.02
+    spacing_y_m: StrictNum = 0.02
+    inactive_band_width_1_m: StrictNum | None = None
+    inactive_band_width_2_m: StrictNum | None = None
+    electrical_effect: StrictBool | None = None
+    shading_factor: StrictNum | None = None
+    cell_width_m: StrictNum | None = None
+    axis_azimuth_deg: StrictNum | None = None
+    min_phi_deg: StrictNum | None = None
+    max_phi_deg: StrictNum | None = None
+    backtracking: StrictBool | None = None
+    irrad_optimiz: StrictBool | None = None
+    central_gap_m: StrictNum | None = None
+    pitch_slope_deg: StrictNum | None = None
+    wind_stow: StrictBool | None = None
+    wind_stow_speed_ms: StrictNum | None = None
+    wind_stow_position_deg: StrictNum | None = None
+
+
 class SingleDesignRequest(BaseModel):
     """One bounded design request; every nested object rejects unknown keys.
 
-    scope is fixed to fixed_unshaded_grid and is never guessed from other inputs.
+    scope selects fixed_unshaded_grid (default), ground_sheds (unlimited or 3D multi-row sheds),
+    or ground_tracker (unlimited or 3D horizontal N-S single-axis trackers), with optional
+    ground_layout and bifacial (pvBiFacial) configuration.
     """
     model_config = _STRICT_CONFIG
     new_project: StrictStr = ""
@@ -669,7 +716,7 @@ class SingleDesignRequest(BaseModel):
     target_dc_kw: StrictNum | None = None
     tilt: StrictNum | None = None
     azimuth: StrictNum | None = None
-    scope: Literal["fixed_unshaded_grid"] = "fixed_unshaded_grid"
+    scope: Literal["fixed_unshaded_grid", "ground_sheds", "ground_tracker"] = "fixed_unshaded_grid"
     module: EquipmentRequest = Field(default_factory=EquipmentRequest)
     inverter: EquipmentRequest = Field(default_factory=EquipmentRequest)
     template_project: StrictStr | None = None
@@ -679,6 +726,8 @@ class SingleDesignRequest(BaseModel):
     electrical_design: DesignEnvelopeRequest | None = None
     losses: LossRequest | None = None
     report_pages: list[StrictStr] | None = None
+    ground_layout: GroundLayoutRequest | None = None
+    bifacial: BifacialUpdates | None = None
 
 class SourceTextRequest(BaseModel):
     """One caller-declared source; its text is checked here and never returned."""

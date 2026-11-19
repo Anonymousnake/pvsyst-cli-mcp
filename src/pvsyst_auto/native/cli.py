@@ -36,6 +36,8 @@ VAR_GROUPS = {
                      "viEBatCh", "viEBatDis", "viEFrGrid", "viSOC_Beg", "viSOC_End",
                      "viEArrMPP", "viEDirUse", "viCL_Chrg", "viCL_InvB", "viCL_Over",
                      "viEUnused", "viEBatLss", "viE_Solar", "viSolFrac"),
+    "bifacial": (*VERIFIED_VARIABLES, "viGlobGnd", "viDiffGnd", "viGlobBak",
+                 "viBeamBak", "viDifSBak", "viBmSFBak", "viMismBak", "viPRBifi"),
 }
 SFI_TEMPLATE = """PVObject_=pvSimulFile
   Comment={comment}
