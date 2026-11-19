@@ -22,7 +22,7 @@ from pvsyst_auto.energy.storage import grid_storage_state
 from pvsyst_auto.energy.unavailability import system_unavail_state
 from pvsyst_auto.energy.dc import dc_cabling_state
 from pvsyst_auto.native.grid_limit import grid_limit_state
-from pvsyst_auto.native.headless import _PLOT_SAMPLES, _simul_plots
+from pvsyst_auto.native.headless import _PLOT_SAMPLES, _result_histograms, _simul_plots
 from pvsyst_auto.native.horizon import horizon_state
 from pvsyst_auto.native.p50 import p50_state
 from pvsyst_auto.project.circuit import topology_state, transformer_state
@@ -53,7 +53,7 @@ def saved_results(text: str, lines: list[str]) -> dict:
     """Read recognized saved-result records and the separate output-file configuration."""
     issues = []
     try:
-        blocks = objects(text)
+        blocks = objects(text, include_private=True)
     except ValueError as exc:
         blocks = []
         issues.append("native result-cache objects unreadable: %s" % exc)
@@ -165,8 +165,7 @@ def saved_results(text: str, lines: list[str]) -> dict:
             plots = list(_simul_plots(lines, root, blocks))
         except ValueError as exc:
             issues.append(str(exc))
-    histograms = sum(value == "THistogramme" for owner in ([root] if root else []) + plots
-                     for _, value in owner.fields.get("Histogram", ()))
+    histograms = len(_result_histograms([root, *plots], blocks)) if root else 0
     plot_samples = any(_PLOT_SAMPLES & plot.fields.keys() for plot in plots)
     present = var_list_start is not None or histograms > 0 or plot_samples
     return {

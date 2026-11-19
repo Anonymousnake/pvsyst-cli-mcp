@@ -644,6 +644,13 @@ def _simul_plots(lines, root, blocks):
     raise ValueError("Unclosed or malformed SimulPlots list")
 
 
+def _result_histograms(owners, blocks):
+    """Return histograms directly owned by this root or its simulation plots."""
+    return [block for block in blocks if block.object_type == "THistogramme"
+            and any(block.path.rpartition("/")[0] == owner.path
+                    and owner.line < block.line < block.end_line < owner.end_line for owner in owners)]
+
+
 def strip_result_cache(lines):
     """Clear the saved VarList, histograms, known plot samples/counts and root Flags bit 0.
 
@@ -651,7 +658,7 @@ def strip_result_cache(lines):
     and preserve the original whitespace and line endings of retained fields.
     Returns ``(lines, report)``.
     """
-    blocks = objects("\n".join(line.rstrip("\r\n") for line in lines))
+    blocks = objects("\n".join(line.rstrip("\r\n") for line in lines), include_private=True)
     root = next((block for block in blocks if not block.path), None)
     if root is None or root.object_type != "pvVCalcul":
         raise ValueError("Expected a root pvVCalcul object")
@@ -674,22 +681,10 @@ def strip_result_cache(lines):
     report["plot_sample_rows_removed"] = len(remove)
     report["plot_counts_cleared"] = len(replace)
 
-    # Handle plot and root histograms without letting a missing closer consume
-    # a following object or histogram.
-    for owner in [root, *plots]:
-        for start, value in owner.fields.get("Histogram", ()):
-            if value != "THistogramme":
-                continue
-            for index in range(start + 1, owner.end_line - 1):
-                tag = lines[index].strip()
-                if tag == "End of THistogramme":
-                    remove.update(range(start, index + 1))
-                    report["histograms_removed"] += 1
-                    break
-                if tag.startswith(("PVObject_", "Histogram", "End of", "EndTags", "VarList,")):
-                    raise ValueError("Unclosed Histogram block")
-            else:
-                raise ValueError("Unclosed Histogram block")
+    histograms = _result_histograms([root, *plots], blocks)
+    for histogram in histograms:
+        remove.update(range(histogram.line - 1, histogram.end_line))
+    report["histograms_removed"] = len(histograms)
     # The saved VarList is an unwrapped root list, not a parsed PVObject.
     children = {block.line - 1: block.end_line for block in blocks if block.path and "/" not in block.path}
     start = None
