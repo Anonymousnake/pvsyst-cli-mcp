@@ -5,7 +5,15 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, StrictBool, StrictStr
 from pvsyst_auto.engineering.brief import EngineeringBriefRequest, review_engineering_brief
 from pvsyst_auto.engineering.suggest import suggest_sizing
-from pvsyst_auto.api.schemas import EngineeringBlock, EngineeringRevisionRequest, EngineeringScenario, StrictNum
+from pvsyst_auto.api.schemas import (
+    EconomicsFinancialConfig,
+    EconomicsScenarioInput,
+    EconomicsTariffConfig,
+    EngineeringBlock,
+    EngineeringRevisionRequest,
+    EngineeringScenario,
+    StrictNum,
+)
 from pvsyst_auto.api.context import categorized_tool, cli, variant_store
 
 
@@ -78,6 +86,32 @@ def pvsyst_compare_engineering_scenarios(objective: StrictStr, scenarios: list[E
     return compare_engineering_scenarios(variant_store(), objective=objective,
         scenarios=[scenario.model_dump(exclude_none=True) for scenario in scenarios],
         output_name=output_name, dry_run=dry_run)
+
+@categorized_tool()
+def pvsyst_evaluate_economics(
+        scenarios: list[EconomicsScenarioInput] | None = None,
+        batch_summary_csv: StrictStr | None = None,
+        financial: EconomicsFinancialConfig | None = None,
+        tariff: EconomicsTariffConfig | None = None,
+        rank_by: Literal[
+            "npv", "irr", "lcoe", "simple_payback_years",
+            "discounted_payback_years", "year1_net_benefit",
+        ] = "npv",
+        include_cashflow_schedule: StrictBool = True) -> dict:
+    """Pure-Python PV and PV+BESS financial evaluator: streams hourly or sub-hourly SFI CSVs
+    (or UserBatch summary CSVs) under fixed or time-of-use (TOU) tariffs to compute LCOE,
+    NPV, IRR, simple/discounted payback, 25-year degraded cashflows, and scenario rankings."""
+    from pvsyst_auto.engineering.economics import evaluate_economics
+    return evaluate_economics(
+        workspace=cli().workspace,
+        scenarios=[s.model_dump(exclude_none=True) for s in scenarios] if scenarios is not None else None,
+        batch_summary_csv=batch_summary_csv,
+        financial=financial.model_dump(exclude_none=True) if financial is not None else None,
+        tariff=tariff.model_dump(exclude_none=True) if tariff is not None else None,
+        rank_by=rank_by,
+        include_cashflow_schedule=include_cashflow_schedule,
+    )
+
 
 @categorized_tool()
 def pvsyst_export_engineering_delivery(manifest_name: StrictStr, output_name: StrictStr,

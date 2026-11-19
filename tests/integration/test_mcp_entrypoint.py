@@ -71,7 +71,7 @@ class PackageEntrypointTests(unittest.TestCase):
                     self.assertEqual(resources, {"pvsyst://guide/workflows", "pvsyst://guide/variables"})
                     tools = (await session.list_tools()).tools
                     names = {tool.name for tool in tools}
-                    self.assertEqual(len(names), 40)
+                    self.assertEqual(len(names), 41)
                     self.assertTrue({"pvsyst_capabilities", "pvsyst_license_info", "pvsyst_suggest_sizing",
                                      "pvsyst_diagnose_results", "pvsyst_run_batch_sweep",
                                      "pvsyst_project_handoff", "pvsyst_export_engineering_delivery",
@@ -240,8 +240,8 @@ class ToolGroupsTests(unittest.TestCase):
             )
             default_names = {item["name"] for item in default_tools}
             full_names = {item["name"] for item in full}
-            self.assertEqual(len(default_names), 40)
-            self.assertEqual(len(full_names), 69)
+            self.assertEqual(len(default_names), 41)
+            self.assertEqual(len(full_names), 70)
             self.assertTrue({"pvsyst_license_info", "pvsyst_suggest_sizing", "pvsyst_diagnose_results",
                              "pvsyst_run_batch_sweep", "pvsyst_project_handoff",
                              "pvsyst_export_engineering_delivery"}.issubset(default_names))

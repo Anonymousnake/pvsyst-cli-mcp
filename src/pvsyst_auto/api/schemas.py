@@ -880,3 +880,59 @@ class BatchSweepRequest(BaseModel):
     export_hourly: StrictBool = False
     log_level: StrictInt | None = 3
     allow_window_creation: StrictBool | None = None
+
+
+class EconomicsReplacementEvent(BaseModel):
+    model_config = _STRICT_CONFIG
+    year: Annotated[StrictInt, Field(ge=1, le=50)]
+    cost: StrictNum
+    label: StrictStr | None = None
+
+
+class EconomicsTouPeriod(BaseModel):
+    model_config = _STRICT_CONFIG
+    name: StrictStr
+    hours: Annotated[list[StrictInt], Field(min_length=1, max_length=24)]
+    import_rate: StrictNum | None = None
+    export_rate: StrictNum | None = None
+    months: list[StrictInt] | None = None
+    day_type: Literal["all", "weekday", "weekend"] = "all"
+
+
+class EconomicsTariffConfig(BaseModel):
+    model_config = _STRICT_CONFIG
+    mode: Literal["feed_in", "self_consumption_flat", "tou"] = "feed_in"
+    feed_in_tariff: StrictNum = 0.0
+    import_tariff: StrictNum = 0.0
+    self_consumption_ratio: StrictNum | None = None
+    tou_schedule: list[EconomicsTouPeriod] | None = None
+
+
+class EconomicsFinancialConfig(BaseModel):
+    model_config = _STRICT_CONFIG
+    currency: StrictStr = "CNY"
+    project_life_years: Annotated[StrictInt, Field(ge=1, le=50)] = 25
+    discount_rate_pct: StrictNum = 6.0
+    first_year_degradation_pct: StrictNum = 1.0
+    annual_degradation_pct: StrictNum = 0.4
+    opex_escalation_pct: StrictNum = 2.0
+    tariff_escalation_pct: StrictNum = 0.0
+    capex_per_kw: StrictNum | None = None
+    battery_capex_per_kwh: StrictNum | None = None
+    fixed_capex: StrictNum = 0.0
+    opex_per_kw_year: StrictNum = 0.0
+    opex_pct_capex: StrictNum = 0.0
+    salvage_value_pct: StrictNum = 0.0
+    replacement_events: list[EconomicsReplacementEvent] | None = None
+
+
+class EconomicsScenarioInput(BaseModel):
+    model_config = _STRICT_CONFIG
+    label: StrictStr
+    csv_name: StrictStr | None = None
+    annual_yield_kwh: StrictNum | None = None
+    installed_dc_kw: StrictNum | None = None
+    battery_kwh: StrictNum | None = None
+    capex_total: StrictNum | None = None
+    annual_opex: StrictNum | None = None
+    replacement_events: list[EconomicsReplacementEvent] | None = None
