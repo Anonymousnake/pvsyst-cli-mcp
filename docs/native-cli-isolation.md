@@ -4,7 +4,7 @@ Windows 上所有对原版 `PVsystCLI.exe` 的调用——包括正常的 `help`
 
 ## 普通 CSV 数值仿真拒建窗
 
-仅当一次调用被判定为**普通整点 CSV 数值仿真**——命令为 `run-simulation`、带 `-ocf:`（CSV 目标）且**不含** `-rpf:`（PDF）、`-bpf:`（批处理参数）、`-brf:`（批处理 RVT）——才以“拒建窗”方式启动。判定在 `native/cli._is_plain_csv_run` 一处完成。
+仅在普通 CSV 数值仿真（`run-simulation` 带 `-ocf:`，且无 PDF、批处理或 `-rst:1` 阴影重算）时，默认禁止建窗。阴影重算默认在私有非交互桌面上允许建窗；若显式同时请求重算与 `allow_window_creation=false`，CLI 启动前就会报错。
 
 该分支在新建私有桌面上，用 `SetUserObjectSecurity` 只对该用户 SID 拒绝 `DESKTOP_CREATEWINDOW(0x2)`（其余访问保持完整），再启动子进程。因此单纯的整点数值计算不依赖创建任何顶层窗口；若拒绝步骤失败，显式抛错、**不静默回退**到 Default 桌面（与非 Windows 的原路径语义一致）。这依赖标准的 Windows 原生 ACL，不经 hook、patch 或注入。
 

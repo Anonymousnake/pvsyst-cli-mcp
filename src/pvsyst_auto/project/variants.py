@@ -204,7 +204,7 @@ class VariantStore:
             raise ValueError("Choose one or more of PAN, OND, BTR, GEN")
         if not isinstance(subarray_id, int) or isinstance(subarray_id, bool) or subarray_id < 1:
             raise ValueError("subarray_id must be a positive integer")
-        _, lines = self._text(data)
+        text, lines = self._text(data)
         arrays, system = self._sections(lines)
         for kind, filename in updates.items():
             component = self.components._path(kind, filename)
@@ -221,10 +221,13 @@ class VariantStore:
             if len(indices) != 1:
                 raise ValueError(f"{FIELDS[kind]} must occur exactly once in its section")
             index = indices[0]
-            line = lines[index]
-            prefix = line[:line.index("=") + 1]
-            ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
-            lines[index] = f"{prefix}{filename}{ending}"
+            lines[index] = replace_value(lines[index], filename)
+        if "".join(lines) == text:
+            return data
+
+        from pvsyst_auto.native.headless import strip_result_cache
+
+        lines, _ = strip_result_cache(lines)
         candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
         self._text(candidate)
         return candidate

@@ -448,6 +448,18 @@ class ComponentTests(unittest.TestCase):
         self.assertTrue(has_object(["  PVObject_UserNeeds = pvLoad\n"], "pvLoad"))
         self.assertFalse(has_object(["  PVObject_GridStorage=pvGridStorage"], "pvLoad"))
 
+    def test_batchsimul_owns_fields_up_to_its_endtags(self):
+        text = ("PVObject_=pvVCalcul\n  BatchSimul = TBatchSimul\n    Version=8.1.0\n"
+                "    ParamsFileName=Batch.CSV\n  EndTags  \n  Version=8.1.7\n"
+                "  Comment=TBatchSimul\nEnd of PVObject pvVCalcul\n")
+        root, = objects(text)
+        self.assertEqual(root.one("Version"), (5, "8.1.7"))
+        self.assertEqual(root.one("Comment"), (6, "TBatchSimul"))
+        self.assertNotIn("ParamsFileName", root.fields)
+        self.assertNotIn("BatchSimul", root.fields)
+        with self.assertRaisesRegex(ValueError, "Unmatched object closing tag"):
+            objects(text.replace("  EndTags  \n", ""))
+
     def test_pathless_object_field_error_names_type_line_and_occurrences(self):
         missing_text = "PVObject_=pvVCalcul\n  Version=8.1.6\nEnd of PVObject pvVCalcul\n"
         with self.assertRaises(ValueError) as missing:

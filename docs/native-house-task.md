@@ -27,7 +27,7 @@
 | `string_layout` | 可选；显式 per-module-cell 组串接线声明 `{tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`，作为 `layout` 同级兄弟块，不替换 `layout`。`row`/`col` 1 基、`global_string>=0`（`0`=未分配 draft）、`subarray_id` 为真实源子阵 id。省略即旧行为：旧 recipe v1/v2 形状与字节不变、不升版本、不造 v3。draft 可保存/回读但原生 import 前须补全；显式接线仅在 `scene_import_method="native"`（默认）且 `shading_mode="module_layout"` 时被消费，`gui`/`linear` 会在写入前拒绝而不是悄悄丢弃 |
 | `module_geometry` | 组件几何尺寸（`model_name`、`nom_power_wp`、`width_m`、`length_m`、`geometry_depth_m`） |
 | `report_pages` | 可选的原生 PDF 报告页名称列表；省略时输出默认完整报告 |
-| `report_pdf` | 可选 `StrictBool`，默认 `null`。省略/`None`/`True` 保留原有 CSV+PDF 完整报告；`False` 选择 **CSV-only**：复用原 `out_csv` 单出口（不加 `-rpf:`），落入 `_is_plain_csv_run` 拒窗路径，只产出逐时 CSV、不生成 PDF 文件、结果里不列 `pdf` 产物/守卫。`False` 会持久化并经 sourced→子 house 透传；不接受字符串/数字强制转换。省略时请求/检查点旧序列化形状不变（沿用既有 `exclude_none`，不新增 key） |
+| `report_pdf` | 可选 `StrictBool`，默认 `null`。省略/`None`/`True` 保留原有 CSV+PDF 完整报告；`False` 选择 **CSV-only**：复用原 `out_csv` 单出口（不加 `-rpf:`），只产出逐时 CSV，不列 `pdf` 产物/守卫。阴影重算仍在私有非交互桌面上允许建窗；新任务若显式设置 `allow_window_creation=false`，会在预检报错。`False` 会持久化并经 sourced→子 house 透传；不接受字符串/数字强制转换。省略时请求/检查点旧序列化形状不变（沿用既有 `exclude_none`，不新增 key） |
 | `shading_mode` | 可选；省略时保留原有线性阴影流程，`module_layout` 使用原生组件布局与精细电气阴影计算 |
 | `scene_import_method` | 可选；省略或 `"native"` 使用默认免 GUI 原生导入阶段（直接写 `.VCx` 几何、原生 `oeTree` 与布局记录）。传入 `"gui"` 仅保留为旧版未维护兼容路径，不支持 `obstacles` 等新特性。native 的**导入阶段**只写 STORED 变体；本工具 `pvsyst_run_house_task` 在 `dry_run=false` 且 `confirm=true` 时，会沿同一流程自动继续全年 CLI 仿真，成功后上下文匹配新变体才把 `native_consumption_verified` 置 true |
 
@@ -54,7 +54,7 @@
 
 在 `spec` 中加 `"report_pdf": false` 可让最终 CLI 仿真只产出逐时 CSV、不产出 PDF：
 
-- 复用现有纯 CSV 仿真路径（仅 `-ocf:` 指定输出 CSV，不传 `-rpf:`），走 Windows 拒建窗的隔离桌面分支，不启动 `PVsyst.exe`。
+- 复用现有纯 CSV 仿真路径（仅 `-ocf:` 指定输出 CSV，不传 `-rpf:`），阴影重算仍允许在私有非交互桌面建窗；原生导入不启动 `PVsyst.exe`。
 - 结果 JSON 的产物列表、校验逻辑与步骤状态均与 CSV-only 模式保持一致：只记录 `csv` 而不会将缺失的 PDF 记为成功；`resume=true` 续跑时在验证 CSV 覆盖完整年份与逐时数据无误后直接视为完成，CSV 损坏则会中断并报错。
 - 该开关**只控制是否输出 PDF**：`report_pdf` 默认为 `True`；`report_pdf=False` 与默认 `scene_import_method="native"` 组合时，全流程仅在纯 CLI 阶段创建导出进程，无需 PVsyst 桌面 GUI，但不代表 CLI 内部完全不涉及任何系统窗口句柄（丢失报告页 PDF 在无窗口创建权限时仍受限于 CLI 自身渲染器）。
 - 参数行为：`report_pdf` 必须为严格布尔类型（可选）；当计算结果附带告警（例如未静态校验的内置模型或 CLI 告警）时，任务状态保持 `needs_review` 以供复核。

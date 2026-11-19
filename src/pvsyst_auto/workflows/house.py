@@ -306,9 +306,10 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 raise ValueError(
                     "allow_window_creation=false requires scene_import_method='native'; the GUI "
                     "import method opens the native window and cannot honor a windowless request")
+            if not resume and request.get("allow_window_creation") is False:
+                raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
             # Any value except an explicit False keeps the original CSV+PDF contract
-            # (absent/None/True). An explicit False requests the CSV-only native path,
-            # so no PDF output is expected and the CLI runs as a plain CSV (windowless).
+            # (absent/None/True). CSV-only runs still recompute shading.
             require_pdf = request.get("report_pdf") is not False
             guard_keys = {"csv", "pdf"} if require_pdf else {"csv"}
             paths, plan = _prepare(store, components, request)
@@ -324,7 +325,10 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                         or not isinstance(record.get("artifacts"), dict) or not isinstance(record.get("runs"), list)
                         or len(record["runs"]) > 99 or any(not isinstance(run, dict) for run in record["runs"])):
                     raise ValueError("Checkpoint schema/request/phase differs; it is not a resumable task")
-                if PHASES.index(record["phase"]) >= PHASES.index("simulated") and (
+                simulated = PHASES.index(record["phase"]) >= PHASES.index("simulated")
+                if not simulated and request.get("allow_window_creation") is False:
+                    raise ValueError("House shading recomputation requires allow_window_creation=true or unset; start a new task with that policy")
+                if simulated and (
                         not record["runs"] or not isinstance(record.get("output_guards"), dict)
                         or set(record["output_guards"]) != guard_keys
                         or record["runs"][-1].get("status") != "returned"

@@ -120,6 +120,8 @@ def _run_preserve_source_hardware(store, components, cli, *, request, dry_run=Tr
         if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation)):
             raise ValueError("Use strict booleans")
         child = _preserve_child_request(request)
+        if not resume and child.get("allow_window_creation") is False:
+            raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
 
         def check_native():
             preflight, error = _native_preflight(
@@ -237,6 +239,8 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
                               issues=["allow_window_creation=false requires scene_import_method='native'; "
                                       "the GUI import method opens the native window, so nothing was prepared."])
                 return result
+            if not resume and request.get("allow_window_creation") is False:
+                raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
             design = _prune_empty(request["design"])
             if not isinstance(design, dict) or not isinstance(binding, dict):
                 raise ValueError("Provide the design request and the cited-source binding as objects")

@@ -112,13 +112,16 @@ class Profile(ObjectBlock):
 def objects(text: str) -> list[ObjectBlock]:
     """Keep each field in its owning object, including root and nested Flags.
 
-    Native closing tags are read as saved: `End of TOrientGroup` closes pvOrient and
-    `End of TDomeOrientGroup` closes pvDomeOrient, so no rewritten view is needed.
+    Read native closing tags as saved, including the class aliases and TBatchSimul's
+    `EndTags`. Other records' `EndTags` are not object closers here.
     """
     stack: list[tuple[str, ObjectBlock]] = []
     result = []
     for index, line in enumerate(text.splitlines()):
         end = OBJECT_CLOSE.fullmatch(line)
+        if stack and stack[-1][1].object_type == "TBatchSimul" and line.strip() == "EndTags":
+            stack.pop()[1].end_line = index + 1
+            continue
         if end:
             kind = OBJECT_CLOSE_ALIAS.get(end[1], end[1])
             if not stack or stack[-1][1].object_type != kind:
@@ -130,8 +133,15 @@ def objects(text: str) -> list[ObjectBlock]:
         if not match:
             continue
         name, value = match[2], match[4]
-        if ((name.startswith("PVObject_") and re.fullmatch(r"pv\w+", value))
-                or value in ("TConverter", "TCubicProfile")):
+        batch = (len(stack) == 1 and stack[-1][1].object_type == "pvVCalcul"
+                 and (name, value) == ("BatchSimul", "TBatchSimul"))
+        opens_object = ((name.startswith("PVObject_") and re.fullmatch(r"pv\w+", value))
+                        or value in ("TConverter", "TCubicProfile"))
+        if stack and stack[-1][1].object_type == "TBatchSimul":
+            if opens_object or (name, value) == ("BatchSimul", "TBatchSimul"):
+                raise ValueError(f"Unclosed BatchSimul before line {index + 1}")
+            continue
+        if opens_object or batch:
             if len(stack) >= 64:
                 raise ValueError("Object nesting exceeds 64 supported levels")
             if stack and isinstance(stack[-1][1], Profile):
@@ -139,7 +149,8 @@ def objects(text: str) -> list[ObjectBlock]:
             path = "/".join([item[0] for item in stack[1:]] + [name]) if stack else ""
             cls = Profile if value == "TCubicProfile" else ObjectBlock
             block = cls(path, index + 1, value)
-            result.append(block)
+            if not batch:
+                result.append(block)
             stack.append((name, block))
         elif stack:
             stack[-1][1].fields.setdefault(name, []).append((index, value))

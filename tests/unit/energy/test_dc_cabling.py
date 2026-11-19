@@ -243,6 +243,33 @@ class HeadlessDCCablingTests(unittest.TestCase):
         self.assertEqual(result["status"], "created", result)
         self.assertEqual(result["dc"]["loss_percent"], "98.99")
 
+    def test_resistance_disagreement_is_readable_but_not_editable(self):
+        ws, store = self._setup_ws()
+        source = ws / "Projects/Demo.VC0"
+        text = source.read_text(encoding="utf-8").replace(
+            "                    SubArrayId=1\n",
+            "                    CableDefinition=Start\n"
+            "                      Resistance=206.577633418868 m\u03a9\n"
+            "                    CableDefinition=End\n"
+            "                    SubArrayId=1\n",
+        )
+        rounded = dc_cabling_state(text.replace("378.105", "206.578").splitlines(True))
+        self.assertNotIn("issues", rounded)
+        original = text.replace("378.105", "13.621").encode("utf-8")
+        source.write_bytes(original)
+        state = store.inspect_parameters("Demo.PRJ", "VC0")["dc_cabling"]
+        self.assertEqual((state["mode"], state["resistance_mohm"], state["circuit_resistance_mohm"],
+                          state["resistance_difference_mohm"]),
+                         ("resistance", "13.621", "206.577633418868", "192.956633418868"))
+        blocked = create_dc_cabling_variant(
+            store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+            dc={"mode": "resistance", "value": 500}, dry_run=False,
+        )
+        self.assertEqual(blocked["status"], "blocked", blocked)
+        self.assertEqual(blocked["issues"], state["issues"])
+        self.assertFalse((source.parent / "Demo.VC1").exists())
+        self.assertEqual(source.read_bytes(), original)
+
     def test_cold_and_legacy_flag_readback_supported(self):
         ws, _ = self._setup_ws(pan_bytes=JKM600_PAN.encode("utf-8"))
         lines = (ws / "Projects" / "Demo.VC0").read_text(encoding="utf-8-sig").splitlines(True)
