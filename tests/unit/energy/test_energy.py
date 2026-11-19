@@ -203,6 +203,21 @@ class WorkspaceTests(unittest.TestCase):
                                           new_variant="VC1", load_manifest_name="load_load.json",
                                           dry_run=False, **{"battery": BATTERY, "storage": STORAGE, **changes})
 
+    def test_saved_battery_reference_keeps_leading_space(self):
+        name = " Fixture.BTR"
+        (self.root / "ComposPV/Batteries" / name).write_text(BTR, encoding="utf-8")
+        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + CLOSE)
+        result = self.build_storage(battery={**BATTERY, "file_name": name, "library": "builtin"})
+        self.assertIn(f"BatteryFile={name}\r\n", self.created(result))
+
+        saved = self.store.inspect_parameters("Fixture.PRJ", "VC1")["grid_storage"]
+        references = self.store.inspect("Fixture.PRJ", "VC1")["system_references"]
+        dependencies = self.store.components.dependencies("Fixture.PRJ", "VC1")["references"]
+        self.assertEqual(
+            (saved["battery_file"], references["BTR"], [(ref["name"], ref["status"]) for ref in dependencies]),
+            (name, [name], [(name, "workspace")]),
+        )
+
     def test_storage_scalars_never_use_exponent_notation(self):
         self.source(ROOT.format(root_flags="$00") + ARRAY + STORAGE_SYSTEM
                     + GRID_STORAGE.format(strategy="SelfConsumption", unavail="") + CLOSE)

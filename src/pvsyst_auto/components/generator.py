@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import re
 
-from pvsyst_auto.components.editor import ASSIGNMENT, OBJECT_CLOSE_ALIAS, replace_value
+from pvsyst_auto.components.editor import ASSIGNMENT, OBJECT_CLOSE_ALIAS, REFERENCE, replace_value
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 THRESHOLDS = ("VBkUpEncl_syst", "VBkUpDecl_syst")
@@ -16,12 +16,13 @@ def direct_fields(lines, bounds):
     """Read only fields owned by a system/subarray, skipping nested objects."""
     fields, stack, in_unavail = {}, [], False
     for i in range(bounds[0] + 1, bounds[1]):
-        line = lines[i].strip()
+        raw = lines[i].rstrip("\r\n")
+        line = raw.strip()
         if in_unavail:
             if line == "End of PVObject pvUnavail":
                 in_unavail = False
             continue
-        match = ASSIGNMENT.fullmatch(lines[i].rstrip("\r\n"))
+        match = ASSIGNMENT.fullmatch(raw)
         if line == "SystemUnavail=TUnavailability":
             in_unavail = True
         elif match and (match[2].startswith("PVObject_") and re.fullmatch(r"pv\w+", match[4])
@@ -40,7 +41,8 @@ def direct_fields(lines, bounds):
                 raise ValueError("Unmatched EndTags in generator configuration scope")
             stack.pop()
         elif match and not stack:
-            fields.setdefault(match[2], []).append((i, match[4]))
+            reference = REFERENCE.fullmatch(raw)
+            fields.setdefault(match[2], []).append((i, reference[2] if reference else match[4]))
     if stack or in_unavail:
         raise ValueError("Unclosed nested object in generator configuration scope")
     return fields

@@ -11,7 +11,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from pvsyst_auto.components.editor import objects, replace_value, root_block
+from pvsyst_auto.components.editor import REFERENCE, objects, replace_value, root_block
 from pvsyst_auto.components.store import ComponentStore, FIELD, MAX_PROJECT_BYTES
 from pvsyst_auto.project import fileio, variant_readback, variant_topology, variant_updates
 from pvsyst_auto.project.paths import project_path, project_root
@@ -188,7 +188,7 @@ class VariantStore:
             arrays, system = self._sections(lines)
 
             def values(bounds, types):
-                return {kind: [FIELD.fullmatch(lines[i].rstrip("\r\n"))[2]
+                return {kind: [REFERENCE.fullmatch(lines[i].rstrip("\r\n"))[2]
                                for i in self._field_indices(lines, bounds, FIELDS[kind])]
                         for kind in types}
 

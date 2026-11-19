@@ -21,7 +21,7 @@ from pathlib import Path
 
 from pvsyst_auto.project.paths import project_name, project_path, variant_id
 from pvsyst_auto.project import fileio
-from pvsyst_auto.components.editor import OBJECT_CLOSE_ALIAS, curve_inventory, replace_curves, replace_value, objects
+from pvsyst_auto.components.editor import OBJECT_CLOSE_ALIAS, REFERENCE, curve_inventory, replace_curves, replace_value, objects
 from pvsyst_auto.components.battery import battery_curve_inventory, replace_battery_curve
 from pvsyst_auto.components.commercial import commercial_inventory, replace_commercial
 from pvsyst_auto.components.curves import NUMBER, export_curve_csv, import_curve_csv
@@ -61,7 +61,6 @@ REQUIRED = {
     "REV": ("Version", "Flags", "Comment"),
 }
 FIELD = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
-REFERENCE = re.compile(r"^\s*(PVModule|GInverter|BatteryFile|GensetFile)\s*=\s*(\S.*?)\s*$")
 REF_KIND = {"PVModule": "PAN", "GInverter": "OND", "BatteryFile": "BTR",
             "GensetFile": "GEN"}
 MAX_BYTES = 2_000_000
@@ -836,7 +835,7 @@ class ComponentStore:
                 variant_text = text
             for line_no, line in enumerate(text.splitlines(), 1):
                 match = REFERENCE.fullmatch(line)
-                if not match:
+                if not match or not match[2].strip():
                     continue
                 kind = REF_KIND[match[1]]
                 name = match[2]
