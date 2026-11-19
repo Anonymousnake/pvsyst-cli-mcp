@@ -18,8 +18,8 @@ def _write_csv(path: Path, *, pr: float = 0.84, il_vmax: float = 0.0, il_pmax: f
         "Geographical Site;OptSite.SIT",
         "Weather data;OptMet.MET",
         "Simulation variant;OptTest.VC0",
-        "date;GlobInc;EArray;E_Grid;PR;IL_Vmax;IL_Pmax;GlobShd",
-        ";W/m2;kW;kW;ratio;kW;kW;W/m2",
+        "date;GlobInc;EArray;E_Grid;PR;IL_Vmax;IL_Pmax;GlobHrz;GlobShd",
+        ";W/m2;kW;kW;ratio;kW;kW;W/m2;W/m2",
     ]
     start = datetime(2024, 6, 1, 0, 0)
     for h in range(48):
@@ -30,7 +30,7 @@ def _write_csv(path: Path, *, pr: float = 0.84, il_vmax: float = 0.0, il_pmax: f
         lines.append(
             f"{dt.strftime('%d/%m/%y %H:%M')};{gi:.2f};{ea:.3f};{eg:.3f};"
             f"{pr if gi > 0 else ''};{il_vmax if gi > 0 else 0.0};"
-            f"{il_pmax if gi > 0 else 0.0};{glob_shd if gi > 0 else 0.0}"
+            f"{il_pmax if gi > 0 else 0.0};{gi:.2f};{gi - glob_shd if gi > 0 else 0.0}"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path

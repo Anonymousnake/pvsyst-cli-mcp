@@ -593,17 +593,20 @@ def diagnose_simulation_csv(
                         )
 
     # --- 3. Shading, Soiling & Grid Curtailment ---
-    if "GlobShd" in idx and globinc_kwh_m2 and globinc_kwh_m2 > 0:
-        shd_kwh_m2 = _to_kwh_m2(sums["GlobShd"], units.get("GlobShd", ""), step_hours)
-        if shd_kwh_m2 is not None:
-            pct = (abs(shd_kwh_m2) / globinc_kwh_m2) * 100.0
+    before = "GlobHrz" if counts.get("GlobHrz") == rows else "GlobInc"
+    if all(counts.get(col) == rows for col in (before, "GlobShd")):
+        before_shd = _to_kwh_m2(sums[before], units.get(before, ""), step_hours)
+        after_shd = _to_kwh_m2(sums["GlobShd"], units.get("GlobShd", ""), step_hours)
+        if before_shd and after_shd is not None:
+            shd_kwh_m2 = before_shd - after_shd
+            pct = shd_kwh_m2 / before_shd * 100.0
             if pct > cfg["shading_loss_max_pct"]:
                 pitch_note = f" (FieldType={orient0.get('FieldType')}, Pitch={orient0.get('Pitch')})" if orient0 else ""
                 add(
                     code="SHADING_LOSS_HIGH",
                     severity="high" if pct > cfg["shading_loss_max_pct"] * 2 else "medium",
                     category="shading_soiling_curtailment",
-                    metric="GlobShd / GlobInc",
+                    metric=f"({before} - GlobShd) / {before}",
                     observed=pct,
                     threshold=cfg["shading_loss_max_pct"],
                     unit="%",
