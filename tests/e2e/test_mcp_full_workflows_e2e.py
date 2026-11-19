@@ -207,7 +207,6 @@ class RealMcpServerWorkflowsE2E(unittest.TestCase):
                 "module_geometry": mg,
                 "shading_mode": "module_layout",
                 "report_pdf": False,
-                "allow_window_creation": False,
             }
             async with stdio_client(self._mcp_params()) as (read, write):
                 async with ClientSession(read, write) as session:
@@ -220,8 +219,8 @@ class RealMcpServerWorkflowsE2E(unittest.TestCase):
                         "pvsyst_run_house_task", {"spec": spec, "dry_run": False, "confirm": True}
                     ))
                     self.assertFalse(err, done)
-                    self.assertEqual(done["phase"], "completed", done)
-                    self.assertIn(done["status"], ("completed", "needs_review"), done)
+                    self.assertEqual(done["phase"], "completed", done.get("issues"))
+                    self.assertIn(done["status"], ("completed", "needs_review"), done.get("issues"))
                     self.assertTrue(done["native_consumption_verified"])
                     self.assertGreater(done["metrics"]["array_energy_kwh"], 0.0)
                     self.assertGreater(done["metrics"]["grid_energy_kwh"], 0.0)

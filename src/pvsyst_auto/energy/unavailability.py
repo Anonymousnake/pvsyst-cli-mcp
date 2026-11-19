@@ -5,11 +5,12 @@ from datetime import datetime
 import math
 import re
 
-from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
+from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, root_block
 from pvsyst_auto.versions import HEADLESS_RECORD_VERSION, NATIVE_TEXT_OR_SEED, SEED_LABEL
 
-START = "SystemUnavail=TUnavailability"
+START = ("SystemUnavail", "TUnavailability")
 SETTINGS_KEYS = ("TimeFraction", "NbPeriods", "MinDuration", "MaxDuration", "RandomInit")
+LEGACY_KEYS = ("UnavTotDuration", "UnavNbPeriods", "UnavDuration", "UnavBegDate")
 MAX_PERIODS = 1000
 _HEX_FLAG = re.compile(r"\$[0-9A-Fa-f]{1,8}")
 _DATE_RE = re.compile(r"\d{2}/\d{2}/\d{2} \d{2}:\d{2}")
@@ -23,18 +24,34 @@ def _value(line):
 def system_unavail_state(lines, system):
     if system is None:
         return {"configured": False, "reason": "no pvSystem section"}
-    # Same assignment grammar as the other readers, so spacing around "=" is not "absent".
-    starts = [i for i in range(system[0] + 1, system[1]) if _value(lines[i]) == tuple(START.split("="))]
+    # Look for declarations using the same assignment grammar as the other readers.
+    starts = []
+    may_have_legacy = False
+    for index in range(system[0] + 1, system[1]):
+        pair = _value(lines[index])
+        if pair == START:
+            starts.append(index)
+        elif pair and pair[0] in LEGACY_KEYS:
+            may_have_legacy = True
+    legacy = {}
+    if may_have_legacy:
+        try:
+            fields = root_block(lines, system).fields
+        except ValueError as exc:
+            return {"configured": True, "issue": str(exc)}
+        if legacy_fields := {key: fields[key][0][1] for key in LEGACY_KEYS if key in fields}:
+            legacy["legacy_fields"] = legacy_fields
     if not starts:
-        return {"configured": False, "reason": None}
+        return {"configured": True, "mode": "legacy", **legacy} if legacy else {"configured": False, "reason": None}
     if len(starts) != 1:
-        return {"configured": True, "issue": "Requires exactly one SystemUnavail record"}
+        return {"configured": True, "issue": "Requires exactly one SystemUnavail record", **legacy}
     start = starts[0]
     end = next((i for i in range(start + 1, system[1])
                 if lines[i].strip() == "End of PVObject pvUnavail"), None)
     if end is None:
-        return {"configured": True, "issue": "SystemUnavail block is not closed"}
-    settings, periods, issues = {}, [], []
+        return {"configured": True, "issue": "SystemUnavail block is not closed", **legacy}
+    settings, periods = {}, []
+    issues = ["Legacy outage fields coexist with SystemUnavail"] if legacy else []
     mode = None
     for index in range(start + 1, end):
         pair = _value(lines[index])
@@ -51,7 +68,7 @@ def system_unavail_state(lines, system):
             settings[key] = value
         elif key == "DateBeg":
             if len(periods) >= MAX_PERIODS:
-                return {"configured": True, "issue": f"SystemUnavail period list exceeds {MAX_PERIODS} entries"}
+                return {"configured": True, "issue": f"SystemUnavail period list exceeds {MAX_PERIODS} entries", **legacy}
             duration = None
             for probe in range(index + 1, min(index + 4, end)):
                 inner = _value(lines[probe])
@@ -71,7 +88,7 @@ def system_unavail_state(lines, system):
     if undated:
         issues.append(f"{undated} SystemUnavail period(s) lack a Duration within three lines of DateBeg")
     result = {"configured": True, "mode": mode, "settings": settings,
-              "periods": periods, "period_count": len(periods)}
+              "periods": periods, "period_count": len(periods), **legacy}
     if issues:
         result["issues"] = issues
     return result
@@ -164,7 +181,9 @@ def replace_system_unavailability(lines, system, updates):
         raise ValueError("System unavailability requires hexadecimal Grid system Flags")
     flags_val = int(raw[1:], 16)
     before = system_unavail_state(lines, system)
-    if before["configured"] and "issue" in before or before.get("issues"):
+    if "legacy_fields" in before:
+        raise ValueError("Legacy outage fields are read-only; native migration is not verified")
+    if "issue" in before or before.get("issues"):
         raise ValueError("Existing SystemUnavail block has structural issues and cannot be rewritten safely")
     if before["configured"]:
         if root.one("SystemUnavail")[1] != "TUnavailability" or len(blocks) != 2:

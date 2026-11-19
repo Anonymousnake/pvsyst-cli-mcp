@@ -304,15 +304,16 @@ class BudgetedCLI(PVsystCLI):
         self.attempt, self.report, self.maximum = attempt, report, maximum
 
     def _launch(self, args, *, allow_window_creation):
-        if allow_window_creation is not False:
-            raise ValueError("Acceptance execution requires an explicit no-window request")
+        if type(allow_window_creation) is not bool:
+            raise ValueError("Acceptance execution requires an explicit window policy")
+        allow_window_creation = allow_window_creation and args[0] == "run-simulation" and "-rst:1" in args
         if self.report["cli_commands_spent"] >= self.maximum:
             raise ValueError("Native command budget exhausted; no automatic retry")
         self.report["cli_commands_spent"] += 1
         number = self.report["cli_commands_spent"]
         save(self.attempt / f"native-{number:02d}-intent.json", {"args": list(args), "spent": True})
         try:
-            result = super()._launch(args, allow_window_creation=False)
+            result = super()._launch(args, allow_window_creation=allow_window_creation)
         except BaseException as exc:
             save(self.attempt / f"native-{number:02d}-error.json",
                  {"type": type(exc).__name__, "message": self._redact(str(exc)),
@@ -357,7 +358,7 @@ def execute(case, args, attempt, report):
                    "out_csv": target, "time_step": "hour", "recompute_shading": True,
                    "start_date": case["start"].strftime("%Y.%m.%d"),
                    "end_date": (case["end"] - timedelta(days=1)).strftime("%Y.%m.%d"),
-                   "allow_window_creation": False}
+                   "allow_window_creation": True}
         if "met_name" in request:
             options["met"] = workspace_file(working, "Meteo", request["met_name"], ".met")
         cli.preflight_run_simulation(request["project"], request["variant"], **options)

@@ -16,7 +16,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from pvsyst_auto.components.editor import objects
+from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.native._prep import _prepare_source
 from pvsyst_auto.project.circuit import inventory
 from pvsyst_auto.project.fileio import publish_new
@@ -77,7 +77,7 @@ def _n6(value):
 
 
 def _n3(value):
-    """Native 8.1.6/8.1.7 stores three decimals for oeTree dimensions."""
+    """Write spacing and oeTree dimensions with three decimal places."""
     value = 0.0 if value == 0 else float(value)
     return f"{value:.3f}"
 
@@ -622,10 +622,10 @@ def strip_result_cache(lines):
 
     Deletes the root-level ``VarList ... TVarSimul`` results block and every
     ``Histogram=THistogramme`` block, then clears ONLY the root Flags bit 0 (0x1,
-    "simulation done") while preserving every other flag bit. Matching uses ``strip()``,
-    so lines may carry their original EOL; the root Flags rewrite preserves it. A
-    present-but-unclosed cache is malformed and raises; an absent cache is a legal noop
-    (a valid cold source that was never simulated stores none). This removes the *derived
+    "simulation done") while preserving every other flag bit. Flags are selected by
+    object ownership, not indentation, and the rewrite preserves the original EOL.
+    A present-but-unclosed cache is malformed and raises; a cold source may omit
+    both the cache and root Flags. This removes the *derived
     result* cache only -- economic ``TEcoEvaluation`` inputs, hourly-tariff ``TVarSimul``,
     household/load profiles, geometry and component references are left untouched.
     Returns ``(lines, report)``.
@@ -650,15 +650,15 @@ def strip_result_cache(lines):
             break
         del lines[s:e + 1]
         report["histograms_removed"] += 1
-    root = next((i for i, line in enumerate(lines)
-                 if re.match(r"^  Flags=\$[0-9A-Fa-f]+\s*$", line)), None)
-    if root is None:
-        raise ValueError("root Flags line not found")
-    body = lines[root].rstrip("\r\n")
-    ending = lines[root][len(body):]
-    value = int(body.split("$", 1)[1], 16)
+    root = root_block("\n".join(line.rstrip("\r\n") for line in lines))
+    if "Flags" not in root.fields and not any(report.values()):
+        return lines, report
+    index, flags = root.one("Flags")
+    if not re.fullmatch(r"\$[0-9A-Fa-f]+", flags):
+        raise ValueError("Invalid root Flags value")
+    value = int(flags[1:], 16)
     if value & 0x1:
-        lines[root] = "  Flags=$%08X%s" % (value & ~0x1, ending)
+        lines[index] = replace_value(lines[index], f"${value & ~0x1:0{len(flags) - 1}X}")
         report["root_simulation_bit_cleared"] = True
     return lines, report
 
@@ -1029,6 +1029,13 @@ def _preflight(store, components, scene_name, shading_mode, string_layout=None):
     house = prepared["house"]
     obstacles = prepared["obstacles"]
     tables = prepared["table_profiles"]
+    for index, table in enumerate(tables, 1):
+        for field in ("row_spacing_m", "column_spacing_m"):
+            value = table[field]
+            if float(_n3(value)) != value:
+                name = table.get("name", f"PVTable{index}")
+                raise ValueError(f"Native table {name!r}: {field}={value} m cannot be represented "
+                                 "at millimetre precision; use a multiple of 0.001 m.")
     source = snap["source"]
     source_text = snap["bytes"].decode("utf-8-sig")
     _support_gate(source, tables, source_text, shading_mode, string_layout)
@@ -1110,7 +1117,6 @@ def import_house_pv_scene_native(store, components, scene_name, variant_name,
             original = snap["bytes"]
             lines = pre["candidate_text"].splitlines(keepends=True)
             index, = store._display_name_fields(lines, complete=True)
-            from pvsyst_auto.components.editor import replace_value
             lines[index] = replace_value(lines[index], variant_name)
             edited = "".join(lines)
             # The emitted variant is consumed by PVsyst, whose legacy reader treats a BOM-less

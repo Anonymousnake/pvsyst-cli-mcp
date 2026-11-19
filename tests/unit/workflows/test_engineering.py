@@ -461,14 +461,15 @@ class EngineeringTests(unittest.TestCase):
             "layout": {"module_rows": 1, "module_columns": 1, "orientation": "landscape",
                        "row_spacing_m": 0.0, "column_spacing_m": 0.0, "origin_m": [0.0, 0.0, 0.0], "roof_mesh": "r"},
         }
-        child = {key: value for key, value in request.items() if key not in ("prepare_mode", "design")}
-        child["year"] = 2024
         plan = {"scene_name": "house.pvc2", "obstacles": [], "house_parts": [], "pv_tables": [],
                 "source": {"module_total": 1}, "shading_mode": "linear"}
         scene = {"status": "ready", "create_arguments": {"project": "Out.PRJ", "variant": "VC0",
                  "house": house_profile(request["house"]), "layout": request["layout"]}}
         for phase in ("simulated", "completed", "gui_closed"):
             with self.subTest(phase=phase):
+                current = {**request, "allow_window_creation": phase == "gui_closed"}
+                child = {key: value for key, value in current.items() if key not in ("prepare_mode", "design")}
+                child["year"] = 2024
                 root = self.workspace()
                 store = VariantStore(root, ComponentStore(root))
                 cli = Mock()
@@ -497,7 +498,7 @@ class EngineeringTests(unittest.TestCase):
                         patch.object(house_flow, "read_house_pv_scene", return_value=scene), \
                         patch.object(house_flow, "_verify_new"), \
                         patch.object(house_flow, "_annual", return_value={"metrics": {"diagnostic_flags": []}}) as annual:
-                    result = run_sourced_house_task(store, store.components, cli, request=request, dry_run=False,
+                    result = run_sourced_house_task(store, store.components, cli, request=current, dry_run=False,
                                                     confirm=True, resume=True, retry_simulation=phase == "gui_closed")
                 cli.run_simulation.assert_not_called()
                 self.assertIsNotNone(result["house"], result)
@@ -505,8 +506,8 @@ class EngineeringTests(unittest.TestCase):
                 if phase == "gui_closed":
                     self.assertEqual(result["status"], "needs_attention", result)
                     self.assertIn("no remaining trial executions", result["house"]["issues"][0])
-                    cli.version.assert_called_once_with(allow_window_creation=False)
-                    cli.license_info.assert_called_once_with(allow_window_creation=False)
+                    cli.version.assert_called_once_with(allow_window_creation=True)
+                    cli.license_info.assert_called_once_with(allow_window_creation=True)
                     annual.assert_not_called()
                 else:
                     self.assertEqual((result["status"], result["stage"]), ("completed", "completed"), result)
