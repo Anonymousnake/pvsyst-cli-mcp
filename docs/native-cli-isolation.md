@@ -28,6 +28,10 @@ CSV / PDF 仍由原 PVsyst 引擎产出，`pvsyst_run_simulation` 等工具的�
 
 如果当前操作系统环境无法建立隔离桌面、拒绝建窗或隔离启动失败，工具应显式报错，不静默回退到用户 Default 桌面。非 Windows 平台维持原 `subprocess.run` 路径，不套用私有桌面逻辑。
 
+## CLI 工作区设置
+
+对 PVsystCLI 8.1.6 rev49278 和 8.1.7 rev49382，适配器按 Windows 用户配置文件串行启动 CLI，并在进程退出后仅恢复 `DataPath` 和 `WorkspaceN` 最近列表。运行计数等其他 INI 内容保留。此保护不协调独立启动的 PVsystCLI，也不能在 MCP 宿主被强制终止后恢复设置。
+
 ## 验证范围
 
 `tests/e2e/test_native_cli_launch_e2e.py` 提供了需要连接本机 `PVsystCLI.exe` 的可选端到端测试（单次 CSV 仿真，消耗一次 license，默认不随离线 CI 运行）。私有桌面隔离在纯 CSV 模式下禁止 `DESKTOP_CREATEWINDOW` 并保持父进程桌面不变；带 PDF 渲染的场景仍依赖正常桌面图形接口。

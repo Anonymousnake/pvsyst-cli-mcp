@@ -227,6 +227,14 @@ class RealMcpServerWorkflowsE2E(unittest.TestCase):
                     self.assertGreater(done["metrics"]["grid_energy_kwh"], 0.0)
                     self.assertEqual(done["hourly_rows"], 8760)
                     self.assertIn("ShdElec", str(done.get("electrical_shading_output")))
+                    # Check before the test's outer byte-for-byte INI cleanup.
+                    from pvsyst_auto.native._workspace_ini import _is_supported, _profile_ini, _snapshot
+                    if _is_supported(self.cli):
+                        ini = _profile_ini()
+                        restored = _snapshot(ini.read_bytes())[1]
+                        original = _snapshot(self.snapshots[ini])[1]
+                        self.assertEqual({k: v for k, v in restored.items() if v},
+                                         {k: v for k, v in original.items() if v})
                     vc_text = Path(done["artifacts"]["native_variant"]).read_text(encoding="utf-8-sig")
                     self.assertIn("ModuleOrient=moPortrait", vc_text)
                     self.assertIn("ModSpacingX=0.040", vc_text)
