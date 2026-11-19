@@ -331,6 +331,48 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
                          [-90.0, 90.0])
         self.assertAlmostEqual(dry_dual["plan"]["nominal_dc_kw"], 24 * 0.440, places=6)
 
+    def test_zero_template_mixed_pan_sizes_require_table_geometry(self):
+        wider_pan = (PAN.replace("Model=440W", "Model=480W").replace("PNom=440", "PNom=480")
+                     .replace("LargApp=1.032", "LargApp=1.150").replace("LongApp=1.996", "LongApp=2.200"))
+        (self.root / "ComposPV/PVmodules/Lab480.PAN").write_bytes(
+            wider_pan.replace("\n", "\r\n").encode("utf-8-sig")
+        )
+        house = {"kind": "mesh", "meshes": [
+            _roof_mesh("EastRoof", 0.0, 0.0, 25.0, 0.0),
+            _roof_mesh("WestRoof", 30.0, 0.0, 25.0, 180.0),
+        ]}
+        z = 4.0 + math.tan(math.radians(25.0)) + 0.1
+        tables = [
+            {"name": name + "Table", "orientation_id": i, "module_rows": 2, "module_columns": 6,
+             "orientation": "portrait", "row_spacing_m": 0.02, "column_spacing_m": 0.02,
+             "origin_m": origin, "roof_mesh": name + "Roof"}
+            for i, name, origin in ((1, "East", [1.0, 1.0, z]), (2, "West", [29.0, -1.0, z]))
+        ]
+        request = HouseTaskRequest(
+            site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET", ond_name="Lab50.OND",
+            anchor_azimuth_deg=-90.0, new_project="MixedHouse.PRJ", variant_name="Mixed PANs",
+            year=1990, house=house, layout={"tables": tables}, report_pdf=False,
+            subarrays=[{"subarray_id": i, "orientation_id": i, "pan_name": pan,
+                        "n_mod_serie": 12, "n_string_ch": 1}
+                       for i, pan in ((1, "Lab440.PAN"), (2, "Lab480.PAN"))],
+        ).model_dump(exclude_none=True)
+        cli = FakeCLI(self.root / "PVsystCLI.exe", self.root)
+        before = set(self.root.rglob("*"))
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                blocked = run_house_task(self.store, self.components, cli, request=request,
+                                         dry_run=dry_run, confirm=not dry_run)
+                self.assertEqual(blocked["status"], "blocked", blocked["issues"])
+                self.assertRegex(blocked["issues"][0], r"WestTable.*module_geometry")
+                self.assertEqual(set(self.root.rglob("*")), before)
+
+        west = dict(tables[1], module_geometry={"model_name": "480W", "nom_power_wp": 480.0,
+                                               "width_m": 1.150, "length_m": 2.200,
+                                               "geometry_depth_m": DEFAULT_MODULE_DEPTH_M})
+        explicit = dict(request, new_project="ExplicitGeometryHouse.PRJ", layout={"tables": [tables[0], west]})
+        ready = run_house_task(self.store, self.components, cli, request=explicit, dry_run=True)
+        self.assertEqual(ready["status"], "ready", ready["issues"])
+
 
 if __name__ == "__main__":
     unittest.main()
