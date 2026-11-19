@@ -944,9 +944,12 @@ def summarize_results(path: str | os.PathLike, columns: tuple[str, ...]) -> dict
         samples = state["samples"]
         unit = units.get(name, "")
         observed = None
-        if samples and name in ("E_Grid", "EArray") and step is not None and unit in ("W", "kW"):
-            observed = state["sum"] * step / 60 * (0.001 if unit == "W" else 1)
-            if not math.isfinite(observed):
+        if samples and name in ("E_Grid", "EArray"):
+            if unit in ("Wh", "kWh"):
+                observed = state["sum"] * (0.001 if unit == "Wh" else 1.0)
+            elif step is not None and unit in ("W", "kW"):
+                observed = state["sum"] * step / 60 * (0.001 if unit == "W" else 1.0)
+            if observed is not None and not math.isfinite(observed):
                 raise ValueError(f"{name}: summary arithmetic exceeds finite numeric range")
         complete = samples == count
         summary[name] = {**state, "max": state["max"] if samples else None,

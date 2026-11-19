@@ -350,6 +350,20 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
             result["inspection"] = report
             if report["valid"] is not True:
                 raise ValueError("Weather CSV preflight: " + "; ".join(report["issues"] + report["unchecked_checks"]))
+            meta = report["metadata"]
+            for key, low, high, label in (
+                ("#Latitude", -90, 90, "Latitude"),
+                ("#Longitude", -180, 180, "Longitude"),
+                ("#Time Zone", -12, 12, "Timezone"),
+            ):
+                raw_val = meta.get(key)
+                val = number(raw_val) if isinstance(raw_val, str) else raw_val
+                if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or not low <= val <= high:
+                    raise ValueError(f"{label} outside [{low}, {high}]")
+            raw_alt = meta.get("#Altitude")
+            alt_val = number(raw_alt) if isinstance(raw_alt, str) else raw_alt
+            if isinstance(alt_val, bool) or not isinstance(alt_val, (int, float)) or not math.isfinite(alt_val):
+                raise ValueError("Altitude must be finite")
             extra = set(report["units"]) - DATE_COLUMNS - {"GHI", "DHI", "Tamb"}
             if "DHI" not in report["units"] or extra:
                 raise ValueError("This verified import profile requires GHI, DHI, Tamb only; unmapped columns: " + ", ".join(sorted(extra)))
