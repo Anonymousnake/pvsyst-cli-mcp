@@ -1525,12 +1525,28 @@ def synthesize_utility_project(
     n_cols = _pos_int(module_columns, "module_columns")
     sy = _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
     sx = _finite(spacing_x_m, "spacing_x_m", minimum=0.0)
-    chord_mod = ml if module_orient == "moPortrait" else mw
-    resolved_collector_width = (
-        _finite(collector_width_m, "collector_width_m", minimum=0.1)
-        if collector_width_m is not None
-        else round(n_rows * chord_mod + max(0, n_rows - 1) * sy, 3)
+    need_3d = (
+        include_3d_scene
+        if include_3d_scene is not None
+        else (field_type in ("RegularSheds", "TrackHorizNSAxis") or site_polygon is not None or bool(obstacles))
     )
+    chord_mod = ml if module_orient == "moPortrait" else mw
+    scene_collector_width = round(n_rows * chord_mod + max(0, n_rows - 1) * sy, 3)
+    if need_3d:
+        if collector_width_m is not None:
+            override_width = _finite(collector_width_m, "collector_width_m", minimum=0.1)
+            if abs(override_width - scene_collector_width) > 1e-3:
+                raise ValueError(
+                    f"collector_width_m ({override_width:.3f}) disagrees with the 3D scene chord width "
+                    f"({scene_collector_width:.3f}); omit collector_width_m or match the scene dimensions"
+                )
+        resolved_collector_width = scene_collector_width
+    else:
+        resolved_collector_width = (
+            _finite(collector_width_m, "collector_width_m", minimum=0.1)
+            if collector_width_m is not None
+            else scene_collector_width
+        )
     resolved_pitch = _finite(pitch_m, "pitch_m", minimum=0.1)
     if resolved_pitch <= resolved_collector_width:
         raise ValueError(
@@ -1538,11 +1554,6 @@ def synthesize_utility_project(
             "so adjacent ground rows do not overlap (GCR < 1.0)"
         )
 
-    need_3d = (
-        include_3d_scene
-        if include_3d_scene is not None
-        else (field_type in ("RegularSheds", "TrackHorizNSAxis") or site_polygon is not None or bool(obstacles))
-    )
     eff_base_slope = _finite(base_slope_deg, "base_slope_deg", minimum=-45.0, maximum=45.0)
     orient_spec = {
         "id": 1,

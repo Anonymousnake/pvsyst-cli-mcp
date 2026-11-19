@@ -239,20 +239,14 @@ def _pan_physical_fields(store, pan_info: dict) -> dict:
 
 def _pan_is_bifacial(store, pan_info: dict) -> bool | None:
     """Return True/False for readable text .PAN based on TPVModule.isBiFacial (Flags bit 23, $00800000)."""
-    try:
-        pan_path = Path(pan_info["path"]) if pan_info.get("path") else None
-        if pan_path is None or not pan_path.is_file():
-            pan_name = Path(pan_info["name"]).name
-            library = pan_info.get("library") or "workspace"
-            pan_path = store.components._path("PAN", pan_name, library)
-        raw = store.components._read(pan_path)
-        root, _ = pan_blocks(raw.decode("utf-8-sig"))
-        flags_raw = root.one("Flags")[1].strip()
-        if not flags_raw.startswith("$"):
-            return None
-        return bool(int(flags_raw[1:], 16) & 0x00800000)
-    except (ValueError, OSError, KeyError):
-        return None
+    from pvsyst_auto.project.bifacial import pan_is_bifacial
+
+    return pan_is_bifacial(
+        store.components,
+        pan_info.get("name", ""),
+        path=pan_info.get("path"),
+        library=pan_info.get("library"),
+    )
 
 
 def _ond_pnom_kw(ond_electrical: dict) -> float:
@@ -304,6 +298,15 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
     shed_count = int(layout.get("shed_count", 10))
     module_rows = int(layout.get("module_rows", 2))
     module_columns = int(layout.get("module_columns", 25))
+    if include_3d and layout.get("site_polygon") is None:
+        scene_modules = shed_count * module_rows * module_columns
+        electrical_modules = int(plan["module_count"])
+        if scene_modules != electrical_modules:
+            raise ValueError(
+                f"3D scene module count ({scene_modules} = {shed_count}x{module_rows}x{module_columns}) "
+                f"disagrees with electrical module count ({electrical_modules}); "
+                "adjust ground_layout shed_count/module_rows/module_columns to match the electrical design"
+            )
     orient_str = "moLandscape" if layout.get("module_orientation") == "landscape" else "moPortrait"
     axis_azim = (
         float(layout["axis_azimuth_deg"])

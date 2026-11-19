@@ -89,7 +89,7 @@ class SuggestSizingTests(unittest.TestCase):
             module={"file_name": "Lab440.PAN"},
             inverter={"file_name": "Lab50.OND"},
             weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
-            ground_layout={"model_mode": "3d", "pitch_m": 12.0, "shed_count": 6},
+            ground_layout={"model_mode": "3d", "pitch_m": 12.0, "shed_count": 6, "module_columns": 20},
             bifacial={"ground_albedo": 0.30, "bifaciality_factor": 0.80, "height_above_ground_m": 2.4},
         )
         with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
