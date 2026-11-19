@@ -224,6 +224,25 @@ class HeadlessDCCablingTests(unittest.TestCase):
             self.assertEqual(bad_pct["status"], "blocked")
             self.assertIn("99", bad_pct["issues"][0])
 
+    def test_resistance_rejects_loss_that_rounds_up_to_99_percent(self):
+        ws, store = self._setup_ws(pan_bytes=JKM600_PAN.encode("utf-8"))
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                result = create_dc_cabling_variant(
+                    store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+                    dc={"mode": "resistance", "value": 12783.754}, dry_run=dry_run,
+                )
+                self.assertEqual(result["status"], "blocked", result)
+                self.assertIn("99.00%", result["issues"][0])
+                self.assertFalse((ws / "Projects" / "Demo.VC1").exists())
+
+        result = create_dc_cabling_variant(
+            store, project="Demo.PRJ", source_variant="VC0", new_variant="VC2",
+            dc={"mode": "resistance", "value": 12783.300}, dry_run=False,
+        )
+        self.assertEqual(result["status"], "created", result)
+        self.assertEqual(result["dc"]["loss_percent"], "98.99")
+
     def test_cold_and_legacy_flag_readback_supported(self):
         ws, _ = self._setup_ws(pan_bytes=JKM600_PAN.encode("utf-8"))
         lines = (ws / "Projects" / "Demo.VC0").read_text(encoding="utf-8-sig").splitlines(True)

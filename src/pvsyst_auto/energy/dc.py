@@ -402,12 +402,12 @@ def create_dc_cabling_variant(store, *, project, source_variant, new_variant, dc
             else:
                 res_decimal = value
                 pct_float = (float(value) / r_array_stc_mohm) * 100.0
-                if pct_float >= 99.0:
+                pct_decimal = Decimal(f"{pct_float:.2f}")
+                if pct_decimal >= 99:
                     raise ValueError(
-                        f"Resistance {value} mOhm corresponds to {pct_float:.2f}% STC loss, "
+                        f"Resistance {value} mOhm corresponds to {pct_decimal:.2f}% STC loss, "
                         "which exceeds PVsystCLI simulation limit (<99%)."
                     )
-                pct_decimal = Decimal(f"{pct_float:.2f}")
         else:
             if mode == "percent":
                 raise ValueError(
