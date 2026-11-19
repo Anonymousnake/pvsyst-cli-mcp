@@ -26,28 +26,28 @@ def _write_report_csv(path: Path, *, scale: float = 1.0, pr: float = 0.84, with_
         "date;" + ";".join(c for c, _ in cols),
         ";" + ";".join(u for _, u in cols),
     ]
-    # Cover 12 representative days (one per month) so every month has data
-    for month in range(1, 13):
-        start = datetime(2024, month, 15, 0, 0)
-        for h in range(24):
-            dt = start + timedelta(hours=h)
-            gi = 750.0 if 7 <= h < 17 else 0.0
-            ea = 100.0 * scale * (gi / 1000.0) * pr if gi > 0 else 0.0
-            clip = 1.5 * scale if 11 <= h <= 13 else 0.0
-            eg = max(0.0, ea - clip) * 0.98
-            row = [
-                dt.strftime("%d/%m/%y %H:%M"),
-                f"{gi:.2f}", f"{ea:.3f}", f"{eg:.3f}",
-                f"{pr:.3f}" if gi > 0 else "",
-                f"{clip:.3f}", "0.0", "0.0",
-            ]
-            if with_load_bess:
-                load = 40.0 if 8 <= h < 20 else 15.0
-                ch = 15.0 if 11 <= h < 15 else 0.0
-                dis = 20.0 if 18 <= h < 20 else 0.0
-                imp = max(0.0, load - eg - dis + ch)
-                row.extend([f"{load:.2f}", f"{imp:.2f}", f"{ch:.2f}", f"{dis:.2f}"])
-            lines.append(";".join(row))
+    # Contiguous full-year hourly timestamps so all 12 months have regular cadence.
+    start = datetime(2024, 1, 1, 0, 0)
+    for step in range(366 * 24):
+        dt = start + timedelta(hours=step)
+        h = dt.hour
+        gi = 750.0 if 7 <= h < 17 else 0.0
+        ea = 100.0 * scale * (gi / 1000.0) * pr if gi > 0 else 0.0
+        clip = 1.5 * scale if 11 <= h <= 13 else 0.0
+        eg = max(0.0, ea - clip) * 0.98
+        row = [
+            dt.strftime("%d/%m/%y %H:%M"),
+            f"{gi:.2f}", f"{ea:.3f}", f"{eg:.3f}",
+            f"{pr:.3f}" if gi > 0 else "",
+            f"{clip:.3f}", "0.0", "0.0",
+        ]
+        if with_load_bess:
+            load = 40.0 if 8 <= h < 20 else 15.0
+            ch = 15.0 if 11 <= h < 15 else 0.0
+            dis = 20.0 if 18 <= h < 20 else 0.0
+            imp = max(0.0, load - eg - dis + ch)
+            row.extend([f"{load:.2f}", f"{imp:.2f}", f"{ch:.2f}", f"{dis:.2f}"])
+        lines.append(";".join(row))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -145,6 +145,25 @@ class InteractiveReportTests(unittest.TestCase):
         self.assertEqual(en_res["chart_count"], 2)
         en_html = Path(en_res["report_path"]).read_text(encoding="utf-8")
         self.assertIn("Monthly Generation &amp; Performance Ratio", en_html)
+
+    def test_report_rejects_irregular_timestamp_cadence(self):
+        gap_csv = self.root / "Results" / "gap_report.csv"
+        gap_csv.write_text(
+            "PVSYST 8.1.7\n"
+            "date;GlobInc;EArray;E_Grid;PR\n"
+            ";W/m2;kW;kW;ratio\n"
+            "01/06/24 08:00;500;10;9.5;0.84\n"
+            "01/06/24 08:15;500;10;9.5;0.84\n"
+            "01/06/24 08:45;500;10;9.5;0.84\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "regular cadence"):
+            generate_report(
+                workspace=self.root,
+                title="Gap",
+                output_name="gap_report.html",
+                scenarios=[{"label": "Gap", "csv_name": "gap_report.csv"}],
+            )
 
 
 if __name__ == "__main__":

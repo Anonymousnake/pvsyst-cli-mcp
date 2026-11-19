@@ -566,6 +566,47 @@ class BifacialAndUtilityTests(unittest.TestCase):
                 bifacial_updates={"ground_albedo": 0.30}, dry_run=True,
             )
 
+    def test_utility_preserves_default_loss_bits_unless_explicitly_set(self):
+        # Omitted pmism_mpp / module_quality_loss keep both default bits set ($001E0002 / $001E0402).
+        default_synth = synthesize_utility_project(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            field_type="Sheds", pan_name="Lab440.PAN", ond_name="Lab50.OND",
+        )
+        self.assertIn("Flags=$001E0002", default_synth["vc0_text"])
+
+        explicit_synth = synthesize_utility_project(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            field_type="Sheds", pan_name="Lab440.PAN", ond_name="Lab50.OND",
+            pmism_mpp=1.5, module_quality_loss=-0.8,
+        )
+        self.assertIn("Flags=$000A0002", explicit_synth["vc0_text"])
+        self.assertIn("PMismMPP=1.50", explicit_synth["vc0_text"])
+        self.assertIn("PQualityModU=-0.80", explicit_synth["vc0_text"])
+
+    def test_extract_bifacial_metrics_handles_subhourly_and_wh_m2_units(self):
+        from pvsyst_auto.native.cli import result_units
+        from pvsyst_auto.workflows.utility import _extract_bifacial_metrics
+
+        stamps = ("01/06/24 10:00", "01/06/24 10:15", "01/06/24 10:30", "01/06/24 10:45")
+        for label, g_unit, g_val, m_unit, m_val in (
+            ("w_m2_kw", "W/m2", "400.0", "kW", "2.0"),
+            ("wh_m2_kwh", "Wh/m2", "100.0", "kWh", "0.5"),
+        ):
+            with self.subTest(label=label):
+                csv_path = self.root / "Results" / f"bifi_{label}.csv"
+                lines = [
+                    "PVSYST 8.1.7",
+                    "date;GlobBak;GlobGnd;MismBak;PRBifi",
+                    f";{g_unit};{g_unit};{m_unit};ratio",
+                ] + [f"{s};{g_val};{g_val};{m_val};0.85" for s in stamps]
+                csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                metrics = _extract_bifacial_metrics(csv_path, result_units(csv_path, strict=True))
+                # 4 * 15 min = 1 h: 400 W/m2 * 1 h = 0.4 kWh/m2, 2 kW * 1 h = 2.0 kWh
+                self.assertAlmostEqual(metrics["rear_irradiation_kwh_m2"], 0.4, places=6)
+                self.assertAlmostEqual(metrics["ground_irradiation_kwh_m2"], 0.4, places=6)
+                self.assertAlmostEqual(metrics["rear_mismatch_loss_kwh"], 2.0, places=6)
+                self.assertAlmostEqual(metrics["mean_pr_bifi"], 0.85, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

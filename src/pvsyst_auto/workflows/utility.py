@@ -382,32 +382,47 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "base_slope_deg": float(layout.get("base_slope_deg", 0.0)),
         "u_factor": float(losses.get("UFactor", 29.0)),
         "lid_loss": float(losses.get("LIDLoss", 0.0)),
-        "pmism_mpp": float(losses.get("PMismMPP", 2.0)),
-        "module_quality_loss": float(losses.get("ModuleQualityLoss", 3.0)),
+        "pmism_mpp": float(losses["PMismMPP"]) if "PMismMPP" in losses else None,
+        "module_quality_loss": float(losses["ModuleQualityLoss"]) if "ModuleQualityLoss" in losses else None,
         "with_bom": True,
     }
     return kwargs
 
 
 def _extract_bifacial_metrics(csv_path: Path, units: dict) -> dict:
-    """Compute annual bifacial irradiance and loss summaries from SFI CSV."""
+    """Compute annual bifacial irradiance and loss summaries from hourly or sub-hourly SFI CSV."""
     if not units.get("GlobBak"):
         raise ValueError("Bifacial simulation output lacks GlobBak column/unit")
-    irrad_scale = {"W/m2": 0.001, "W/m\u00b2": 0.001, "kW/m2": 1.0, "kW/m\u00b2": 1.0}.get(units["GlobBak"])
-    if irrad_scale is None:
+    irrad_units = {
+        "W/m2": (0.001, True), "W/m\u00b2": (0.001, True),
+        "kW/m2": (1.0, True), "kW/m\u00b2": (1.0, True),
+        "Wh/m2": (0.001, False), "Wh/m\u00b2": (0.001, False),
+        "kWh/m2": (1.0, False), "kWh/m\u00b2": (1.0, False),
+    }
+    power_units = {
+        "W": (0.001, True), "kW": (1.0, True),
+        "Wh": (0.001, False), "kWh": (1.0, False),
+    }
+    bak_info = irrad_units.get(units["GlobBak"])
+    if bak_info is None:
         raise ValueError(f"Unsupported GlobBak unit: {units['GlobBak']!r}")
     present = tuple(c for c in ("GlobBak", "GlobGnd", "DiffGnd", "BeamBak", "DifSBak", "MismBak", "PRBifi")
                     if c in units)
-    summ = summarize_results(csv_path, present)["summary"]
+    res = summarize_results(csv_path, present)
+    if res["rows"] >= 2 and res["step_minutes"] is None:
+        raise ValueError("Bifacial simulation output does not have a regular timestamp cadence")
+    step_hours = (res["step_minutes"] or 60.0) / 60.0
+    summ = res["summary"]
+    bak_scale, bak_is_power = bak_info
     out = {
-        "rear_irradiation_kwh_m2": summ["GlobBak"]["sum"] * irrad_scale,
+        "rear_irradiation_kwh_m2": summ["GlobBak"]["sum"] * bak_scale * (step_hours if bak_is_power else 1.0),
     }
     if "GlobGnd" in summ:
-        gnd_scale = {"W/m2": 0.001, "W/m\u00b2": 0.001, "kW/m2": 1.0, "kW/m\u00b2": 1.0}.get(units["GlobGnd"], 0.001)
-        out["ground_irradiation_kwh_m2"] = summ["GlobGnd"]["sum"] * gnd_scale
+        gnd_scale, gnd_is_power = irrad_units.get(units["GlobGnd"], (0.001, True))
+        out["ground_irradiation_kwh_m2"] = summ["GlobGnd"]["sum"] * gnd_scale * (step_hours if gnd_is_power else 1.0)
     if "MismBak" in summ:
-        p_scale = {"W": 0.001, "Wh": 0.001, "kW": 1.0, "kWh": 1.0}.get(units["MismBak"], 1.0)
-        out["rear_mismatch_loss_kwh"] = summ["MismBak"]["sum"] * p_scale
+        p_scale, p_is_power = power_units.get(units["MismBak"], (1.0, True))
+        out["rear_mismatch_loss_kwh"] = summ["MismBak"]["sum"] * p_scale * (step_hours if p_is_power else 1.0)
     if "PRBifi" in summ and summ["PRBifi"]["mean"] is not None:
         out["mean_pr_bifi"] = summ["PRBifi"]["mean"]
     return out

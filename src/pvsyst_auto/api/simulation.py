@@ -143,7 +143,7 @@ def pvsyst_run_simulation(project: str, variant: str,
                     diag = None
             if diag is not None:
                 sim_result["physical_diagnostics"] = compact_diagnostics_summary(diag)
-                if diag.get("needs_review"):
+                if diag.get("needs_review") or diag.get("status") == "blocked":
                     sim_result["status"] = "needs_review"
                 else:
                     sim_result.setdefault("status", "completed")
