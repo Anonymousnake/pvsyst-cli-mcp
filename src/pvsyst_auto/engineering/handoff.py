@@ -27,20 +27,42 @@ def _root_values(block, names):
     return {name: block.one(name)[1] for name in names if name in block.fields}
 
 
+def _load_child(blocks, owner, key, kind):
+    path = f"{owner.path}/{key}" if owner.path else key
+    matches = [block for block in blocks if block.path == path and block.object_type == kind
+               and owner.line < block.line < owner.end_line]
+    if len(matches) > 1:
+        raise ValueError(f"Duplicate {key} records in {owner.object_type} at line {owner.line}")
+    return matches[0] if matches else None
+
+
 def _load_records(blocks):
     records = []
     for block in blocks:
         if block.object_type.casefold() != "pvload":
             continue
-        values, omitted = {}, []
-        for name in sorted(block.fields):
-            value = block.one(name)[1]
-            # A pvLoad ValHour_N is its declared daily profile, not an hourly cache, so it is kept.
-            if (len(value) > 512 or name.casefold().startswith(("day_", "valday"))
-                    or name.casefold() in ("hourlyvalues", "hourlydata")):
-                omitted.append(name)
-            else:
-                values[name] = value
+        markers, omitted = {}, []
+        owners = [block]
+        hourly = _load_child(blocks, block, "HourlyLoad", "THourlyParams")
+        if hourly:
+            owners.append(hourly)
+            markers["HourlyLoad"] = hourly.object_type
+            if cache := _load_child(blocks, hourly, "ParSimulH", "TVarSimul"):
+                owners.append(cache)
+                markers["ParSimulH"] = cache.object_type
+        values = markers.copy()
+        for owner in owners:
+            for name in sorted(owner.fields):
+                # The source belongs to THourlyParams, not the load or the simulation cache.
+                if name in markers or (hourly and owner is not hourly and name in ("FileName", "PathName")):
+                    continue
+                value = owner.one(name)[1]
+                # ValHour_N is the declared daily profile.
+                if (len(value) > 512 or name.casefold().startswith(("day_", "valday"))
+                        or name.casefold() in ("hourlyvalues", "hourlydata")):
+                    omitted.append(name)
+                else:
+                    values[name] = value
         records.append({"type": block.object_type, "path": block.path,
                         "values": values, "omitted_cache_fields": omitted})
     return {"present": bool(records), "objects": records, "hourly_cache_contents_included": False}
@@ -95,7 +117,7 @@ def build_project_handoff(store, *, project, variant, declarations=None):
             parameters = store.inspect_parameters(project, variant)
             references = store.inspect(project, variant)
             structure = store.validate_structure(project, variant)
-            blocks = objects("".join(lines))
+            blocks = objects("".join(lines), include_private=True)
             dependencies, missing, review = [], [], []
 
             def dependency(kind, name, resolution, action=None):
