@@ -305,6 +305,28 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(blocked["issues"], ["Every prepared load row must be one Date;P Load pair"])
         self.assertFalse((self.root / "Projects/Fixture.VC1").exists())
 
+    def test_legacy_outages_are_reported_but_read_only(self):
+        legacy = {"UnavTotDuration": "7.30", "UnavNbPeriods": "3",
+                  "UnavDuration": "58,58,58,1,1,", "UnavBegDate": "15000,15001,15002,"}
+        system = PV_SYSTEM.replace("Flags=$00", "Flags=$00010000").replace(
+            "  End of PVObject pvSystem", "".join(f"    {key} = {value}\n" for key, value in legacy.items())
+            + "  End of PVObject pvSystem",
+        )
+        self.source(ROOT.format(root_flags="$00") +
+                    "  PVObject_PVMainArray=pvMainArray\n    Flags=$00100400\n    Flags2=$082A\n" +
+                    ARRAY.replace("    SubArrayId=1", "    Version=8.1.6\n    SubArrayId=1") +
+                    "  End of PVObject pvMainArray\n" + system + CLOSE)
+        source = self.root / "Projects/Fixture.VC0"
+        original = source.read_bytes()
+        state = self.store.inspect_parameters("Fixture.PRJ", "VC0")["system_unavailability"]
+        self.assertEqual(state, {"configured": True, "mode": "legacy", "legacy_fields": legacy})
+        digest = self.store.inspect("Fixture.PRJ", "VC0")["sha256"]
+        for updates in ({"mode": "none"}, {"mode": "periods", "periods": [
+                {"date_beg": "01/01/23 12:00", "duration_hours": 24}]}):
+            with self.assertRaisesRegex(ValueError, "Legacy outage fields are read-only"):
+                self.store.update_parameters("Fixture.PRJ", "VC0", digest, system_unavailability_updates=updates)
+            self.assertEqual(source.read_bytes(), original)
+
     def test_system_unavailability_rejects_duration_rounding_to_zero(self):
         from pvsyst_auto.energy.unavailability import replace_system_unavailability
 

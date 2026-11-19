@@ -113,7 +113,8 @@ simulation with shading recomputation. Each launcher attempt spends a command sl
 and persists an intent record **before** the unchanged native launcher is called.
 Raw returned stdout/stderr (license-identifying lines redacted) and return code are
 saved before the adapter interprets them. Timeouts/errors are retained too. Commands
-use the existing private-desktop launcher with `allow_window_creation=False`.
+use the existing private-desktop launcher. Only the shading recomputation run
+allows window creation on that desktop.
 Command slots count adapter launch attempts, **not** all descendant OS processes or
 internal simulation loops; this CLI does not claim independent OS window observation.
 

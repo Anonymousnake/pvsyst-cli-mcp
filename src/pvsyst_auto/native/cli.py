@@ -123,15 +123,14 @@ def _csv_encoding(path: str | os.PathLike) -> str:
 def _is_plain_csv_run(args) -> bool:
     """True only for a bare hourly-CSV numeric simulation.
 
-    ``run-simulation`` with an ``-ocf:`` CSV target and none of ``-rpf:`` (PDF),
-    ``-bpf:`` (batch params) or ``-brf:`` (batch RVT). That path needs no window,
-    so it is the only one allowed to deny DESKTOP_CREATEWINDOW; PDF and batch keep
-    the old private-desktop behavior that may create windows.
+    ``run-simulation`` with an ``-ocf:`` CSV target, no PDF or batch output,
+    and no explicit shading-table recompute. Recompute can require windows even
+    when the only output is a CSV.
     """
     if not args or args[0] != "run-simulation":
         return False
     has_csv = any(arg.startswith("-ocf:") for arg in args)
-    keeps_windows = any(arg.startswith(("-rpf:", "-bpf:", "-brf:")) for arg in args)
+    keeps_windows = any(arg == "-rst:1" or arg.startswith(("-rpf:", "-bpf:", "-brf:")) for arg in args)
     return has_csv and not keeps_windows
 
 
@@ -235,10 +234,16 @@ class PVsystCLI:
                 # False always denies (never falls back to an allowing desktop); True
                 # always allows. The value is per call and never stored globally.
                 from pvsyst_auto.native import _winlaunch
+                from pvsyst_auto.native._workspace_ini import preserve_workspace_settings, WorkspaceSettingsError
+
                 allow = ((not _is_plain_csv_run(args)) if allow_window_creation is None
                          else allow_window_creation)
-                return _winlaunch.run(argv, self.cli.parent, self.timeout,
-                                      allow_window_creation=allow)
+                try:
+                    with preserve_workspace_settings(self.cli, restore=True):
+                        return _winlaunch.run(argv, self.cli.parent, self.timeout,
+                                              allow_window_creation=allow)
+                except WorkspaceSettingsError as exc:
+                    raise PVsystError(str(exc)) from None
             return subprocess.run(argv, cwd=self.cli.parent, capture_output=True,
                                   text=True, errors="replace", timeout=self.timeout,
                                   check=False)
@@ -483,16 +488,14 @@ class PVsystCLI:
                                  allow_window_creation: bool | None = None) -> dict:
         """Pure pre-launch checks for run_simulation: no mkdir, no output, no child CLI.
 
-        ``allow_window_creation`` is accepted only so the public call signature stays
-        uniform with ``run_simulation``; this pure check launches nothing and so never
-        selects a window policy itself.
-
         Everything decidable from the arguments and workspace alone is rejected here
         before any license query or help launch: project/variant existence, output
         requirement, batch conflicts, input existence+suffix, time step, dates, report
         pages, output collisions (no mkdir) and batch output names. The real license
         check, option/help verification and the run stay in run_simulation, which calls
         this first and re-checks outputs right before executing (TOCTOU guard)."""
+        if recompute_shading is True and allow_window_creation is False:
+            raise ValueError("Shading recomputation requires allow_window_creation=true or unset")
         project = self._project_name(project)
         variant = variant_id(variant)
         if project not in self.list_projects() or variant not in self.list_variants(project):

@@ -56,6 +56,8 @@
 - 多朝向分组源（2 个、3 个及以上固定朝向）：线性模式支持 `1..64` 张按源属主分配的组件表；无 `string_layout` 时的 `module_layout` 支持每子阵 `1` 串（`1..100` 块组件）配一张表；多串或跨表拆分传 `string_layout`。
 - 单朝向单子阵：`1..3` 张表（线性）或恰两表两逆变器/两串（`module_layout`）；多串/更多表配合 `string_layout`（最多 `1..64` 张表）。
 
+原生导入的 `row_spacing_m` 与 `column_spacing_m` 须为 `0.001 m` 的整数倍。预检会指出无法表示的表名和字段，不会自动舍入或改变几何；`.pvc2` 场景的创建与读回不受此限制。
+
 来源不匹配、元数据未知或声明冲突会在写入前拦截。负方位角按源 `FieldAzim` 有符号约定写入（`-45` 保留为 `-45`）。精细模式（`shading_mode="module_layout"`）写入 `pvShading.Flags=$20100900`，线性模式写入 `$20000100`。
 
 **显式逐格接线（`string_layout`）**：可提供与 `layout` 同级的 `string_layout` 块逐 module cell 指定全局组串（`row`/`col` 1 基、`global_string>=0`、`subarray_id` 为对应源子阵 id）。组串支持跨表，单表也可包含多串，每条全局串的容量等于所属源子阵的 `NModSerie`。`global_string=0` 为未分配草稿，可在 `pvsyst_create_house_pv_scene` 与 `pvsyst_read_house_pv_scene` 中读写（`string_layout_state="draft_incomplete"`），在原生导入前需补全分配；重复 cell、越界行列号或超容等无效输入会在写入前拦截，显式接线仅在 `method="native"` + `shading_mode="module_layout"` 下使用。
