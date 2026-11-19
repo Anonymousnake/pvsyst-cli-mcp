@@ -135,6 +135,14 @@ def _prepare(store, components, request, *, resume=False):
     if zero_template:
         if (request.get("scene_import_method") or "native") != "native":
             raise ValueError("Zero-template house task requires scene_import_method='native'")
+        for index, orient in enumerate(request.get("orientations") or ()):
+            if isinstance(orient, dict) and orient.get("base_slope_deg") is not None:
+                slope = orient["base_slope_deg"]
+                if not isinstance(slope, bool) and isinstance(slope, (int, float)) and slope != 0:
+                    raise ValueError(
+                        f"orientations[{index}].base_slope_deg must be 0 for headless house tasks "
+                        "(headless 3D PV tables emit BaseSlope=0.0)"
+                    )
         synth = synthesize_house_source(store, components, request)
         synth_payload = {"prj_text": synth["prj_text"], "vc0_text": synth["vc0_text"]}
         source_bytes = synth["vc0_text"].encode("utf-8")
@@ -319,6 +327,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
     paths = None
     record = None
     proc = None
+    attempt = None
     write_enabled = False
     with store.lock:
         try:
@@ -668,6 +677,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     _save(paths["manifest"], record)
             return _public(record)
         except (OSError, ValueError, RuntimeError, KeyError, StopIteration, TypeError, subprocess.TimeoutExpired) as exc:
+            if attempt is not None and attempt.get("status") == "running":
+                attempt["status"] = "failed"
             result.update(status="needs_attention" if write_enabled else "blocked", stage="stopped",
                           native_consumption_verified=False)
             result.setdefault("issues", []).append(str(exc))
@@ -677,6 +688,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
             return _public(result)
         except BaseException as exc:
             # An unanticipated error must not leave a written checkpoint "running"; it then propagates.
+            if attempt is not None and attempt.get("status") == "running":
+                attempt["status"] = "failed"
             if write_enabled and paths is not None and record is not None:
                 record.update(status="needs_attention", stage="stopped", native_consumption_verified=False)
                 try:

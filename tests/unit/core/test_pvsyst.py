@@ -519,6 +519,27 @@ class PVsystTests(unittest.TestCase):
             result = self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
         self.assertEqual(Path(result["batch_summary"]).name, "batch_Results.CSV")
 
+        # Issue #191: quiet batch runs (log_level 0, 1, 2) must forward native refusal text
+        (hourly_dir / "one.CSV").unlink(missing_ok=True)
+        (batch_dir / "batch_Results.CSV").unlink(missing_ok=True)
+        refusal_out = (
+            "Simulation cannot be run.\n"
+            "The hourly load cannot be used with the Peak Shaving strategy.\n"
+        )
+        for level in (0, 1, 2):
+            with self.subTest(log_level=level):
+                with patch.object(
+                    self.client, "_run",
+                    return_value=subprocess.CompletedProcess([], 0, refusal_out, ""),
+                ):
+                    with self.assertRaises(PVsystError) as caught:
+                        self.client.run_simulation(
+                            "Example.PRJ", "VC0", batch_params=batch, log_level=level,
+                        )
+                self.assertIn("batch_Results.CSV", str(caught.exception))
+                self.assertIn("Simulation cannot be run.", str(caught.exception))
+                self.assertIn("Peak Shaving", str(caught.exception))
+
         external = self.workspace.parent / "external"
         external.mkdir()
         link = hourly_dir / "escape.csv"

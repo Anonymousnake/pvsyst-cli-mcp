@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import re
 
+from pvsyst_auto.components.editor import root_block
 from pvsyst_auto.native.cli import iter_result_csv, result_units
 
 SEVERITY_ORDER = {"none": 0, "info": 1, "medium": 2, "high": 3, "critical": 4}
@@ -37,6 +39,8 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
 
 _POWER_SCALE = {"W": 0.001, "kW": 1.0}
 _ENERGY_SCALE = {"Wh": 0.001, "kWh": 1.0}
+_APPARENT_POWER_SCALE = {"VA": 0.001, "kVA": 1.0}
+_APPARENT_ENERGY_SCALE = {"VAh": 0.001, "kVAh": 1.0}
 _IRRAD_SCALE = {
     "W/m2": 0.001, "W/m\u00b2": 0.001,
     "Wh/m2": 0.001, "Wh/m\u00b2": 0.001,
@@ -44,6 +48,28 @@ _IRRAD_SCALE = {
     "kWh/m2": 1.0, "kWh/m\u00b2": 1.0,
 }
 _PR_SCALE = {"ratio": 1.0, "%": 0.01}
+_HEX_FLAG = re.compile(r"\$[0-9a-fA-F]{1,8}")
+_LOAD_FLAG_BIT = 0x00080000
+_GRID_LIMIT_ENABLED_BIT = 0x01000000
+_GRID_LIMIT_APPARENT_BIT = 0x02000000
+
+
+def detect_native_refusal(text: str) -> str | None:
+    """Extract a native PVsystCLI refusal reason (e.g., 'Simulation cannot be run.')."""
+    if not isinstance(text, str) or not text:
+        return None
+    lines = [line.strip() for line in text.splitlines()]
+    for index, line in enumerate(lines):
+        if "simulation cannot be run." in line.casefold():
+            collected = [line]
+            for follow in lines[index + 1:]:
+                if not follow or follow.startswith(("PVsystCLI", "Exiting", "Exit code")):
+                    break
+                collected.append(follow)
+                if len(collected) >= 5:
+                    break
+            return " ".join(collected)
+    return None
 
 
 def _validate_thresholds(overrides: dict | None) -> dict[str, float]:
@@ -74,6 +100,22 @@ def _to_kwh(raw_sum: float, unit: str, step_hours: float) -> float | None:
     return None
 
 
+def _to_kw(value: float, unit: str, step_hours: float) -> float | None:
+    if unit in _POWER_SCALE:
+        return value * _POWER_SCALE[unit]
+    if unit in _ENERGY_SCALE and step_hours > 0:
+        return value * _ENERGY_SCALE[unit] / step_hours
+    return None
+
+
+def _to_kva(value: float, unit: str, step_hours: float) -> float | None:
+    if unit in _APPARENT_POWER_SCALE:
+        return value * _APPARENT_POWER_SCALE[unit]
+    if unit in _APPARENT_ENERGY_SCALE and step_hours > 0:
+        return value * _APPARENT_ENERGY_SCALE[unit] / step_hours
+    return None
+
+
 def _to_kwh_m2(raw_sum: float, unit: str, step_hours: float) -> float | None:
     if unit in ("W/m2", "W/m\u00b2"):
         return raw_sum * 0.001 * step_hours
@@ -94,14 +136,113 @@ def _to_w_m2(value: float, unit: str) -> float | None:
     return None
 
 
-def _variant_context(store, project: str | None, variant: str | None) -> dict | None:
+def _variant_context(store, project: str | None, variant: str | None) -> tuple[dict | None, dict | None]:
     if not project and not variant:
-        return None
+        return None, None
     if bool(project) != bool(variant):
         raise ValueError("Provide both project and variant for .VC0 root-cause attribution, or omit both")
     if store is None:
         raise ValueError("VariantStore is required for .VC0 root-cause attribution")
-    return store.inspect_parameters(project, variant)
+    vc_info = store.inspect_parameters(project, variant)
+    load_ctx = None
+    if hasattr(store, "_read") and hasattr(store, "_path"):
+        try:
+            with store.lock:
+                data = store._read(store._path(project, variant))
+            text = data.decode("utf-8-sig", errors="replace")
+            lines = text.splitlines(keepends=True)
+            has_pvload = any(line.strip() == "PVObject_UserNeeds=pvLoad" for line in lines)
+            raw_flags = None
+            load_flag_enabled = None
+            try:
+                _, raw_flags = root_block(lines).one("Flags")
+                if _HEX_FLAG.fullmatch(raw_flags):
+                    load_flag_enabled = bool(int(raw_flags[1:], 16) & _LOAD_FLAG_BIT)
+            except (ValueError, KeyError):
+                pass
+            load_ctx = {
+                "has_pvload": has_pvload,
+                "root_flags": raw_flags,
+                "load_flag_enabled": load_flag_enabled,
+            }
+        except OSError:
+            load_ctx = None
+    return vc_info, load_ctx
+
+
+def _extract_grid_limit_context(
+    vc_info: dict | None,
+    *,
+    peak_egrid_kw: float | None,
+    peak_eap_kva: float | None,
+) -> dict | None:
+    """Resolve active dispatch cap for kW or kVA (apparent) PLimGrid variants."""
+    if not vc_info:
+        return None
+    limit = None
+    quantity = None
+    tan_phi = None
+
+    pc = vc_info.get("power_controls")
+    if isinstance(pc, dict):
+        gl = pc.get("grid_limit")
+        pf = pc.get("power_factor")
+        if isinstance(gl, dict) and gl.get("mode") == "constant" and isinstance(gl.get("limit"), (int, float)):
+            limit = float(gl["limit"])
+            quantity = gl.get("quantity") or "active"
+        if isinstance(pf, dict) and pf.get("mode") == "constant":
+            raw_tp = pf.get("tan_phi")
+            if isinstance(raw_tp, (int, float)) and math.isfinite(raw_tp):
+                tan_phi = float(raw_tp)
+
+    if limit is None:
+        sys_params = vc_info.get("system_parameters") or {}
+        raw_flags = sys_params.get("Flags")
+        raw_lim = sys_params.get("PLimGrid")
+        if isinstance(raw_flags, str) and _HEX_FLAG.fullmatch(raw_flags) and raw_lim is not None:
+            sys_flags = int(raw_flags[1:], 16)
+            if sys_flags & _GRID_LIMIT_ENABLED_BIT:
+                try:
+                    parsed_lim = float(raw_lim)
+                except (TypeError, ValueError):
+                    parsed_lim = None
+                if parsed_lim is not None and math.isfinite(parsed_lim) and parsed_lim > 0:
+                    limit = parsed_lim
+                    quantity = "apparent" if (sys_flags & _GRID_LIMIT_APPARENT_BIT) else "active"
+        if tan_phi is None and sys_params.get("TanPhi") is not None:
+            try:
+                parsed_tp = float(sys_params["TanPhi"])
+                if math.isfinite(parsed_tp):
+                    tan_phi = parsed_tp
+            except (TypeError, ValueError):
+                pass
+        if tan_phi is None:
+            pf_state = vc_info.get("power_factor")
+            if isinstance(pf_state, dict) and pf_state.get("mode") == "constant":
+                raw_tp = pf_state.get("tan_phi")
+                if isinstance(raw_tp, (int, float)) and math.isfinite(raw_tp):
+                    tan_phi = float(raw_tp)
+
+    if limit is None or not math.isfinite(limit) or limit <= 0:
+        return None
+    eff_tan_phi = tan_phi if tan_phi is not None else 0.0
+    cos_phi = 1.0 / math.sqrt(1.0 + eff_tan_phi * eff_tan_phi)
+    active_cap_kw = limit * cos_phi if quantity == "apparent" else limit
+    return {
+        "enabled": True,
+        "quantity": quantity,
+        "configured_limit": round(limit, 4),
+        "configured_unit": "kVA" if quantity == "apparent" else "kW",
+        "tan_phi": round(eff_tan_phi, 6),
+        "cos_phi": round(cos_phi, 6),
+        "active_dispatch_cap_kw": round(active_cap_kw, 4),
+        "peak_e_grid_kw": round(peak_egrid_kw, 4) if peak_egrid_kw is not None else None,
+        "peak_eap_grid_kva": round(peak_eap_kva, 4) if peak_eap_kva is not None else None,
+        "active_cap_binding": bool(
+            peak_egrid_kw is not None and active_cap_kw > 0 and peak_egrid_kw >= active_cap_kw * 0.995
+        ),
+        "apparent_exceeds_configured_is_expected": quantity == "apparent",
+    }
 
 
 def diagnose_simulation_csv(
@@ -115,7 +256,7 @@ def diagnose_simulation_csv(
     """Run deterministic physics and time-series anomaly diagnostics on a PVsyst SFI CSV."""
     path = Path(csv_path)
     cfg = _validate_thresholds(thresholds)
-    vc_info = _variant_context(store, project, variant)
+    vc_info, load_ctx = _variant_context(store, project, variant)
     units = result_units(path, strict=True)
 
     # Accumulators
@@ -123,6 +264,8 @@ def diagnose_simulation_csv(
     counts: dict[str, int] = {}
     weighted_pr_num = 0.0
     weighted_pr_den = 0.0
+    peak_egrid_raw: float | None = None
+    peak_eap_raw: float | None = None
     egrid_exceeds_earray_count = 0
     egrid_exceeds_stamps: list[str] = []
     night_export_kwh_raw = 0.0
@@ -177,8 +320,14 @@ def diagnose_simulation_csv(
         )
         eg_raw = row[idx["E_Grid"]] if "E_Grid" in idx else None
         ea_raw = row[idx["EArray"]] if "EArray" in idx else None
+        eap_raw = row[idx["EApGrid"]] if "EApGrid" in idx else None
         eg_ok = isinstance(eg_raw, (int, float)) and math.isfinite(eg_raw)
         ea_ok = isinstance(ea_raw, (int, float)) and math.isfinite(ea_raw)
+        eap_ok = isinstance(eap_raw, (int, float)) and math.isfinite(eap_raw)
+        if eg_ok and (peak_egrid_raw is None or float(eg_raw) > peak_egrid_raw):
+            peak_egrid_raw = float(eg_raw)
+        if eap_ok and (peak_eap_raw is None or float(eap_raw) > peak_eap_raw):
+            peak_eap_raw = float(eap_raw)
         pr_raw = row[idx["PR"]] if "PR" in idx else None
         pr_scale = _PR_SCALE.get(units.get("PR", ""))
 
@@ -250,7 +399,21 @@ def diagnose_simulation_csv(
     sub0 = (vc_info.get("subarrays") or [{}])[0].get("values", {}) if vc_info else {}
     orient0 = (vc_info.get("orientations") or [{}])[0].get("values", {}) if vc_info else {}
     has_planned_unavail = bool(
-        vc_info and (vc_info.get("detailed_losses") or {}).get("system_unavailability", {}).get("enabled")
+        vc_info and (
+            (vc_info.get("system_unavailability") or {}).get("configured")
+            or (vc_info.get("detailed_losses") or {}).get("system_unavailability", {}).get("enabled")
+        )
+    )
+    peak_egrid_kw = (
+        _to_kw(peak_egrid_raw, units.get("E_Grid", ""), step_hours)
+        if peak_egrid_raw is not None and "E_Grid" in idx else None
+    )
+    peak_eap_kva = (
+        _to_kva(peak_eap_raw, units.get("EApGrid", ""), step_hours)
+        if peak_eap_raw is not None and "EApGrid" in idx else None
+    )
+    grid_limit_context = _extract_grid_limit_context(
+        vc_info, peak_egrid_kw=peak_egrid_kw, peak_eap_kva=peak_eap_kva,
     )
 
     findings: list[dict] = []
@@ -495,6 +658,16 @@ def diagnose_simulation_csv(
             if curt_kwh is not None:
                 pct = (abs(curt_kwh) / base_kwh) * 100.0
                 if pct > cfg["curtailment_max_pct"]:
+                    if grid_limit_context and grid_limit_context["quantity"] == "apparent":
+                        hint = (
+                            f"Apparent grid limit {grid_limit_context['configured_limit']:g} kVA "
+                            f"with cos(phi)={grid_limit_context['cos_phi']:.4f} caps active dispatch at "
+                            f"{grid_limit_context['active_dispatch_cap_kw']:.2f} kW "
+                            f"(not {grid_limit_context['configured_limit']:g} kW); native EApGrid can "
+                            f"legitimately exceed {grid_limit_context['configured_limit']:g} kVA."
+                        )
+                    else:
+                        hint = "Active grid injection limit (PLimGrid) or full battery preventing PV export."
                     add(
                         code="GRID_CURTAILMENT_HIGH",
                         severity="medium",
@@ -504,7 +677,7 @@ def diagnose_simulation_csv(
                         threshold=cfg["curtailment_max_pct"],
                         unit="%",
                         message=f"Grid limit / unused energy ({curt_col}) is {pct:.2f}% ({abs(curt_kwh):.1f} kWh).",
-                        root_cause_hint="Active grid injection limit (PLimGrid) or full battery preventing PV export.",
+                        root_cause_hint=hint,
                         recommended_actions=[
                             "Evaluate PeakShaving or larger battery capacity via pvsyst_create_grid_storage_system.",
                         ],
@@ -512,6 +685,32 @@ def diagnose_simulation_csv(
                     break
 
     # --- 4. Storage & Load Balance ---
+    if load_ctx and load_ctx.get("has_pvload") and load_ctx.get("load_flag_enabled") is False:
+        load_cols_present = any(col in idx for col in ("E_User", "E_Solar", "EFrGrid"))
+        e_user_total = (
+            _to_kwh(sums["E_User"], units.get("E_User", ""), step_hours)
+            if "E_User" in idx else None
+        )
+        if (not load_cols_present) or (e_user_total is not None and abs(e_user_total) <= 1e-6):
+            add(
+                code="LOAD_NOT_ENABLED",
+                severity="high",
+                category="storage_balance",
+                metric="root_flags_bit19",
+                observed=0.0,
+                threshold=1.0,
+                unit="flag",
+                message=(
+                    "Variant embeds PVObject_UserNeeds=pvLoad, but root pvVCalcul.Flags "
+                    f"({load_ctx.get('root_flags')}) has bit 19 ($00080000) clear and no load energy was consumed."
+                ),
+                root_cause_hint=(
+                    "PVsystCLI ignores PVObject_UserNeeds=pvLoad unless root pvVCalcul.Flags sets bit 19 ($00080000)."
+                ),
+                recommended_actions=[
+                    "Rebind the hourly load via pvsyst_create_native_load_variant (sets bit 19 $00080000) and re-run.",
+                ],
+            )
     if "E_Miss" in idx and "E_User" in idx:
         miss_kwh = _to_kwh(sums["E_Miss"], units.get("E_Miss", ""), step_hours)
         user_kwh = _to_kwh(sums["E_User"], units.get("E_User", ""), step_hours)
@@ -631,6 +830,7 @@ def diagnose_simulation_csv(
         "weighted_pr": round(weighted_pr, 4) if weighted_pr is not None else None,
         "analyzed_columns": [h for h in headers[1:]],
         "variant_attribution_used": vc_info is not None,
+        "grid_limit_context": grid_limit_context,
         "findings": findings,
     }
 

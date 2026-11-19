@@ -11,6 +11,7 @@ from unittest.mock import patch
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.engineering.diagnostics import (
     compact_diagnostics_summary,
+    detect_native_refusal,
     diagnose_simulation_csv,
 )
 from pvsyst_auto.project.synthesize import synthesize_project_and_variant
@@ -296,6 +297,151 @@ class DiagnosticsEngineTests(unittest.TestCase):
             res = api_results.pvsyst_diagnose_results("mcp_diag.csv")
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["finding_count"], 0)
+
+    def test_issue_192_kva_grid_limit_and_apparent_energy_above_limit(self):
+        """Issue #192: kVA grid limit caps active power at L*cos(phi) and EApGrid > PLimGrid is normal."""
+        synth = synthesize_project_and_variant(
+            None,
+            project_comment="kVA Limit",
+            variant_comment="Apparent 210 kVA",
+            pan_name="Test.PAN",
+            ond_name="Test.OND",
+            n_mod_serie=20,
+            n_string_ch=30,
+            n_inverter=1,
+            n_inv_mppt=1,
+        )
+        vc0 = synth["vc0_text"].replace(
+            "  PVObject_System=pvSystem\r\n    Flags=$00\r\n",
+            "  PVObject_System=pvSystem\r\n    Flags=$07100000\r\n"
+            "    TanPhi=0.484\r\n    PLimGrid=210.00\r\n    LimGrSeparLoss=True\r\n",
+        )
+        self.assertIn("PLimGrid=210.00", vc0)
+        self.store.create_project("KvaLimit.PRJ", synth["prj_text"], {"VC0": vc0})
+
+        # Peak E_Grid=189.02 kW (matches 210 * cos(atan(0.484)) = 189.024 kW),
+        # while EApGrid peaks at 245.62 kVA (> 210 kVA configured limit — real PVsystCLI 8.1.7 behavior).
+        cols = [
+            ("GlobInc", "W/m2"),
+            ("EArray", "kW"),
+            ("E_Grid", "kW"),
+            ("EApGrid", "kVA"),
+            ("EGrdLim", "kW"),
+            ("PR", "ratio"),
+        ]
+        rows = []
+        start = datetime(2024, 6, 1, 0, 0)
+        for h in range(24):
+            stamp = (start + timedelta(hours=h)).strftime("%d/%m/%y %H:%M")
+            if 6 <= h < 18:
+                gi = 800.0 if 10 <= h <= 14 else 400.0
+                ea = 225.0 if 10 <= h <= 14 else 110.0
+                eg = 189.02 if 10 <= h <= 14 else 107.0
+                eap = 245.62 if 10 <= h <= 14 else 118.9
+                curt = 32.0 if 10 <= h <= 14 else 0.0
+                rows.append([stamp, gi, ea, eg, eap, curt, 0.78])
+            else:
+                rows.append([stamp, 0.0, 0.0, 0.0, 0.0, 0.0, ""])
+        csv_path = _write_csv(self.root / "Results" / "kva_limit.csv", cols, rows)
+        diag = diagnose_simulation_csv(csv_path, store=self.store, project="KvaLimit.PRJ", variant="VC0")
+
+        glc = diag["grid_limit_context"]
+        self.assertIsNotNone(glc)
+        self.assertEqual(glc["quantity"], "apparent")
+        self.assertAlmostEqual(glc["configured_limit"], 210.0, places=2)
+        self.assertAlmostEqual(glc["active_dispatch_cap_kw"], 189.024, places=2)
+        self.assertAlmostEqual(glc["peak_e_grid_kw"], 189.02, places=2)
+        self.assertAlmostEqual(glc["peak_eap_grid_kva"], 245.62, places=2)
+        self.assertTrue(glc["active_cap_binding"])
+        self.assertTrue(glc["apparent_exceeds_configured_is_expected"])
+
+        codes = [f["code"] for f in diag["findings"]]
+        # EApGrid=245.62 > 210 kVA must NOT trigger an anomaly; only curtailment is reported with kVA*cos(phi) hint
+        self.assertEqual(codes, ["GRID_CURTAILMENT_HIGH"])
+        curt_f = diag["findings"][0]
+        self.assertIn("189.02 kW", curt_f["root_cause_hint"])
+        self.assertIn("210 kVA", curt_f["root_cause_hint"])
+
+    def test_issue_192_load_block_without_root_flag_bit19_triggers_load_not_enabled(self):
+        """Issue #192: pvLoad present with root Flags bit 19 ($00080000) clear triggers LOAD_NOT_ENABLED."""
+        synth = synthesize_project_and_variant(
+            None,
+            project_comment="Disabled Load",
+            variant_comment="No Bit19",
+            pan_name="Test.PAN",
+            ond_name="Test.OND",
+            n_mod_serie=18,
+            n_string_ch=6,
+            n_inverter=1,
+            n_inv_mppt=1,
+        )
+        pvload_block = (
+            "  PVObject_UserNeeds=pvLoad\r\n"
+            "    Flags=$4000\r\n"
+            "    LoadType=HourlyFile\r\n"
+            "  End of PVObject pvLoad\r\n"
+        )
+        vc0_disabled = synth["vc0_text"].replace(
+            "End of PVObject pvVCalcul", pvload_block + "End of PVObject pvVCalcul"
+        )
+        vc0_enabled = vc0_disabled.replace("  Flags=$00100001\r\n", "  Flags=$00180001\r\n", 1)
+        self.assertIn("  Flags=$00180001\r\n", vc0_enabled)
+        self.store.create_project("LoadBit19.PRJ", synth["prj_text"], {"VC0": vc0_disabled, "VC1": vc0_enabled})
+
+        cols, rows = _solar_rows(days=2, pr=0.84)
+        csv_path = _write_csv(self.root / "Results" / "no_load_cols.csv", cols, rows)
+
+        diag_off = diagnose_simulation_csv(csv_path, store=self.store, project="LoadBit19.PRJ", variant="VC0")
+        self.assertTrue(diag_off["needs_review"])
+        self.assertIn("LOAD_NOT_ENABLED", {f["code"] for f in diag_off["findings"]})
+        finding = next(f for f in diag_off["findings"] if f["code"] == "LOAD_NOT_ENABLED")
+        self.assertEqual(finding["severity"], "high")
+        self.assertIn("$00080000", finding["root_cause_hint"])
+
+        diag_on = diagnose_simulation_csv(csv_path, store=self.store, project="LoadBit19.PRJ", variant="VC1")
+        self.assertNotIn("LOAD_NOT_ENABLED", {f["code"] for f in diag_on["findings"]})
+
+    def test_issue_192_demo_tracking_clipping_calibration_and_native_refusal_helper(self):
+        """Issue #192: real _DEMO_Tracking.VC3 clipping (~2.31%) & detect_native_refusal."""
+        # Calibrate against real PVsystCLI 8.1.7 sample: E_Grid=47096.49 kWh, IL_Pmax=1112.27 kWh over 21 h
+        cols = [("GlobInc", "W/m2"), ("EArray", "kW"), ("E_Grid", "kW"), ("IL_Pmax", "kW"), ("PR", "ratio")]
+        rows = []
+        start = datetime(2024, 6, 1, 0, 0)
+        # 21 clipping hours summing to IL_Pmax=1112.27 kWh (peak E_Grid=900 kW) + 51 non-clipping daytime hours
+        for i in range(21):
+            stamp = (start + timedelta(hours=i)).strftime("%d/%m/%y %H:%M")
+            rows.append([stamp, 950.0, 960.0, 900.0, round(1112.27 / 21.0, 6), 0.80])
+        rem_grid = 47096.49 - 21 * 900.0
+        for i in range(51):
+            stamp = (start + timedelta(hours=21 + i)).strftime("%d/%m/%y %H:%M")
+            eg = rem_grid / 51.0
+            rows.append([stamp, 650.0, eg * 1.02, eg, 0.0, 0.83])
+        csv_path = _write_csv(self.root / "Results" / "demo_tracking_clip.csv", cols, rows)
+
+        # Clean under default 3.0% threshold (~2.31% clipping)
+        diag_default = diagnose_simulation_csv(csv_path)
+        self.assertEqual(diag_default["status"], "ok")
+        self.assertNotIn("INVERTER_CLIPPING_HIGH", {f["code"] for f in diag_default["findings"]})
+
+        # Flagged under tighter 2.0% threshold
+        diag_tight = diagnose_simulation_csv(csv_path, thresholds={"clipping_loss_max_pct": 2.0})
+        clip = next(f for f in diag_tight["findings"] if f["code"] == "INVERTER_CLIPPING_HIGH")
+        self.assertGreater(clip["observed"], 2.2)
+        self.assertLess(clip["observed"], 2.5)
+
+        # Native refusal extractor
+        transcript = (
+            "Loading project...\n"
+            "Simulation cannot be run.\n"
+            "The hourly load cannot be used with the Peak Shaving strategy.\n"
+            "\n"
+            "Exiting PVsystCLI.\n"
+        )
+        refusal = detect_native_refusal(transcript)
+        self.assertIsNotNone(refusal)
+        self.assertIn("Simulation cannot be run.", refusal)
+        self.assertIn("Peak Shaving", refusal)
+        self.assertIsNone(detect_native_refusal("Simulation done in 0min 2sec"))
 
 
 if __name__ == "__main__":

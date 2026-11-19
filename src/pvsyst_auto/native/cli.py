@@ -645,7 +645,7 @@ class PVsystCLI:
             # Only the summary named after the parameters file belongs to this run.
             if len(changed) != 1 or changed[0].name.casefold() != batch_summary.name.casefold():
                 raise PVsystError("Batch simulation did not produce exactly one new summary CSV: "
-                                  + batch_summary.name)
+                                  + batch_summary.name + "\n" + self._redact(text)[-3000:])
             summary = workspace_file(self.workspace, "UserBatch", changed[0].name, ".csv")
             hourly = [workspace_file(self.workspace, "UserHourly", name, ".csv") for name in batch_names]
             if any(not p.is_file() for p in hourly):

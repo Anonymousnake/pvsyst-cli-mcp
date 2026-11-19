@@ -938,7 +938,7 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
             raise ValueError("Source subarray %d references a missing source orientation %d"
                              % (sub_id, sub["orientation"]))
         plane = planes[sub["orientation"]]
-        if plane["field_type"] != "FixedPlane" or abs(plane["base_slope_deg"]) > ANGLE_TOL:
+        if plane["field_type"] != "FixedPlane" or plane["base_slope_deg"] != 0.0:
             raise ValueError("Explicit module layout is bounded to ordinary fixed planes (no slope/averaging)")
         if sub["nstr_orient1"] != sub["nstring_ch"]:
             raise ValueError("Explicit module layout requires every source string on the single orientation")
@@ -1004,6 +1004,13 @@ def _support_gate(source, tables, source_text, mode="linear", string_layout=None
         return
     orientations = source.get("orientations") or []
     planes, subs = _parse_electrical(source_text)
+    for sub in subs.values():
+        plane = planes.get(sub["orientation"])
+        if plane is not None and plane["base_slope_deg"] != 0.0:
+            raise ValueError(
+                "Native headless shading requires BaseSlope=0.0 on source orientation %d "
+                "(headless 3D PV tables emit BaseSlope=0.0)" % sub["orientation"]
+            )
     if orientations:
         orientation_ids = {item["id"] for item in orientations}
         if not orientation_ids.issubset(set(planes)):

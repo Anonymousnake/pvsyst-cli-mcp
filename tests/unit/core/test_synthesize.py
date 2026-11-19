@@ -589,6 +589,92 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
                 self.assertEqual(upd["module_quality"]["default_before"], qual_default_before)
                 self.assertFalse(upd["module_quality"]["default_after"])
 
+    def test_house_task_refused_attempt_marks_failed_and_nonzero_base_slope_blocked_in_preflight(self):
+        """Issues #191 & #193: refused CLI attempt must mark status='failed'; non-zero base_slope rejected preflight."""
+        import json
+        from pvsyst_auto.native.cli import PVsystError
+
+        house = {"kind": "mesh", "meshes": [_roof_mesh("SouthRoof", 0.0, 0.0, 25.0, 0.0)]}
+        layout = {
+            "tables": [{
+                "name": "SouthArray", "module_rows": 2, "module_columns": 6,
+                "orientation": "portrait", "row_spacing_m": 0.02, "column_spacing_m": 0.02,
+                "origin_m": [1.0, 1.0, 4.0 + math.tan(math.radians(25.0)) + 0.1],
+                "roof_mesh": "SouthRoof",
+            }]
+        }
+
+        # Issue #193: non-zero base_slope_deg must fail in dry_run=True and confirm=True before any writes
+        cli = FakeCLI(self.root / "PVsystCLI.exe", self.root)
+        for bad_slope in (2.0, -0.01, 0.001):
+            with self.subTest(base_slope_deg=bad_slope):
+                proj = f"BadSlope_{str(bad_slope).replace('-', 'm').replace('.', 'p')}.PRJ"
+                req = HouseTaskRequest(
+                    site_name="Geneva_MN90.SIT",
+                    met_name="Geneva_MN90_SYN.MET",
+                    pan_name="Lab440.PAN",
+                    ond_name="Lab50.OND",
+                    new_project=proj,
+                    variant_name="Bad Slope",
+                    year=1990,
+                    house=house,
+                    layout=layout,
+                    orientations=[{"id": 1, "tilt_deg": 25.0, "azimuth_deg": 0.0, "base_slope_deg": bad_slope}],
+                    report_pdf=False,
+                    shading_mode="linear",
+                    scene_import_method="native",
+                ).model_dump(exclude_none=True)
+                dry = run_house_task(self.store, self.components, cli, request=req, dry_run=True)
+                self.assertEqual(dry["status"], "blocked")
+                self.assertTrue(any("base_slope_deg" in msg for msg in dry["issues"]), dry["issues"])
+                confirmed = run_house_task(self.store, self.components, cli, request=req, dry_run=False, confirm=True)
+                self.assertEqual(confirmed["status"], "blocked")
+                self.assertFalse((self.root / "Projects" / proj).exists())
+
+        # Issue #191: refused CLI simulation must mark runs[-1].status == 'failed' in response and checkpoint
+        class RefusingCLI(FakeCLI):
+            def run_simulation(self, *args, **kwargs):
+                raise PVsystError("Simulation cannot be run.\nRefused by native CLI.")
+
+        refusing_cli = RefusingCLI(self.root / "PVsystCLI.exe", self.root)
+        req = HouseTaskRequest(
+            site_name="Geneva_MN90.SIT",
+            met_name="Geneva_MN90_SYN.MET",
+            pan_name="Lab440.PAN",
+            ond_name="Lab50.OND",
+            new_project="RefusedHouse.PRJ",
+            variant_name="Refused Run",
+            year=1990,
+            house=house,
+            layout=layout,
+            report_pdf=False,
+            shading_mode="linear",
+            scene_import_method="native",
+        ).model_dump(exclude_none=True)
+        res1 = run_house_task(self.store, self.components, refusing_cli, request=req, dry_run=False, confirm=True)
+        self.assertEqual(res1["status"], "needs_attention")
+        self.assertEqual(len(res1["runs"]), 1)
+        self.assertEqual(res1["runs"][0]["status"], "failed")
+        manifest_path = Path(res1["artifacts"]["manifest"])
+        saved1 = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved1["runs"][0]["status"], "failed")
+
+        # Resume without retry_simulation must block without adding a second attempt
+        res_block = run_house_task(self.store, self.components, refusing_cli, request=req,
+                                   dry_run=False, confirm=True, resume=True)
+        self.assertEqual(res_block["status"], "needs_attention")
+        self.assertEqual(len(res_block["runs"]), 1)
+        self.assertEqual(res_block["runs"][0]["status"], "failed")
+
+        # Explicit retry that also refuses must mark run02 as 'failed' too
+        res2 = run_house_task(self.store, self.components, refusing_cli, request=req,
+                              dry_run=False, confirm=True, resume=True, retry_simulation=True)
+        self.assertEqual(res2["status"], "needs_attention")
+        self.assertEqual(len(res2["runs"]), 2)
+        self.assertEqual([r["status"] for r in res2["runs"]], ["failed", "failed"])
+        saved2 = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual([r["status"] for r in saved2["runs"]], ["failed", "failed"])
+
 
 if __name__ == "__main__":
     unittest.main()

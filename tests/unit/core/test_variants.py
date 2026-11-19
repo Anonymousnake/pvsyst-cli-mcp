@@ -1065,6 +1065,45 @@ class VariantTests(unittest.TestCase):
         self.assertIn("    FieldType=SeasonalTilt\r\n", orient)
         self.assertIn("    WinterMonths=$0803\r\n", orient)
 
+    def test_update_project_sources_preserves_distinct_met_header_and_sitemet(self):
+        """Issue #193: rebinding SIT+MET must keep SIT in SiteSimul and MET's own SiteM/SiteMet/PasAccum."""
+        before, _ = self._prepare_project_sources()
+        met_text = (
+            "PVObject_=pvMeteo\r\n"
+            "  Comment=Real MET header\r\n"
+            "  Version=8.1.7\r\n"
+            "  Flags=$010084E1\r\n"
+            "  NomF=Distinct_2022.MET\r\n"
+            "  SiteM=Meteo Station 2022\r\n"
+            "  DateDebF=01/01/22 00:00\r\n"
+            "  DateFinF=31/12/22 23:00\r\n"
+            "  PasAccum=1\r\n"
+            "\r\n"
+            "  PVObject_SiteMet=pvSite\r\n"
+            "    NomF=Station2022.SIT\r\n"
+            "    Site=Meteo Station 2022\r\n"
+            "    Latitude=47.3700\r\n"
+            "    Longitude=8.5500\r\n"
+            "  End of PVObject pvSite\r\n"
+            "End of PVObject pvMeteo\r\n"
+        )
+        (self.workspace / "Meteo" / "Distinct_2022.MET").write_bytes(b"\xef\xbb\xbf" + met_text.encode("utf-8"))
+        self.store.update_project_sources("Example.PRJ", "New.SIT", "Distinct_2022.MET", before["files"])
+        vc0 = (self.workspace / "Projects" / "Example.VC0").read_text(encoding="utf-8-sig")
+        site_simul = vc0[vc0.index("PVObject_SiteSimul=pvSite"):vc0.index("PVObject_MeteoSimul=pvMeteo")]
+        meteo_simul = vc0[vc0.index("PVObject_MeteoSimul=pvMeteo"):vc0.index("End of PVObject pvMeteo")]
+        self.assertIn("NomF=New.SIT", site_simul)
+        self.assertIn("Site=New Site", site_simul)
+        self.assertIn("Latitude=6.5", site_simul)
+        self.assertIn("NomF=Distinct_2022.MET", meteo_simul)
+        self.assertIn("SiteM=Meteo Station 2022", meteo_simul)
+        self.assertIn("DateDebF=01/01/22 00:00", meteo_simul)
+        self.assertIn("DateFinF=31/12/22 23:00", meteo_simul)
+        self.assertIn("PasAccum=1", meteo_simul)
+        self.assertIn("NomF=Station2022.SIT", meteo_simul)
+        self.assertIn("Latitude=47.3700", meteo_simul)
+        self.assertNotIn("Latitude=6.5", meteo_simul)
+
 
 if __name__ == "__main__":
     unittest.main()

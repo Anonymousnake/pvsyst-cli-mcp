@@ -834,6 +834,14 @@ class VariantStore:
             if len(identifiers) != 1 or not identifiers[0] or filenames != [site_name]:
                 raise ValueError("SIT site identity or filename does not match")
             site_identity = identifiers[0]
+            from pvsyst_auto.project.synthesize import _is_pvmeteo_file, load_meteo_header
+
+            met_path = self.workspace / "Meteo" / met_name
+            site_body = [line.strip() for line in site_lines[1:-1] if line.strip()]
+            meteo_block_lines = (
+                load_meteo_header(met_path, site_identity, site_body)[1]
+                if _is_pvmeteo_file(met_path) else None
+            )
             originals = {}
             candidates = {}
             for name, digest in files_to_read.items():
@@ -848,13 +856,22 @@ class VariantStore:
                 else:
                     self._text(data)
                     self._replace_site_block(lines, "SiteSimul", site_lines)
-                    self._replace_site_block(lines, "SiteMet", site_lines)
                     start, end = self._section_bounds(lines, "PVObject_MeteoSimul=pvMeteo",
                                                       "End of PVObject pvMeteo")
                     child = next((i for i in range(start + 1, end)
                                   if lines[i].strip().startswith("PVObject_")), end)
                     self._replace_unique_field(lines, "NomF", met_name, (start + 1, child))
                     self._replace_unique_field(lines, "SiteM", site_identity, (start + 1, child))
+                    if meteo_block_lines is not None:
+                        self._section_bounds(lines, "PVObject_SiteMet=pvSite", "End of PVObject pvSite")
+                        indent = lines[start][:len(lines[start]) - len(lines[start].lstrip(" \t"))]
+                        eol = "\r\n" if "\r\n" in lines[start] else "\n"
+                        lines[start:end + 1] = [
+                            eol if not raw_ln else (indent + (raw_ln[2:] if raw_ln.startswith("  ") else raw_ln) + eol)
+                            for raw_ln in meteo_block_lines
+                        ]
+                    else:
+                        self._replace_site_block(lines, "SiteMet", site_lines)
                     if "".join(lines) != text:
                         from pvsyst_auto.native.headless import strip_result_cache
 
