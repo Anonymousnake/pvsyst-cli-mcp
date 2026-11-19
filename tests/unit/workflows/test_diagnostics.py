@@ -455,6 +455,125 @@ class DiagnosticsEngineTests(unittest.TestCase):
         self.assertIn("Peak Shaving", refusal)
         self.assertIsNone(detect_native_refusal("Simulation done in 0min 2sec"))
 
+    def test_issue_199_subhourly_wh_zero_output_storage_missing_ebatdis_monthly_pf_and_sim_findings(self):
+        import subprocess
+        import pvsyst_auto.api.simulation as api_simulation
+        from pvsyst_auto.native.cli import PVsystCLI
+
+        # 1. 15-min GlobInc encoded as 50 Wh/m2 (= 200 W/m2) over 30 hours reports 30h HIGH_IRRADIANCE_ZERO_OUTPUT.
+        start = datetime(2024, 6, 1, 0, 0)
+        rows_w = []
+        rows_wh = []
+        for idx_step in range(120):  # 120 * 15 min = 30 hours
+            stamp = (start + timedelta(minutes=15 * idx_step)).strftime("%d/%m/%y %H:%M")
+            rows_w.append([stamp, 200.0, 0.0, 0.0])
+            rows_wh.append([stamp, 50.0, 0.0, 0.0])
+        csv_w = _write_csv(
+            self.root / "Results" / "zero_w.csv",
+            [("GlobInc", "W/m2"), ("EArray", "kW"), ("E_Grid", "kW")],
+            rows_w,
+        )
+        csv_wh = _write_csv(
+            self.root / "Results" / "zero_wh.csv",
+            [("GlobInc", "Wh/m2"), ("EArray", "kW"), ("E_Grid", "kW")],
+            rows_wh,
+        )
+        for p in (csv_w, csv_wh):
+            diag = diagnose_simulation_csv(p)
+            zero_f = next((f for f in diag["findings"] if f["code"] == "HIGH_IRRADIANCE_ZERO_OUTPUT"), None)
+            self.assertIsNotNone(zero_f, f"missing zero output finding for {p.name}: {diag['findings']}")
+            self.assertEqual(zero_f["severity"], "high")
+            self.assertAlmostEqual(zero_f["observed"], 30.0, places=2)
+
+        # 2. Storage variant without EBatDis column skips NIGHTTIME_EXPORT and E_GRID_EXCEEDS_EARRAY.
+        synth_st = synthesize_project_and_variant(
+            None, project_comment="Storage", variant_comment="Storage VC0",
+            pan_name="Test.PAN", ond_name="Test.OND",
+            n_mod_serie=18, n_string_ch=6, n_inverter=1, n_inv_mppt=2,
+            independent_mppt=True, pnom_ac_in_mppt=25.0,
+        )
+        storage_vc = synth_st["vc0_text"].replace(
+            "  PVObject_System=pvSystem\r\n    Flags=$00\r\n    SystemType=Grid\r\n  End of PVObject pvSystem\r\n",
+            "  PVObject_System=pvSystem\r\n    Flags=$10010040\r\n    SystemType=Grid\r\n"
+            "    BatteryFile=Fixture.BTR\r\n    NBattSerie=1\r\n    NBattParall=1\r\n  End of PVObject pvSystem\r\n"
+            "  PVObject_GridStorage=pvGridStorage\r\n    Flags=$00\r\n    Strategy=SelfConsumption\r\n"
+            "    ChargingStrategy=PVAvailable\r\n    DischStrategy=Immediate\r\n"
+            "    BattSoCInit=0.5\r\n    SOCChDecl=0.9\r\n    SOCDischDecl=0.2\r\n    SOCDischSelf=0.2\r\n"
+            "    PMaxCharge=10\r\n    PMaxDisch=10\r\n    BattRectMaxEffic=97\r\n    BattRectEuroEffic=95\r\n"
+            "    BattInvMaxEffic=97\r\n    BattInvEuroEffic=95\r\n  End of PVObject pvGridStorage\r\n",
+        )
+        self.store.create_project("StorageDiag.PRJ", synth_st["prj_text"], {"VC0": storage_vc})
+        csv_no_dis = _write_csv(
+            self.root / "Results" / "storage_no_ebatdis.csv",
+            [("GlobInc", "W/m2"), ("EArray", "kWh"), ("E_Grid", "kWh")],
+            [["01/06/24 22:00", 0.0, 0.0, 5.0], ["01/06/24 23:00", 0.0, 0.0, 4.0]],
+        )
+        diag_st = diagnose_simulation_csv(csv_no_dis, store=self.store, project="StorageDiag.PRJ", variant="VC0")
+        codes_st = {f["code"] for f in diag_st["findings"]}
+        self.assertNotIn("NIGHTTIME_EXPORT", codes_st)
+        self.assertNotIn("E_GRID_EXCEEDS_EARRAY", codes_st)
+
+        # 3. Monthly power factor (Flags=$07300000, PLimGrid=210, TanPhiM=0.484*12) computes cos_phi=0.900114 & cap=189.0239 kW.
+        tan_phi_m_uniform = ",".join(["0.484"] * 12) + ","
+        vc_monthly_uniform = synth_st["vc0_text"].replace(
+            "  PVObject_System=pvSystem\r\n    Flags=$00\r\n    SystemType=Grid\r\n  End of PVObject pvSystem\r\n",
+            "  PVObject_System=pvSystem\r\n    Flags=$07300000\r\n    SystemType=Grid\r\n"
+            f"    PLimGrid=210\r\n    LimGrSeparLoss=True\r\n    TanPhiM={tan_phi_m_uniform}\r\n"
+            "  End of PVObject pvSystem\r\n",
+        )
+        tan_phi_m_varied = ",".join(["0.484"] * 6 + ["0.200"] * 6) + ","
+        vc_monthly_varied = vc_monthly_uniform.replace(tan_phi_m_uniform, tan_phi_m_varied)
+        self.store.create_project("MonthlyPF.PRJ", synth_st["prj_text"], {"VC0": vc_monthly_uniform, "VC1": vc_monthly_varied})
+        csv_grid = _write_csv(
+            self.root / "Results" / "monthly_pf_grid.csv",
+            [("GlobInc", "W/m2"), ("EArray", "kWh"), ("E_Grid", "kWh")],
+            [["01/06/24 11:00", 900.0, 195.0, 189.02], ["01/06/24 12:00", 900.0, 195.0, 188.0]],
+        )
+        diag_pf_u = diagnose_simulation_csv(csv_grid, store=self.store, project="MonthlyPF.PRJ", variant="VC0")
+        gl_u = diag_pf_u["grid_limit_context"]
+        self.assertEqual(gl_u["power_factor_mode"], "monthly")
+        self.assertAlmostEqual(gl_u["cos_phi"], 0.900114, places=5)
+        self.assertAlmostEqual(gl_u["active_dispatch_cap_kw"], 189.0239, places=3)
+        self.assertTrue(gl_u["active_cap_binding"])
+
+        diag_pf_v = diagnose_simulation_csv(csv_grid, store=self.store, project="MonthlyPF.PRJ", variant="VC1")
+        gl_v = diag_pf_v["grid_limit_context"]
+        self.assertEqual(gl_v["power_factor_mode"], "monthly")
+        self.assertIsNone(gl_v["cos_phi"])
+        self.assertIsNone(gl_v["active_dispatch_cap_kw"])
+        self.assertEqual(len(gl_v["monthly_active_dispatch_cap_kw"]), 12)
+        self.assertAlmostEqual(gl_v["monthly_active_dispatch_cap_kw"][5], 189.0239, places=3)
+        self.assertTrue(gl_v["active_cap_binding"])
+
+        # 4. Single CSV pvsyst_run_simulation attaches physical_diagnostics and sets status="needs_review" for critical findings.
+        fake_cli_exe = self.root / "PVsystCLI.exe"
+        fake_cli_exe.write_bytes(b"stub")
+        client = PVsystCLI(fake_cli_exe, self.root)
+        client._help_cache["run-simulation"] = " --output-csv-file|-ocf: "
+        out_csv = self.root / "Results" / "ov_run.csv"
+
+        def _fake_run(*args, **kwargs):
+            _write_csv(
+                out_csv,
+                [("GlobInc", "W/m2"), ("EArray", "kWh"), ("E_Grid", "kWh"), ("IL_Vmax", "kWh")],
+                [["01/06/24 11:00", 900.0, 604.8, 590.0, 33.0], ["01/06/24 12:00", 900.0, 604.8, 590.0, 33.0]],
+            )
+            return subprocess.CompletedProcess([], 0, "Simulation done in 0min 2sec", "")
+
+        import pvsyst_auto.api.context as api_ctx
+        with patch.object(api_ctx, "cli", return_value=client), \
+                patch.object(api_simulation, "cli", return_value=client), \
+                patch.object(api_simulation, "variant_store", return_value=self.store), \
+                patch.object(client, "license_info", return_value={"status": "LICENSED"}), \
+                patch.object(client, "_run", side_effect=_fake_run):
+            sim = api_simulation.pvsyst_run_simulation(
+                project="MonthlyPF.PRJ", variant="VC0", csv_name="ov_run",
+            )
+        self.assertIn("Simulation done in", sim["diagnostics"])
+        self.assertEqual(sim["status"], "needs_review")
+        self.assertEqual(sim["physical_diagnostics"]["max_severity"], "critical")
+        self.assertTrue(any(f["code"] == "INVERTER_OVERVOLTAGE" for f in sim["physical_diagnostics"]["top_findings"]))
+
 
 if __name__ == "__main__":
     unittest.main()
