@@ -505,7 +505,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                         "stage": "preflight", "resume": resume, "native_consumption_verified": False}
             if not resume:
                 _save(paths["manifest"], record, first=True)
-            write_enabled = True
+            write_enabled = record["phase"] != "completed"
             if record["phase"] == "initialized":
                 unchanged()
                 if zero_template:
@@ -653,7 +653,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                         "Two-orientation authoring and native consumption are separate stages; this task's saved/reloaded geometry and annual evidence are recorded below."
                         if warning == obsolete and record.get("native_import", {}).get("native_reload_verified") is True
                         else warning for warning in record.get("warnings", [])]
-                _save(paths["manifest"], record)
+                if write_enabled:
+                    _save(paths["manifest"], record)
             return _public(record)
         except (OSError, ValueError, RuntimeError, KeyError, StopIteration, TypeError, subprocess.TimeoutExpired) as exc:
             result.update(status="needs_attention" if write_enabled else "blocked", stage="stopped",
