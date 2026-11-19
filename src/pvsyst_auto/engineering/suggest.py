@@ -9,12 +9,69 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+from pvsyst_auto.components.editor import objects
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
 from pvsyst_auto.components.store import electrical_inventory
 
 DEFAULT_BETA_VOC_PCT_PER_C = -0.30
 DEFAULT_BETA_VMP_PCT_PER_C = -0.35
 DEFAULT_ALPHA_ISC_PCT_PER_C = 0.05
+
+_ASYMMETRIC_MPPT_PAIRS = (
+    ("IscMaxMain", "IscMaxSec", "A"),
+    ("IMaxMain", "IMaxSec", "A"),
+    ("IMaxDCMain", "IMaxDCSec", "A"),
+    ("IDCMaxMain", "IDCMaxSec", "A"),
+    ("PNomMain", "PNomSec", "kW"),
+    ("PMaxMain", "PMaxSec", "kW"),
+    ("NbInputsMain", "NbInputsSec", "inputs"),
+    ("NbMPPTMain", "NbMPPTSec", "MPPTs"),
+)
+
+
+def _inspect_ond_mppt_limits(ond_text: str) -> tuple[list[str], float | None]:
+    """Check an OND for asymmetric Main/Sec MPPT limits and any uniform declared Isc limit.
+
+    Returns ``(asymmetry_issues, uniform_isc_limit_a)``.
+    """
+    fields: dict[str, list[float]] = {}
+    for block in objects(ond_text):
+        if block.path not in ("", "Converter"):
+            continue
+        for key, entries in block.fields.items():
+            for _, raw in entries:
+                try:
+                    val = float(raw)
+                except ValueError:
+                    continue
+                if math.isfinite(val):
+                    fields.setdefault(key, []).append(val)
+
+    issues: list[str] = []
+    for main_key, sec_key, unit in _ASYMMETRIC_MPPT_PAIRS:
+        main_vals = [v for v in fields.get(main_key, ()) if v > 0]
+        sec_vals = [v for v in fields.get(sec_key, ()) if v > 0]
+        if main_vals and sec_vals:
+            if not math.isclose(main_vals[0], sec_vals[0], rel_tol=1e-9, abs_tol=1e-9):
+                issues.append(
+                    f"OND declares asymmetric MPPT limits ({main_key}={main_vals[0]:g} {unit} != "
+                    f"{sec_key}={sec_vals[0]:g} {unit}); uniform per-MPPT sizing cannot guarantee "
+                    "every input stays within rating"
+                )
+        elif sec_vals and not main_vals:
+            issues.append(
+                f"OND declares secondary MPPT limit {sec_key}={sec_vals[0]:g} {unit} without a matching "
+                f"{main_key}; uniform per-MPPT sizing cannot assume equal inputs"
+            )
+
+    uniform_isc: float | None = None
+    isc_main = [v for v in fields.get("IscMaxMain", ()) if v > 0]
+    isc_sec = [v for v in fields.get("IscMaxSec", ()) if v > 0]
+    if isc_main and isc_sec and math.isclose(isc_main[0], isc_sec[0], rel_tol=1e-9, abs_tol=1e-9):
+        uniform_isc = isc_main[0]
+    elif isc_main and not isc_sec:
+        uniform_isc = isc_main[0]
+    return issues, uniform_isc
 
 
 def _finite(value, label: str, *, minimum: float | None = None, maximum: float | None = None,
@@ -193,6 +250,12 @@ def suggest_sizing(
     mod_op_a = round(max(imp, imp * (1.0 + (alpha_isc / 100.0) * max(0.0, t_op_max - 25.0))), 3)
     mod_sc_a = round(max(isc, isc * (1.0 + (alpha_isc / 100.0) * max(0.0, t_op_max - 25.0))), 3)
 
+    mppt_asymmetry_issues, declared_uniform_isc_a = _inspect_ond_mppt_limits(ond_text)
+    if mppt_asymmetry_issues:
+        for msg in mppt_asymmetry_issues:
+            issue("mppt_limits", msg)
+        return result
+
     idc_field = (ond_elec.get("fields") or {}).get("IDCMax") or {}
     if idc_field.get("status") == "declared" and float(idc_field["value"]) > 0:
         total_idc = float(idc_field["value"])
@@ -211,6 +274,9 @@ def suggest_sizing(
             f"OND IDCMax not declared; estimated per-MPPT current limit from PNomConv={pnom_ac:g} kW "
             f"at Vref={v_ref_dc:g} V (operating={mppt_op_a:g} A, short-circuit={mppt_sc_a:g} A)"
         )
+    if declared_uniform_isc_a is not None and declared_uniform_isc_a < mppt_sc_a:
+        mppt_sc_a = round(declared_uniform_isc_a, 3)
+        assumptions.append(f"Capped per-MPPT short-circuit limit to declared OND IscMax={mppt_sc_a:g} A")
 
     v_abs_limit = min(vabs_max, v_max_mod)
     min_series = max(1, math.ceil(vmpp_min / hot_vmp))
