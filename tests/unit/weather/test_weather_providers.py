@@ -161,6 +161,17 @@ class MultiProviderWeatherTests(unittest.TestCase):
             self.assertEqual(done["preparation"]["status"], "prepared")
             prep_mock.assert_called_once()
 
+            with patch.object(acquisition, "_provider_get", return_value=(payload, raw_text, "https://re.jrc.ec.europa.eu/api/v5_3/tmy?ok=1")), \
+                    patch.object(api_weather, "prepare_weather", return_value={"status": "blocked", "issues": ["SIT exists"]}):
+                failed = api_weather.pvsyst_acquire_weather(
+                    csv_name="chain_tmy2.csv", year=2021,
+                    latitude=31.32, longitude=120.72, site_name="Suzhou",
+                    country_code="CN", timezone_name="Asia/Shanghai",
+                    provider="pvgis_tmy", prepare=True, dry_run=False,
+                )
+            self.assertEqual((failed["status"], failed["stage"]), ("blocked", "preparation"))
+            self.assertEqual(failed["preparation"]["issues"], ["SIT exists"])
+
 
 if __name__ == "__main__":
     unittest.main()
