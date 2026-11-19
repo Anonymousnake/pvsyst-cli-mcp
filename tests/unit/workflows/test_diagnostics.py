@@ -574,6 +574,23 @@ class DiagnosticsEngineTests(unittest.TestCase):
         self.assertEqual(sim["physical_diagnostics"]["max_severity"], "critical")
         self.assertTrue(any(f["code"] == "INVERTER_OVERVOLTAGE" for f in sim["physical_diagnostics"]["top_findings"]))
 
+    def test_issue_201_irregular_subhourly_cadence_returns_blocked(self):
+        # 15-min rows covering 08:00..10:00 with 09:00 removed -> 8 rows, irregular cadence -> blocked.
+        stamps = [
+            "01/06/24 08:00", "01/06/24 08:15", "01/06/24 08:30", "01/06/24 08:45",
+            "01/06/24 09:15", "01/06/24 09:30", "01/06/24 09:45", "01/06/24 10:00",
+        ]
+        csv_gap = _write_csv(
+            self.root / "Results" / "gap_15min.csv",
+            [("GlobInc", "W/m2"), ("EArray", "kW"), ("E_Grid", "kW")],
+            [[stamp, 500.0, 0.0, 0.0] for stamp in stamps],
+        )
+        diag = diagnose_simulation_csv(csv_gap, thresholds={"zero_output_max_hours": 3.0})
+        self.assertEqual(diag["status"], "blocked", diag)
+        self.assertIsNone(diag["step_minutes"])
+        self.assertEqual(diag["finding_count"], 0)
+        self.assertTrue(diag["issues"])
+
 
 if __name__ == "__main__":
     unittest.main()

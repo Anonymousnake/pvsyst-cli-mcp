@@ -341,7 +341,8 @@ def diagnose_simulation_csv(
     step_minutes: float | None = None
     regular = True
     scan_rows = 0
-    for _, scan_row in iter_result_csv(path, strict=True):
+    scan_headers: list[str] = []
+    for scan_headers, scan_row in iter_result_csv(path, strict=True):
         stamp = scan_row[0]
         if prev_stamp is not None:
             delta = (stamp - prev_stamp).total_seconds() / 60.0
@@ -357,7 +358,28 @@ def diagnose_simulation_csv(
     if scan_rows == 0:
         raise ValueError("Result CSV contains no simulation rows")
 
-    eff_step_min = step_minutes if (regular and step_minutes is not None) else 60.0
+    if not regular:
+        return {
+            "status": "blocked",
+            "issues": [
+                "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+                "cannot establish interval duration for diagnostics"
+            ],
+            "max_severity": "none",
+            "finding_count": 0,
+            "counts_by_severity": {"critical": 0, "high": 0, "medium": 0, "info": 0},
+            "needs_review": False,
+            "rows": scan_rows,
+            "step_minutes": None,
+            "is_bifacial": False,
+            "weighted_pr": None,
+            "analyzed_columns": [h for h in scan_headers[1:]],
+            "variant_attribution_used": vc_info is not None,
+            "grid_limit_context": None,
+            "findings": [],
+        }
+
+    eff_step_min = step_minutes if step_minutes is not None else 60.0
     step_hours = eff_step_min / 60.0
     has_grid_storage = bool(vc_info and vc_info.get("grid_storage") is not None)
 
