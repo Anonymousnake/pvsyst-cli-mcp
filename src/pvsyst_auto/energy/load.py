@@ -11,6 +11,7 @@ from pathlib import Path, PureWindowsPath
 
 from pvsyst_auto.components.editor import replace_value, root_block
 from pvsyst_auto.energy.profiles import DATE_FORMATS, TIME_BASIS, UNITS, _inspect_load, _read
+from pvsyst_auto.energy.storage import PEAK_SHAVING_LOAD_ERROR, has_peak_shaving_storage
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
@@ -132,6 +133,8 @@ def create_load_variant(store, *, project, source_variant, new_variant, load_man
         _, system = store._sections(lines)
         if system is None:
             raise ValueError("One owning pvSystem is required")
+        if has_peak_shaving_storage(lines):
+            raise ValueError(PEAK_SHAVING_LOAD_ERROR)
         record, profile, values = load_snapshot(store.workspace, load_manifest_name)
         newline = "\r\n" if "\r\n" in text else "\n"
         block, encoding = hourly_load_block(profile, values, record["year"], newline)
