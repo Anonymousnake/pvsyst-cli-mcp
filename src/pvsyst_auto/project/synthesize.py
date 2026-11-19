@@ -1240,6 +1240,7 @@ def synthesize_house_source(store, components, request: dict) -> dict:
 
 def synthesize_ground_shed_shading(*, shed_count: int = 10, pitch_m: float = 10.0,
                                    tilt_deg: float = 20.0, azimuth_deg: float = 0.0,
+                                   base_slope_deg: float = 0.0,
                                    module_rows: int = 2, module_columns: int = 25,
                                    module_width_m: float = 1.052, module_length_m: float = 2.131,
                                    module_name: str = "PV Module",
@@ -1288,7 +1289,7 @@ def synthesize_ground_shed_shading(*, shed_count: int = 10, pitch_m: float = 10.
         "        ColorBord=$00505050",
         f"        DOrigine={origin[0]:.6f},{origin[1]:.6f},{origin[2]:.6f}",
         f"        DInclin={tilt:.6f}",
-        "        BaseSlope=0.000000",
+        f"        BaseSlope={_finite(base_slope_deg, 'base_slope_deg', minimum=-45.0, maximum=45.0):.6f}",
         f"        DAzimut={azim:.6f}",
         "        Source=osPVsyst",
         f"      NElemChamps={n_sheds}",
@@ -1480,6 +1481,12 @@ def synthesize_utility_project(
     module_name: str | None = None,
     bifacial: dict | None = None,
     include_3d_scene: bool | None = None,
+    site_polygon: list[list[float]] | None = None,
+    setback_m: float = 0.0,
+    ground_clearance_m: float = 0.5,
+    max_table_columns: int | None = None,
+    obstacles: list[dict] | None = None,
+    base_slope_deg: float = 0.0,
     u_factor: float = 29.0,
     lid_loss: float = 0.0,
     pmism_mpp: float = 2.0,
@@ -1534,13 +1541,15 @@ def synthesize_utility_project(
     need_3d = (
         include_3d_scene
         if include_3d_scene is not None
-        else field_type in ("RegularSheds", "TrackHorizNSAxis")
+        else (field_type in ("RegularSheds", "TrackHorizNSAxis") or site_polygon is not None or bool(obstacles))
     )
+    eff_base_slope = _finite(base_slope_deg, "base_slope_deg", minimum=-45.0, maximum=45.0)
     orient_spec = {
         "id": 1,
         "field_type": field_type,
         "tilt_deg": tilt_deg,
         "azimuth_deg": azimuth_deg,
+        "base_slope_deg": eff_base_slope,
         "axis_azimuth_deg": axis_azimuth_deg,
         "min_phi_deg": min_phi_deg,
         "max_phi_deg": max_phi_deg,
@@ -1569,6 +1578,7 @@ def synthesize_utility_project(
         orient_spec["cell_width_m"] = cell_width_m
 
     shading_lines = None
+    ground_3d_layout = None
     if need_3d:
         if field_type in ("TrackHorizNSAxis", "UnlimTracking"):
             shading_lines = synthesize_ground_tracker_shading(
@@ -1585,12 +1595,43 @@ def synthesize_utility_project(
                 spacing_y_m=sy,
                 version=version,
             )
+        elif site_polygon is not None:
+            from pvsyst_auto.scene.ground import build_ground_3d_shading, plan_ground_polygon_layout
+
+            ground_3d_layout = plan_ground_polygon_layout(
+                site_polygon,
+                tilt_deg=tilt_deg,
+                azimuth_deg=azimuth_deg,
+                pitch_m=resolved_pitch,
+                module_width_m=mw,
+                module_length_m=ml,
+                module_rows=n_rows,
+                module_orientation="landscape" if module_orient == "moLandscape" else "portrait",
+                spacing_x_m=sx,
+                spacing_y_m=sy,
+                setback_m=setback_m,
+                ground_clearance_m=ground_clearance_m,
+                max_table_columns=max_table_columns,
+                base_slope_deg=eff_base_slope,
+            )
+            shading_lines = build_ground_3d_shading(
+                ground_3d_layout["tables"],
+                module_name=resolved_mod_name,
+                module_width_m=mw,
+                module_length_m=ml,
+                module_orient=module_orient,
+                spacing_x_m=sx,
+                spacing_y_m=sy,
+                obstacles=obstacles,
+                version=version,
+            )
         else:
             shading_lines = synthesize_ground_shed_shading(
                 shed_count=shed_count,
                 pitch_m=resolved_pitch,
                 tilt_deg=tilt_deg,
                 azimuth_deg=azimuth_deg,
+                base_slope_deg=eff_base_slope,
                 module_rows=n_rows,
                 module_columns=n_cols,
                 module_width_m=mw,
@@ -1601,6 +1642,26 @@ def synthesize_utility_project(
                 spacing_y_m=sy,
                 version=version,
             )
+            if obstacles:
+                from pvsyst_auto.native.headless import _faces, _shd_object, _shd_tree
+                from pvsyst_auto.scene.author import obstacle_profiles
+
+                parsed_obs = obstacle_profiles(obstacles)
+                if parsed_obs:
+                    # Splice 3D obstacles into the ListeObjets of the regular shed shading scene
+                    extra_lines: list[str] = []
+                    for idx_o, obs in enumerate(parsed_obs, start=2):
+                        if obs["kind"] == "tree":
+                            extra_lines.extend(_shd_tree(idx_o, idx_o, obs, 0.0, 0.0))
+                        else:
+                            extra_lines.extend(_shd_object(idx_o, idx_o, [tuple(v) for v in obs["vertices"]], _faces(obs)))
+                    shading_lines = [
+                        (f"    ListeObjets, list of={1 + len(parsed_obs)} TShdObject"
+                         if ln.strip() == "ListeObjets, list of=1 TShdObject" else ln)
+                        for ln in shading_lines
+                    ]
+                    end_pos = next(i for i, ln in enumerate(shading_lines) if ln.strip() == "End of ListeObjets")
+                    shading_lines[end_pos:end_pos] = extra_lines
 
     sub_mppt = n_inv_mppt if n_inv_mppt is not None else (n_string_ch if independent_mppt else 1)
     subarrays = [{
@@ -1651,5 +1712,8 @@ def synthesize_utility_project(
         "module_length_m": ml,
         "module_dimension_source": dim_source,
         "bifacial_enabled": bool(bifacial and bifacial.get("enabled", True)),
+        "base_slope_deg": eff_base_slope,
+        "obstacle_count": len(obstacles or ()),
+        **({"ground_3d_layout": ground_3d_layout} if ground_3d_layout is not None else {}),
     }
     return result

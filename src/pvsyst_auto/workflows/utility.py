@@ -34,6 +34,8 @@ GROUND_LAYOUT_KEYS = frozenset((
     "axis_azimuth_deg", "min_phi_deg", "max_phi_deg",
     "backtracking", "irrad_optimiz", "central_gap_m", "pitch_slope_deg",
     "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg",
+    "site_polygon", "setback_m", "ground_clearance_m", "max_table_columns",
+    "obstacles", "base_slope_deg",
 ))
 TRACKER_ONLY_KEYS = frozenset((
     "axis_azimuth_deg", "min_phi_deg", "max_phi_deg",
@@ -56,9 +58,11 @@ def _is_int(value) -> bool:
 
 def resolve_utility_field_type(scope: str, ground_layout: dict | None) -> tuple[str, bool]:
     """Map (scope, ground_layout.model_mode) to native (field_type, include_3d_scene)."""
-    mode = (ground_layout or {}).get("model_mode", "unlimited")
+    layout = ground_layout or {}
+    mode = layout.get("model_mode", "unlimited")
     if scope == "ground_sheds":
-        return ("RegularSheds", True) if mode == "3d" else ("Sheds", False)
+        has_3d = (mode == "3d") or (layout.get("site_polygon") is not None) or bool(layout.get("obstacles"))
+        return ("RegularSheds", True) if has_3d else ("Sheds", False)
     if scope == "ground_tracker":
         return ("TrackHorizNSAxis", True) if mode == "3d" else ("UnlimTracking", False)
     raise ValueError(f"Not a utility scope: {scope!r}")
@@ -165,6 +169,39 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
         val = layout["wind_stow_position_deg"]
         if not _is_number(val) or not -90 <= val <= 90:
             bad("ground_layout.wind_stow_position_deg", "wind_stow_position_deg must lie in -90..90 degrees")
+
+    if layout.get("site_polygon") is not None:
+        if scope != "ground_sheds":
+            bad("ground_layout.site_polygon", "site_polygon finite 3D layout is currently supported for scope='ground_sheds'")
+        else:
+            from pvsyst_auto.scene.ground import validate_site_polygon
+            try:
+                validate_site_polygon(layout["site_polygon"])
+            except ValueError as exc:
+                bad("ground_layout.site_polygon", exc)
+    if layout.get("obstacles") is not None:
+        if scope != "ground_sheds":
+            bad("ground_layout.obstacles", "3D obstacles are currently supported for scope='ground_sheds'")
+        else:
+            from pvsyst_auto.scene.author import obstacle_profiles
+            try:
+                obstacle_profiles(layout["obstacles"])
+            except ValueError as exc:
+                bad("ground_layout.obstacles", exc)
+    for key in ("setback_m", "ground_clearance_m"):
+        val = layout.get(key)
+        if val is not None and (not _is_number(val) or val < 0):
+            bad(f"ground_layout.{key}", f"{key} must be a non-negative finite number")
+    if layout.get("max_table_columns") is not None:
+        val = layout["max_table_columns"]
+        if not _is_int(val) or not 1 <= val <= 500:
+            bad("ground_layout.max_table_columns", "max_table_columns must be an integer in 1..500")
+    if layout.get("base_slope_deg") is not None:
+        val = layout["base_slope_deg"]
+        if scope != "ground_sheds":
+            bad("ground_layout.base_slope_deg", "base_slope_deg is supported for scope='ground_sheds'; use pitch_slope_deg for trackers")
+        elif not _is_number(val) or not -45 <= val <= 45:
+            bad("ground_layout.base_slope_deg", "base_slope_deg must lie in -45..45 degrees")
 
     bifacial = spec.get("bifacial")
     if bifacial is not None:
@@ -321,6 +358,12 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "spacing_y_m": float(layout.get("spacing_y_m", 0.02)),
         "bifacial": bif_cfg,
         "include_3d_scene": include_3d,
+        "site_polygon": layout.get("site_polygon"),
+        "setback_m": float(layout.get("setback_m", 0.0)),
+        "ground_clearance_m": float(layout.get("ground_clearance_m", 0.5)),
+        "max_table_columns": layout.get("max_table_columns"),
+        "obstacles": layout.get("obstacles"),
+        "base_slope_deg": float(layout.get("base_slope_deg", 0.0)),
         "u_factor": float(losses.get("UFactor", 29.0)),
         "lid_loss": float(losses.get("LIDLoss", 0.0)),
         "pmism_mpp": float(losses.get("PMismMPP", 2.0)),

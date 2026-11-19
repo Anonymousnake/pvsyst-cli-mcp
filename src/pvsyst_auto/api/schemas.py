@@ -702,6 +702,12 @@ class GroundLayoutRequest(BaseModel):
     wind_stow: StrictBool | None = None
     wind_stow_speed_ms: StrictNum | None = None
     wind_stow_position_deg: StrictNum | None = None
+    site_polygon: Annotated[list[list[StrictNum]], Field(min_length=3, max_length=64)] | None = None
+    setback_m: StrictNum | None = None
+    ground_clearance_m: StrictNum | None = None
+    max_table_columns: Annotated[StrictInt, Field(ge=1, le=500)] | None = None
+    obstacles: Annotated[list[ObstacleSpec], Field(min_length=1, max_length=64)] | None = None
+    base_slope_deg: StrictNum | None = None
 
 
 class AutoSizingOptions(BaseModel):

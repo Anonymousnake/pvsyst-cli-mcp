@@ -156,7 +156,7 @@ def _shd_table(idx, noc, profile, group, modules, turn):
             "        %s=%s" % FORMAT["table_colors"][2],
             "        DOrigine=" + ",".join(_n6(v) for v in world_origin),
             "        DInclin=%s" % _n6(profile["tilt_deg"]),
-            "        BaseSlope=%s" % FORMAT["base_slope"],
+            "        BaseSlope=%s" % _n6(group.get("base_slope_deg", 0.0)),
             # Signed source FieldAzim convention (e.g. -45), never 315 standing in for -45.
             "        DAzimut=%s" % _n6(group["field_azimuth_deg"]),
             "        Source=%s" % FORMAT["source"],
