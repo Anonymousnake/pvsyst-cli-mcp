@@ -203,6 +203,26 @@ class WorkspaceTests(unittest.TestCase):
                                           new_variant="VC1", load_manifest_name="load_load.json",
                                           dry_run=False, **{"battery": BATTERY, "storage": STORAGE, **changes})
 
+    def test_storage_and_component_swaps_reject_leading_space_battery_bindings(self):
+        name = " Fixture.BTR"
+        (self.root / "ComposPV/Batteries" / name).write_text(BTR, encoding="utf-8")
+        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + CLOSE)
+        for library in ("workspace", "builtin"):
+            result = self.build_storage(battery={**BATTERY, "file_name": name, "library": library})
+            self.assertEqual(result["status"], "blocked", result)
+            self.assertIn("Battery references cannot start with whitespace", result["issues"][0])
+            self.assertFalse((self.root / "Projects/Fixture.VC1").exists())
+
+        self.created(self.build_storage())
+        variant = self.root / "Projects/Fixture.VC1"
+        variant.write_bytes(variant.read_bytes().replace(b"BatteryFile=Fixture.BTR", b"BatteryFile= Fixture.BTR"))
+        before = variant.read_bytes()
+        with self.assertRaisesRegex(ValueError, "Battery references cannot start with whitespace"):
+            self.store.update("Fixture.PRJ", "VC1", {"BTR": name})
+        self.assertEqual(variant.read_bytes(), before)
+        self.store.update("Fixture.PRJ", "VC1", {"BTR": "Fixture.BTR"})
+        self.assertIn(b"BatteryFile=Fixture.BTR\r\n", variant.read_bytes())
+
     def test_storage_scalars_never_use_exponent_notation(self):
         self.source(ROOT.format(root_flags="$00") + ARRAY + STORAGE_SYSTEM
                     + GRID_STORAGE.format(strategy="SelfConsumption", unavail="") + CLOSE)

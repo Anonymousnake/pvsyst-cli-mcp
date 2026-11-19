@@ -14,7 +14,7 @@ from pathlib import Path
 from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.components.store import ComponentStore, FIELD, MAX_PROJECT_BYTES
 from pvsyst_auto.project import fileio, variant_readback, variant_topology, variant_updates
-from pvsyst_auto.project.paths import project_path, project_root
+from pvsyst_auto.project.paths import battery_reference_name, project_path, project_root
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
@@ -207,6 +207,8 @@ class VariantStore:
         text, lines = self._text(data)
         arrays, system = self._sections(lines)
         for kind, filename in updates.items():
+            if kind == "BTR":
+                battery_reference_name(filename)
             component = self.components._path(kind, filename)
             if not component.is_file() and self.components.builtin:
                 component = self.components._path(kind, filename, "builtin")
@@ -221,7 +223,11 @@ class VariantStore:
             if len(indices) != 1:
                 raise ValueError(f"{FIELDS[kind]} must occur exactly once in its section")
             index = indices[0]
-            lines[index] = replace_value(lines[index], filename)
+            line = lines[index]
+            if kind == "BTR":
+                key, equals, old = line.partition("=")
+                line = key + equals + old.lstrip(" \t")
+            lines[index] = replace_value(line, filename)
         if "".join(lines) == text:
             return data
 
