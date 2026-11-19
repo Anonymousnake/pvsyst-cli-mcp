@@ -244,7 +244,7 @@ class ObstaclePipelineTests(unittest.TestCase):
         house = {"kind": "mesh", "meshes": [_roof_mesh("MainRoof", 0.0, 0.0, 25.0)]}
         layout = {"tables": [
             {"name": "RowA", "roof_mesh": "MainRoof", "module_rows": 2, "module_columns": 6,
-             "row_spacing_m": 0, "column_spacing_m": 0, "orientation": "landscape",
+             "row_spacing_m": 0.001, "column_spacing_m": 0, "orientation": "landscape",
              "origin_m": [1.0, 1.0, 1.0 * math.tan(math.radians(25.0)) + 0.3]},
             {"name": "RowB", "roof_mesh": "MainRoof", "module_rows": 2, "module_columns": 6,
              "row_spacing_m": 0, "column_spacing_m": 0, "orientation": "landscape",
@@ -272,6 +272,15 @@ class ObstaclePipelineTests(unittest.TestCase):
         self.assertEqual(out["status"], "ready", out)
         self.assertEqual(out["request_summary"]["shading_mode"], "module_layout")
         self.assertFalse((ws / "Projects/HouseOut.PRJ").exists())
+        precise_layout = {"tables": [dict(layout["tables"][0], row_spacing_m=0.0005), layout["tables"][1]]}
+        before = set(ws.rglob("*"))
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                blocked = run_house_task(store, comps, fake_cli, request={**req, "layout": precise_layout},
+                                         dry_run=dry_run, confirm=not dry_run)
+                self.assertEqual(blocked["status"], "blocked", blocked)
+                self.assertRegex(blocked["issues"][0], r"RowA.*row_spacing_m=0\.0005 m.*0\.001 m")
+                self.assertEqual(set(ws.rglob("*")), before)
 
     def test_portrait_spacing_three_roofs_powersharing_and_no_shading_source(self):
         from pvsyst_auto.scene.author import _rotate_z
