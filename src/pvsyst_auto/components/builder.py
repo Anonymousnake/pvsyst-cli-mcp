@@ -5,27 +5,155 @@ import difflib
 import json
 from pvsyst_auto.components.commercial import replace_commercial
 from pvsyst_auto.components.editor import objects, replace_value
+from pvsyst_auto.components.single_diode import (
+    synthesize_ond_from_datasheet,
+    synthesize_pan_from_datasheet,
+)
 from pvsyst_auto.components.store import electrical_inventory, inspect_curves
 from pvsyst_auto.components.pan import ALIASES as PAN_ALIASES
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.workflows.sourced_design import bind_source_values
 from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
-# Only fields with verified units and an existing editor are admitted.
+# Only fields with verified units and an existing editor or synthesizer are admitted.
 SCALAR_UNITS = {
-    "PAN": {"PNom": "W", "ISC": "A", "Voc": "V", "Imp": "A", "Vmp": "V"},
-    "OND": {"PNomConv": "kW", "PMaxOUT": "kW", "VMppMin": "V", "VMPPMax": "V",
-            "VAbsMax": "V", "EfficMax": "%", "EfficEuro": "%"},
+    "PAN": {
+        "PNom": ("W",),
+        "ISC": ("A",),
+        "Voc": ("V",),
+        "Imp": ("A",),
+        "Vmp": ("V",),
+        "NCelS": ("count", "cells"),
+        "NCelP": ("count", "strings"),
+        "NDiode": ("count",),
+        "BifacialityFactor": ("ratio", "%"),
+        "VMaxIEC": ("V",),
+        "VMaxUL": ("V",),
+        "MuISC": ("mA/degC", "mA/C", "A_per_degC", "pct_per_degC"),
+        "muVocSpec": ("mV/degC", "mV/C", "V_per_degC", "pct_per_degC"),
+        "muPmpReq": ("pct_per_degC",),
+    },
+    "OND": {
+        "PNomConv": ("kW",),
+        "PMaxOUT": ("kW",),
+        "VMppMin": ("V",),
+        "VMPPMax": ("V",),
+        "VAbsMax": ("V",),
+        "EfficMax": ("%",),
+        "EfficEuro": ("%",),
+        "VOutConv": ("V",),
+        "NbMPPT": ("count",),
+        "NbInputs": ("count",),
+        "IDCMax": ("A",),
+    },
 }
 DIMENSION_UNITS = {"Width": ("m", "mm"), "Height": ("m", "mm"),
                    "Depth": ("m", "mm"), "Weight": ("kg",)}
 
 
-def build_sourced_component(store, *, component_type, template_name, new_name,
+def _build_zero_template_candidate(component_type, *, manufacturer, model, values, source_note):
+    """Synthesize a complete PVsyst 8.1.7 PAN or OND directly from cited datasheet values."""
+    conversions = []
+    parsed: dict[str, tuple[float, str]] = {}
+    for key, entries in values.items():
+        entry, = entries
+        val = float(entry["value"])
+        unit = entry["unit"]
+        if key in DIMENSION_UNITS and unit == "mm":
+            val /= 1000.0
+            conversions.append({"field": key, "from": "mm", "to": "m", "factor": 0.001})
+            unit = "m"
+        elif key == "BifacialityFactor" and unit == "%":
+            val /= 100.0
+            conversions.append({"field": key, "from": "%", "to": "ratio", "factor": 0.01})
+            unit = "ratio"
+        parsed[key] = (val, unit)
+
+    def req(key):
+        if key not in parsed:
+            raise ValueError(f"Zero-template {component_type} synthesis requires declared field: {key}")
+        return parsed[key][0]
+
+    if component_type == "PAN":
+        isc = req("ISC")
+        voc = req("Voc")
+        mu_isc = None
+        if "MuISC" in parsed:
+            val, unit = parsed["MuISC"]
+            if unit == "pct_per_degC":
+                mu_isc = isc * (val / 100.0) * 1000.0
+                conversions.append({"field": "MuISC", "from": unit, "to": "mA/degC", "factor": isc * 10.0})
+            elif unit == "A_per_degC":
+                mu_isc = val * 1000.0
+                conversions.append({"field": "MuISC", "from": unit, "to": "mA/degC", "factor": 1000.0})
+            else:
+                mu_isc = val
+        mu_voc = None
+        if "muVocSpec" in parsed:
+            val, unit = parsed["muVocSpec"]
+            if unit == "pct_per_degC":
+                mu_voc = voc * (val / 100.0) * 1000.0
+                conversions.append({"field": "muVocSpec", "from": unit, "to": "mV/degC", "factor": voc * 10.0})
+            elif unit == "V_per_degC":
+                mu_voc = val * 1000.0
+                conversions.append({"field": "muVocSpec", "from": unit, "to": "mV/degC", "factor": 1000.0})
+            else:
+                mu_voc = val
+        mu_pmp = parsed["muPmpReq"][0] if "muPmpReq" in parsed else -0.32
+        text, meta = synthesize_pan_from_datasheet(
+            manufacturer=manufacturer,
+            model=model,
+            pnom_w=req("PNom"),
+            isc_a=isc,
+            voc_v=voc,
+            imp_a=req("Imp"),
+            vmp_v=req("Vmp"),
+            width_m=req("Width"),
+            height_m=req("Height"),
+            depth_m=parsed["Depth"][0] if "Depth" in parsed else 0.035,
+            weight_kg=parsed["Weight"][0] if "Weight" in parsed else 28.0,
+            n_cells_s=int(round(parsed["NCelS"][0])) if "NCelS" in parsed else 72,
+            n_cells_p=int(round(parsed["NCelP"][0])) if "NCelP" in parsed else 2,
+            n_diode=int(round(parsed["NDiode"][0])) if "NDiode" in parsed else 3,
+            mu_isc_ma_per_c=mu_isc,
+            mu_voc_mv_per_c=mu_voc,
+            mu_pmp_pct_per_c=mu_pmp,
+            bifaciality_factor=parsed["BifacialityFactor"][0] if "BifacialityFactor" in parsed else None,
+            vmax_iec_v=parsed["VMaxIEC"][0] if "VMaxIEC" in parsed else 1500.0,
+            vmax_ul_v=parsed["VMaxUL"][0] if "VMaxUL" in parsed else 1500.0,
+            source_note=source_note,
+        )
+        return text, meta, conversions, {k: str(v[0]) for k, v in parsed.items()}
+
+    text, meta = synthesize_ond_from_datasheet(
+        manufacturer=manufacturer,
+        model=model,
+        pnom_ac_kw=req("PNomConv"),
+        pmax_ac_kw=parsed["PMaxOUT"][0] if "PMaxOUT" in parsed else None,
+        vmpp_min_v=req("VMppMin"),
+        vmpp_max_v=req("VMPPMax"),
+        vabs_max_v=req("VAbsMax"),
+        effic_max_pct=parsed["EfficMax"][0] if "EfficMax" in parsed else 98.5,
+        effic_euro_pct=parsed["EfficEuro"][0] if "EfficEuro" in parsed else None,
+        vout_ac_v=parsed["VOutConv"][0] if "VOutConv" in parsed else None,
+        nb_mppt=int(round(parsed["NbMPPT"][0])) if "NbMPPT" in parsed else 2,
+        nb_inputs=int(round(parsed["NbInputs"][0])) if "NbInputs" in parsed else None,
+        idc_max_a=parsed["IDCMax"][0] if "IDCMax" in parsed else 0.0,
+        width_m=parsed["Width"][0] if "Width" in parsed else 0.70,
+        height_m=parsed["Height"][0] if "Height" in parsed else 0.65,
+        depth_m=parsed["Depth"][0] if "Depth" in parsed else 0.35,
+        weight_kg=parsed["Weight"][0] if "Weight" in parsed else 75.0,
+        source_note=source_note,
+    )
+    return text, meta, conversions, {k: str(v[0]) for k, v in parsed.items()}
+
+
+def build_sourced_component(store, *, component_type, new_name,
                            manufacturer, model, sources, declarations,
+                           template_name=None,
                            source_library="workspace", dry_run=True,
                            acknowledge_inherited_model=False):
-    """Preview or create a new component from cited values and a template."""
+    """Preview or create a new component from cited values (template-derived or zero-template)."""
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
               "issues": [], "warnings": [], "provenance": [],
               "component_created": False, "artifacts": {}, "model_refitted": False}
@@ -44,8 +172,8 @@ def build_sourced_component(store, *, component_type, template_name, new_name,
         issue("declarations", "Supply at least one cited numeric field")
     if result["issues"]:
         return result
-    fields = {key: ((unit,), ("scalar", key))
-              for key, unit in SCALAR_UNITS[component_type].items()}
+    fields = {key: (units, ("scalar", key))
+              for key, units in SCALAR_UNITS[component_type].items()}
     fields.update({key: (units, ("commercial", key)) for key, units in DIMENSION_UNITS.items()})
     binding = bind_source_values(manufacturer_model=manufacturer + " " + model,
                                  sources=sources, declarations=declarations, field_specs=fields)
@@ -55,13 +183,77 @@ def build_sourced_component(store, *, component_type, template_name, new_name,
         return result
     with store.lock:
         try:
-            original_path = store._path(component_type, template_name, source_library)
             target = store._path(component_type, new_name)
             manifest = workspace_file(store.workspace, "Results", new_name + ".sources.json", ".json")
             for path in (target, manifest):
                 if path.exists() or (path.parent.exists() and any(
                         member.name.casefold() == path.name.casefold() for member in path.parent.iterdir())):
                     raise FileExistsError("Choose new component and source-record names; already exists: " + path.name)
+            source_ids = sorted({item["sourceID"] for item in result["provenance"]})
+            zero_template = template_name is None or template_name == ""
+            if zero_template:
+                source_note = ("Zero-template datasheet synthesis; cited " + ", ".join(source_ids))[:1000]
+                candidate, synth_meta, conversions, requested = _build_zero_template_candidate(
+                    component_type,
+                    manufacturer=manufacturer,
+                    model=model,
+                    values=binding["values"],
+                    source_note=source_note,
+                )
+                bom = not candidate.isascii()
+                data = (b"\xef\xbb\xbf" if bom else b"") + candidate.encode("utf-8")
+                validation = store._inspect(component_type, data)
+                store._require_valid(validation, complete=True)
+                electrical = electrical_inventory(component_type, candidate)
+                if electrical["status"] != "readable":
+                    raise ValueError("Candidate electrical fields are unreadable: " + "; ".join(electrical["issues"]))
+                diff = "".join(difflib.unified_diff([], candidate.splitlines(keepends=True),
+                                                    fromfile="<zero-template>", tofile=new_name))
+                result.update(
+                    status="needs_review",
+                    stage="preview",
+                    model_refitted=(component_type == "PAN"),
+                    synthesized=True,
+                    synthesized_metadata=synth_meta,
+                    artifacts={"component": str(target), "source_record": str(manifest)},
+                    template=None,
+                    requested_fields=requested,
+                    identity={"manufacturer": manufacturer, "model": model},
+                    unit_conversions=conversions,
+                    utf8_bom=bom,
+                    acknowledgement=acknowledge_inherited_model,
+                    inherited_fields={},
+                    inherited_curves=inspect_curves(component_type, candidate),
+                    validation={key: validation[key] for key in
+                                ("structural_errors", "warnings", "known_value_errors")},
+                    diff=diff[:32000],
+                    diff_truncated=len(diff) > 32000,
+                )
+                if dry_run:
+                    return result
+                if not acknowledge_inherited_model:
+                    issue("acknowledge_inherited_model", "Preview the synthesized model and set acknowledge_inherited_model=true before creation")
+                    result["status"] = "blocked"
+                    return result
+                manifest.parent.mkdir(parents=True, exist_ok=True)
+                record = {key: value for key, value in result.items()
+                          if key not in ("diff", "stage", "component_created", "dry_run")}
+                encoded_record = json.dumps(record, ensure_ascii=False, indent=2, allow_nan=False)
+                result["stage"] = "creation"
+                created = False
+                try:
+                    with manifest.open("x", encoding="utf-8") as stream:
+                        created = True
+                        stream.write(encoded_record)
+                    store._new(component_type, new_name, data)
+                except BaseException:
+                    if created:
+                        manifest.unlink(missing_ok=True)
+                    raise
+                result.update(stage="created", component_created=True)
+                return result
+
+            original_path = store._path(component_type, template_name, source_library)
             original = store._read(original_path)
             text = store._text(component_type, original)[1]
             if text is None:
@@ -91,7 +283,10 @@ def build_sourced_component(store, *, component_type, template_name, new_name,
             for key, entries in binding["values"].items():
                 entry, = entries
                 value = entry["value"]
-                if value <= 0:
+                if key in ("muVocSpec", "muPmpReq"):
+                    if value >= 0:
+                        raise ValueError(key + " must be negative")
+                elif value <= 0:
                     raise ValueError(key + " must be positive")
                 if key in ("EfficMax", "EfficEuro") and value > 100:
                     raise ValueError(key + " must be a percentage in (0,100]")

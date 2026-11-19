@@ -134,6 +134,7 @@ class ComponentStore:
         self.workspace = Path(workspace).resolve(strict=True)
         self.builtin = Path(builtin).resolve() if builtin else None
         self.lock = lock or threading.RLock()
+        self._meta_cache: dict[tuple[str, int, int], dict] = {}
 
     @staticmethod
     def _kind(kind: str) -> str:
@@ -388,25 +389,190 @@ class ComponentStore:
             result["lines"] = [line[:2000] for line in page]
         return result
 
+    @staticmethod
+    def _parse_float(values: list[str] | None) -> float | None:
+        if not values:
+            return None
+        try:
+            num = float(values[0])
+            return num if math.isfinite(num) else None
+        except (TypeError, ValueError):
+            return None
+
+    def _extract_specs(self, kind: str, text: str | None) -> dict:
+        if not text:
+            return {}
+        fields = self._fields(text)
+        specs: dict = {}
+        if kind == "PAN":
+            pnom = self._parse_float(fields.get("PNom"))
+            voc = self._parse_float(fields.get("Voc"))
+            isc = self._parse_float(fields.get("ISC") or fields.get("Isc"))
+            vmp = self._parse_float(fields.get("Vmp"))
+            imp = self._parse_float(fields.get("Imp"))
+            bifi_factor = self._parse_float(fields.get("BifacialityFactor"))
+            flags_raw = (fields.get("Flags") or [""])[0]
+            flag_bifi = bool(re.fullmatch(r"\$[0-9a-fA-F]{1,8}", flags_raw)
+                             and (int(flags_raw[1:], 16) & 0x00800000))
+            vmax_iec = self._parse_float(fields.get("VMaxIEC"))
+            vmax_ul = self._parse_float(fields.get("VMaxUL"))
+            vmax = max((v for v in (vmax_iec, vmax_ul) if v is not None), default=None)
+            if pnom is not None:
+                specs["pnom_w"] = pnom
+            if voc is not None:
+                specs["voc_v"] = voc
+            if isc is not None:
+                specs["isc_a"] = isc
+            if vmp is not None:
+                specs["vmp_v"] = vmp
+            if imp is not None:
+                specs["imp_a"] = imp
+            specs["bifacial"] = bool(flag_bifi or (bifi_factor is not None and bifi_factor > 0))
+            if bifi_factor is not None:
+                specs["bifaciality_factor"] = bifi_factor
+            if vmax is not None:
+                specs["vmax_v"] = vmax
+        elif kind == "OND":
+            pnom_kw = self._parse_float(fields.get("PNomConv"))
+            pmax_kw = self._parse_float(fields.get("PMaxOUT"))
+            vmin = self._parse_float(fields.get("VMppMin"))
+            vmax = self._parse_float(fields.get("VMPPMax"))
+            vabs = self._parse_float(fields.get("VAbsMax"))
+            eff = self._parse_float(fields.get("EfficMax"))
+            mppt = self._parse_float(fields.get("NbMPPT"))
+            if pnom_kw is not None:
+                specs["pnom_ac_kw"] = pnom_kw
+                specs["pnom_w"] = round(pnom_kw * 1000.0, 2)
+            if pmax_kw is not None:
+                specs["pmax_ac_kw"] = pmax_kw
+            if vmin is not None:
+                specs["vmpp_min_v"] = vmin
+            if vmax is not None:
+                specs["vmpp_max_v"] = vmax
+            if vabs is not None:
+                specs["vabs_max_v"] = vabs
+            if eff is not None:
+                specs["effic_max_pct"] = eff
+            if mppt is not None:
+                specs["nb_mppt"] = int(mppt)
+        elif kind == "BTR":
+            cap = self._parse_float(fields.get("CapNomC10") or fields.get("CapaRef"))
+            if cap is not None:
+                specs["cap_nom_ah"] = cap
+        elif kind == "GEN":
+            pgen = self._parse_float(fields.get("PNomGen"))
+            if pgen is not None:
+                specs["pnom_gen_kva"] = pgen
+                specs["pnom_w"] = round(pgen * 1000.0, 2)
+        return specs
+
+    def _cached_summary(self, kind: str, path: Path, library: str) -> dict:
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        cached = self._meta_cache.get(key)
+        if cached is not None:
+            return dict(cached)
+        data = self._read(self._path(kind, path.name, library))
+        info = self._inspect(kind, data)
+        _, text = self._text(kind, data)
+        entry = {
+            "name": path.name,
+            "format": info["format"],
+            "manufacturer": info.get("manufacturer"),
+            "model": info.get("model"),
+            "specs": self._extract_specs(kind, text),
+        }
+        self._meta_cache[key] = entry
+        return dict(entry)
+
+    def _persist_workspace_index(self, kind: str, items: list[dict]) -> None:
+        """Best-effort write of workspace metadata index for external inspection/caching."""
+        compos = self.workspace / "ComposPV"
+        if not compos.is_dir() or compos.is_symlink():
+            return
+        index_path = compos / ".mcp-component-index.json"
+        if index_path.is_symlink():
+            return
+        try:
+            existing = json.loads(index_path.read_text(encoding="utf-8")) if index_path.is_file() else {}
+            if not isinstance(existing, dict):
+                existing = {}
+        except (OSError, ValueError):
+            existing = {}
+        existing[kind] = items
+        try:
+            fileio.write_json(index_path, existing)
+        except OSError:
+            pass
+
     def list(self, kind: str, library: str = "workspace", query: str = "",
-             offset: int = 0, limit: int = 100) -> dict:
+             offset: int = 0, limit: int = 100, *,
+             min_power_w: float | None = None,
+             max_power_w: float | None = None,
+             bifacial: bool | None = None,
+             min_system_voltage_v: float | None = None,
+             min_mppt: int | None = None,
+             manufacturer: str | None = None) -> dict:
         kind = self._kind(kind)
         if offset < 0 or not 1 <= limit <= 200:
             raise ValueError("Offset must be >= 0 and limit between 1 and 200")
+        for fname, fval in (("min_power_w", min_power_w), ("max_power_w", max_power_w),
+                            ("min_system_voltage_v", min_system_voltage_v)):
+            if fval is not None:
+                if isinstance(fval, bool) or not isinstance(fval, (int, float)) or not math.isfinite(fval) or fval < 0:
+                    raise ValueError(f"{fname} must be a non-negative finite number")
+        if min_power_w is not None and max_power_w is not None and min_power_w > max_power_w:
+            raise ValueError("min_power_w must be <= max_power_w")
+        if bifacial is not None and type(bifacial) is not bool:
+            raise ValueError("bifacial filter must be a strict boolean")
+        if min_mppt is not None and (type(min_mppt) is not int or min_mppt < 1):
+            raise ValueError("min_mppt must be a positive integer")
+        has_elec_filter = any(v is not None for v in (
+            min_power_w, max_power_w, bifacial, min_system_voltage_v, min_mppt, manufacturer
+        ))
+
         folder = self._folder(kind, library)
         files = sorted((p for p in folder.iterdir() if p.is_file() and not p.is_symlink()
                         and p.suffix.upper() == f".{kind}"),
                        key=lambda path: path.name.casefold()) if folder.is_dir() else []
+        all_indexed = []
         matched = []
         for path in files:
             try:
-                info = self._inspect(kind, self._read(self._path(kind, path.name, library)))
-                if query.casefold() in " ".join((path.name, info.get("manufacturer") or "",
-                                                   info.get("model") or "")).casefold():
-                    matched.append({"name": path.name, "format": info["format"],
-                                    "manufacturer": info.get("manufacturer"), "model": info.get("model")})
+                entry = self._cached_summary(kind, path, library)
+                all_indexed.append(entry)
+                if query and query.casefold() not in " ".join((
+                    path.name, entry.get("manufacturer") or "", entry.get("model") or ""
+                )).casefold():
+                    continue
+                if manufacturer and manufacturer.casefold() not in (entry.get("manufacturer") or "").casefold():
+                    continue
+                specs = entry.get("specs") or {}
+                if min_power_w is not None or max_power_w is not None:
+                    pw = specs.get("pnom_w")
+                    if pw is None:
+                        continue
+                    if min_power_w is not None and pw < min_power_w:
+                        continue
+                    if max_power_w is not None and pw > max_power_w:
+                        continue
+                if bifacial is not None:
+                    if specs.get("bifacial") is not bifacial:
+                        continue
+                if min_system_voltage_v is not None:
+                    vmax = specs.get("vmax_v") if kind == "PAN" else specs.get("vabs_max_v")
+                    if vmax is None or vmax < min_system_voltage_v:
+                        continue
+                if min_mppt is not None:
+                    mppt = specs.get("nb_mppt")
+                    if mppt is None or mppt < min_mppt:
+                        continue
+                matched.append(entry)
             except (ValueError, FileNotFoundError):
-                matched.append({"name": path.name, "format": "unrecognized"})
+                if not has_elec_filter and not query:
+                    matched.append({"name": path.name, "format": "unrecognized"})
+        if library == "workspace" and all_indexed:
+            self._persist_workspace_index(kind, all_indexed)
         return {"total": len(matched), "offset": offset, "items": matched[offset:offset + limit]}
 
     def validate(self, kind: str, name: str, library: str = "workspace") -> dict:
