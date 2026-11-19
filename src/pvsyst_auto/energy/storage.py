@@ -732,9 +732,8 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
         if (availability is not None) != weak:
             raise ValueError("Supply a fresh complete availability declaration exactly when configuring WeakGrid")
 
-        if any(line.strip().startswith(("VarList,", "Histogram=THistogramme")) for line in lines):
-            strip_result_cache(lines)
-            _, bounds, _ = storage_state(lines, store._sections(lines)[1])
+        strip_result_cache(lines)
+        _, bounds, _ = storage_state(lines, store._sections(lines)[1])
 
         candidate_text = "".join(lines)
         if weak:

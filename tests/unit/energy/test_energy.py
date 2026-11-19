@@ -235,6 +235,27 @@ class WorkspaceTests(unittest.TestCase):
             self.assertIn("    " + line + "\r\n", text)
         self.assertEqual(result["after"]["soc_min"], 0.00001)
 
+    def test_storage_edits_invalidate_plot_only_saved_results(self):
+        plot = ("  SimulPlots=Start\n    PVObject_=pvSimulPlot\n      VarY=E_Grid\n"
+                "      NValRes=2\n      ValuesY=1,2,\n    End of PVObject pvSimulPlot\n  EndTags\n")
+        existing = STORAGE_SYSTEM + GRID_STORAGE.format(strategy="SelfConsumption", unavail="")
+        for target, system, edit, inputs in (
+            ("VC1", PV_SYSTEM, create_grid_storage_system,
+             {"battery": BATTERY, "storage": STORAGE, "load_manifest_name": "load_load.json"}),
+            ("VC2", existing, create_grid_storage_variant, {"updates": {"max_charge_ac_kw": 999}}),
+        ):
+            with self.subTest(edit=edit.__name__):
+                self.source(ROOT.format(root_flags="$00100001") + ARRAY + system + plot + CLOSE)
+                before = self.store.inspect_parameters("Fixture.PRJ", "VC0", include_saved_results=True)["saved_results"]
+                self.assertTrue(before["present"])
+
+                result = edit(self.store, project="Fixture.PRJ", source_variant="VC0", new_variant=target,
+                              dry_run=False, **inputs)
+                self.assertEqual(result["status"], "created", result)
+                after = self.store.inspect_parameters("Fixture.PRJ", target, include_saved_results=True)["saved_results"]
+                self.assertFalse(after["present"])
+                self.assertEqual(int(after["root_flags"][1:], 16) & 1, 0)
+
     def test_weak_grid_rebinding_replaces_only_the_availability_lines(self):
         source = (ROOT.format(root_flags="$00080000") + ARRAY + STORAGE_SYSTEM + SNAPSHOT_LOAD
                   + GRID_STORAGE.format(strategy="WeakGrid", unavail=OLD_UNAVAIL) + CLOSE)
