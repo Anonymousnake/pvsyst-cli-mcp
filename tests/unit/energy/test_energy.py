@@ -324,11 +324,12 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(text.endswith("  End of PVObject pvLoad\r\nEnd of PVObject pvVCalcul\r\n"))
 
         (self.root / "Projects/Fixture.VC1").unlink()
-        self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + "  " + CLOSE)
+        self.source(ROOT.format(root_flags="$00100020") + ARRAY + PV_SYSTEM + "  " + CLOSE)
         inserted = self.created(create_native_load_variant(
             self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
             load={"mode": "hourly", "load_manifest_name": "load_load.json"}, dry_run=False,
         ))
+        self.assertEqual(inserted.splitlines()[3], "  Flags=$00180020")
         self.assertIn("  End of PVObject pvSystem\r\n  PVObject_UserNeeds=pvLoad\r\n", inserted)
         self.assertTrue(inserted.endswith("  End of PVObject pvLoad\r\n  End of PVObject pvVCalcul\r\n"))
         with self.assertRaisesRegex(ValueError, "hourly load accepts only"):
