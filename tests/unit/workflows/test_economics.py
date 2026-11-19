@@ -187,6 +187,25 @@ class EconomicsEngineTests(unittest.TestCase):
                 financial={"capex_per_kw": 3500.0},
             )
 
+    def test_irregular_timestamp_cadence_is_rejected(self):
+        gap_csv = self.root / "Results" / "gap_econ.csv"
+        gap_csv.write_text(
+            "PVSYST 8.1.7\n"
+            "date;E_Grid\n"
+            ";kW\n"
+            "01/06/24 08:00;10.0\n"
+            "01/06/24 08:15;10.0\n"
+            "01/06/24 08:45;10.0\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "regular cadence"):
+            evaluate_economics(
+                workspace=self.root,
+                scenarios=[{"label": "Gap", "csv_name": "gap_econ.csv"}],
+                financial={"fixed_capex": 100_000.0},
+                tariff={"mode": "feed_in", "feed_in_tariff": 0.4},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

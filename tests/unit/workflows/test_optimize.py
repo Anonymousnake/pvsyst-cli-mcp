@@ -129,6 +129,57 @@ class OptimizeVariantTests(unittest.TestCase):
         self.assertTrue(res["converged"])
         self.assertEqual(self.cli.calls, [])
 
+    def test_optimize_blocks_irregular_cadence_uses_feasible_series_range_and_subhourly_kwh(self):
+        from unittest.mock import patch
+        from pvsyst_auto.workflows.optimize import propose_remediations
+
+        # 1. Irregular cadence returns status='blocked' (not 'no_action_needed')
+        gap_csv = self.root / "Results" / "gap_opt.csv"
+        gap_csv.write_text(
+            "PVSYST 8.1.7\n"
+            "date;GlobInc;EArray;E_Grid;PR\n"
+            ";W/m2;kW;kW;ratio\n"
+            "01/06/24 08:00;500;0;0;0\n"
+            "01/06/24 08:15;500;0;0;0\n"
+            "01/06/24 08:45;500;0;0;0\n",
+            encoding="utf-8",
+        )
+        blocked = optimize_variant(
+            self.cli, self.store, project="OptTest.PRJ", variant="VC0",
+            csv_name="gap_opt.csv", dry_run=True,
+        )
+        self.assertEqual(blocked["status"], "blocked", blocked)
+        self.assertFalse(blocked["converged"])
+        self.assertTrue(blocked["issues"])
+
+        # 2. Sub-hourly kW E_Grid reports energy_kwh (4 * 15min * 40 kW = 40 kWh, not 160)
+        sub_csv = self.root / "Results" / "sub15_clean.csv"
+        sub_csv.write_text(
+            "PVSYST 8.1.7\n"
+            "date;GlobInc;EArray;E_Grid;PR\n"
+            ";W/m2;kW;kW;ratio\n"
+            "01/06/24 10:00;800;42;40;0.84\n"
+            "01/06/24 10:15;800;42;40;0.84\n"
+            "01/06/24 10:30;800;42;40;0.84\n"
+            "01/06/24 10:45;800;42;40;0.84\n",
+            encoding="utf-8",
+        )
+        clean = optimize_variant(
+            self.cli, self.store, project="OptTest.PRJ", variant="VC0",
+            csv_name="sub15_clean.csv", dry_run=True,
+        )
+        self.assertEqual(clean["status"], "no_action_needed")
+        self.assertAlmostEqual(clean["baseline"]["e_grid_sum"], 40.0, places=2)
+
+        # 3. propose_remediations respects suggest_sizing recommended.feasible_series_range[1]
+        fake_hint = {"status": "ready", "recommended": {"series_modules": 18, "feasible_series_range": [10, 25]}}
+        diag_uv = {"findings": [{"code": "INVERTER_UNDERVOLTAGE", "severity": "high"}]}
+        with patch("pvsyst_auto.workflows.optimize.suggest_sizing", return_value=fake_hint), \
+                patch.object(self.store.components, "list", return_value={"items": [{"name": "Test.PAN", "specs": {"pnom_w": 440.0}}]}):
+            prop = propose_remediations(self.store, "OptTest.PRJ", "VC0", diag_uv)
+        # Current NModSerie=24; +10% would be 26, capped to feasible_series_range[1]=25
+        self.assertEqual(prop["subarray_updates"]["NModSerie"], 25)
+
 
 if __name__ == "__main__":
     unittest.main()

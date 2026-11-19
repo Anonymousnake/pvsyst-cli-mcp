@@ -969,7 +969,7 @@ def compact_diagnostics_summary(diag: dict, *, max_findings: int = 5) -> dict:
         diag.get("findings") or [],
         key=lambda f: -SEVERITY_ORDER.get(f.get("severity", "info"), 0),
     )
-    return {
+    summary = {
         "status": diag["status"],
         "max_severity": diag["max_severity"],
         "finding_count": diag["finding_count"],
@@ -988,3 +988,6 @@ def compact_diagnostics_summary(diag: dict, *, max_findings: int = 5) -> dict:
             for f in sorted_findings[:max_findings]
         ],
     }
+    if diag.get("issues"):
+        summary["issues"] = list(diag["issues"])
+    return summary

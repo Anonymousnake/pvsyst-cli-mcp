@@ -389,6 +389,11 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
 
     if rows == 0:
         raise ValueError("Result CSV contains no simulation rows")
+    if not regular:
+        raise ValueError(
+            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+            "cannot settle energy or tariffs reliably"
+        )
     if first_row_data is not None:
         step_minutes = 60.0
         _process_row(first_row_data[0], first_row_data[1], 1.0)

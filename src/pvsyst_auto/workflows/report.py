@@ -191,7 +191,12 @@ def _summarize_csv_for_report(csv_path: Path) -> dict[str, Any]:
 
     if rows == 0:
         raise ValueError("Result CSV has no data rows")
-    step_hours = (step_minutes if (regular and step_minutes) else 60.0) / 60.0
+    if not regular:
+        raise ValueError(
+            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+            "cannot compute monthly energy or losses reliably"
+        )
+    step_hours = (step_minutes if step_minutes else 60.0) / 60.0
 
     def to_kwh(col: str, raw: float) -> float:
         u = units.get(col, "")

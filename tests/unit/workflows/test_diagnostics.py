@@ -591,6 +591,45 @@ class DiagnosticsEngineTests(unittest.TestCase):
         self.assertEqual(diag["finding_count"], 0)
         self.assertTrue(diag["issues"])
 
+        # pvsyst_run_simulation must surface blocked diagnostics as status="needs_review" with issues preserved.
+        import subprocess
+        import pvsyst_auto.api.context as api_ctx
+        import pvsyst_auto.api.simulation as api_simulation
+        from pvsyst_auto.native.cli import PVsystCLI
+
+        synth = synthesize_project_and_variant(
+            None, project_comment="GapSim", variant_comment="GapSim",
+            pan_name="Test.PAN", ond_name="Test.OND",
+            n_mod_serie=18, n_string_ch=6, n_inverter=1, n_inv_mppt=2,
+            independent_mppt=True, pnom_ac_in_mppt=25.0,
+        )
+        self.store.create_project("GapSim.PRJ", synth["prj_text"], {"VC0": synth["vc0_text"]})
+        fake_cli_exe = self.root / "PVsystCLI.exe"
+        fake_cli_exe.write_bytes(b"stub")
+        client = PVsystCLI(fake_cli_exe, self.root)
+        client._help_cache["run-simulation"] = " --output-csv-file|-ocf: "
+        out_csv = self.root / "Results" / "gap_sim_run.csv"
+
+        def _fake_gap_run(*args, **kwargs):
+            _write_csv(
+                out_csv,
+                [("GlobInc", "W/m2"), ("EArray", "kW"), ("E_Grid", "kW")],
+                [[stamp, 500.0, 0.0, 0.0] for stamp in stamps],
+            )
+            return subprocess.CompletedProcess([], 0, "Simulation done in 0min 2sec", "")
+
+        with patch.object(api_ctx, "cli", return_value=client), \
+                patch.object(api_simulation, "cli", return_value=client), \
+                patch.object(api_simulation, "variant_store", return_value=self.store), \
+                patch.object(client, "license_info", return_value={"status": "LICENSED"}), \
+                patch.object(client, "_run", side_effect=_fake_gap_run):
+            sim = api_simulation.pvsyst_run_simulation(
+                project="GapSim.PRJ", variant="VC0", csv_name="gap_sim_run",
+            )
+        self.assertEqual(sim["status"], "needs_review")
+        self.assertEqual(sim["physical_diagnostics"]["status"], "blocked")
+        self.assertTrue(sim["physical_diagnostics"]["issues"])
+
 
 if __name__ == "__main__":
     unittest.main()

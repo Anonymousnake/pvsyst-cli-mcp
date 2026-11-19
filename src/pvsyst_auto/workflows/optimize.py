@@ -54,6 +54,33 @@ def _parse_float(value: Any) -> float | None:
         return None
 
 
+def _sizing_max_series(sizing_hint: dict | None) -> int | None:
+    if not isinstance(sizing_hint, dict) or sizing_hint.get("status") != "ready":
+        return None
+    rec = sizing_hint.get("recommended") or {}
+    feasible = rec.get("feasible_series_range")
+    if isinstance(feasible, (list, tuple)) and len(feasible) == 2 and type(feasible[1]) is int:
+        return feasible[1]
+    legacy = (sizing_hint.get("string_bounds") or {}).get("max_modules_in_series")
+    if type(legacy) is int:
+        return legacy
+    val = rec.get("series_modules")
+    return val if type(val) is int else None
+
+
+def _summarize_egrid_kwh(csv_path: Path) -> float | None:
+    try:
+        entry = summarize_results(csv_path, ("E_Grid",))["summary"].get("E_Grid") or {}
+        val = entry.get("energy_kwh")
+        if val is None:
+            val = entry.get("observed_energy_kwh")
+        if val is None:
+            val = entry.get("sum")
+        return round(float(val), 2) if val is not None else None
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 def propose_remediations(
     store,
     project: str,
@@ -113,12 +140,8 @@ def propose_remediations(
         if code == "INVERTER_OVERVOLTAGE" and sub0 is not None and not series_changed:
             cur = _parse_int((sub0.get("values") or {}).get("NModSerie"))
             if cur is not None and cur > 1:
-                suggested_max = None
-                if sizing_hint and sizing_hint.get("status") == "ready":
-                    rec = sizing_hint.get("recommended") or {}
-                    s_max = (sizing_hint.get("string_bounds") or {}).get("max_modules_in_series") or rec.get("series_modules")
-                    if isinstance(s_max, int) and 1 <= s_max < cur:
-                        suggested_max = s_max
+                s_max = _sizing_max_series(sizing_hint)
+                suggested_max = s_max if (s_max is not None and 1 <= s_max < cur) else None
                 new_val = suggested_max if suggested_max is not None else max(1, cur - max(1, round(cur * 0.1)))
                 if new_val < cur:
                     sub_updates["NModSerie"] = new_val
@@ -139,10 +162,9 @@ def propose_remediations(
             if cur is not None:
                 step = max(1, round(cur * 0.1))
                 new_val = cur + step
-                if sizing_hint and sizing_hint.get("status") == "ready":
-                    s_max = (sizing_hint.get("string_bounds") or {}).get("max_modules_in_series")
-                    if isinstance(s_max, int) and s_max > cur:
-                        new_val = min(new_val, s_max)
+                s_max = _sizing_max_series(sizing_hint)
+                if s_max is not None:
+                    new_val = min(new_val, s_max)
                 if new_val > cur:
                     sub_updates["NModSerie"] = new_val
                     series_changed = True
@@ -276,13 +298,28 @@ def optimize_variant(
     baseline_diag = diagnose_simulation_csv(
         csv_path, store=store, project=proj, variant=base_var, thresholds=thresholds
     )
-    baseline_egrid = None
-    try:
-        summ = summarize_results(csv_path, ("E_Grid",))["summary"]
-        if "E_Grid" in summ and summ["E_Grid"]["sum"] is not None:
-            baseline_egrid = round(float(summ["E_Grid"]["sum"]), 2)
-    except (ValueError, KeyError):
-        baseline_egrid = None
+    baseline_egrid = _summarize_egrid_kwh(csv_path)
+
+    if baseline_diag.get("status") == "blocked":
+        return {
+            "status": "blocked",
+            "issues": list(baseline_diag.get("issues") or ["Baseline diagnostics blocked"]),
+            "dry_run": dry_run,
+            "project": proj,
+            "baseline_variant": base_var,
+            "baseline_csv": safe_csv,
+            "baseline": {
+                "variant": base_var,
+                "csv": safe_csv,
+                "e_grid_sum": baseline_egrid,
+                "weighted_pr": baseline_diag.get("weighted_pr"),
+                "diagnostics": compact_diagnostics_summary(baseline_diag),
+            },
+            "proposed_remediation": None,
+            "iterations": [],
+            "recommended_variant": base_var,
+            "converged": False,
+        }
 
     first_proposal = propose_remediations(
         store, proj, base_var, baseline_diag,
@@ -374,13 +411,7 @@ def optimize_variant(
         next_diag = diagnose_simulation_csv(
             out_csv, store=store, project=proj, variant=next_var, thresholds=thresholds
         )
-        next_egrid = None
-        try:
-            summ = summarize_results(out_csv, ("E_Grid",))["summary"]
-            if "E_Grid" in summ and summ["E_Grid"]["sum"] is not None:
-                next_egrid = round(float(summ["E_Grid"]["sum"]), 2)
-        except (ValueError, KeyError):
-            next_egrid = None
+        next_egrid = _summarize_egrid_kwh(out_csv)
 
         iter_record = {
             "iteration": iteration,
@@ -393,6 +424,12 @@ def optimize_variant(
             "diagnostics": compact_diagnostics_summary(next_diag),
         }
         result["iterations"].append(iter_record)
+
+        if next_diag.get("status") == "blocked":
+            result["status"] = "blocked"
+            result["issues"] = list(next_diag.get("issues") or ["Iteration diagnostics blocked"])
+            result["converged"] = False
+            break
 
         score = (
             0 if not next_diag["needs_review"] else 1,
