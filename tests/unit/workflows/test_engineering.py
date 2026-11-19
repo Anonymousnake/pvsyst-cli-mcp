@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from textwrap import indent
 from unittest.mock import Mock, patch
 
 from pvsyst_auto.components.editor import objects
@@ -241,6 +242,54 @@ class EngineeringTests(unittest.TestCase):
         self.assertEqual(record["values"]["ValHour_1"], "1.000,2.000,3.000,6,")
         self.assertEqual(record["omitted_cache_fields"], ["Day_1"])
         self.assertFalse(load["hourly_cache_contents_included"])
+
+    def test_handoff_uses_the_unique_hourly_source_not_nested_cache_fields(self):
+        root = self.workspace()
+        load_dir = root / "UserHourlyParams"
+        load_dir.mkdir()
+        (load_dir / "Load.csv").write_text("sample", encoding="utf-8")
+        project = root / "Projects" / "Work.PRJ"
+        project.write_text("PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
+        store = VariantStore(root, ComponentStore(root))
+        cache = ("      ParSimulH=TVarSimul\n        Varident=ELoadIN\n"
+                 "        Day_0101=+0+0\n      End of VarSimul=viELoadIN\n")
+        source = f"      FileName=Load.csv\n      PathName={load_dir}\n"
+        template = "    HourlyLoad=THourlyParams\n{}{}    End of THourlyParams\n"
+        hourly = template.format(source, cache)
+        decoy = "FileName=Decoy.csv\nPathName=C:\\Other\n"
+        decoy_cache = cache.replace("        Day_", indent(decoy, "        ") + "        Day_")
+        cases = (
+            ("valid", hourly),
+            ("nested decoy", template.format(source, decoy_cache)),
+            ("missing source", indent(decoy, "    ") + template.format("", decoy_cache)),
+            ("duplicate typed HourlyLoad", hourly + hourly.replace("Load.csv", "Decoy.csv")),
+        )
+        for label, body in cases:
+            with self.subTest(case=label):
+                text = grouped_variant().replace("End of PVObject pvVCalcul\n", (
+                    f"  PVObject_UserNeeds=pvLoad\n{body}  End of PVObject pvLoad\nEnd of PVObject pvVCalcul\n"))
+                project.with_suffix(".VC0").write_text(text, encoding="utf-8-sig")
+                result = build_project_handoff(store, project=project.name, variant="VC0")
+                if label == "duplicate typed HourlyLoad":
+                    self.assertEqual(result["status"], "blocked", result)
+                    self.assertIn("HourlyLoad", result["issues"][0])
+                    self.assertEqual(result["external_dependencies"], [])
+                    continue
+                self.assertNotEqual(result["status"], "blocked", result)
+                load, = result["saved"]["load"]["objects"]
+                dep, = [item for item in result["external_dependencies"] if item["kind"] == "load"]
+                has_source = label != "missing source"
+                expected_name, expected_path = ("Load.csv", str(load_dir)) if has_source else (None, None)
+                self.assertEqual((dep["name"], dep["saved_path"], dep["path_matches_workspace"]),
+                                 (expected_name, expected_path, has_source))
+                self.assertEqual(load["hourly_source"], {"file_name": expected_name, "saved_path": expected_path,
+                    "workspace_folder": "UserHourlyParams", "workspace_file": has_source,
+                    "runtime_binding_verified": False})
+                values = {"HourlyLoad": "THourlyParams", "ParSimulH": "TVarSimul", "Varident": "ELoadIN"}
+                if has_source:
+                    values.update(FileName=expected_name, PathName=expected_path)
+                self.assertEqual(load["values"], values)
+                self.assertEqual(load["omitted_cache_fields"], ["Day_0101"])
 
     @unittest.skipUnless(os.name == "nt", "Windows path aliases require Windows")
     def test_handoff_recognizes_workspace_path_with_short_name_components(self):

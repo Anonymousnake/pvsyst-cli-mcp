@@ -31,6 +31,34 @@ OBJECT_CLOSE_ALIAS = {"TAgeing": "pvAgeing", "TOrientGroup": "pvOrient",
                       "TDomeOrientGroup": "pvDomeOrient", "TSimulFich": "pvSimulFile"}
 OBJECT_CLOSE = re.compile(r"\s*End of (?:PVObject )?(pv\w+|TConverter|TCubicProfile|%s)\s*"
                           % "|".join(map(re.escape, OBJECT_CLOSE_ALIAS)))
+# Saved owner/key/type triples from the PR fixtures, writers and installed DataRO examples.
+# A class name alone can also be ordinary text (e.g. Model=TPrintSettings).
+PRIVATE_OPEN = {
+    ("pvProject", "PrintSettings", "TPrintSettings"),
+    ("pvVCalcul", "BatchSimul", "TBatchSimul"),
+    ("pvVCalcul", "EconomicEval", "TEcoEvaluation"),
+    ("pvVCalcul", "P50_P90", "TP50_P90"),
+    ("pvVCalcul", "Histogram", "THistogramme"),
+    ("pvSimulPlot", "Histogram", "THistogramme"),
+    ("pvCarbonBalance", "Custom_Fractions", "TEnergyMixSet"),
+    ("pvCarbonBalance", "Custom_LCE_Definitions", "TEnergyMixSet"),
+    ("pvSubArray", "WiringResistance", "TWiringResistance"),
+    ("pvShdFTable", "SFTable", "TInterpole2D"),
+    *(("pvMeteoTransp", "TransposTable_" + month, "TInterpole2D")
+      for month in "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()),
+    ("pvLoad", "HouseHoldUses", "THouseHoldUses"),
+    ("pvLoad", "WaterUse", "TWaterUse"),
+    ("pvLoad", "HourlyLoad", "THourlyParams"),
+    ("pvHydrCircuit", "Fluide", "TFluide"),
+    ("TEcoEvaluation", "HourlyTariff", "THourlyParams"),
+    ("TEcoEvaluation", "HourlyCSVTariff", "TVarSimul"),
+    ("TEcoEvaluation", "ConsumptionHourlyCSVTariff", "TVarSimul"),
+    ("THourlyParams", "ParSimulH", "TVarSimul"),
+    ("pvGridStorage", "ChargingPVFracParSim", "TParSimulSeries"),
+    ("pvGridStorage", "ChargingPowerParSim", "TParSimulSeries"),
+    ("pvGridStorage", "DischargingPowerParSim", "TParSimulSeries"),
+    ("TParSimulSeries", "fVarSimul", "TVarSimul"),
+}
 PRIVATE_CLOSE = {
     **dict.fromkeys(("TBatchSimul", "TEnergyMixSet", "TP50_P90", "TPrintSettings", "TWiringResistance"), "EndTags"),
     "THouseHoldUses": "End of HouseHoldUses", "TWaterUse": "End of WaterUse",
@@ -141,10 +169,10 @@ def objects(text: str, *, include_private: bool = False) -> list[ObjectBlock]:
         if not match:
             continue
         name, value = match[2], match[4]
-        batch = len(stack) == 1 and owner == "pvVCalcul" and (name, value) == ("BatchSimul", "TBatchSimul")
-        if owner == "pvHydrCircuit" and name == "Pipe" and value.isdecimal():
+        pipe = (owner, name) == ("pvHydrCircuit", "Pipe") and value.isdecimal()
+        private = pipe or ((owner, name, value) in PRIVATE_OPEN and (value != "TBatchSimul" or len(stack) == 1))
+        if pipe:
             value = "TPipe"
-        private = batch or (owner and name != "Comment" and value in PRIVATE_CLOSE and value != "TBatchSimul")
         opens_object = ((name.startswith("PVObject_") and re.fullmatch(r"pv\w+", value))
                         or value in ("TConverter", "TCubicProfile"))
         if owner == "TBatchSimul" and (opens_object or private or (name, value) == ("BatchSimul", "TBatchSimul")):

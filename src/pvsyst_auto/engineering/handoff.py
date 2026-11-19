@@ -27,21 +27,35 @@ def _root_values(block, names):
     return {name: block.one(name)[1] for name in names if name in block.fields}
 
 
+def _load_child(blocks, owner, key, kind):
+    path = f"{owner.path}/{key}" if owner.path else key
+    matches = [block for block in blocks if block.path == path and block.object_type == kind
+               and owner.line < block.line < owner.end_line]
+    if len(matches) > 1:
+        raise ValueError(f"Duplicate {key} records in {owner.object_type} at line {owner.line}")
+    return matches[0] if matches else None
+
+
 def _load_records(blocks):
     records = []
-    hourly_records = {block.path: block for block in blocks
-                      if block.object_type in ("THourlyParams", "TVarSimul")}
     for block in blocks:
         if block.object_type.casefold() != "pvload":
             continue
-        values, omitted = {}, []
+        markers, omitted = {}, []
         owners = [block]
-        for name in ("HourlyLoad", "HourlyLoad/ParSimulH"):
-            if hourly := hourly_records.get(f"{block.path}/{name}"):
-                owners.append(hourly)
-                values[name.rsplit("/", 1)[-1]] = hourly.object_type
+        hourly = _load_child(blocks, block, "HourlyLoad", "THourlyParams")
+        if hourly:
+            owners.append(hourly)
+            markers["HourlyLoad"] = hourly.object_type
+            if cache := _load_child(blocks, hourly, "ParSimulH", "TVarSimul"):
+                owners.append(cache)
+                markers["ParSimulH"] = cache.object_type
+        values = markers.copy()
         for owner in owners:
             for name in sorted(owner.fields):
+                # The source belongs to THourlyParams, not the load or the simulation cache.
+                if name in markers or (hourly and owner is not hourly and name in ("FileName", "PathName")):
+                    continue
                 value = owner.one(name)[1]
                 # ValHour_N is the declared daily profile.
                 if (len(value) > 512 or name.casefold().startswith(("day_", "valday"))

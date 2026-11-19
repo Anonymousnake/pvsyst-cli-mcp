@@ -460,6 +460,14 @@ class ComponentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unmatched object closing tag"):
             objects(text.replace("  EndTags  \n", ""))
 
+    def test_class_name_as_commercial_model_is_an_ordinary_field(self):
+        self.files["PAN"].write_text(PAN.replace("Model=440W", "Model=TPrintSettings"), encoding="utf-8")
+        report = self.store.validate("PAN", "sample.PAN")
+        self.assertEqual(report["known_value_errors"], [])
+        commercial = self.store.inspect("PAN", "sample.PAN")["commercial"]
+        self.assertTrue(commercial["editable"], commercial)
+        self.assertEqual(commercial["fields"]["Model"]["value"], "TPrintSettings")
+
     def test_native_private_frames_keep_their_owners(self):
         with self.subTest(record="PrintSettings"):
             text = ("PVObject_=pvProject\nPrintSettings=TPrintSettings\n  PCNDec=1\nEndTags\n"
