@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pvsyst_auto.native.cli import PVsystError, VAR_GROUPS, build_sfi, validate_report_pages, iter_result_csv, result_units
 from pvsyst_auto.components.store import electrical_inventory
+from pvsyst_auto.engineering.diagnostics import compact_diagnostics_summary, diagnose_simulation_csv
 from pvsyst_auto.engineering.sizing import plan_capacity
 from pvsyst_auto.project.paths import project_path, variant_id, workspace_file, write_json
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
@@ -448,8 +449,13 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                 raise ValueError("Native output changed across result validation stages")
             flags = result["metrics"]["diagnostic_flags"]
             result["warnings"].extend(flags)
+            diag_full = diagnose_simulation_csv(
+                paths["csv"], store=store, project=new_project, variant=variant,
+            )
+            result["diagnostics"] = compact_diagnostics_summary(diag_full)
             review = (tracking_mode or run.get("warnings") or flags or weather_warnings
-                      or result.get("weather_comparison", {}).get("needs_review", False))
+                      or result.get("weather_comparison", {}).get("needs_review", False)
+                      or diag_full["needs_review"])
             result.update(status="needs_review" if review else "completed", stage="completed")
     except (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired) as exc:
         result.update(status="failed", error=cli._redact(str(exc))[-12000:])

@@ -57,7 +57,7 @@ TOOL_GROUPS = {
         "pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_design",
         "pvsyst_prepare_sourced_design", "pvsyst_run_house_task",
     ),
-    "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"),
+    "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results", "pvsyst_diagnose_results"),
     "Engineering": (
         "pvsyst_suggest_sizing", "pvsyst_project_handoff",
         "pvsyst_run_engineering_task", "pvsyst_compare_engineering_scenarios",

@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from pvsyst_auto.components.pan import pan_blocks, validation_fields as pan_validation_fields
+from pvsyst_auto.engineering.diagnostics import compact_diagnostics_summary, diagnose_simulation_csv
 from pvsyst_auto.engineering.sizing import plan_capacity
 from pvsyst_auto.native.cli import (
     PVsystError,
@@ -602,9 +603,14 @@ def run_utility_design(
                 raise ValueError("Native output changed across result validation stages")
             flags = result["metrics"]["diagnostic_flags"]
             result["warnings"].extend(flags)
+            diag_full = diagnose_simulation_csv(
+                paths["csv"], store=store, project=new_project, variant=variant,
+            )
+            result["diagnostics"] = compact_diagnostics_summary(diag_full)
             review = bool(
                 run.get("warnings") or flags or weather_warnings
                 or result.get("weather_comparison", {}).get("needs_review", False)
+                or diag_full["needs_review"]
             )
             result.update(
                 status="needs_review" if review else "completed",

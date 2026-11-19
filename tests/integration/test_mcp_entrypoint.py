@@ -71,9 +71,10 @@ class PackageEntrypointTests(unittest.TestCase):
                     self.assertEqual(resources, {"pvsyst://guide/workflows", "pvsyst://guide/variables"})
                     tools = (await session.list_tools()).tools
                     names = {tool.name for tool in tools}
-                    self.assertEqual(len(names), 38)
+                    self.assertEqual(len(names), 39)
                     self.assertTrue({"pvsyst_capabilities", "pvsyst_license_info", "pvsyst_suggest_sizing",
-                                     "pvsyst_project_handoff", "pvsyst_export_engineering_delivery",
+                                     "pvsyst_diagnose_results", "pvsyst_project_handoff",
+                                     "pvsyst_export_engineering_delivery",
                                      "pvsyst_run_engineering_task", "pvsyst_simulate_design",
                                      "pvsyst_run_house_task", "pvsyst_create_native_load_variant"}.issubset(names))
                     self.assertTrue({"pvsyst_license_activate", "pvsyst_prepare_block_project",
@@ -239,9 +240,9 @@ class ToolGroupsTests(unittest.TestCase):
             )
             default_names = {item["name"] for item in default_tools}
             full_names = {item["name"] for item in full}
-            self.assertEqual(len(default_names), 38)
-            self.assertEqual(len(full_names), 67)
-            self.assertTrue({"pvsyst_license_info", "pvsyst_suggest_sizing",
+            self.assertEqual(len(default_names), 39)
+            self.assertEqual(len(full_names), 68)
+            self.assertTrue({"pvsyst_license_info", "pvsyst_suggest_sizing", "pvsyst_diagnose_results",
                              "pvsyst_project_handoff", "pvsyst_export_engineering_delivery"}.issubset(default_names))
             self.assertTrue({"pvsyst_license_activate", "pvsyst_prepare_block_project"}.isdisjoint(default_names))
             self.assertTrue({"pvsyst_license_activate", "pvsyst_prepare_block_project"}.issubset(full_names))

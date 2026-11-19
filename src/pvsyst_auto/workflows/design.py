@@ -1056,6 +1056,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     result["preview"][phase_name] = simulation
     result["artifacts"]["project_preparation" if prepare_only else "simulate"] = dict(simulation.get("artifacts") or {})
     result["metrics"] = simulation.get("metrics")
+    if simulation.get("diagnostics") is not None:
+        result["diagnostics"] = simulation["diagnostics"]
     if simulation.get("bifacial_metrics") is not None:
         result["bifacial_metrics"] = simulation["bifacial_metrics"]
     if simulation.get("utility_summary") is not None:

@@ -11,6 +11,7 @@ import time
 
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi, iter_result_csv, result_units, validate_report_pages
 from pvsyst_auto.components.editor import objects
+from pvsyst_auto.engineering.diagnostics import compact_diagnostics_summary, diagnose_simulation_csv
 from pvsyst_auto.project.paths import safe_filename, variant_id, workspace_file, write_json as _save
 from pvsyst_auto.results import annual_summary, fingerprint
 from pvsyst_auto.scene.author import create_house_pv_scene, house_profile, obstacle_profiles, table_profiles, check_tables
@@ -96,7 +97,9 @@ def _annual(csv_path, pdf_path, request, plan, variant, *, require_pdf=True):
         if units.get("ShdElec") != "kW":
             raise ValueError("Detailed native house output lacks the requested ShdElec column/unit")
         electrical = {"electrical_shading_output": {"column": "ShdElec", "unit": units["ShdElec"]}}
-    return {"metrics": metrics, "native_context": context, "numeric_columns": len(headers) - 1, **electrical,
+    diagnostics = compact_diagnostics_summary(diagnose_simulation_csv(csv_path))
+    return {"metrics": metrics, "diagnostics": diagnostics, "native_context": context,
+            "numeric_columns": len(headers) - 1, **electrical,
             "hourly_rows": rows, "shading_output": {"column": "GlobShd", "unit": units["GlobShd"]}}
 
 
@@ -637,9 +640,11 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                             or attempt["csv"] != csv_path.name or (require_pdf and attempt.get("pdf") != pdf_path.name) or attempt["status"] != "returned"):
                         raise ValueError("Recorded native outputs changed or do not match this task attempt")
                 verified = _annual(csv_path, pdf_path, request, plan, record["variant"], require_pdf=require_pdf)
+                diag_needs_review = bool((verified.get("diagnostics") or {}).get("needs_review"))
                 record.update(verified, native_consumption_verified=True,
                                status="needs_review" if (attempt["native"]["warnings"] or verified["metrics"]["diagnostic_flags"]
-                                   or record.get("input_handoff", {}).get("status") == "needs_review") else "completed",
+                                   or record.get("input_handoff", {}).get("status") == "needs_review"
+                                   or diag_needs_review) else "completed",
                               phase="completed", stage="completed")
                 record["artifacts"].update(csv=str(csv_path))
                 if require_pdf:

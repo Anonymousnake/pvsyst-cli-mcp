@@ -1,11 +1,14 @@
 """Results MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
-from pydantic import StrictInt
+from typing import Literal
+from pydantic import StrictInt, StrictStr
+from pvsyst_auto.engineering.diagnostics import diagnose_simulation_csv
 from pvsyst_auto.native.cli import (is_batch_summary_name, parse_batch_results,
                                     read_result_page, summarize_results)
 from pvsyst_auto.results import compare_results
-from pvsyst_auto.api.context import categorized_tool, result_path, workspace_path
+from pvsyst_auto.api.context import categorized_tool, result_path, variant_store, workspace_path
+from pvsyst_auto.api.schemas import StrictNum
 
 
 @categorized_tool()
@@ -49,3 +52,24 @@ def pvsyst_read_batch_results(summary_name: str,
     if not requested:
         raise ValueError("Select at least one batch result column")
     return parse_batch_results(target, requested)
+
+
+@categorized_tool()
+def pvsyst_diagnose_results(
+        csv_name: StrictStr,
+        folder: Literal["Results", "UserHourly"] = "Results",
+        project: StrictStr | None = None,
+        variant: StrictStr | None = None,
+        thresholds: dict[str, StrictNum] | None = None) -> dict:
+    """Run deterministic physics loss-chain and time-series anomaly diagnostics on an SFI result
+    CSV (PR bounds, inverter clipping/voltage/current limits, shading/curtailment, storage balance,
+    daytime zero-output and phase lag), with optional .VC0 root-cause attribution."""
+    target = result_path(folder, csv_name)
+    store = variant_store() if (project or variant) else None
+    return diagnose_simulation_csv(
+        target,
+        store=store,
+        project=project,
+        variant=variant,
+        thresholds=thresholds,
+    )

@@ -2,7 +2,7 @@
 
 For setup instructions and package layout, see [README.md](../README.md) or [README.zh-CN.md](../README.zh-CN.md).
 
-By default the MCP server exposes **38 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **67 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
+By default the MCP server exposes **39 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **68 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
 
 ## PVsystCLI version differences
 
@@ -108,12 +108,13 @@ Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parame
 
 Detailed guides: [automatic simulation](automatic-simulation.md), [single-design inputs](single-design-inputs.md), [capacity sizing](capacity-sizing.md), [tracking template flow](tracking-template-flow.md), [tutorial grid workflow](tutorial-grid-cycle.md), [house PV modeling](house-pv-modeling.md), [native house task](native-house-task.md), and [sourced house task](sourced-house-task.md).
 
-### Results (`results`, default: 3)
+### Results (`results`, default: 4)
 
 | Tool | What it does |
 |---|---|
 | `pvsyst_read_results`, `pvsyst_read_rows` | Parse simulation CSV metadata, units, and summary statistics, or page through hourly rows |
 | `pvsyst_read_batch_results` | Parse `SIM_*` summary rows from a batch simulation output CSV |
+| `pvsyst_diagnose_results` | Run deterministic physics loss-chain and time-series anomaly diagnostics on an SFI result CSV with optional `.VC0` root-cause attribution |
 
 ### Expert & Low-Level (`expert`, opt-in: 25)
 
