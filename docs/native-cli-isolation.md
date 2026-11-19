@@ -4,7 +4,7 @@ Windows 上所有对原版 `PVsystCLI.exe` 的调用——包括正常的 `help`
 
 ## 普通 CSV 数值仿真拒建窗
 
-仅当一次调用被判定为**普通整点 CSV 数值仿真**——命令为 `run-simulation`、带 `-ocf:`（CSV 目标）且**不含** `-rpf:`（PDF）、`-bpf:`（批处理参数）、`-brf:`（批处理 RVT）——才以“拒建窗”方式启动。判定在 `native/cli._is_plain_csv_run` 一处完成。
+仅在普通 CSV 数值仿真（`run-simulation` 带 `-ocf:`，且无 PDF、批处理或 `-rst:1` 阴影重算）时，默认禁止建窗。阴影重算默认在私有非交互桌面上允许建窗；若显式同时请求重算与 `allow_window_creation=false`，CLI 启动前就会报错。
 
 该分支在新建私有桌面上，用 `SetUserObjectSecurity` 只对该用户 SID 拒绝 `DESKTOP_CREATEWINDOW(0x2)`（其余访问保持完整），再启动子进程。因此单纯的整点数值计算不依赖创建任何顶层窗口；若拒绝步骤失败，显式抛错、**不静默回退**到 Default 桌面（与非 Windows 的原路径语义一致）。这依赖标准的 Windows 原生 ACL，不经 hook、patch 或注入。
 
@@ -27,6 +27,10 @@ CSV / PDF 仍由原 PVsyst 引擎产出，`pvsyst_run_simulation` 等工具的�
 ## 失败与回退
 
 如果当前操作系统环境无法建立隔离桌面、拒绝建窗或隔离启动失败，工具应显式报错，不静默回退到用户 Default 桌面。非 Windows 平台维持原 `subprocess.run` 路径，不套用私有桌面逻辑。
+
+## CLI 工作区设置
+
+对 PVsystCLI 8.1.6 rev49278 和 8.1.7 rev49382，适配器按 Windows 用户配置文件串行启动 CLI，并在进程退出后仅恢复 `DataPath` 和 `WorkspaceN` 最近列表。运行计数等其他 INI 内容保留。此保护不协调独立启动的 PVsystCLI，也不能在 MCP 宿主被强制终止后恢复设置。
 
 ## 验证范围
 

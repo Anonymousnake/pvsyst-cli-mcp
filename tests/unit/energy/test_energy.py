@@ -230,6 +230,33 @@ class WorkspaceTests(unittest.TestCase):
         self.assertNotIn("Comment=old", text)
         self.assertTrue(text.endswith("    End of PVObject pvUnavail\r\n  End of PVObject pvGridStorage\r\n" + CLOSE.replace("\n", "\r\n")))
 
+    def test_new_storage_preserves_owning_system_unavailability_bit(self):
+        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+
+        for source_flags, has_outage, controls in (
+            ("$00", False, {"strategy": "peak_shaving", "grid_limit_kw": 6000.0}),
+            ("$05100000", False, {"strategy": "power_shift", "charging_pv_fraction": 0.4, "discharging_power_kw": 3000.0}),
+            ("$05100000", True, {"strategy": "power_shift", "charging_pv_fraction": 0.4, "discharging_power_kw": 3000.0}),
+        ):
+            with self.subTest(source_flags=source_flags, has_outage=has_outage, strategy=controls["strategy"]):
+                text = ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM.replace("$00", source_flags) + CLOSE
+                lines = text.splitlines(keepends=True)
+                if has_outage:
+                    replace_system_unavailability(lines, self.store._sections(lines)[1], {
+                        "mode": "periods", "periods": [{"date_beg": "03/06/90 00:00", "duration_hours": 48}],
+                    })
+                self.source("".join(lines))
+                result = create_grid_storage_system(
+                    self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                    battery=BATTERY, storage={**STORAGE, **controls}, dry_run=False,
+                )
+                written = self.created(result).splitlines(keepends=True)
+                saved = self.root / "Projects/Fixture.VC1"
+                saved.unlink()
+                state = system_unavail_state(written, self.store._sections(written)[1])
+                self.assertEqual(state["configured"], has_outage)
+                self.assertEqual(bool(int(result["configuration"]["system_flags"][1:], 16) & 0x00010000), has_outage)
+
     def test_storage_system_load_insertion_and_replacement(self):
         self.source(ROOT.format(root_flags="$00100001") + ARRAY + PV_SYSTEM + "  " + CLOSE)
         battery = {**BATTERY, "monthly_temperature_c": [0.00001] + [20] * 11, "cycle_sow": 0.00001}
@@ -277,6 +304,44 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(blocked["status"], "blocked", blocked)
         self.assertEqual(blocked["issues"], ["Every prepared load row must be one Date;P Load pair"])
         self.assertFalse((self.root / "Projects/Fixture.VC1").exists())
+
+    def test_legacy_outages_are_reported_but_read_only(self):
+        legacy = {"UnavTotDuration": "7.30", "UnavNbPeriods": "3",
+                  "UnavDuration": "58,58,58,1,1,", "UnavBegDate": "15000,15001,15002,"}
+        system = PV_SYSTEM.replace("Flags=$00", "Flags=$00010000").replace(
+            "  End of PVObject pvSystem", "".join(f"    {key} = {value}\n" for key, value in legacy.items())
+            + "  End of PVObject pvSystem",
+        )
+        self.source(ROOT.format(root_flags="$00") +
+                    "  PVObject_PVMainArray=pvMainArray\n    Flags=$00100400\n    Flags2=$082A\n" +
+                    ARRAY.replace("    SubArrayId=1", "    Version=8.1.6\n    SubArrayId=1") +
+                    "  End of PVObject pvMainArray\n" + system + CLOSE)
+        source = self.root / "Projects/Fixture.VC0"
+        original = source.read_bytes()
+        state = self.store.inspect_parameters("Fixture.PRJ", "VC0")["system_unavailability"]
+        self.assertEqual(state, {"configured": True, "mode": "legacy", "legacy_fields": legacy})
+        digest = self.store.inspect("Fixture.PRJ", "VC0")["sha256"]
+        for updates in ({"mode": "none"}, {"mode": "periods", "periods": [
+                {"date_beg": "01/01/23 12:00", "duration_hours": 24}]}):
+            with self.assertRaisesRegex(ValueError, "Legacy outage fields are read-only"):
+                self.store.update_parameters("Fixture.PRJ", "VC0", digest, system_unavailability_updates=updates)
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_system_unavailability_rejects_duration_rounding_to_zero(self):
+        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+
+        lines = crlf(SYSTEM)
+        original = list(lines)
+        period = {"date_beg": "01/01/23 12:00", "duration_hours": 0.0001}
+        updates = {"mode": "periods", "periods": [period]}
+        with self.assertRaisesRegex(ValueError, "rounds to 0.000"):
+            replace_system_unavailability(lines, (2, 5), updates)
+        self.assertEqual(lines, original)
+
+        period["duration_hours"] = 0.0006
+        result = replace_system_unavailability(lines, (2, 5), updates)
+        self.assertEqual(result["after"]["periods"], [{"date_beg": "01/01/23 12:00", "duration": "0.001"}])
+        self.assertIn("        Duration=0.001\r\n", lines)
 
     def test_system_unavailability_authoring_and_geometry_combo(self):
         from pvsyst_auto.energy.unavailability import replace_system_unavailability
@@ -800,11 +865,11 @@ class WorkspaceTests(unittest.TestCase):
         _, sys3 = self.store._sections(vc3_lines)
         st3 = grid_storage_state(vc3_lines, sys3)
         self.assertEqual(st3["grid_limit_kw"], 120.0)
-        self.assertIn("    LimGrSeparLoss=False\n", "".join(vc3_lines))
-        # Ensure Constant PF bit 20 (0x00100000) was NOT set
+        self.assertIn("    LimGrSeparLoss=True\n", "".join(vc3_lines))
+        # Inherit the injection-point limit without enabling constant PF.
         sys_flag_line = next(l for l in vc3_lines[sys3[0]:sys3[1]] if l.strip().startswith("Flags=$"))
         sys_flag_int = int(sys_flag_line.split("$")[1].strip(), 16)
-        self.assertTrue(sys_flag_int & 0x01000000)
+        self.assertEqual(sys_flag_int & 0x07000000, 0x05000000)
         self.assertEqual(sys_flag_int & 0x00100000, 0)
 
         # 5. Sub-cent PowerShift scalar (0.004) survives roundtrip via decimal_text

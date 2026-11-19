@@ -262,9 +262,12 @@ class ObstaclePipelineTests(unittest.TestCase):
             "module_geometry": MG,
             "shading_mode": "module_layout",
             "report_pdf": False,
-            "allow_window_creation": False,
         }
         fake_cli = type("Cli", (), {"cli": str(ws / "PVsystCLI.exe"), "list_variants": lambda _s, _p: ["VC0"]})()
+        blocked = run_house_task(store, comps, fake_cli,
+                                 request={**req, "allow_window_creation": False}, dry_run=False, confirm=True)
+        self.assertEqual(blocked["status"], "blocked", blocked)
+        self.assertIn("House shading recomputation requires", blocked["issues"][0])
         out = run_house_task(store, comps, fake_cli, request=req, dry_run=True)
         self.assertEqual(out["status"], "ready", out)
         self.assertEqual(out["request_summary"]["shading_mode"], "module_layout")
@@ -474,6 +477,31 @@ End of PVObject pvVCalcul
             house=house, layout=layout, module_geometry=MG, dry_run=False,
         )
         self.assertEqual(sc["status"], "created", sc)
+
+        source_path = ws / "Projects/Demo.VC1"
+        source_before = source_path.read_bytes()
+        variants_before = set(source_path.parent.iterdir())
+        for mode, field, spacing in (("linear", "column_spacing_m", 0.0204),
+                                     ("module_layout", "row_spacing_m", 0.030001)):
+            with self.subTest(unsupported_spacing=field):
+                name = f"SubMillimetre-{mode}.pvc2"
+                precise_layout = {"tables": [dict(layout["tables"][0], **{field: spacing}), *layout["tables"][1:]]}
+                authored = create_house_pv_scene(
+                    store, comps, project="Demo.PRJ", variant="VC1", output_name=name,
+                    house=house, layout=precise_layout, module_geometry=MG, dry_run=False,
+                )
+                self.assertEqual(authored["status"], "created", authored)
+                readback = read_house_pv_scene(comps, name)
+                self.assertEqual(readback["create_arguments"]["layout"]["tables"][0][field], spacing)
+                blocked = import_house_pv_scene_native(
+                    store, comps, name, "Submillimetre", shading_mode=mode,
+                    dry_run=mode == "linear", confirm=mode != "linear",
+                )
+                self.assertEqual((blocked["status"], blocked["stage"]), ("blocked", "preflight"))
+                self.assertFalse(blocked["precheck_passed"])
+                self.assertRegex(blocked["issues"][0], rf"SouthTbl.*{field}={spacing} m.*0\.001 m")
+        self.assertEqual(set(source_path.parent.iterdir()), variants_before)
+        self.assertEqual(source_path.read_bytes(), source_before)
 
         # Verify BOTH implicit 3-roof module_layout AND linear succeed on unshaded PowerSharing source
         for mode in ("linear", "module_layout"):

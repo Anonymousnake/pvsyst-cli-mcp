@@ -259,20 +259,19 @@ def _state(lines):
         first = parsed_nodes[0]["resistance"]
         if any(item["resistance"] != first for item in parsed_nodes):
             raise ValueError("StringNode resistances must agree across the subarray")
-        if first.quantize(Decimal("0.001")) != resistance:
-            raise ValueError("Native StringNode resistance and subarray summary must agree")
-        circuit_res = str(first)
-        cable_present = True
+        circuit_res = first
     else:
         circuit_res = None
-        cable_present = False
     mode = "percent" if (int(flags[1:], 16) & 0x01) else "resistance"
     state = {"mode": mode,
              "resistance_mohm": str(resistance),
              "loss_percent": str(percent),
-             "circuit_resistance_mohm": circuit_res,
-             "cable_definition_present": cable_present,
+             "circuit_resistance_mohm": str(circuit_res) if circuit_res is not None else None,
+             "cable_definition_present": circuit_res is not None,
              "string_groups": len(parsed_nodes)}
+    if circuit_res is not None and circuit_res.quantize(Decimal("0.001")) != resistance:
+        state["resistance_difference_mohm"] = str(abs(circuit_res - resistance))
+        state["issues"] = ["Native StringNode resistance and subarray summary must agree"]
     return state, layout, parsed_nodes
 
 
@@ -283,18 +282,9 @@ def dc_cabling_state(lines):
         return {"mode": "unsupported", "issues": [str(exc)]}
 
 
-def _root_version(lines, root) -> str:
-    """Return root pvVCalcul Version, ignoring any nested BatchSimul=TBatchSimul block."""
-    batch_start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("BatchSimul=")), len(lines))
-    versions = [val for idx, val in root.fields.get("Version", []) if idx < batch_start]
-    if len(versions) != 1:
-        raise ValueError("Root pvVCalcul Version must occur exactly once")
-    return versions[0]
-
-
 def _profile(store, lines):
     root = root_block(lines)
-    if _root_version(lines, root) not in NATIVE_TEXT_OR_SEED:
+    if root.one("Version")[1] not in NATIVE_TEXT_OR_SEED:
         raise ValueError(f"Requires a native {SEED_LABEL} variant")
     root_flags = root.one("Flags")[1]
     if not _HEX_FLAG.fullmatch(root_flags):
@@ -343,6 +333,8 @@ def _profile(store, lines):
     if grid_inventory(lines, arrays)["counts_valid"] is not True:
         raise ValueError("Requires complete consistent native grid counts")
     state, layout, parsed_nodes = _state(lines)
+    if state.get("issues"):
+        raise ValueError("; ".join(state["issues"]))
     if layout[5] or (int(main_flags[1:], 16) & 0x02000000):
         raise ValueError("Native DC cabling edits exclude MV/HV transformers")
     if layout[6].one("Version")[1] not in NATIVE_TEXT_OR_SEED or layout[6].one("Flags")[1] != "$00":
@@ -402,12 +394,12 @@ def create_dc_cabling_variant(store, *, project, source_variant, new_variant, dc
             else:
                 res_decimal = value
                 pct_float = (float(value) / r_array_stc_mohm) * 100.0
-                if pct_float >= 99.0:
+                pct_decimal = Decimal(f"{pct_float:.2f}")
+                if pct_decimal >= 99:
                     raise ValueError(
-                        f"Resistance {value} mOhm corresponds to {pct_float:.2f}% STC loss, "
+                        f"Resistance {value} mOhm corresponds to {pct_decimal:.2f}% STC loss, "
                         "which exceeds PVsystCLI simulation limit (<99%)."
                     )
-                pct_decimal = Decimal(f"{pct_float:.2f}")
         else:
             if mode == "percent":
                 raise ValueError(

@@ -448,6 +448,39 @@ class ComponentTests(unittest.TestCase):
         self.assertTrue(has_object(["  PVObject_UserNeeds = pvLoad\n"], "pvLoad"))
         self.assertFalse(has_object(["  PVObject_GridStorage=pvGridStorage"], "pvLoad"))
 
+    def test_batchsimul_owns_fields_up_to_its_endtags(self):
+        text = ("PVObject_=pvVCalcul\n  BatchSimul = TBatchSimul\n    Version=8.1.0\n"
+                "    ParamsFileName=Batch.CSV\n  EndTags  \n  Version=8.1.7\n"
+                "  Comment=TBatchSimul\nEnd of PVObject pvVCalcul\n")
+        root, = objects(text)
+        self.assertEqual(root.one("Version"), (5, "8.1.7"))
+        self.assertEqual(root.one("Comment"), (6, "TBatchSimul"))
+        self.assertNotIn("ParamsFileName", root.fields)
+        self.assertNotIn("BatchSimul", root.fields)
+        with self.assertRaisesRegex(ValueError, "Unmatched object closing tag"):
+            objects(text.replace("  EndTags  \n", ""))
+
+    def test_pathless_object_field_error_names_type_line_and_occurrences(self):
+        missing_text = "PVObject_=pvVCalcul\n  Version=8.1.6\nEnd of PVObject pvVCalcul\n"
+        with self.assertRaises(ValueError) as missing:
+            objects(missing_text)[0].one("MissingField")
+        self.assertEqual(
+            str(missing.exception),
+            "MissingField must occur exactly once in pvVCalcul at line 1 (found 0)",
+        )
+
+        duplicate_text = (
+            "PVObject_=pvVCalcul\n  Version=8.1.6\n  Version=8.1.7\n"
+            "End of PVObject pvVCalcul\n"
+        )
+        with self.assertRaises(ValueError) as duplicate:
+            objects(duplicate_text)[0].one("Version")
+        self.assertEqual(
+            str(duplicate.exception),
+            "Version must occur exactly once in pvVCalcul at line 1 "
+            "(found 2, at lines 2, 3)",
+        )
+
     def test_replace_value_and_key_reject_line_breaks(self):
         for brk in ("\n", "\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
             with self.assertRaises(ValueError):

@@ -40,11 +40,17 @@ _OPEN_EXISTING = 3
 _FILE_ATTRIBUTE_NORMAL = 0x80
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 0x00000102
 _WAIT_FAILED = 0xFFFFFFFF
 _INFINITE = 0xFFFFFFFF
 # CreateFileW reports failure with INVALID_HANDLE_VALUE (-1), never with NULL.
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+class NativeProcessNotStopped(OSError):
+    """Native process exit could not be confirmed during cleanup."""
+
 # Desktop DACL values for the "no window" path. Create with DESKTOP_ALL_ACCESS
 # so this handle carries WRITE_DAC, which SetUserObjectSecurity needs to attach
 # the deny ACE; the resulting DACL then grants this user every desktop right
@@ -427,13 +433,15 @@ def run(argv: list[str], cwd, timeout, *,
         _GetExitCodeProcess(hproc, ctypes.byref(code))
         # Reap only our owned subtree; never touch processes by image name.
         _TerminateJobObject(hjob, 1 if timed_out else 0)
-        _WaitForSingleObject(hproc, 2000)
+        if _WaitForSingleObject(hproc, 2000) != _WAIT_OBJECT_0:
+            _TerminateProcess(hproc, 1)
         stdout = _read_stream(out_path)
         stderr = _read_stream(err_path)
         if timed_out:
             raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr)
         return subprocess.CompletedProcess(argv, int(code.value), stdout, stderr)
     finally:
+        stopped = True
         for handle in (hout, herr, hnin):
             if handle:
                 _CloseHandle(handle)
@@ -443,7 +451,7 @@ def run(argv: list[str], cwd, timeout, *,
             # No-op if it already exited; kills a child left suspended by a
             # failed assign/resume step.
             _TerminateProcess(hproc, 1)
-            _WaitForSingleObject(hproc, 2000)
+            stopped = _WaitForSingleObject(hproc, 2000) == _WAIT_OBJECT_0
             _CloseHandle(hproc)
         if hjob:
             _TerminateJobObject(hjob, 0)
@@ -453,3 +461,5 @@ def run(argv: list[str], cwd, timeout, *,
         if hdesk:
             _CloseDesktop(hdesk)
         shutil.rmtree(tmpdir, ignore_errors=True)
+        if not stopped:
+            raise NativeProcessNotStopped("Could not confirm that PVsystCLI stopped; workspace settings were not restored")

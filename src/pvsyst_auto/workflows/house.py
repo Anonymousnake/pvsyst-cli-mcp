@@ -281,7 +281,11 @@ def _engineering_assets(paths, plan, guards):
 
 
 def run_house_task(store, components, cli, *, request, dry_run=True, confirm=False,
-                   resume=False, retry_simulation=False):
+                   resume=False, retry_simulation=False, simulation_preflight=None):
+    """Deliver the house task, calling optional preflight only before a new attempt.
+
+    The preflight callback returns an error message or None.
+    """
     result = {"status": "blocked", "stage": "preflight", "issues": [], "warnings": [],
               "artifacts": {}, "native_consumption_verified": False}
     paths = None
@@ -302,9 +306,10 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 raise ValueError(
                     "allow_window_creation=false requires scene_import_method='native'; the GUI "
                     "import method opens the native window and cannot honor a windowless request")
+            if not resume and request.get("allow_window_creation") is False:
+                raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
             # Any value except an explicit False keeps the original CSV+PDF contract
-            # (absent/None/True). An explicit False requests the CSV-only native path,
-            # so no PDF output is expected and the CLI runs as a plain CSV (windowless).
+            # (absent/None/True). CSV-only runs still recompute shading.
             require_pdf = request.get("report_pdf") is not False
             guard_keys = {"csv", "pdf"} if require_pdf else {"csv"}
             paths, plan = _prepare(store, components, request)
@@ -320,7 +325,10 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                         or not isinstance(record.get("artifacts"), dict) or not isinstance(record.get("runs"), list)
                         or len(record["runs"]) > 99 or any(not isinstance(run, dict) for run in record["runs"])):
                     raise ValueError("Checkpoint schema/request/phase differs; it is not a resumable task")
-                if PHASES.index(record["phase"]) >= PHASES.index("simulated") and (
+                simulated = PHASES.index(record["phase"]) >= PHASES.index("simulated")
+                if not simulated and request.get("allow_window_creation") is False:
+                    raise ValueError("House shading recomputation requires allow_window_creation=true or unset; start a new task with that policy")
+                if simulated and (
                         not record["runs"] or not isinstance(record.get("output_guards"), dict)
                         or set(record["output_guards"]) != guard_keys
                         or record["runs"][-1].get("status") != "returned"
@@ -565,6 +573,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 pdf_path = workspace_file(store.workspace, "Results", stem + ".pdf", ".pdf")
                 if csv_path.exists() or (require_pdf and pdf_path.exists()):
                     raise FileExistsError("Simulation outputs already exist; no native overwrite/retry")
+                if simulation_preflight is not None and (error := simulation_preflight()) is not None:
+                    raise ValueError(error)
                 attempt = {"number": number, "status": "running", "csv": csv_path.name}
                 if require_pdf:
                     attempt["pdf"] = pdf_path.name

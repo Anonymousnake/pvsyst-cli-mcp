@@ -1,8 +1,11 @@
 """Readonly engineering handoff from saved PVsyst project and variant records."""
 from __future__ import annotations
 
+import ctypes
 import json
 import ntpath
+import os
+from pathlib import PureWindowsPath
 
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
@@ -41,6 +44,32 @@ def _load_records(blocks):
         records.append({"type": block.object_type, "path": block.path,
                         "values": values, "omitted_cache_fields": omitted})
     return {"present": bool(records), "objects": records, "hourly_cache_contents_included": False}
+
+
+def _load_path_matches_workspace(saved_path, workspace_dir):
+    if not isinstance(saved_path, str) or not saved_path:
+        return False
+    saved = ntpath.normcase(ntpath.normpath(saved_path))
+    long_path = ntpath.normcase(ntpath.normpath(str(workspace_dir)))
+    if saved == long_path:
+        return True
+    if os.name != "nt":
+        return False
+    # Ask Windows for aliases of the verified workspace directory only. The saved path
+    # may be external and must never be opened or resolved.
+    get_short_path = ctypes.windll.kernel32.GetShortPathNameW
+    size = get_short_path(str(workspace_dir), None, 0)
+    if not size:
+        return False
+    buffer = ctypes.create_unicode_buffer(size)
+    if not 0 < get_short_path(str(workspace_dir), buffer, size) < size:
+        return False
+    short_path = ntpath.normcase(ntpath.normpath(buffer.value))
+    saved_parts, long_parts, short_parts = (PureWindowsPath(path).parts for path in (saved, long_path, short_path))
+    # A path can mix short and long names for different components.
+    return len(saved_parts) == len(long_parts) == len(short_parts) and all(
+        actual in (long, short) for actual, long, short in zip(saved_parts, long_parts, short_parts)
+    )
 
 
 def build_project_handoff(store, *, project, variant, declarations=None):
@@ -147,8 +176,7 @@ def build_project_handoff(store, *, project, variant, declarations=None):
                     safe_filename(name, ".csv")
                     file = workspace_file(store.workspace, "UserHourlyParams", name, ".csv")
                     resolution = "workspace" if file.is_file() else "missing"
-                    matches = isinstance(saved_path, str) and bool(saved_path) and (
-                        ntpath.normcase(ntpath.normpath(saved_path)) == ntpath.normcase(ntpath.normpath(str(file.parent))))
+                    matches = _load_path_matches_workspace(saved_path, file.parent)
                 except (ValueError, OSError):
                     resolution = "invalid"
                 row["hourly_source"] = {"file_name": name, "saved_path": saved_path,

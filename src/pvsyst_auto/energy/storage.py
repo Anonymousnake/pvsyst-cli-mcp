@@ -10,6 +10,7 @@ from fractions import Fraction
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.components.generator import direct_fields, finite, one
 from pvsyst_auto.energy.availability import native_availability
+from pvsyst_auto.energy.power import APPARENT, ENABLED, INJECTION
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
@@ -258,16 +259,25 @@ def set_grid_export(lines, system, allow_grid_export):
 
 
 def set_system_grid_limit(lines, system, grid_limit_kw: float) -> float:
-    """Write positive PLimGrid (kW), LimGrSeparLoss=False, and grid-limit bits (0x05000000) on pvSystem."""
+    """Update an enabled kW limit's value, or enable a new kW limit at injection."""
     limit = finite(grid_limit_kw, "grid_limit_kw", 0, math.inf, positive=True)
     fields = direct_fields(lines, system)
-    flag_idx, flags = one(fields, "Flags")
-    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", flags):
+    flag_idx, raw_flags = one(fields, "Flags")
+    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags):
         raise ValueError("Owning system flags must be unambiguous hexadecimal values")
-    lines[flag_idx] = replace_value(lines[flag_idx], f"${int(flags[1:], 16) | 0x05000000:08X}")
+    flags = int(raw_flags[1:], 16)
+    edits = {"PLimGrid": decimal_text(limit)}
+    if flags & ENABLED:
+        if flags & APPARENT:
+            raise ValueError("Native apparent grid limits use kVA and cannot be set with grid_limit_kw")
+    else:
+        # Keep the legacy injection default: the 8.1.7 PeakShaving fixture does not charge at the inverter limit.
+        flags = (flags & ~APPARENT) | ENABLED | INJECTION
+        lines[flag_idx] = replace_value(lines[flag_idx], f"${flags:08X}")
+        edits["LimGrSeparLoss"] = "False"
     newline = "\r\n" if any("\r\n" in line for line in lines) else "\n"
     insert = []
-    for key, val in (("PLimGrid", decimal_text(limit)), ("LimGrSeparLoss", "False")):
+    for key, val in edits.items():
         existing = one(fields, key, False)
         if existing:
             lines[existing[0]] = replace_value(lines[existing[0]], val)
@@ -278,15 +288,18 @@ def set_system_grid_limit(lines, system, grid_limit_kw: float) -> float:
     return limit
 
 
-def _system_grid_limit(lines, system) -> float | None:
-    fields = direct_fields(lines, system)
-    flag_val = one(fields, "Flags")[1]
+def _system_grid_limit(fields) -> dict[str, float]:
+    raw_flags = one(fields, "Flags")[1]
+    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags):
+        return {}
+    flags = int(raw_flags[1:], 16)
+    if not flags & ENABLED:
+        return {}
     plim = one(fields, "PLimGrid", False)
-    if plim is None or not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", flag_val):
-        return None
-    if not (int(flag_val[1:], 16) & 0x01000000):
-        return None
-    return finite(float(Decimal(plim[1])), "PLimGrid", 0, math.inf, positive=True)
+    if plim is None:
+        return {}
+    key = "grid_limit_kva" if flags & APPARENT else "grid_limit_kw"
+    return {key: finite(float(Decimal(plim[1])), "PLimGrid", 0, math.inf, positive=True)}
 
 
 def storage_state(lines, system):
@@ -328,9 +341,7 @@ def storage_state(lines, system):
         "discharging_strategy": one(values, "DischStrategy")[1],
         "backend": "pvsyst_native_ac_coupled",
     }
-    grid_limit = _system_grid_limit(lines, system)
-    if grid_limit is not None:
-        state["grid_limit_kw"] = grid_limit
+    state.update(_system_grid_limit(fields))
     for name, (key, low, high) in NUMERIC_FIELDS.items():
         try:
             raw = Decimal(one(values, key)[1])
@@ -388,8 +399,8 @@ def validate_storage(state, *, allow_weak=False, preserved=None):
     if preserved is not None and pair == tuple(preserved[name] for name in STRATEGY_KEYS):
         return
     if state["strategy"] == "PeakShaving":
-        if state.get("grid_limit_kw") is None:
-            raise ValueError("PeakShaving requires a positive grid_limit_kw (PLimGrid)")
+        if state.get("grid_limit_kw") is None and state.get("grid_limit_kva") is None:
+            raise ValueError("PeakShaving requires an enabled PLimGrid")
     if state["strategy"] == "PowerShift":
         chg = state["charging_strategy"]
         if chg == "PVProdFraction":
@@ -423,7 +434,7 @@ def validate_storage(state, *, allow_weak=False, preserved=None):
                 raise ValueError("SpecifiedHours discharging_schedule_48 must contain 48 non-negative slots with at least one > 0")
 
 
-def resolve_storage_controls(spec: dict, *, base: dict | None = None, system_grid_limit: float | None = None) -> dict:
+def resolve_storage_controls(spec: dict, *, base: dict | None = None, inherited_limit: dict | None = None) -> dict:
     """Resolve and strictly validate strategy, charging/discharging modes, schedules, and limits."""
     strat_key = spec.get("strategy")
     if strat_key is not None:
@@ -474,12 +485,16 @@ def resolve_storage_controls(spec: dict, *, base: dict | None = None, system_gri
         resolved = {"strategy": strategy, "charging_strategy": chg, "discharging_strategy": dis}
         if "grid_limit_kw" in spec:
             resolved["grid_limit_kw"] = finite(spec["grid_limit_kw"], "grid_limit_kw", 0, math.inf, positive=True)
-        elif system_grid_limit is not None:
-            resolved["grid_limit_kw"] = system_grid_limit
-        elif base is not None and base.get("grid_limit_kw") is not None:
-            resolved["grid_limit_kw"] = base["grid_limit_kw"]
         else:
-            raise ValueError("PeakShaving requires grid_limit_kw (or an existing PLimGrid on pvSystem)")
+            limits = base if base is not None else inherited_limit or {}
+            if "grid_limit_kw" in limits:
+                resolved["grid_limit_kw"] = limits["grid_limit_kw"]
+            elif "grid_limit_kva" in limits:
+                if not same_strategy:
+                    raise ValueError("Native apparent grid limits use kVA and cannot be inherited as grid_limit_kw")
+                resolved["grid_limit_kva"] = limits["grid_limit_kva"]
+            else:
+                raise ValueError("PeakShaving requires grid_limit_kw (or an existing PLimGrid on pvSystem)")
         if dis == "MinMaxHour":
             sh = spec.get("discharge_start_hour", base.get("HourBegDisch") if same_strategy and base else None)
             eh = spec.get("discharge_end_hour", base.get("HourEndDisch") if same_strategy and base else None)
@@ -500,10 +515,6 @@ def resolve_storage_controls(spec: dict, *, base: dict | None = None, system_gri
     resolved = {"strategy": strategy, "charging_strategy": chg, "discharging_strategy": dis}
     if "grid_limit_kw" in spec:
         resolved["grid_limit_kw"] = finite(spec["grid_limit_kw"], "grid_limit_kw", 0, math.inf, positive=True)
-    elif system_grid_limit is not None:
-        resolved["grid_limit_kw"] = system_grid_limit
-    elif base is not None and base.get("grid_limit_kw") is not None:
-        resolved["grid_limit_kw"] = base["grid_limit_kw"]
 
     same_chg = same_strategy and chg == base["charging_strategy"]
     if chg == "PVProdFraction":
@@ -685,9 +696,9 @@ def create_grid_storage_variant(store, *, project, source_variant, new_variant, 
             weak = after["strategy"] == "WeakGrid"
             validate_storage(after, allow_weak=availability is not None, preserved=before)
         else:
-            controls = resolve_storage_controls(clean_updates, base=before, system_grid_limit=_system_grid_limit(lines, system))
+            controls = resolve_storage_controls(clean_updates, base=before)
             merged_state.update(controls)
-            if "grid_limit_kw" in controls and ("grid_limit_kw" in clean_updates or controls["strategy"] == "PeakShaving"):
+            if "grid_limit_kw" in clean_updates:
                 set_system_grid_limit(lines, system, controls["grid_limit_kw"])
                 _, system = store._sections(lines)
             set_grid_export(lines, system, allow_grid_export)

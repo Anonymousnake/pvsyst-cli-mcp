@@ -108,27 +108,35 @@ def _run_preserve_source_hardware(store, components, cli, *, request, dry_run=Tr
     """Preserve the existing source hardware and deliver it through the existing house task.
 
     Skips prepare_template/global resize/setIndependentMPPT entirely; the source variant is
-    cloned verbatim by run_house_task. Native version/licence is still read through the existing
-    _native_preflight (per-call window policy), and every house guard stays in force.
+    cloned verbatim by run_house_task. Fresh runs check native capabilities, version and licence
+    up front. On resume the same preflight runs only before a new simulation attempt.
     """
     result = {"status": "blocked", "stage": "source_probe", "issues": [],
               "prepare_mode": PRESERVE_SOURCE_HARDWARE, "source_preparation": None,
               "source_summary": None, "house": None, "house_preflight_complete": False,
+              "native_preflight": None,
               "native_consumption_verified": False, "weather_native_comparison_performed": False}
     try:
         if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation)):
             raise ValueError("Use strict booleans")
         child = _preserve_child_request(request)
-        preflight, error = _native_preflight(
-            cli, "existing", prepare_only=False,
-            allow_window_creation=request.get("allow_window_creation"))
-        result["native_preflight"] = preflight
-        if error is not None:
+        if not resume and child.get("allow_window_creation") is False:
+            raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
+
+        def check_native():
+            preflight, error = _native_preflight(
+                cli, "existing", prepare_only=False,
+                allow_window_creation=request.get("allow_window_creation"))
+            result["native_preflight"] = preflight
+            return error
+
+        if not resume and (error := check_native()) is not None:
             result.update(status="blocked", stage="native_preflight", issues=[error])
             return result
         result["stage"] = "house_delivery"
         delivered = run_house_task(store, components, cli, request=child, dry_run=dry_run,
-            confirm=confirm, resume=resume, retry_simulation=retry_simulation)
+            confirm=confirm, resume=resume, retry_simulation=retry_simulation,
+            simulation_preflight=check_native if resume else None)
         result["house"] = delivered
         result["stage"] = delivered.get("stage") or "house_delivery"
         result["source_summary"] = _preserve_source_summary(
@@ -231,6 +239,8 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
                               issues=["allow_window_creation=false requires scene_import_method='native'; "
                                       "the GUI import method opens the native window, so nothing was prepared."])
                 return result
+            if not resume and request.get("allow_window_creation") is False:
+                raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
             design = _prune_empty(request["design"])
             if not isinstance(design, dict) or not isinstance(binding, dict):
                 raise ValueError("Provide the design request and the cited-source binding as objects")

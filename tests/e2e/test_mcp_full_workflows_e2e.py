@@ -207,7 +207,6 @@ class RealMcpServerWorkflowsE2E(unittest.TestCase):
                 "module_geometry": mg,
                 "shading_mode": "module_layout",
                 "report_pdf": False,
-                "allow_window_creation": False,
             }
             async with stdio_client(self._mcp_params()) as (read, write):
                 async with ClientSession(read, write) as session:
@@ -220,13 +219,21 @@ class RealMcpServerWorkflowsE2E(unittest.TestCase):
                         "pvsyst_run_house_task", {"spec": spec, "dry_run": False, "confirm": True}
                     ))
                     self.assertFalse(err, done)
-                    self.assertEqual(done["phase"], "completed", done)
-                    self.assertIn(done["status"], ("completed", "needs_review"), done)
+                    self.assertEqual(done["phase"], "completed", done.get("issues"))
+                    self.assertIn(done["status"], ("completed", "needs_review"), done.get("issues"))
                     self.assertTrue(done["native_consumption_verified"])
                     self.assertGreater(done["metrics"]["array_energy_kwh"], 0.0)
                     self.assertGreater(done["metrics"]["grid_energy_kwh"], 0.0)
                     self.assertEqual(done["hourly_rows"], 8760)
                     self.assertIn("ShdElec", str(done.get("electrical_shading_output")))
+                    # Check before the test's outer byte-for-byte INI cleanup.
+                    from pvsyst_auto.native._workspace_ini import _is_supported, _profile_ini, _snapshot
+                    if _is_supported(self.cli):
+                        ini = _profile_ini()
+                        restored = _snapshot(ini.read_bytes())[1]
+                        original = _snapshot(self.snapshots[ini])[1]
+                        self.assertEqual({k: v for k, v in restored.items() if v},
+                                         {k: v for k, v in original.items() if v})
                     vc_text = Path(done["artifacts"]["native_variant"]).read_text(encoding="utf-8-sig")
                     self.assertIn("ModuleOrient=moPortrait", vc_text)
                     self.assertIn("ModSpacingX=0.040", vc_text)
