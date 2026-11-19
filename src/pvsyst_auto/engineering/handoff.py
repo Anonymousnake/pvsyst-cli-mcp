@@ -29,18 +29,26 @@ def _root_values(block, names):
 
 def _load_records(blocks):
     records = []
+    hourly_records = {block.path: block for block in blocks
+                      if block.object_type in ("THourlyParams", "TVarSimul")}
     for block in blocks:
         if block.object_type.casefold() != "pvload":
             continue
         values, omitted = {}, []
-        for name in sorted(block.fields):
-            value = block.one(name)[1]
-            # A pvLoad ValHour_N is its declared daily profile, not an hourly cache, so it is kept.
-            if (len(value) > 512 or name.casefold().startswith(("day_", "valday"))
-                    or name.casefold() in ("hourlyvalues", "hourlydata")):
-                omitted.append(name)
-            else:
-                values[name] = value
+        owners = [block]
+        for name in ("HourlyLoad", "HourlyLoad/ParSimulH"):
+            if hourly := hourly_records.get(f"{block.path}/{name}"):
+                owners.append(hourly)
+                values[name.rsplit("/", 1)[-1]] = hourly.object_type
+        for owner in owners:
+            for name in sorted(owner.fields):
+                value = owner.one(name)[1]
+                # ValHour_N is the declared daily profile.
+                if (len(value) > 512 or name.casefold().startswith(("day_", "valday"))
+                        or name.casefold() in ("hourlyvalues", "hourlydata")):
+                    omitted.append(name)
+                else:
+                    values[name] = value
         records.append({"type": block.object_type, "path": block.path,
                         "values": values, "omitted_cache_fields": omitted})
     return {"present": bool(records), "objects": records, "hourly_cache_contents_included": False}
@@ -95,7 +103,7 @@ def build_project_handoff(store, *, project, variant, declarations=None):
             parameters = store.inspect_parameters(project, variant)
             references = store.inspect(project, variant)
             structure = store.validate_structure(project, variant)
-            blocks = objects("".join(lines))
+            blocks = objects("".join(lines), include_private=True)
             dependencies, missing, review = [], [], []
 
             def dependency(kind, name, resolution, action=None):
