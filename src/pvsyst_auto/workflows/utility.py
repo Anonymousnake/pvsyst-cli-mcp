@@ -91,6 +91,19 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
     if mode not in ("unlimited", "3d"):
         bad("ground_layout.model_mode", "Choose 'unlimited' or '3d'")
 
+    if mode == "unlimited" and scope == "ground_tracker":
+        for key in ("central_gap_m", "pitch_slope_deg", "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg"):
+            if key in layout:
+                bad(f"ground_layout.{key}", f"{key} requires model_mode='3d'")
+    elif mode == "3d":
+        for key in ("electrical_effect", "shading_factor", "cell_width_m"):
+            if key in layout:
+                bad(f"ground_layout.{key}", f"{key} requires model_mode='unlimited'")
+        if scope == "ground_sheds":
+            for key in ("inactive_band_width_1_m", "inactive_band_width_2_m"):
+                if key in layout:
+                    bad(f"ground_layout.{key}", f"{key} requires model_mode='unlimited' for ground_sheds")
+
     if scope == "ground_sheds":
         for name, low, high in (("tilt", 0, 90), ("azimuth", -180, 180)):
             value = spec.get(name)
