@@ -208,6 +208,12 @@ def _prepare(store, components, request, *, resume=False):
         raise ValueError("The house task requires a complete AI/caller-authored mesh house")
     obstacles = obstacle_profiles(request.get("obstacles"), existing_names=[m["name"] for m in pocket["meshes"]])
     tables = table_profiles(request["layout"], pocket, snap["modules"], snap["source"])
+    if zero_template and source_groups:
+        for entry, table in zip(entries, tables):
+            geometry = table.get("module_geometry", snap["modules"])
+            if entry.get("module_geometry") is None and any(
+                    geometry[axis] != snap["modules"][axis] for axis in ("width_m", "length_m")):
+                raise ValueError(f"Table {table['name']} uses a different PAN size. Set layout.tables[].module_geometry.")
     check_tables(pocket, tables)
     mode = request.get("shading_mode", "linear")
     if mode not in ("linear", "module_layout"):
