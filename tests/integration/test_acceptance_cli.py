@@ -237,7 +237,7 @@ class AcceptanceCLITests(unittest.TestCase):
             outside.mkdir()
             junction = long_dir / "linked_dir"
             created = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
-                                     capture_output=True, text=True)
+                                     capture_output=True)
             if created.returncode == 0:
                 try:
                     with self.assertRaisesRegex(ValueError, "links and junctions"):
