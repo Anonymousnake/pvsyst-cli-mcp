@@ -124,12 +124,25 @@ class VariantTests(unittest.TestCase):
                          cold.replace(b"GInverter = original.OND", b"GInverter = new.OND", 1))
 
         root = b"\tFlags = $00A0 \r\n"
-        cold = cold.replace(b"  Version=8.1.6\r\n", b"  Version=8.1.6\r\n" + root, 1)
+        plots = (b"  SimulPlots=Start\r\n"
+                 b"    PVObject_=pvSimulPlot\r\n      Flags=$000F\r\n      VarY=E_Grid\r\n"
+                 b"      BinLarg=20.0000\r\n      ShowOnReport=False\r\n      NValAcc = 0 \r\n      NValRes=0\r\n"
+                 b"    End of PVObject pvSimulPlot\r\n  EndTags\r\n")
+        warm_plots = plots.replace(b"NValAcc = 0 \r\n      NValRes=0\r\n",
+                                   b"NValAcc = 2 \r\n      NValRes=2\r\n"
+                                   b"      ValuesX=1,2,\r\n      ValuesY_contd=3,4,\r\n"
+                                   b"      ValuesZ = 0,1,\r\n      ValuesU_contd=9,5,\r\n"
+                                   b"      Histogram=THistogramme\r\n        ValuesY=1,2,\r\n      End of THistogramme\r\n")
+        export = (b"  PVObject_Simul=pvSimulFile\r\n    FileNameWr=Output.CSV\r\n"
+                  b"    VarIdentWr=viE_Grid\r\n    Units=uikWh\r\n    TypeValW=Hour\r\n  End of TSimulFich\r\n")
+        cold = cold.replace(b"  Version=8.1.6\r\n", b"  Version=8.1.6\r\n" + root, 1).replace(
+            b"End of PVObject pvVCalcul", plots + export + b"End of PVObject pvVCalcul").replace(
+            b"    SystemType=Battery\r\n", b"    SystemType=Battery\r\n    ValuesX=unrelated\r\n    NValRes=17\r\n")
         cache = (b"  VarList, list of=1 TVarSimul\r\n"
                  b"    VarSimul_1=E_Grid\r\n      ValMonth=1.5,2.25\r\n    End of VarSimul=E_Grid\r\n"
                  b"  End of the List VarList\r\n"
                  b"  Histogram=THistogramme\r\n    Ident=E_Grid\r\n  End of THistogramme\r\n")
-        cached = cold.replace(root, root.replace(b"00A0", b"00A1")).replace(
+        cached = cold.replace(root, root.replace(b"00A0", b"00A1")).replace(plots, warm_plots).replace(
             b"End of PVObject pvVCalcul", cache + b"End of PVObject pvVCalcul")
         self.original.write_bytes(cached)
         before = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)
@@ -153,6 +166,22 @@ class VariantTests(unittest.TestCase):
         self.assertEqual(backup.read_bytes(), cached)
         after = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)
         self.assertFalse(after["saved_results"]["present"])
+        self.assertEqual(after["saved_results"]["pv_simul_file"]["file_name_written"], "Output.CSV")
+
+    def test_malformed_plot_scope_refuses_component_clone(self):
+        plot = (b"  SimulPlots=Start\r\n    PVObject_=pvSimulPlot\r\n"
+                b"      NValRes=2\r\n      ValuesX=1,2,\r\n    End of PVObject pvSimulPlot\r\n")
+        cold = self.original.read_bytes().replace(b"Version=8.1.6", b"Version=8.1.6\r\n  Flags=$01", 1)
+        for scope, error in ((plot, "SimulPlots"),
+                             (plot + plot + b"  EndTags\r\n", "SimulPlots"),
+                             (plot.replace(b"NValRes=2", b"NValRes=bad") + b"  EndTags\r\n", "NValRes")):
+            with self.subTest(error=error, scope=scope):
+                before = cold.replace(b"  PVObject_System", scope + b"  PVObject_System")
+                self.original.write_bytes(before)
+                with self.assertRaisesRegex(ValueError, error):
+                    self.store.clone("Example.PRJ", "VC0", "VC1", {"OND": "new.OND"})
+                self.assertEqual(self.original.read_bytes(), before)
+                self.assertFalse(self.original.with_suffix(".VC1").exists())
 
     def test_update_and_restore_with_hash_and_backup(self):
         initial = self.store.inspect("Example.PRJ", "VC0")
@@ -324,6 +353,28 @@ class VariantTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed while preparing"):
                 self.store.clone_subarray("Example.PRJ", "VC0", 1, state["sha256"])
         self.assertEqual(self.original.read_bytes(), external)
+
+    def test_subarray_clone_and_removal_invalidate_saved_results(self):
+        cold = self._prepare_grid_variant().replace("  Version=8.1.6\n", "  Version=8.1.6\n  Flags=$00100000\n")
+        cache = ("  VarList, list of=1 TVarSimul\n    VarSimul_1=GlobHor\n"
+                 "      Varident=GlobHor\n      ValMonth=10,20,\n"
+                 "    End of VarSimul=viGlobHor\n  End of the List VarList\n")
+        hot = cold.replace("Flags=$00100000", "Flags=$00100001").replace(
+            "End of PVObject pvVCalcul", cache + "End of PVObject pvVCalcul")
+        self.original.write_bytes(hot.encode())
+        self.store.clone_subarray("Example.PRJ", "VC0", 1)
+        cloned = self.original.read_text(encoding="utf-8")
+        for edit in ("clone", "remove"):
+            with self.subTest(edit=edit):
+                if edit == "remove":
+                    warm = cloned.replace(cache, "").replace("Flags=$00100000", "Flags=$00100001")
+                    warm = warm.replace("End of PVObject pvVCalcul", cache + "End of PVObject pvVCalcul")
+                    self.original.write_text(warm, encoding="utf-8")
+                    self.store.remove_subarray("Example.PRJ", "VC0", 3)
+                state = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)["saved_results"]
+                self.assertFalse(state["present"])
+                self.assertEqual(state["root_flags"], "$00100000")
+                self.assertIn(b"    Flags=$60", self.original.read_bytes())
 
     def test_project_and_variant_archives_restore_original_bytes(self):
         self.store.clone("Example.PRJ", "VC0", "VC1")
@@ -649,6 +700,20 @@ class VariantTests(unittest.TestCase):
         originals = {name: (self.workspace / "Projects" / name).read_bytes()
                      for name in before["files"]}
         return before, originals
+
+    def test_project_source_replacement_invalidates_saved_results(self):
+        self._prepare_project_sources()
+        cache = (b"  VarList, list of=1 TVarSimul\r\n    VarSimul_1=GlobHor\r\n"
+                 b"      Varident=GlobHor\r\n      ValMonth=10,20,\r\n"
+                 b"    End of VarSimul=viGlobHor\r\n  End of the List VarList\r\n")
+        self.original.write_bytes(self.original.read_bytes().replace(
+            b"  Version=8.1.6\r\n", b"  Version=8.1.6\r\n  Flags=$0001\r\n").replace(
+            b"End of PVObject pvVCalcul", cache + b"End of PVObject pvVCalcul"))
+        self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET")
+        state = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)["saved_results"]
+        self.assertFalse(state["present"])
+        self.assertEqual(state["root_flags"], "$0000")
+        self.assertIn(b"    Flags=$60\r\n", self.original.read_bytes())
 
     def test_update_and_restore_project_sources_across_all_variants(self):
         before, originals = self._prepare_project_sources()

@@ -853,6 +853,10 @@ class VariantStore:
                                   if lines[i].strip().startswith("PVObject_")), end)
                     self._replace_unique_field(lines, "NomF", met_name, (start + 1, child))
                     self._replace_unique_field(lines, "SiteM", site_identity, (start + 1, child))
+                    if "".join(lines) != text:
+                        from pvsyst_auto.native.headless import strip_result_cache
+
+                        lines, _ = strip_result_cache(lines)
                 candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
                 if name == project:
                     self._project_text(candidate)

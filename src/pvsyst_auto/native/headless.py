@@ -16,7 +16,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from pvsyst_auto.components.editor import objects, replace_value, root_block
+from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.native._prep import _prepare_source
 from pvsyst_auto.project.circuit import inventory
 from pvsyst_auto.project.fileio import publish_new
@@ -617,49 +617,107 @@ def _block(lines, start_pred, end_pred):
     raise ValueError("block start not found")
 
 
-def strip_result_cache(lines):
-    """Remove this variant's own derived result cache and clear the root simulation bit.
+_PLOT_SAMPLES = {f"Values{axis}{suffix}" for axis in "XYZU" for suffix in ("", "_contd")}
 
-    Deletes the root-level ``VarList ... TVarSimul`` results block and every
-    ``Histogram=THistogramme`` block, then clears ONLY the root Flags bit 0 (0x1,
-    "simulation done") while preserving every other flag bit. Flags are selected by
-    object ownership, not indentation, and the rewrite preserves the original EOL.
-    A present-but-unclosed cache is malformed and raises; a cold source may omit
-    both the cache and root Flags. This removes the *derived
-    result* cache only -- economic ``TEcoEvaluation`` inputs, hourly-tariff ``TVarSimul``,
-    household/load profiles, geometry and component references are left untouched.
+
+def _simul_plots(lines, root, blocks):
+    """Yield only the variant's pvSimulPlot records inside its SimulPlots list."""
+    if "SimulPlots" not in root.fields:
+        return
+    start, value = root.one("SimulPlots")
+    if value != "Start":
+        raise ValueError("Invalid SimulPlots start")
+    by_start = {block.line - 1: block for block in blocks
+                if block.object_type == "pvSimulPlot" and "/" not in block.path}
+    index = start + 1
+    while index < root.end_line - 1:
+        tag = lines[index].strip()
+        if tag in ("EndTags", "End of List SimulPlots"):
+            return
+        if not tag:
+            index += 1
+        elif plot := by_start.get(index):
+            yield plot
+            index = plot.end_line
+        else:
+            break
+    raise ValueError("Unclosed or malformed SimulPlots list")
+
+
+def _result_histograms(owners, blocks):
+    """Return histograms directly owned by this root or its simulation plots."""
+    return [block for block in blocks if block.object_type == "THistogramme"
+            and any(block.path.rpartition("/")[0] == owner.path
+                    and owner.line < block.line < block.end_line < owner.end_line for owner in owners)]
+
+
+def strip_result_cache(lines):
+    """Clear the saved VarList, histograms, known plot samples/counts and root Flags bit 0.
+
+    Preserve plot definitions and export settings. Plan edits before changing any lines,
+    and preserve the original whitespace and line endings of retained fields.
     Returns ``(lines, report)``.
     """
+    blocks = objects("\n".join(line.rstrip("\r\n") for line in lines), include_private=True)
+    root = next((block for block in blocks if not block.path), None)
+    if root is None or root.object_type != "pvVCalcul":
+        raise ValueError("Expected a root pvVCalcul object")
+    plots = list(_simul_plots(lines, root, blocks))
     report = {"var_list_removed": False, "histograms_removed": 0,
+              "plot_sample_rows_removed": 0, "plot_counts_cleared": 0,
               "root_simulation_bit_cleared": False}
-    try:
-        s, e = _block(lines, lambda x: x.startswith("VarList, list of="),
-                      lambda x: x == "End of the List VarList")
-    except ValueError as exc:
-        if "block start not found" not in str(exc):
-            raise
-    else:
-        del lines[s:e + 1]
-        report["var_list_removed"] = True
-    while True:
-        try:
-            s, e = _block(lines, lambda x: x == "Histogram=THistogramme", lambda x: x == "End of THistogramme")
-        except ValueError as exc:
-            if "block start not found" not in str(exc):
-                raise  # a present-but-unclosed histogram is malformed, never silently dropped
-            break
-        del lines[s:e + 1]
-        report["histograms_removed"] += 1
-    root = root_block("\n".join(line.rstrip("\r\n") for line in lines))
-    if "Flags" not in root.fields and not any(report.values()):
-        return lines, report
-    index, flags = root.one("Flags")
-    if not re.fullmatch(r"\$[0-9A-Fa-f]+", flags):
-        raise ValueError("Invalid root Flags value")
-    value = int(flags[1:], 16)
-    if value & 0x1:
-        lines[index] = replace_value(lines[index], f"${value & ~0x1:0{len(flags) - 1}X}")
-        report["root_simulation_bit_cleared"] = True
+    remove = set()
+    replace = {}
+    for plot in plots:
+        for key in _PLOT_SAMPLES & plot.fields.keys():
+            remove.update(index for index, _ in plot.fields[key])
+        for key in ("NValAcc", "NValRes"):
+            if key in plot.fields:
+                index, value = plot.one(key)
+                if not re.fullmatch(r"[0-9]+", value):
+                    raise ValueError(f"Invalid plot {key} value")
+                if value != "0":
+                    replace[index] = replace_value(lines[index], "0")
+    report["plot_sample_rows_removed"] = len(remove)
+    report["plot_counts_cleared"] = len(replace)
+
+    histograms = _result_histograms([root, *plots], blocks)
+    for histogram in histograms:
+        remove.update(range(histogram.line - 1, histogram.end_line))
+    report["histograms_removed"] = len(histograms)
+    # The saved VarList is an unwrapped root list, not a parsed PVObject.
+    children = {block.line - 1: block.end_line for block in blocks if block.path and "/" not in block.path}
+    start = None
+    index = root.line
+    while index < root.end_line - 1:
+        tag = lines[index].strip()
+        if index in children and start is None:
+            index = children[index]
+            continue
+        if tag.startswith("VarList, list of="):
+            if start is not None or report["var_list_removed"] or not re.fullmatch(r"VarList, list of=[0-9]+\s+TVarSimul", tag):
+                raise ValueError("Malformed or duplicate VarList")
+            start = index
+        elif tag == "End of the List VarList":
+            if start is None:
+                raise ValueError("Unmatched VarList closing tag")
+            remove.update(range(start, index + 1))
+            report["var_list_removed"] = True
+            start = None
+        elif start is not None and (index in children or tag in ("EndTags", "SimulPlots=Start", "Histogram=THistogramme")):
+            raise ValueError("Unclosed VarList")
+        index += 1
+    if start is not None:
+        raise ValueError("Unclosed VarList")
+    if "Flags" in root.fields or any(report.values()):
+        index, flags = root.one("Flags")
+        if not re.fullmatch(r"\$[0-9A-Fa-f]+", flags):
+            raise ValueError("Invalid root Flags value")
+        value = int(flags[1:], 16)
+        if value & 0x1:
+            replace[index] = replace_value(lines[index], f"${value & ~0x1:0{len(flags) - 1}X}")
+            report["root_simulation_bit_cleared"] = True
+    lines[:] = [replace.get(index, line) for index, line in enumerate(lines) if index not in remove]
     return lines, report
 
 

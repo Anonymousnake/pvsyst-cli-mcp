@@ -22,6 +22,7 @@ from pvsyst_auto.energy.storage import grid_storage_state
 from pvsyst_auto.energy.unavailability import system_unavail_state
 from pvsyst_auto.energy.dc import dc_cabling_state
 from pvsyst_auto.native.grid_limit import grid_limit_state
+from pvsyst_auto.native.headless import _PLOT_SAMPLES, _result_histograms, _simul_plots
 from pvsyst_auto.native.horizon import horizon_state
 from pvsyst_auto.native.p50 import p50_state
 from pvsyst_auto.project.circuit import topology_state, transformer_state
@@ -49,10 +50,10 @@ def _declared_numbers(text: str) -> list[float] | None:
 
 
 def saved_results(text: str, lines: list[str]) -> dict:
-    """Read the result cache stored inside a variant."""
+    """Read recognized saved-result records and the separate output-file configuration."""
     issues = []
     try:
-        blocks = objects(text)
+        blocks = objects(text, include_private=True)
     except ValueError as exc:
         blocks = []
         issues.append("native result-cache objects unreadable: %s" % exc)
@@ -158,8 +159,15 @@ def saved_results(text: str, lines: list[str]) -> dict:
     parsed_indices = {entry["index"] for entry in entries}
     missing_indices = (sorted(set(range(1, declared_count + 1)) - parsed_indices)
                        if declared_count is not None else [])
-    histograms = sum(1 for line in lines if line.strip() == "Histogram=THistogramme")
-    present = (var_list_start is not None or pv_simul_file is not None or histograms > 0)
+    plots = []
+    if root is not None:
+        try:
+            plots = list(_simul_plots(lines, root, blocks))
+        except ValueError as exc:
+            issues.append(str(exc))
+    histograms = len(_result_histograms([root, *plots], blocks)) if root else 0
+    plot_samples = any(_PLOT_SAMPLES & plot.fields.keys() for plot in plots)
+    present = var_list_start is not None or histograms > 0 or plot_samples
     return {
         "present": present,
         "root_flags": root_flags,

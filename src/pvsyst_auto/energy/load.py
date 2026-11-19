@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path, PureWindowsPath
 
 from pvsyst_auto.energy.profiles import DATE_FORMATS, TIME_BASIS, UNITS, _inspect_load, _read
+from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.weather.csv import number
@@ -137,6 +138,9 @@ def create_load_variant(store, *, project, source_variant, new_variant, load_man
         if not replaced:
             closing = text.rfind("\n", 0, text.rindex("End of PVObject pvVCalcul")) + 1
             candidate_text = text[:closing] + block + text[closing:]
+        if candidate_text != text:
+            candidate_lines, _ = strip_result_cache(candidate_text.splitlines(keepends=True))
+            candidate_text = "".join(candidate_lines)
 
         def verify(checked, _, res):
             store._sections(checked)
@@ -149,7 +153,7 @@ def create_load_variant(store, *, project, source_variant, new_variant, load_man
                 annual_load_kwh=math.fsum(power for _, power in values),
             )
             res["warnings"].append("The load is an explicit embedded hourly snapshot. Later CSV changes require a new binding; file-reading progress logs do not prove CSV consumption.")
-            res["warnings"].append("Storage strategy, system flags, site/weather, topology and all non-load fields stay inherited. Verify native E_User and matching simulation year/timezone before claiming consumption.")
+            res["warnings"].append("Storage strategy, system flags, site/weather and topology stay inherited. Verify native E_User and matching simulation year/timezone before claiming consumption.")
 
         return {"candidate_text": candidate_text, "verify": verify}
 
