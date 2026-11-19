@@ -17,7 +17,7 @@ Windows 下配合本地 PVsyst 8 使用的 MCP 服务端与 Python 封装库。�
 | 对比两到三个方案的仿真结果 | `pvsyst_compare_engineering_scenarios` | [多方案对比](docs/engineering-scenarios.md) |
 | 可研简报核对、交接读参、分块拼装与交付打包（需 `expert` 组） | `pvsyst_review_engineering_brief`、`pvsyst_project_handoff`、`pvsyst_prepare_block_project`、`pvsyst_export_engineering_delivery` | [工程简报预审](docs/engineering-brief.md) |
 
-服务默认仅注册 **8 个默认核心组共 39 个高频工具**以降低模型上下文开销；`PVSYST_TOOL_GROUPS` 显式列出的组会替换这 8 个默认组，单独设置 `admin` 或 `expert` 只加载对应组。设置 `PVSYST_TOOL_GROUPS=all` 可加载全部 **68 个工具**；若要保留默认组并追加 `expert`，请完整写成 `setup,projects,components,weather,storage,simulation,results,engineering,expert`。从 `v0.1.0` 升级的完整迁移说明见[工具参考中的升级小节](docs/tool-reference.md#upgrading-from-v010)。
+服务默认仅注册 **8 个默认核心组共 40 个高频工具**以降低模型上下文开销；`PVSYST_TOOL_GROUPS` 显式列出的组会替换这 8 个默认组，单独设置 `admin` 或 `expert` 只加载对应组。设置 `PVSYST_TOOL_GROUPS=all` 可加载全部 **69 个工具**；若要保留默认组并追加 `expert`，请完整写成 `setup,projects,components,weather,storage,simulation,results,engineering,expert`。从 `v0.1.0` 升级的完整迁移说明见[工具参考中的升级小节](docs/tool-reference.md#upgrading-from-v010)。
 
 ## 安装与环境准备
 
@@ -63,9 +63,9 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 
 ### 按需调整暴露的工具组
 
-未配置 `PVSYST_TOOL_GROUPS` 时，服务默认仅暴露 **39 个高频核心工具**（涵盖 `setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering` 八个默认组），大幅减少 LLM 上下文占用。可通过 `env` 中的 `PVSYST_TOOL_GROUPS` 精确控制；显式列出的组会替换默认组：
+未配置 `PVSYST_TOOL_GROUPS` 时，服务默认仅暴露 **40 个高频核心工具**（涵盖 `setup`、`projects`、`components`、`weather`、`storage`、`simulation`、`results`、`engineering` 八个默认组），大幅减少 LLM 上下文占用。可通过 `env` 中的 `PVSYST_TOOL_GROUPS` 精确控制；显式列出的组会替换默认组：
 
-- `"PVSYST_TOOL_GROUPS": "all"`：加载全部 **68 个工具**（包含默认组及 `admin`、`expert`）。
+- `"PVSYST_TOOL_GROUPS": "all"`：加载全部 **69 个工具**（包含默认组及 `admin`、`expert`）。
 - `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"`：保留默认组并追加 `expert`，共 64 个工具。
 - `"PVSYST_TOOL_GROUPS": "setup,engineering,results"`：只加载这三组的 11 个工具。
 

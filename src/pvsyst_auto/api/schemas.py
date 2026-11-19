@@ -864,3 +864,19 @@ class EngineeringBlock(BaseModel):
     id: Annotated[StrictStr, Field(min_length=1, max_length=100)]
     source_subarray_id: Annotated[StrictInt, Field(ge=1, le=2147483647)]
     count: Annotated[StrictInt, Field(ge=1, le=100)]
+
+
+class BatchSweepRequest(BaseModel):
+    """Parametric PVsyst UserBatch sweep specification (Cartesian grid or explicit scenarios)."""
+    model_config = _STRICT_CONFIG
+    project: StrictStr
+    variant: StrictStr
+    sweep_name: StrictStr
+    grid: dict[StrictStr, list[Any]] | None = None
+    scenarios: list[dict[StrictStr, Any]] | None = None
+    result_variables: list[StrictStr] | None = None
+    sort_by: StrictStr = "E_Grid"
+    sort_descending: StrictBool = True
+    export_hourly: StrictBool = False
+    log_level: StrictInt | None = 3
+    allow_window_creation: StrictBool | None = None

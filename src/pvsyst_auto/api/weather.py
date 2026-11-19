@@ -13,11 +13,13 @@ from pvsyst_auto.api.context import categorized_tool, cli, workspace_path
 
 
 @categorized_tool()
-def pvsyst_inspect_weather_csv(csv_name: str, expected_year: StrictInt | None = None) -> dict:
-    """Validate a PVsyst standard hourly weather CSV in workspace/Meteo (headers, explicit
-    units, full-year hourly calendar including leap day, and monthly GHI/Tamb summaries)."""
+def pvsyst_inspect_weather_csv(csv_name: str, expected_year: StrictInt | None = None,
+                               step_minutes: StrictInt | None = None) -> dict:
+    """Validate a PVsyst standard hourly or sub-hourly (5/10/15/30/60 min) weather CSV in
+    workspace/Meteo (headers, explicit units, full-year calendar including leap day, and monthly summaries)."""
     try:
-        return inspect_weather_csv(workspace_path("Meteo", csv_name, ".csv"), expected_year)
+        return inspect_weather_csv(workspace_path("Meteo", csv_name, ".csv"), expected_year,
+                                   step_minutes=step_minutes)
     except (ValueError, OSError) as exc:
         raise ToolError(str(exc)) from None
 
@@ -25,12 +27,13 @@ def pvsyst_inspect_weather_csv(csv_name: str, expected_year: StrictInt | None = 
 def pvsyst_prepare_weather(csv_name: StrictStr = "", year: StrictInt | None = None,
                             sit_name: StrictStr = "", met_name: StrictStr = "",
                             country_code: StrictStr = "", time_basis: StrictStr = "",
+                            step_minutes: StrictInt | None = None,
                             dry_run: StrictBool = True) -> dict:
-    """Convert a validated full-year hourly weather CSV into new SIT and MET files
-    and write a provenance manifest under workspace/Results."""
+    """Convert a validated full-year hourly or sub-hourly (5/10/15/30/60 min) weather CSV into
+    new SIT and MET files and write a provenance manifest under workspace/Results."""
     return prepare_weather(cli(), csv_name=csv_name, year=year, sit_name=sit_name,
                            met_name=met_name, country_code=country_code,
-                           time_basis=time_basis, dry_run=dry_run)
+                           time_basis=time_basis, step_minutes=step_minutes, dry_run=dry_run)
 
 @categorized_tool()
 def pvsyst_resolve_location(query: StrictStr, country_code: StrictStr = "") -> dict:

@@ -54,8 +54,8 @@ TOOL_GROUPS = {
         "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system",
     ),
     "Simulation": (
-        "pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_simulate_design",
-        "pvsyst_prepare_sourced_design", "pvsyst_run_house_task",
+        "pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_run_batch_sweep",
+        "pvsyst_simulate_design", "pvsyst_prepare_sourced_design", "pvsyst_run_house_task",
     ),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results", "pvsyst_diagnose_results"),
     "Engineering": (

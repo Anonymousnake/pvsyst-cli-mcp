@@ -16,7 +16,9 @@ from pvsyst_auto.components.editor import objects
 from pvsyst_auto.project.fileio import write_json
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.results import fingerprint
-from pvsyst_auto.weather.csv import DATE_COLUMNS, inspect_weather_csv, number, read_bytes
+from pvsyst_auto.weather.csv import (
+    DATE_COLUMNS, SUPPORTED_STEP_MINUTES, inspect_weather_csv, number, read_bytes,
+)
 
 MEF_TEMPLATE = """PVObject_=pvMeteoFormat
   Comment=Standard hourly import, fixed local standard time
@@ -70,6 +72,22 @@ MEF_TEMPLATE = """PVObject_=pvMeteoFormat
   LargChamps=17,19,19,17,17,12,
 End of PVObject pvMeteoFormat
 """
+
+
+def render_mef(step_minutes: int = 60) -> str:
+    """Render a pvMeteoFormat (.MEF) definition for hourly or sub-hourly (5/10/15/30/60 min) CSVs."""
+    if type(step_minutes) is not int or step_minutes not in SUPPORTED_STEP_MINUTES:
+        raise ValueError(f"step_minutes must be one of {SUPPORTED_STEP_MINUTES}")
+    if step_minutes == 60:
+        return MEF_TEMPLATE
+    return (
+        MEF_TEMPLATE
+        .replace(
+            "Comment=Standard hourly import, fixed local standard time",
+            f"Comment=Standard {step_minutes}-minute sub-hourly import, fixed local standard time",
+        )
+        .replace("MeasureStep=60", f"MeasureStep={step_minutes}")
+    )
 
 
 MET_HEADER_LIMIT = 256 * 1024
@@ -177,7 +195,7 @@ def inspect_met_calendar(path, year):
         report["issues"].append("Native MET DateFinF precedes DateDebF")
     elif begin <= datetime(year, 1, 1) and end >= datetime(year, 12, 31, 23):
         report["coverage"] = "declared"
-    elif begin == datetime(1990, 1, 1) and end == datetime(1990, 12, 31, 23):
+    elif begin == datetime(1990, 1, 1) and datetime(1990, 12, 31, 23) <= end < datetime(1991, 1, 1):
         report["coverage"] = "generic_reference"
         report["warnings"].append("Native MET declares generic reference year 1990; compatibility with "
                                   "the requested year remains for the native run to check")
@@ -189,7 +207,7 @@ def inspect_met_calendar(path, year):
     return report
 
 
-def check_generated_met(path, *, time_zone):
+def check_generated_met(path, *, time_zone, expected_step_minutes: int = 60):
     """Verify a freshly converted .MET against the requested local legal standard basis.
 
     Only the bounded owning-field prefix of the generated file is read; the encoded hour array is
@@ -198,17 +216,17 @@ def check_generated_met(path, *, time_zone):
     standard offset. A field that exists but contradicts the request is a hard failure; a field
     this profile does not require is reported as unchecked rather than invented.
     """
+    if type(expected_step_minutes) is not int or expected_step_minutes not in SUPPORTED_STEP_MINUTES:
+        raise ValueError(f"expected_step_minutes must be one of {SUPPORTED_STEP_MINUTES}")
     segments, stop = read_object_prefix(path)
-    root = declared_fields(segments, "root", ("IsSourceUt", "HourShift", "TimeShift",
-                                              "TimeShiftTotalMin", "PasAccum",
-                                              "VarMeteoStepDuration"))
+    root_keys = ("IsSourceUt", "HourShift", "TimeShift", "TimeShiftTotalMin",
+                 "PasAccum", "VarMeteoStepDuration", "VarMeteoVarAcc")
+    root = declared_fields(segments, "root", root_keys)
     site = declared_fields(segments, "SiteMet", ("HLeg", "TimeZone"))
     issues, unchecked = [], []
     # A duplicated time declaration is ambiguous even when the values agree, so it is refused
     # before any value is read.
-    for section, fields, keys in (("root", root, ("IsSourceUt", "HourShift", "TimeShift",
-                                                  "TimeShiftTotalMin", "PasAccum",
-                                                  "VarMeteoStepDuration")),
+    for section, fields, keys in (("root", root, root_keys),
                                   ("SiteMet", site, ("HLeg", "TimeZone"))):
         for key in keys:
             if len(fields.get(key, ())) > 1:
@@ -242,18 +260,27 @@ def check_generated_met(path, *, time_zone):
             unchecked.append(f"Generated MET declares no root {key}")
         elif value != "0":
             issues.append(f"Generated MET root declares {key}={value}, not 0")
+    allowed_steps = (str(expected_step_minutes), f"{expected_step_minutes}.0")
     for key in ("PasAccum", "VarMeteoStepDuration"):
         value = first_value(root, key)
         if value is None:
             unchecked.append(f"Generated MET declares no root {key}")
-        elif value not in ("60", "60.0"):
-            issues.append(f"Generated MET root declares {key}={value}, not a 60 minute step")
+        elif value not in allowed_steps:
+            issues.append(f"Generated MET root declares {key}={value}, not a {expected_step_minutes} minute step")
+    if expected_step_minutes < 60:
+        var_acc = first_value(root, "VarMeteoVarAcc")
+        if var_acc is None:
+            unchecked.append("Generated MET declares no root VarMeteoVarAcc for sub-hourly step")
+        elif var_acc != "SubHour":
+            issues.append(f"Generated MET root declares VarMeteoVarAcc={var_acc}, expected SubHour for {expected_step_minutes} minute step")
     return {"valid": not issues, "issues": issues, "unchecked_checks": unchecked,
-            "header_read_stop": stop, "root": root, "site": site}
+            "step_minutes": expected_step_minutes, "header_read_stop": stop, "root": root, "site": site}
 
 
 def normalized_rows(path, report):
     """Reserialize verified date columns and units; never change the interval labels."""
+    step_minutes = report.get("step_minutes", 60)
+    step_hours = step_minutes / 60.0
     reader = csv.reader(io.StringIO(read_bytes(path).decode("utf-8-sig")),
                         delimiter=report["delimiter"], strict=True)
     for header in reader:
@@ -267,7 +294,7 @@ def normalized_rows(path, report):
         values = dict(zip(header, (cell.strip() for cell in row)))
         stamp = datetime(int(values.get("Year", report["expected_year"])), int(values["Month"]),
                          int(values["Day"]), int(values["Hour"]), int(values.get("Minute", "0")))
-        irradiance = [number(values[name]) * (1 if report["units"][name] == "W/m2" else 1000 / 3.6)
+        irradiance = [number(values[name]) * (1 if report["units"][name] == "W/m2" else (1000 / 3.6) / step_hours)
                       for name in ("GHI", "DHI")]
         yield stamp, *irradiance, number(values["Tamb"])
 
@@ -301,7 +328,8 @@ def check_site(path, report, country_code):
 
 
 def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
-                    country_code="", time_basis="", dry_run=True, allow_window_creation=None):
+                    country_code="", time_basis="", dry_run=True,
+                    step_minutes: int | None = None, allow_window_creation=None):
     # Reuse the workspace CLI lock rather than introducing a separate lock layer.
     with cli._lock:
         result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
@@ -310,12 +338,15 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
         try:
             if type(dry_run) is not bool or type(year) is not int or not 1969 <= year <= 2068:
                 raise ValueError("Use a strict boolean and integer year in 1969..2068")
+            if step_minutes is not None and (type(step_minutes) is not int or step_minutes not in SUPPORTED_STEP_MINUTES):
+                raise ValueError(f"step_minutes must be one of {SUPPORTED_STEP_MINUTES}")
             if time_basis != "local_standard_interval_start":
-                raise ValueError("Declare local_standard_interval_start: fixed winter timezone, no DST, hourly interval-start labels")
+                raise ValueError("Declare local_standard_interval_start: fixed winter timezone, no DST, interval-start labels")
             if not isinstance(country_code, str) or not re.fullmatch(r"[A-Z]{2}", country_code):
                 raise ValueError("country_code must be an explicit uppercase ISO alpha-2 code")
             source = workspace_file(cli.workspace, "Meteo", csv_name, ".csv")
-            report = inspect_weather_csv(source, year)
+            report = inspect_weather_csv(source, year, step_minutes=step_minutes)
+            resolved_step = report["step_minutes"]
             result["inspection"] = report
             if report["valid"] is not True:
                 raise ValueError("Weather CSV preflight: " + "; ".join(report["issues"] + report["unchecked_checks"]))
@@ -340,7 +371,7 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
                 cli._require("create-site", option, allow_window_creation=allow_window_creation)
             cli.command_help("convert-meteo", allow_window_creation=allow_window_creation)
             result.update(status="ready", source={"name": source.name, "sha256": report["sha256"]},
-                          year=year, country_code=country_code, time_basis=time_basis,
+                          year=year, step_minutes=resolved_step, country_code=country_code, time_basis=time_basis,
                           artifacts={key: str(path) for key, path in paths.items()},
                           mapping={"GHI": "GlobHor (W/m2)", "DHI": "DiffHor (W/m2)", "Tamb": "T_Amb (degC)"})
             result["warnings"].extend(report["warnings"])
@@ -366,7 +397,7 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
                 writer.writerows([[stamp.strftime("%Y-%m-%d %H:%M"), ghi, dhi, temp]
                                   for stamp, ghi, dhi, temp in normalized_rows(source, report)])
             with paths["mef"].open("xb") as stream:
-                stream.write(b"\xef\xbb\xbf" + MEF_TEMPLATE.encode("ascii"))
+                stream.write(b"\xef\xbb\xbf" + render_mef(resolved_step).encode("ascii"))
             build_monthly_weather_csv(paths["monthly_csv"],
                 [month["GHI"]["observed_kwh_m2"] for month in report["months"]],
                 [month["Tamb"]["observed_mean_degC"] for month in report["months"]],
@@ -390,8 +421,12 @@ def prepare_weather(cli, *, csv_name="", year=None, sit_name="", met_name="",
             result["stage"] = "met_declarations"
             save()
             # A wrong fixed plane time reference must never be published as a prepared basis.
-            result["met_declarations"] = check_generated_met(
-                met, time_zone=number(report["metadata"]["#Time Zone"]))
+            met_tz = number(report["metadata"]["#Time Zone"])
+            result["met_declarations"] = (
+                check_generated_met(met, time_zone=met_tz)
+                if resolved_step == 60
+                else check_generated_met(met, time_zone=met_tz, expected_step_minutes=resolved_step)
+            )
             result["warnings"].extend(result["met_declarations"]["unchecked_checks"])
             if not result["met_declarations"]["valid"]:
                 raise ValueError("Generated MET time basis: "
@@ -457,12 +492,18 @@ def load_weather_manifest(workspace, name, year, sit_name, met_name):
     if (data["created_files"]["sit"]["name"].casefold() != sit_name.casefold()
             or data["created_files"]["met"]["name"].casefold() != met_name.casefold()):
         raise ValueError("Weather manifest SIT/MET names differ from simulation inputs")
-    report = inspect_weather_csv(Path(assets["weather_source"]["path"]), year)
+    manifest_step = data.get("step_minutes", 60)
+    report = inspect_weather_csv(Path(assets["weather_source"]["path"]), year, step_minutes=manifest_step)
     if report["valid"] is not True:
         raise ValueError("Prepared source CSV no longer passes full-year inspection")
     check_site(Path(assets["weather_sit"]["path"]), report, data["country_code"])
-    declarations = check_generated_met(
-        Path(assets["weather_met"]["path"]), time_zone=number(report["metadata"]["#Time Zone"]))
+    met_tz = number(report["metadata"]["#Time Zone"])
+    declarations = (
+        check_generated_met(Path(assets["weather_met"]["path"]), time_zone=met_tz)
+        if manifest_step == 60
+        else check_generated_met(Path(assets["weather_met"]["path"]), time_zone=met_tz,
+                                 expected_step_minutes=manifest_step)
+    )
     if not declarations["valid"]:
         raise ValueError("Prepared MET time basis: " + "; ".join(declarations["issues"])
                          + "; prepare new SIT/MET files from the original CSV with LegalTime")
@@ -530,14 +571,18 @@ def compare_native_weather(csv_path, source, report):
                           "max_abs_delta": state["max_abs_delta"]}
         monthly.append(entry)
     step_minutes = sorted(steps)
-    # W/m2 deltas integrate to kWh/m2 only across a regular hourly cadence.
+    # W/m2 deltas integrate to kWh/m2 across any regular supported cadence (5/10/15/30/60 min).
     regular_hourly = step_minutes == [60.0]
+    regular_step = (step_minutes[0] if len(step_minutes) == 1
+                    and step_minutes[0] in tuple(float(s) for s in SUPPORTED_STEP_MINUTES)
+                    else None)
     return {"rows": count, "timestamps_match": True, "columns": stats,
             "needs_review": any(state["outside_review_threshold"] for state in stats.values()),
             "review_thresholds": {"irradiance_w_m2": 0.1, "temperature_degC": 0.01},
             "step_minutes": step_minutes, "regular_hourly_step": regular_hourly,
-            "signed_energy_delta_kwh_m2": {key: (stats[key]["signed_delta_sum"] / 1000.0
-                                                 if regular_hourly else None)
+            "regular_step_minutes": regular_step,
+            "signed_energy_delta_kwh_m2": {key: (stats[key]["signed_delta_sum"] * (regular_step / 60.0) / 1000.0
+                                                 if regular_step is not None else None)
                                            for key in ("GlobHor", "DiffHor")},
             "temperature_mean_delta_degC": stats["T_Amb"]["mean_signed"],
             "monthly": monthly,

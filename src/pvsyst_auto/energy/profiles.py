@@ -71,7 +71,10 @@ def _inspect_load(raw, *, year, date_format="iso", date_column="Date", load_colu
             continue
         index = len(values)
         if index >= expected:
-            raise ValueError("Load CSV has more than one full year's hourly rows")
+            raise ValueError(
+                "Load CSV has more than one full year's hourly rows "
+                "(PVsyst 8.1.7 native pvLoad THourlyParams snapshots are hourly 60-min profiles)"
+            )
         if len(cells) != 2:
             raise ValueError("Each load row must contain exactly two columns")
         stamp = datetime.strptime(cells[date_index].strip(), DATE_FORMATS[date_format])

@@ -39,6 +39,12 @@ VAR_GROUPS = {
     "bifacial": (*VERIFIED_VARIABLES, "viGlobGnd", "viDiffGnd", "viGlobBak",
                  "viBeamBak", "viDifSBak", "viBmSFBak", "viMismBak", "viPRBifi"),
 }
+SFI_TIME_STEPS = {
+    "hour": "Hour",
+    "subhour": "SubHour",
+    "day": "Day",
+    "month": "Month",
+}
 SFI_TEMPLATE = """PVObject_=pvSimulFile
   Comment={comment}
   Version=8.0.0
@@ -46,7 +52,7 @@ SFI_TEMPLATE = """PVObject_=pvSimulFile
   FileNameWr=results.CSV
   VarIdentWr={variables},
   Units=uikW,uiW_m2,uim3_h,uimeterW,
-  TypeValW=Hour
+  TypeValW={type_val_w}
   Separator=$003B
   DecimalSep=$002E
   NCarCol=6
@@ -137,20 +143,24 @@ def _is_plain_csv_run(args) -> bool:
 
 
 def build_sfi(path: str | os.PathLike, variables: list[str] | str,
-              comment: str = "Hourly Results") -> Path:
-    """Create an hourly SFI from verified groups or explicit vi* identifiers."""
+              comment: str = "Hourly Results",
+              time_step: str = "hour") -> Path:
+    """Create an SFI export definition (hour, subhour, day, or month) from verified groups or vi* identifiers."""
     if isinstance(variables, str):
         variables = list(VAR_GROUPS[variables])
     if not variables or any(not re.fullmatch(r"vi[A-Za-z0-9_]+", v) for v in variables):
         raise ValueError("Expected a nonempty list of vi* identifiers")
     if not comment.strip() or "\n" in comment or "\r" in comment:
         raise ValueError("SFI comment must be one nonempty line")
+    if not isinstance(time_step, str) or time_step.strip().lower() not in SFI_TIME_STEPS:
+        raise ValueError("SFI time_step must be one of: hour, subhour, day, month")
+    type_val_w = SFI_TIME_STEPS[time_step.strip().lower()]
     target = Path(path)
     if target.suffix.lower() != ".sfi":
         raise ValueError("SFI destination must end in .sfi")
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("x", encoding="utf-8", newline="\n") as file:
-        file.write(SFI_TEMPLATE.format(comment=comment, variables=",".join(variables)))
+        file.write(SFI_TEMPLATE.format(comment=comment, variables=",".join(variables), type_val_w=type_val_w))
     return target
 
 

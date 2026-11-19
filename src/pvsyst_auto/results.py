@@ -19,8 +19,11 @@ def fingerprint(path):
     return digest.hexdigest()
 
 
+SUPPORTED_ANNUAL_STEPS = (5, 10, 15, 30, 60)
+
+
 def annual_summary(path, year, nominal_dc_power_kw):
-    """Accept one complete hourly calendar year and compute standard grid PR."""
+    """Accept one complete hourly or sub-hourly (5/10/15/30/60 min) calendar year and compute standard grid PR."""
     if type(year) is not int or not 1969 <= year <= 2068:
         raise ValueError("Annual SFI validation requires a year in 1969..2068 (two-digit CSV dates)")
     if (isinstance(nominal_dc_power_kw, bool) or not isinstance(nominal_dc_power_kw, (int, float))
@@ -28,48 +31,89 @@ def annual_summary(path, year, nominal_dc_power_kw):
         raise ValueError("Nominal DC power must be a positive finite kWp value")
     before = fingerprint(path)
     units = result_units(path, strict=True)
-    power = {name: {"W": 0.001, "Wh": 0.001, "kW": 1, "kWh": 1}.get(units.get(name))
-             for name in ("E_Grid", "EArray", "IL_Pmax")}
-    irradiation_scale = {"W/m2": 0.001, "W/m\u00b2": 0.001,
-                         "Wh/m2": 0.001, "Wh/m\u00b2": 0.001,
-                         "kW/m2": 1, "kW/m\u00b2": 1,
-                         "kWh/m2": 1, "kWh/m\u00b2": 1}.get(units.get("GlobInc"))
+    # Distinguish instantaneous power/irradiance (needs * step_hours) from step-integrated energy.
+    power_unit_kind = {
+        "W": (0.001, True), "kW": (1.0, True),
+        "Wh": (0.001, False), "kWh": (1.0, False),
+    }
+    irrad_unit_kind = {
+        "W/m2": (0.001, True), "W/m\u00b2": (0.001, True),
+        "kW/m2": (1.0, True), "kW/m\u00b2": (1.0, True),
+        "Wh/m2": (0.001, False), "Wh/m\u00b2": (0.001, False),
+        "kWh/m2": (1.0, False), "kWh/m\u00b2": (1.0, False),
+    }
+    power_info = {name: power_unit_kind.get(units.get(name)) for name in ("E_Grid", "EArray", "IL_Pmax")}
+    irrad_info = irrad_unit_kind.get(units.get("GlobInc"))
     pr_scale = {"ratio": 1, "%": 0.01}.get(units.get("PR"))
-    if any(scale is None for scale in power.values()) or irradiation_scale is None or pr_scale is None:
+    if any(info is None for info in power_info.values()) or irrad_info is None or pr_scale is None:
         raise ValueError("Annual output requires explicit power, irradiance and PR units")
-    columns = (*power, "GlobInc", "PR")
-    totals = dict.fromkeys(power, 0.0)
-    irradiation = weighted_pr = dark_tare_kwh = 0.0
-    first = expected = datetime(year, 1, 1)
+
+    columns = (*power_info, "GlobInc", "PR")
+    first = datetime(year, 1, 1)
     end = datetime(year + 1, 1, 1)
+
+    # Accumulate raw column sums first, inferring step_minutes from rows 1 and 2 on the fly.
+    raw_totals = dict.fromkeys(power_info, 0.0)
+    raw_irradiation = raw_weighted_pr = raw_dark_tare = 0.0
     indices = None
+    step_minutes: int | None = None
+    step_delta: timedelta | None = None
+    expected = first
     count = 0
     for headers, row in iter_result_csv(path, strict=True):
         if indices is None:
             if len(set(headers)) != len(headers) or any(name not in headers for name in columns):
                 raise ValueError("Annual output requires unique E_Grid, EArray, IL_Pmax, GlobInc and PR columns")
             indices = {name: headers.index(name) for name in columns}
-        if row[0] != expected or expected >= end:
-            raise ValueError(f"Annual hourly coverage mismatch at row {count + 1}: expected {expected}, got {row[0]}")
+        if count == 0:
+            if row[0] != first:
+                raise ValueError(f"Annual coverage mismatch at row 1: expected {first}, got {row[0]}")
+        elif count == 1:
+            delta_sec = (row[0] - first).total_seconds()
+            delta_min = delta_sec / 60.0
+            if delta_sec <= 0 or delta_min != int(delta_min) or int(delta_min) not in SUPPORTED_ANNUAL_STEPS:
+                raise ValueError(
+                    f"Annual coverage mismatch at row 2: expected step in {SUPPORTED_ANNUAL_STEPS} min from {first}, got {row[0]}"
+                )
+            step_minutes = int(delta_min)
+            step_delta = timedelta(minutes=step_minutes)
+            expected = first + step_delta
+        if count >= 1:
+            if row[0] != expected or expected >= end:
+                raise ValueError(f"Annual coverage mismatch at row {count + 1}: expected {expected}, got {row[0]}")
         values = {name: row[index] for name, index in indices.items()}
-        if any(not math.isfinite(values[name]) for name in (*power, "GlobInc")):
-            raise ValueError(f"Annual output has missing or nonfinite energy/irradiance at {expected}")
+        if any(not math.isfinite(values[name]) for name in (*power_info, "GlobInc")):
+            raise ValueError(f"Annual output has missing or nonfinite energy/irradiance at {row[0]}")
         if values["GlobInc"] < 0 or values["IL_Pmax"] < 0:
             raise ValueError("Annual output contains negative irradiation or clipping loss")
-        for name, scale in power.items():
-            totals[name] += values[name] * scale  # Fixed one-hour samples integrate kW to kWh.
-        light = values["GlobInc"] * irradiation_scale
-        irradiation += light
-        if light:
+        for name in power_info:
+            raw_totals[name] += values[name]
+        g = values["GlobInc"]
+        raw_irradiation += g
+        if g:
             if not math.isfinite(values["PR"]):
-                raise ValueError(f"Annual output has missing PR during irradiation at {expected}")
-            weighted_pr += light * values["PR"] * pr_scale
+                raise ValueError(f"Annual output has missing PR during irradiation at {row[0]}")
+            raw_weighted_pr += g * values["PR"] * pr_scale
         elif values["E_Grid"] < 0:
-            dark_tare_kwh += values["E_Grid"] * power["E_Grid"]
-        expected += timedelta(hours=1)
+            raw_dark_tare += values["E_Grid"]
+        if step_delta is not None:
+            expected += step_delta
         count += 1
-    if expected != end:
-        raise ValueError(f"Annual output is incomplete: {count} hourly rows; ended at {expected}")
+    if step_minutes is None or step_delta is None or expected != end:
+        raise ValueError(f"Annual output is incomplete: {count} rows; ended at {expected}")
+
+    step_hours = step_minutes / 60.0
+    totals = {
+        name: raw_totals[name] * base * (step_hours if is_power else 1.0)
+        for name, (base, is_power) in power_info.items()
+    }
+    irrad_base, irrad_is_power = irrad_info
+    irrad_factor = irrad_base * (step_hours if irrad_is_power else 1.0)
+    irradiation = raw_irradiation * irrad_factor
+    weighted_pr = raw_weighted_pr * irrad_factor
+    egrid_base, egrid_is_power = power_info["E_Grid"]
+    dark_tare_kwh = raw_dark_tare * egrid_base * (step_hours if egrid_is_power else 1.0)
+
     if irradiation <= 0 or any(not math.isfinite(v) for v in (*totals.values(), irradiation, weighted_pr, dark_tare_kwh)):
         raise ValueError("Annual arithmetic requires positive irradiation and finite totals")
     reference_energy = irradiation * nominal_dc_power_kw
@@ -86,9 +130,9 @@ def annual_summary(path, year, nominal_dc_power_kw):
     diagnostics = []
     if totals["IL_Pmax"] > 3 * reference_energy:
         diagnostics.append("IL_Pmax exceeds three times STC reference energy; review PV model and sizing.")
-    return {"year": year, "rows": count, "first": str(first), "last": str(end - timedelta(hours=1)),
+    return {"year": year, "rows": count, "first": str(first), "last": str(end - step_delta),
             "diagnostic_flags": diagnostics,
-            "step_minutes": 60, "complete_year": True, "sha256": before,
+            "step_minutes": step_minutes, "complete_year": True, "sha256": before,
             "grid_energy_kwh": totals["E_Grid"], "array_energy_kwh": totals["EArray"],
             "clipping_loss_kwh": totals["IL_Pmax"], "incident_irradiation_kwh_m2": irradiation,
             "nominal_dc_power_kw": nominal_dc_power_kw, "pr_ratio": ratio, "pr_percent": ratio * 100,

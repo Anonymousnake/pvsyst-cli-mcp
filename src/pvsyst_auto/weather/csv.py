@@ -11,8 +11,20 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 MAX_BYTES = 32 * 1024 * 1024
-MAX_ROWS = 20000
-IDENTIFIERS = {"#Weather data hourly data", "#TMY hourly data", "#Meteo hourly data"}
+MAX_ROWS = 110000
+SUPPORTED_STEP_MINUTES = (5, 10, 15, 30, 60)
+IDENTIFIERS = {
+    "#Weather data hourly data", "#TMY hourly data", "#Meteo hourly data",
+    "#Weather data sub-hourly data", "#Meteo sub-hourly data",
+    "#Weather data subhourly data", "#Meteo subhourly data",
+}
+_TIME_STEP_MINUTES = {
+    "hour": 60, "hourly": 60, "60": 60, "60 min": 60, "60min": 60, "1 h": 60, "1h": 60,
+    "30": 30, "30 min": 30, "30min": 30,
+    "15": 15, "15 min": 15, "15min": 15,
+    "10": 10, "10 min": 10, "10min": 10,
+    "5": 5, "5 min": 5, "5min": 5,
+}
 META = {"#Site", "#Country", "#Data Source", "#Time step", "#Year", "#Latitude",
         "#Longitude", "#Altitude", "#Time Zone", "#Time reference", "#Hour Shift",
         "#Time Shift", "#Plane tilt", "#Plane Azimuth", "#Albedo", "#Summarization period"}
@@ -20,6 +32,14 @@ IRRADIANCE = {"GHI", "DHI", "DNI", "GPI"}
 OTHER_UNITS = {"Tamb": {"deg.C", "degC"}, "WindVel": {"m/s", "m/sec"},
                "RH": {"%"}, "Pw": {"cm"}, "Linke": {"", "-"}, "Aod": {"", "-"}}
 DATE_COLUMNS = {"Year", "Month", "Day", "Hour", "Minute"}
+
+
+def parse_time_step_minutes(value: str | None) -> int | None:
+    """Parse PVsyst #Time step metadata into a supported step in minutes (5, 10, 15, 30, 60)."""
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.strip().lower().split())
+    return _TIME_STEP_MINUTES.get(normalized)
 
 
 def number(value):
@@ -45,10 +65,13 @@ def read_bytes(path):
     return data
 
 
-def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
+def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool,
+                     step_minutes: int | None = None):
     """Shared core behind the fingerprinted and the value-only public entry points."""
     if expected_year is not None and (type(expected_year) is not int or not 1 <= expected_year <= 9998):
         raise ValueError("expected_year must be an integer in 1..9998")
+    if step_minutes is not None and (type(step_minutes) is not int or step_minutes not in SUPPORTED_STEP_MINUTES):
+        raise ValueError(f"step_minutes must be one of {SUPPORTED_STEP_MINUTES}")
     data = read_bytes(path)
     try:
         text = data.decode("utf-8-sig")
@@ -130,8 +153,17 @@ def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
                     "#Longitude", "#Altitude", "#Time Zone"):
             if not metadata.get(key):
                 issue(f"Missing metadata {key}")
-        if metadata.get("#Time step") != "Hour":
-            issue("#Time step must be Hour")
+        declared_step = parse_time_step_minutes(metadata.get("#Time step"))
+        resolved_step = step_minutes if step_minutes is not None else declared_step
+        if declared_step is None:
+            issue("#Time step must be Hour or a supported sub-hourly step (5/10/15/30 min)")
+        elif step_minutes is not None and declared_step != step_minutes:
+            issue(f"#Time step ({metadata.get('#Time step')}) differs from requested step_minutes={step_minutes}")
+        if resolved_step is None:
+            resolved_step = 60
+        if resolved_step < 60 and "Minute" not in headers:
+            issue(f"Sub-hourly ({resolved_step} min) weather CSV requires a Minute column")
+        step_hours = resolved_step / 60.0
         numeric_meta = {}
         for key, lower, upper in (("#Latitude", -90, 90), ("#Longitude", -180, 180),
                                   ("#Time Zone", -12, 14), ("#Altitude", None, None),
@@ -167,10 +199,10 @@ def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
         scales = {}
         for name in headers:
             if name in IRRADIANCE:
-                scale = {"W/m2": 0.001, "MJ/m2": 1 / 3.6}.get(unit_map[name])
+                scale = {"W/m2": 0.001 * step_hours, "MJ/m2": 1 / 3.6}.get(unit_map[name])
                 if scale is None:
-                    issue(f"{name}: expected W/m2 or MJ/m2 hourly units")
-                elif metadata.get("#Time step") == "Hour":
+                    issue(f"{name}: expected W/m2 or MJ/m2 units")
+                elif declared_step is not None:
                     scales[name] = scale
             elif name in OTHER_UNITS and unit_map[name] not in OTHER_UNITS[name]:
                 issue(f"{name}: unsupported or missing unit {unit_map[name]!r}")
@@ -185,7 +217,7 @@ def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
                 continue
             rows += 1
             if rows > MAX_ROWS:
-                raise ValueError("Weather CSV exceeds the 20000-row single-year reader limit")
+                raise ValueError(f"Weather CSV exceeds the {MAX_ROWS}-row single-year reader limit")
             line = reader.line_num
             if len(row) > len(headers) and not any(value.strip() for value in row[len(headers):]):
                 del row[len(headers):]  # trailing delimiter, as for the header above
@@ -208,7 +240,7 @@ def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
                     duplicates += 1
                 if previous is not None and stamp <= previous:
                     out_of_order += 1
-                if stamp.minute:
+                if stamp.minute % resolved_step:
                     off_grid += 1
                 timestamps.add(stamp)
                 first = stamp if first is None else min(first, stamp)
@@ -251,14 +283,17 @@ def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
     expected = set()
     if year is not None:
         start = datetime(year, 1, 1)
-        expected = {start + timedelta(hours=i) for i in range(8784 if calendar.isleap(year) else 8760)}
+        days = 366 if calendar.isleap(year) else 365
+        steps_per_day = 1440 // resolved_step
+        expected = {start + timedelta(minutes=resolved_step * i) for i in range(days * steps_per_day)}
     missing, unexpected = expected - timestamps, timestamps - expected
     coverage = bool(expected) and not (missing or unexpected or duplicates or out_of_order or invalid_dates)
     if not coverage:
-        issue(f"Incomplete raw full-year hourly coverage: missing={len(missing)}, unexpected={len(unexpected)}, "
+        cadence_label = "hourly" if resolved_step == 60 else f"{resolved_step}-minute sub-hourly"
+        issue(f"Incomplete raw full-year {cadence_label} coverage: missing={len(missing)}, unexpected={len(unexpected)}, "
               f"duplicates={duplicates}, nonincreasing={out_of_order}, invalid_dates={invalid_dates}")
     if off_grid:
-        warnings.append(f"{off_grid} records have nonzero minutes; verify the provider's interval label convention")
+        warnings.append(f"{off_grid} records are not aligned to the {resolved_step}-minute grid; verify the provider's interval label convention")
     if "DHI" not in headers and "DNI" not in headers:
         warnings.append("No measured diffuse/direct column; native diffuse estimation needs separate review")
     if any(value < -60 or value > 60 for stats in month_stats.values() for value in stats["Tamb"]):
@@ -284,7 +319,8 @@ def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
     if fingerprint_result:
         result["sha256"] = hashlib.sha256(data).hexdigest()
     result.update({
-            "format": "pvsyst_standard_hourly", "delimiter": separator, "metadata": metadata,
+            "format": "pvsyst_standard_hourly" if resolved_step == 60 else "pvsyst_standard_subhourly",
+            "step_minutes": resolved_step, "delimiter": separator, "metadata": metadata,
             "units": unit_map, "ignored_columns": [name for name in headers if name not in numeric_columns | DATE_COLUMNS],
             "valid": False if issue_count else None if unchecked else True,
             "issues": issues, "issue_count": issue_count, "issues_truncated": issue_count > len(issues),
@@ -298,12 +334,12 @@ def _inspect_weather(path: Path, expected_year, *, fingerprint_result: bool):
     return result
 
 
-def inspect_weather_csv(path: Path, expected_year: int | None = None):
-    """Inspect one raw hourly year and disclose its SHA-256; never fill gaps, relabel time or alter units."""
-    return _inspect_weather(path, expected_year, fingerprint_result=True)
+def inspect_weather_csv(path: Path, expected_year: int | None = None, *, step_minutes: int | None = None):
+    """Inspect one raw full-year hourly or sub-hourly (5/10/15/30/60 min) weather CSV and disclose its SHA-256."""
+    return _inspect_weather(path, expected_year, fingerprint_result=True, step_minutes=step_minutes)
 
 
-def inspect_weather_values(path: Path, expected_year: int | None = None):
+def inspect_weather_values(path: Path, expected_year: int | None = None, *, step_minutes: int | None = None):
     """Value-only twin of the public inspector: identical checks and key order, no hash.
 
     No SHA-256 is computed and no ``sha256`` key is returned, so callers that must not
@@ -311,4 +347,4 @@ def inspect_weather_values(path: Path, expected_year: int | None = None):
     The before/after byte comparison that detects a file changed mid-read is retained;
     it compares the raw bytes and is not a hash.
     """
-    return _inspect_weather(path, expected_year, fingerprint_result=False)
+    return _inspect_weather(path, expected_year, fingerprint_result=False, step_minutes=step_minutes)

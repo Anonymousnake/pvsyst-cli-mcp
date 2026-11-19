@@ -3,23 +3,50 @@ from __future__ import annotations
 
 from pydantic import StrictBool, StrictInt, StrictStr
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
+from pvsyst_auto.workflows.batch import run_batch_sweep
 from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.sourced_design import prepare_sourced_design
-from pvsyst_auto.api.schemas import HouseTaskRequest, SingleDesignRequest, SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest
+from pvsyst_auto.api.schemas import (
+    BatchSweepRequest, HouseTaskRequest, SingleDesignRequest,
+    SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest,
+)
 from pvsyst_auto.api.context import categorized_tool, cli, components, optional_path, simulation_csv_path, variant_store, workspace_path
 from pvsyst_auto.components.identity import sourced_component
 
 
 @categorized_tool()
-def pvsyst_build_sfi(filename: str, variables: str = "all_common") -> dict:
-    """Create a new hourly export definition (.SFI) in workspace/Models from a preset group
-    (energy, inverter_losses, all_common, shading, soiling, grid_limit, grid_storage, bifacial) or comma-separated vi* variables."""
+def pvsyst_build_sfi(filename: str, variables: str = "all_common", time_step: str = "hour") -> dict:
+    """Create a new export definition (.SFI) in workspace/Models from a preset group
+    (energy, inverter_losses, all_common, shading, soiling, grid_limit, grid_storage, bifacial)
+    or comma-separated vi* variables, with time_step='hour' (default), 'subhour', 'day', or 'month'."""
     with cli()._lock:
         target = workspace_path("Models", filename, ".sfi")
         names = (VAR_GROUPS[variables] if variables in VAR_GROUPS
                  else [part.strip() for part in variables.split(",")])
-        build_sfi(target, list(names))
-    return {"sfi": str(target), "variables": list(names)}
+        build_sfi(target, list(names), time_step=time_step)
+    return {"sfi": str(target), "variables": list(names), "time_step": time_step.strip().lower()}
+
+
+@categorized_tool()
+def pvsyst_run_batch_sweep(spec: BatchSweepRequest, dry_run: StrictBool = True) -> dict:
+    """Generate UserBatch <sweep_name>_BatchParams.CSV and <sweep_name>_BatchVariables.RVT from a
+    Cartesian parameter grid or explicit scenario rows (<=100 scenarios), run one PVsystCLI batch
+    simulation, and return ranked scenario results with baseline deltas."""
+    return run_batch_sweep(
+        cli(),
+        project=spec.project,
+        variant=spec.variant,
+        sweep_name=spec.sweep_name,
+        grid=spec.grid,
+        scenarios=spec.scenarios,
+        result_variables=spec.result_variables,
+        sort_by=spec.sort_by,
+        sort_descending=spec.sort_descending,
+        export_hourly=spec.export_hourly,
+        dry_run=dry_run,
+        log_level=spec.log_level,
+        allow_window_creation=spec.allow_window_creation,
+    )
 
 @categorized_tool()
 def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,

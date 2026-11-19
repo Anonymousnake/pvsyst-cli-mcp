@@ -13,10 +13,12 @@ Quick workflow selection:
    - If you have manufacturer datasheet bounds, pass `electrical_design` or `capacity`. If you only have loose `.PAN`/`.OND` files, call `pvsyst_suggest_sizing` first or pass `sizing_mode="auto_from_components"` (output is marked `needs_review` with explicit assumptions).
 4. 3D rooftop house + obstacles + electrical shading (`module_layout`):
    - Resolve & prepare weather first (`pvsyst_resolve_location` -> `pvsyst_acquire_weather` -> `pvsyst_prepare_weather`), then call `pvsyst_run_house_task` (omit `source_project`/`source_variant` for zero-template synthesis; omit `module_geometry` when the `.PAN` is readable).
-5. Revisions, cabling, loads & AC-coupled storage on existing projects:
+5. Parametric sweeps, revisions, cabling, loads & AC-coupled storage on existing projects:
    - Inspect current state with `pvsyst_project_handoff` or `pvsyst_get_variant_parameters`.
+   - Sweep tilt/azimuth/pitch/albedo/soiling/grid-limit in one CLI call with `pvsyst_run_batch_sweep` (`dry_run=true` first).
+   - For sub-hourly (5/10/15/30 min) weather & storage runs, prepare the CSV with `pvsyst_prepare_weather(..., step_minutes=15)`, build an SFI with `pvsyst_build_sfi(..., time_step="subhour")`, and run `pvsyst_run_simulation(..., time_step="subhour")`.
    - Apply targeted edits via `pvsyst_update_variant_parameters`, `pvsyst_create_ac_cabling_variant`, `pvsyst_create_dc_cabling_variant`, `pvsyst_create_native_load_variant`, or `pvsyst_create_grid_storage_system`.
-   - Compare runs with `pvsyst_compare_engineering_scenarios` and bundle deliverables via `pvsyst_export_engineering_delivery`.
+   - Audit completed CSVs with `pvsyst_diagnose_results`, compare runs with `pvsyst_compare_engineering_scenarios`, and bundle deliverables via `pvsyst_export_engineering_delivery`.
 6. Safety & verification conventions:
    - Always preview mutating workflows with `dry_run=true` before executing `dry_run=false`.
    - Never overwrite existing projects/outputs; pick fresh filenames on retry.
