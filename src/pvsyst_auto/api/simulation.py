@@ -127,7 +127,27 @@ def pvsyst_run_simulation(project: str, variant: str,
         license_state = current.license_info(allow_window_creation=allow_window_creation)
         if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
             raise ValueError("PVsystCLI reports no remaining trial executions")
-        return current.run_simulation(project, variant, **options)
+        sim_result = current.run_simulation(project, variant, **options)
+        if sim_result.get("csv") and not options.get("batch_params"):
+            from pvsyst_auto.engineering.diagnostics import compact_diagnostics_summary, diagnose_simulation_csv
+
+            diag = None
+            try:
+                diag = diagnose_simulation_csv(
+                    sim_result["csv"], store=variant_store(), project=project, variant=variant,
+                )
+            except (ValueError, OSError):
+                try:
+                    diag = diagnose_simulation_csv(sim_result["csv"])
+                except (ValueError, OSError):
+                    diag = None
+            if diag is not None:
+                sim_result["physical_diagnostics"] = compact_diagnostics_summary(diag)
+                if diag.get("needs_review"):
+                    sim_result["status"] = "needs_review"
+                else:
+                    sim_result.setdefault("status", "completed")
+        return sim_result
 
 @categorized_tool()
 def pvsyst_simulate_design(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
