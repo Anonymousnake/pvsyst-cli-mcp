@@ -6,6 +6,7 @@ import re
 
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.components.store import FIELD
+from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import circuit_nodes, inventory as grid_inventory, positive_integer, require_ordinary_mppt
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED
 
@@ -253,6 +254,7 @@ def clone_subarray_data(store, data, source_subarray_id, *, clone_orientation=Fa
         insertions.append((end + 1, branch))
     for offset, block in sorted(insertions, key=lambda item: item[0], reverse=True):
         lines[offset:offset] = block
+    lines, _ = strip_result_cache(lines)
     candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
     _, checked = store._text(candidate)
     checked_arrays, _ = store._sections(checked)
@@ -452,6 +454,7 @@ def remove_subarray(store, project: str, variant: str, subarray_id: int,
             deletions.append(plane)
         for first, last in sorted(deletions, reverse=True):
             del lines[first:last + 1]
+        lines, _ = strip_result_cache(lines)
         candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
         _, checked = store._text(candidate)
         checked_arrays, _ = store._sections(checked)

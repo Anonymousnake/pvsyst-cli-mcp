@@ -305,6 +305,19 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(blocked["issues"], ["Every prepared load row must be one Date;P Load pair"])
         self.assertFalse((self.root / "Projects/Fixture.VC1").exists())
 
+    def test_load_rebinding_invalidates_saved_results(self):
+        cache = ("  VarList, list of=1 TVarSimul\n    VarSimul_1=E_User\n"
+                 "      Varident=E_User\n      ValMonth=10,20,\n"
+                 "    End of VarSimul=viE_User\n  End of the List VarList\n")
+        self.source(ROOT.format(root_flags="$00080001") + ARRAY + PV_SYSTEM + OLD_LOAD + cache + CLOSE)
+        text = self.created(self.bind_load())
+        state = self.store.inspect_parameters("Fixture.PRJ", "VC1", include_saved_results=True)["saved_results"]
+        self.assertFalse(state["present"])
+        self.assertEqual(state["root_flags"], "$00080000")
+        self.assertIn("    Flags=$4000\r\n", text)
+        source = self.store.inspect_parameters("Fixture.PRJ", "VC0", include_saved_results=True)["saved_results"]
+        self.assertTrue(source["present"])
+
     def test_legacy_outages_are_reported_but_read_only(self):
         legacy = {"UnavTotDuration": "7.30", "UnavNbPeriods": "3",
                   "UnavDuration": "58,58,58,1,1,", "UnavBegDate": "15000,15001,15002,"}

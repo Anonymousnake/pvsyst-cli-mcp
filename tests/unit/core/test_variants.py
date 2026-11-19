@@ -325,6 +325,28 @@ class VariantTests(unittest.TestCase):
                 self.store.clone_subarray("Example.PRJ", "VC0", 1, state["sha256"])
         self.assertEqual(self.original.read_bytes(), external)
 
+    def test_subarray_clone_and_removal_invalidate_saved_results(self):
+        cold = self._prepare_grid_variant().replace("  Version=8.1.6\n", "  Version=8.1.6\n  Flags=$00100000\n")
+        cache = ("  VarList, list of=1 TVarSimul\n    VarSimul_1=GlobHor\n"
+                 "      Varident=GlobHor\n      ValMonth=10,20,\n"
+                 "    End of VarSimul=viGlobHor\n  End of the List VarList\n")
+        hot = cold.replace("Flags=$00100000", "Flags=$00100001").replace(
+            "End of PVObject pvVCalcul", cache + "End of PVObject pvVCalcul")
+        self.original.write_bytes(hot.encode())
+        self.store.clone_subarray("Example.PRJ", "VC0", 1)
+        cloned = self.original.read_text(encoding="utf-8")
+        for edit in ("clone", "remove"):
+            with self.subTest(edit=edit):
+                if edit == "remove":
+                    warm = cloned.replace(cache, "").replace("Flags=$00100000", "Flags=$00100001")
+                    warm = warm.replace("End of PVObject pvVCalcul", cache + "End of PVObject pvVCalcul")
+                    self.original.write_text(warm, encoding="utf-8")
+                    self.store.remove_subarray("Example.PRJ", "VC0", 3)
+                state = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)["saved_results"]
+                self.assertFalse(state["present"])
+                self.assertEqual(state["root_flags"], "$00100000")
+                self.assertIn(b"    Flags=$60", self.original.read_bytes())
+
     def test_project_and_variant_archives_restore_original_bytes(self):
         self.store.clone("Example.PRJ", "VC0", "VC1")
         initial = self.store.inspect_project("Example.PRJ")
@@ -649,6 +671,20 @@ class VariantTests(unittest.TestCase):
         originals = {name: (self.workspace / "Projects" / name).read_bytes()
                      for name in before["files"]}
         return before, originals
+
+    def test_project_source_replacement_invalidates_saved_results(self):
+        self._prepare_project_sources()
+        cache = (b"  VarList, list of=1 TVarSimul\r\n    VarSimul_1=GlobHor\r\n"
+                 b"      Varident=GlobHor\r\n      ValMonth=10,20,\r\n"
+                 b"    End of VarSimul=viGlobHor\r\n  End of the List VarList\r\n")
+        self.original.write_bytes(self.original.read_bytes().replace(
+            b"  Version=8.1.6\r\n", b"  Version=8.1.6\r\n  Flags=$0001\r\n").replace(
+            b"End of PVObject pvVCalcul", cache + b"End of PVObject pvVCalcul"))
+        self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET")
+        state = self.store.inspect_parameters("Example.PRJ", "VC0", include_saved_results=True)["saved_results"]
+        self.assertFalse(state["present"])
+        self.assertEqual(state["root_flags"], "$0000")
+        self.assertIn(b"    Flags=$60\r\n", self.original.read_bytes())
 
     def test_update_and_restore_project_sources_across_all_variants(self):
         before, originals = self._prepare_project_sources()
