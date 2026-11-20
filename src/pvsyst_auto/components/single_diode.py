@@ -137,7 +137,9 @@ def derive_single_diode_parameters(
         rs = max(0.05, min(0.5, 0.25 * (voc - vmp) / imp))
         a_mod = gamma * vt_mod
         i_0 = (isc - voc / r_sh) / max(math.exp(min(voc / a_mod, 700.0)) - 1.0, 1.0)
-        dp_dv = 0.0
+        exp_m = math.exp(min((vmp + imp * rs) / a_mod, 700.0))
+        g_d = (i_0 / a_mod) * exp_m + (1.0 / r_sh)
+        dp_dv = abs(imp - vmp * g_d / (1.0 + rs * g_d))
     else:
         dp_dv, gamma, rs, _, i_0 = best
         # Fine local refinement around best gamma
