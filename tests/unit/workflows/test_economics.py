@@ -106,6 +106,22 @@ class EconomicsEngineTests(unittest.TestCase):
         self.assertEqual(len(fin["cashflow_schedule"]), 25)
         self.assertEqual(fin["cashflow_schedule"][11]["replacement_cost"], 30_000.0)
 
+    def test_first_year_benefit_includes_first_year_degradation(self):
+        res = evaluate_economics(
+            scenarios=[
+                {"label": "A", "annual_yield_kwh": 100_000.0, "annual_opex": 15_900.0},
+                {"label": "B", "annual_yield_kwh": 80_000.0, "annual_opex": 8_000.0},
+            ],
+            financial={"first_year_degradation_pct": 2.0},
+            tariff={"feed_in_tariff": 0.4},
+            rank_by="year1_net_benefit",
+        )
+        fin = res["scenarios"][0]["financials"]
+        year1 = fin["cashflow_schedule"][0]
+        self.assertEqual((fin["year1_gross_benefit"], fin["year1_net_benefit"]),
+                         (year1["gross_benefit"], year1["net_cashflow"]))
+        self.assertEqual(res["best_scenario"], "B")
+
     def test_tou_pv_and_bess_settlement_consistent_across_hourly_and_15min(self):
         csv_60 = _make_ci_tou_csv(self.root / "Results" / "bess_60m.csv", days=10, step_minutes=60, with_battery=True)
         csv_15 = _make_ci_tou_csv(self.root / "Results" / "bess_15m.csv", days=10, step_minutes=15, with_battery=True)
