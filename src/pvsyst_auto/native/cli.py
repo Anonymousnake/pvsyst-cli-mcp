@@ -768,11 +768,26 @@ def is_batch_summary_name(filename: str) -> bool:
     return match is not None and match.group("kind").lower() == "results"
 
 
+def _parse_batch_param_value(raw: str) -> int | float | str:
+    if re.fullmatch(r"[+-]?\d+", raw):
+        return int(raw)
+    try:
+        val = float(raw)
+        if math.isfinite(val):
+            return val
+    except ValueError:
+        pass
+    return raw
+
+
 def parse_batch_results(path: str | os.PathLike,
                         columns: tuple[str, ...] = ("E_Grid", "PR")) -> dict:
     """Read the SIM_* rows of a PVsyst UserBatch/*Results.CSV summary."""
     encoding = _csv_encoding(path)
     headers: list[str] = []
+    param_indices: list[int] = []
+    param_names: list[str] = []
+    subtitle_pending = False
     scenarios: list[dict] = []
     with open(path, "r", encoding=encoding, errors="replace", newline="") as stream:
         for fields in csv.reader(stream, delimiter=";"):
@@ -781,7 +796,23 @@ def parse_batch_results(path: str | os.PathLike,
                 for column in columns:
                     if column not in headers:
                         raise ValueError(f"Batch result column {column!r} missing")
+                if "Error" in headers:
+                    param_end = headers.index("Error")
+                else:
+                    metric_starts = [headers.index(col) for col in columns if headers.index(col) >= 2]
+                    param_end = min(metric_starts) if metric_starts else 2
+                param_indices = [i for i in range(2, param_end) if headers[i]]
+                param_names = [headers[i] for i in param_indices]
+                subtitle_pending = bool(param_indices)
+            elif subtitle_pending and fields and fields[0].strip() == "":
+                subtitle_pending = False
+                for pos, idx in enumerate(param_indices):
+                    sub = fields[idx].strip() if idx < len(fields) else ""
+                    if sub and not sub.startswith("[") and sub.upper() != "Y/N":
+                        param_names[pos] = f"{param_names[pos]} {sub}".strip()
             elif headers and fields and re.fullmatch(r"SIM_[A-Za-z0-9_-]+", fields[0].strip()):
+                subtitle_pending = False
+
                 def field(name: str) -> str:
                     index = headers.index(name)
                     return fields[index].strip() if index < len(fields) else ""
@@ -792,9 +823,20 @@ def parse_batch_results(path: str | os.PathLike,
                         values[column] = float(field(column))
                     except ValueError:
                         values[column] = None
-                scenarios.append({"id": fields[0].strip(), "hourly_file": field("Create hourly"),
-                                  "error": field("Error") if "Error" in headers else "",
-                                  "values": values})
+                entry: dict = {
+                    "id": fields[0].strip(),
+                    "hourly_file": field("Create hourly"),
+                    "error": field("Error") if "Error" in headers else "",
+                    "values": values,
+                }
+                if param_indices:
+                    params = {}
+                    for pos, idx in enumerate(param_indices):
+                        raw_val = fields[idx].strip() if idx < len(fields) else ""
+                        if raw_val != "":
+                            params[param_names[pos]] = _parse_batch_param_value(raw_val)
+                    entry["parameters"] = params
+                scenarios.append(entry)
     if not headers or not scenarios:
         raise ValueError("No SIM_* rows found in batch summary")
     return {"columns": list(columns), "scenarios": scenarios}

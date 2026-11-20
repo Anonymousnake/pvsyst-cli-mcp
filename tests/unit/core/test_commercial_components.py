@@ -53,6 +53,7 @@ class CommercialComponentTests(unittest.TestCase):
             vmax_iec_v=1500.0,
         )
         self.assertTrue(meta["bifacial"])
+        self.assertFalse(meta["single_diode"]["fallback"])
         self.assertEqual(meta["flags"], "$00800000")
         self.assertIn("BifacialityFactor=0.800", pan_text)
         report = self.store._inspect("PAN", pan_text.encode("utf-8"))
@@ -61,6 +62,7 @@ class CommercialComponentTests(unittest.TestCase):
 
     def test_fallback_reports_actual_mpp_slope_residual(self):
         diode = derive_single_diode_parameters(voc=50.0, isc=13.0, vmp=42.0, imp=12.74, n_cells_s=96)
+        self.assertTrue(diode["fallback"])
         self.assertGreater(diode["mpp_slope_residual_a"], 1.0)
 
     def test_zero_template_ond_synthesis_validates_cleanly(self):

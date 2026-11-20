@@ -631,6 +631,8 @@ def evaluate_economics(
             metrics = row.get("values") or {}
             hourly_name = row.get("hourly_file")
             item: dict[str, Any] = {"label": ident}
+            if row.get("parameters"):
+                item["batch_parameters"] = dict(row["parameters"])
             if hourly_name and hourly_name.lower().endswith(".csv"):
                 hourly_path = workspace_file(workspace, "UserHourly", hourly_name, ".csv")
                 if hourly_path.is_file():
