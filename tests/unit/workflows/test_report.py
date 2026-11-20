@@ -146,6 +146,17 @@ class InteractiveReportTests(unittest.TestCase):
         en_html = Path(en_res["report_path"]).read_text(encoding="utf-8")
         self.assertIn("Monthly Generation &amp; Performance Ratio", en_html)
 
+    def test_report_rejects_missing_grid_energy(self):
+        csv_path = self.root / "Results" / "no_grid.csv"
+        csv_path.write_text(
+            "PVSYST 8.1.7\ndate;GlobInc;EArray;PR\n;W/m2;kW;ratio\n"
+            "01/06/24 08:00;500;10;0.84\n01/06/24 09:00;500;10;0.84\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "E_Grid or EToGrid"):
+            generate_report(workspace=self.root, title="Missing grid", output_name="missing.html",
+                            scenarios=[{"label": "Base", "csv_name": csv_path.name}])
+
     def test_report_rejects_irregular_timestamp_cadence(self):
         gap_csv = self.root / "Results" / "gap_report.csv"
         gap_csv.write_text(
