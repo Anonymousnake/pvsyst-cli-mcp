@@ -87,6 +87,17 @@ def electrical_inventory(kind: str, text: str) -> dict:
                 if name in root.fields:
                     result["unverified"].append({"field": name, "raw": [v[:256] for _, v in root.fields[name]],
                         "unit": None, "reason": "Serialized coefficient units/model use require separate verification; no conversion assumed"})
+        elif kind == "BTR":
+            specifications = {
+                "CapNomC10": ("Ah", root),
+                "VNomCell": ("V", root),
+                "NCellSerie": ("count", root),
+                "NCellParall": ("count", root),
+                "ResInterne": ("Ohm", root),
+                "EfficI": ("ratio", root),
+                "IMaxCharge": ("A", root),
+                "IMaxDischarge": ("A", root),
+            }
         else:
             converter, = [block for block in blocks if block.path == "Converter" and block.object_type == "TConverter"]
             result["modes"] = {name: converter.fields[name][0][1] if len(converter.fields.get(name, [])) == 1 else None
@@ -315,8 +326,13 @@ class ComponentStore:
                       ("CapNomC10",) if kind == "BTR" else ("PNomGen", "CFuelHor")):
             if field in values and values[field] <= 0:
                 errors.append(f"{field} must be greater than zero")
-        if kind == "BTR" and "AlphaSOC" in values and not 0.16 <= values["AlphaSOC"] <= 0.22:
-            errors.append("AlphaSOC must be between 0.16 and 0.22")
+        if kind == "BTR" and "AlphaSOC" in values:
+            technol = (fields.get("BattTechnol") or [""])[0].casefold()
+            if technol.startswith("bt"):
+                technol = technol[2:]
+            lo_a, hi_a = (0.12, 0.90) if technol.startswith("li_") else (0.16, 0.22)
+            if not lo_a <= values["AlphaSOC"] <= hi_a:
+                errors.append(f"AlphaSOC must be between {lo_a:.2f} and {hi_a:.2f}")
         if kind == "PAN":
             for field in ("NCelS", "NCelP", "NDiode"):
                 if field in values and not values[field].is_integer():
@@ -750,8 +766,13 @@ class ComponentStore:
                use_file_curve: bool = False,
                commercial_updates: dict[str, str] | None = None,
                remarks: list[str] | None = None,
-               curve_csv: dict[str, str] | None = None) -> dict:
+               curve_csv: dict[str, str] | None = None,
+               refit_single_diode: bool = False) -> dict:
         kind = self._kind(kind)
+        if type(refit_single_diode) is not bool:
+            raise ValueError("refit_single_diode must be a strict boolean")
+        if refit_single_diode and kind != "PAN":
+            raise ValueError("refit_single_diode is supported for PAN components only")
         if kind == "REV":
             # Reject inapplicable native-feature edits explicitly; never fabricate curves/IV.
             if curve_updates is not None or curve_csv is not None or use_file_curve:
@@ -795,6 +816,47 @@ class ComponentStore:
             if text is None:
                 raise ValueError("Legacy binary PAN cannot be edited")
             edited = self._replace_fields(kind, text, updates) if updates else text
+            refit_meta: dict | None = None
+            if refit_single_diode and kind == "PAN":
+                stc_keys = {"Voc", "ISC", "Isc", "Vmp", "Imp"}
+                if updates and (set(updates) & stc_keys):
+                    from pvsyst_auto.components.single_diode import derive_single_diode_parameters
+
+                    post_fields = pan_validation_fields(edited)
+                    voc_v = float(post_fields["Voc"][0])
+                    isc_v = float((post_fields.get("ISC") or post_fields.get("Isc"))[0])
+                    vmp_v = float(post_fields["Vmp"][0])
+                    imp_v = float(post_fields["Imp"][0])
+                    ncels_v = int(round(float(post_fields["NCelS"][0]))) if "NCelS" in post_fields else 72
+                    diode = derive_single_diode_parameters(
+                        voc=voc_v, isc=isc_v, vmp=vmp_v, imp=imp_v, n_cells_s=ncels_v,
+                    )
+                    # Patch existing single-diode fields cleanly on the root pvModule object
+                    lines_refit = edited.splitlines(keepends=True)
+                    root_blocks = [b for b in objects(edited) if not b.path]
+                    if root_blocks:
+                        root_blk = root_blocks[0]
+                        diode_fmt = {
+                            "RShunt": f"{diode['RShunt']:.2f}",
+                            "Rp_0": f"{diode['Rp_0']:.1f}",
+                            "Rp_Exp": f"{diode['Rp_Exp']:.2f}",
+                            "RSerie": f"{diode['RSerie']:.4f}",
+                            "Gamma": f"{diode['Gamma']:.4f}",
+                            "muGamma": f"{diode['muGamma']:.4f}",
+                        }
+                        patched_fields: dict[str, str] = {}
+                        for d_key, d_val in diode_fmt.items():
+                            entries = root_blk.fields.get(d_key, [])
+                            if len(entries) == 1:
+                                line_idx = entries[0][0]
+                                lines_refit[line_idx] = replace_value(lines_refit[line_idx], d_val)
+                                patched_fields[d_key] = d_val
+                        edited = "".join(lines_refit)
+                        refit_meta = {
+                            "refitted": True,
+                            "patched_fields": patched_fields,
+                            "single_diode": diode,
+                        }
             if commercial_updates is not None or remarks is not None:
                 edited = replace_commercial(kind, edited, commercial_updates or {}, remarks)
             if curve_updates is not None:
@@ -827,6 +889,8 @@ class ComponentStore:
             if commercial_updates is not None or remarks is not None:
                 result["commercial_before"] = commercial_inventory(kind, text)
                 result["commercial_after"] = commercial_inventory(kind, edited)
+            if refit_meta is not None:
+                result["single_diode_refit"] = refit_meta
             if dry_run or candidate == data:
                 return result
 

@@ -297,6 +297,52 @@ def synthesize_pan_from_datasheet(
     }
 
 
+def _build_ond_curve_points(
+    *,
+    pnom_w: float,
+    p_seuil: float,
+    effic_max_pct: float,
+    effic_euro_pct: float,
+) -> list[tuple[int, int]]:
+    """Build a strictly monotonic 8-point Mode-1 P_out(P_in) efficiency profile in W."""
+    eta_max = effic_max_pct / 100.0
+    eta_delta = max(0.001, (effic_max_pct - effic_euro_pct) / 100.0)
+    fracs_and_etas = (
+        (0.03, max(0.85, eta_max - 4.5 * eta_delta)),
+        (0.05, max(0.88, eta_max - 3.0 * eta_delta)),
+        (0.10, max(0.92, eta_max - 1.6 * eta_delta)),
+        (0.20, max(0.94, eta_max - 0.6 * eta_delta)),
+        (0.30, max(0.95, eta_max - 0.2 * eta_delta)),
+        (0.50, eta_max),
+        (1.00, max(0.94, eta_max - 0.4 * eta_delta)),
+    )
+    points: list[tuple[int, int]] = [(int(round(p_seuil)), 0)]
+    p_in_max = pnom_w / fracs_and_etas[-1][1]
+    for frac, eta in fracs_and_etas:
+        p_in = max(points[-1][0] + 1, int(round(p_in_max * frac)))
+        p_out = max(points[-1][1] + 1, min(p_in, int(round(p_in * eta))))
+        points.append((p_in, p_out))
+    return points
+
+
+def _emit_cubic_profile(name: str, points: list[tuple[float, float]] | list[list[float]], *, indent: str = "    ") -> list[str]:
+    n_pts = len(points)
+    n_max = max(11, n_pts)
+    out = [
+        f"{indent}{name}=TCubicProfile",
+        f"{indent}  NPtsMax={n_max}",
+        f"{indent}  NPtsEff={n_pts}",
+        f"{indent}  LastCompile=$008D",
+        f"{indent}  Mode=1",
+    ]
+    for idx, (xv, yv) in enumerate(points, start=1):
+        out.append(f"{indent}  Point_{idx}={xv:.17g},{yv:.17g}")
+    for idx in range(n_pts + 1, n_max + 1):
+        out.append(f"{indent}  Point_{idx}=0,0")
+    out.append(f"{indent}End of TCubicProfile")
+    return out
+
+
 def synthesize_ond_from_datasheet(
     *,
     manufacturer: str,
@@ -316,9 +362,13 @@ def synthesize_ond_from_datasheet(
     height_m: float = 0.65,
     depth_m: float = 0.35,
     weight_kg: float = 75.0,
+    three_voltage_voltages: tuple[float, float, float] | list[float] | None = None,
+    three_voltage_effic_max: tuple[float, float, float] | list[float] | None = None,
+    three_voltage_effic_euro: tuple[float, float, float] | list[float] | None = None,
+    three_voltage_curves: dict[str, list[list[float]]] | None = None,
     source_note: str = "Zero-template datasheet synthesis",
 ) -> tuple[str, dict[str, Any]]:
-    """Generate complete PVsyst 8.1.7 UTF-8 CRLF .OND text with Mode-1 ProfilPIO curve."""
+    """Generate complete PVsyst 8.1.7 UTF-8 CRLF .OND text (single-voltage or 3-voltage Mode-1 ProfilPIO)."""
     pnom_ac_kw = _pos_finite(pnom_ac_kw, "PNomConv")
     pmax_ac_kw = _pos_finite(pmax_ac_kw, "PMaxOUT") if pmax_ac_kw is not None else pnom_ac_kw
     if pmax_ac_kw < pnom_ac_kw:
@@ -342,35 +392,81 @@ def synthesize_ond_from_datasheet(
     idc_max_a = _pos_finite(idc_max_a, "IDCMax", allow_zero=True)
     v_out = _pos_finite(vout_ac_v, "VOutConv") if vout_ac_v is not None else (800.0 if pnom_ac_kw >= 100.0 else 400.0)
 
+    is_3v = (
+        three_voltage_voltages is not None
+        or three_voltage_effic_max is not None
+        or three_voltage_effic_euro is not None
+        or three_voltage_curves is not None
+    )
+    v_tri: tuple[float, float, float] | None = None
+    emax_tri: tuple[float, float, float] | None = None
+    eeuro_tri: tuple[float, float, float] | None = None
+    v_curves: dict[str, list[tuple[float, float]]] = {}
+
     pnom_w = pnom_ac_kw * 1000.0
     p_seuil = round(max(5.0, 0.005 * pnom_w), 2)
-    eta_max = effic_max_pct / 100.0
-    eta_delta = max(0.001, (effic_max_pct - eff_euro) / 100.0)
-    # Construct strictly monotonic 8-point Mode-1 P_out(P_in) efficiency profile in W
-    fracs_and_etas = (
-        (0.03, max(0.85, eta_max - 4.5 * eta_delta)),
-        (0.05, max(0.88, eta_max - 3.0 * eta_delta)),
-        (0.10, max(0.92, eta_max - 1.6 * eta_delta)),
-        (0.20, max(0.94, eta_max - 0.6 * eta_delta)),
-        (0.30, max(0.95, eta_max - 0.2 * eta_delta)),
-        (0.50, eta_max),
-        (1.00, max(0.94, eta_max - 0.4 * eta_delta)),
+    points = _build_ond_curve_points(
+        pnom_w=pnom_w, p_seuil=p_seuil, effic_max_pct=effic_max_pct, effic_euro_pct=eff_euro,
     )
-    points: list[tuple[int, int]] = [(int(round(p_seuil)), 0)]
-    p_in_max = pnom_w / fracs_and_etas[-1][1]
-    for frac, eta in fracs_and_etas:
-        p_in = max(points[-1][0] + 1, int(round(p_in_max * frac)))
-        p_out = max(points[-1][1] + 1, min(p_in, int(round(p_in * eta))))
-        points.append((p_in, p_out))
-    p_in_eff_max = float(points[6][0])  # 50% load point
+
+    if is_3v:
+        if three_voltage_voltages is None or len(three_voltage_voltages) != 3:
+            raise ValueError("three_voltage_voltages must provide exactly 3 voltages [VMin, VNom, VMax]")
+        v1, v2, v3 = (_pos_finite(v, f"VNomEff[{i}]") for i, v in enumerate(three_voltage_voltages))
+        if not (v1 < v2 < v3):
+            raise ValueError("three_voltage_voltages must be strictly increasing (VMin < VNom < VMax)")
+        if v1 < vmpp_min_v or v3 > vabs_max_v:
+            raise ValueError("three_voltage_voltages must lie within [VMppMin, VAbsMax]")
+        v_tri = (v1, v2, v3)
+
+        if three_voltage_effic_max is not None:
+            if len(three_voltage_effic_max) != 3:
+                raise ValueError("three_voltage_effic_max must contain 3 percentages")
+            emax_tri = tuple(_pos_finite(e, f"EfficMaxV[{i}]") for i, e in enumerate(three_voltage_effic_max))  # type: ignore[assignment]
+            if any(not 50.0 <= e <= 99.8 for e in emax_tri):
+                raise ValueError("three_voltage_effic_max values must be in [50.0, 99.8] %")
+        else:
+            emax_tri = (
+                round(max(50.0, effic_max_pct - 0.35), 2),
+                round(effic_max_pct, 2),
+                round(max(50.0, effic_max_pct - 0.45), 2),
+            )
+
+        if three_voltage_effic_euro is not None:
+            if len(three_voltage_effic_euro) != 3:
+                raise ValueError("three_voltage_effic_euro must contain 3 percentages")
+            eeuro_tri = tuple(_pos_finite(e, f"EfficEuroV[{i}]") for i, e in enumerate(three_voltage_effic_euro))  # type: ignore[assignment]
+            if any(eeuro_tri[i] > emax_tri[i] for i in range(3)):
+                raise ValueError("Each EfficEuroV must be <= corresponding EfficMaxV")
+        else:
+            delta_nom = max(0.1, effic_max_pct - eff_euro)
+            eeuro_tri = tuple(round(max(50.0, emax_tri[i] - delta_nom), 2) for i in range(3))  # type: ignore[assignment]
+
+        for idx_v, tag in enumerate(("ProfilPIOV1", "ProfilPIOV2", "ProfilPIOV3")):
+            if three_voltage_curves and tag in three_voltage_curves:
+                pts_in = three_voltage_curves[tag]
+                if not isinstance(pts_in, list) or len(pts_in) < 4:
+                    raise ValueError(f"{tag} requires at least 4 points")
+                v_curves[tag] = [(float(p[0]), float(p[1])) for p in pts_in]
+            else:
+                v_curves[tag] = _build_ond_curve_points(
+                    pnom_w=pnom_w, p_seuil=p_seuil,
+                    effic_max_pct=emax_tri[idx_v], effic_euro_pct=eeuro_tri[idx_v],
+                )
+        # Keep main ProfilPIO synced with nominal V2 curve
+        points = v_curves["ProfilPIOV2"]
+
+    p_in_eff_max = float(points[min(6, len(points) - 1)][0])
     i_nom_ac = round(pnom_w / (math.sqrt(3.0) * v_out), 3)
     night_loss = round(max(1.0, 0.0001 * pnom_w), 2)
+    # Bit 12 ($1000) enables 3-voltage efficiency curves; clear bit 4 ($0010) so file curves are used in 3V mode
+    flags_str = "$1560" if is_3v else "$0570"
 
     lines = [
         "PVObject_=pvGInverter",
         f"  Comment={manufacturer}\t{model}\t{source_note}",
         "  Version=8.1.7",
-        "  Flags=$0570",
+        f"  Flags={flags_str}",
         "  PVObject_Commercial=pvCommercial",
         "    Flags=$0041",
         f"    Manufacturer={manufacturer}",
@@ -407,18 +503,15 @@ def synthesize_ond_from_datasheet(
         f"    PInEffMax={p_in_eff_max:.3f}",
         f"    PThreshEff={round(p_seuil * 0.5, 2):.2f}",
         "    HasdefaultPThresh=True",
-        "    ProfilPIO=TCubicProfile",
-        "      NPtsMax=11",
-        f"      NPtsEff={len(points)}",
-        "      LastCompile=$008D",
-        "      Mode=1",
     ]
-    for idx, (pin, pout) in enumerate(points, start=1):
-        lines.append(f"      Point_{idx}={pin},{pout}")
-    for idx in range(len(points) + 1, 12):
-        lines.append(f"      Point_{idx}=0,0")
+    lines.extend(_emit_cubic_profile("ProfilPIO", points))
+    if is_3v and v_tri is not None and emax_tri is not None and eeuro_tri is not None:
+        lines.append(f"    VNomEff={v_tri[0]:.1f},{v_tri[1]:.1f},{v_tri[2]:.1f},")
+        lines.append(f"    EfficMaxV={emax_tri[0]:.3f},{emax_tri[1]:.3f},{emax_tri[2]:.3f},")
+        lines.append(f"    EfficEuroV={eeuro_tri[0]:.3f},{eeuro_tri[1]:.3f},{eeuro_tri[2]:.3f},")
+        for tag in ("ProfilPIOV1", "ProfilPIOV2", "ProfilPIOV3"):
+            lines.extend(_emit_cubic_profile(tag, v_curves[tag]))
     lines.extend([
-        "    End of TCubicProfile",
         "  End of TConverter",
         f"  NbInputs={eff_inputs}",
         f"  NbMPPT={nb_mppt}",
@@ -439,4 +532,223 @@ def synthesize_ond_from_datasheet(
         "nb_inputs": eff_inputs,
         "vout_ac_v": v_out,
         "curve_points": len(points),
+        "three_voltage": is_3v,
+        "flags": flags_str,
+        "v_nom_eff": list(v_tri) if v_tri else None,
+        "effic_max_v": list(emax_tri) if emax_tri else None,
+        "effic_euro_v": list(eeuro_tri) if eeuro_tri else None,
+    }
+
+
+_LI_CHEM_DEFAULTS = {
+    "LFP": {
+        "batt_technol": "Li_LFP",
+        "v_nom_cell": 3.20,
+        "v_half_soc": 3.30,
+        "alpha_soc": 0.16,
+        "v_max_charge_cell": 3.60,
+        "v_min_discharge_cell": 2.80,
+        "coulombic_eff": 0.985,
+        "cycle_life_80dod": 6000,
+        "lifetime_years_20c": 15.0,
+        "ir_drop_i10_mv": 16.0,
+    },
+    "NMC": {
+        "batt_technol": "Li_NMC",
+        "v_nom_cell": 3.65,
+        "v_half_soc": 3.70,
+        "alpha_soc": 0.70,
+        "v_max_charge_cell": 4.15,
+        "v_min_discharge_cell": 3.00,
+        "coulombic_eff": 0.980,
+        "cycle_life_80dod": 3500,
+        "lifetime_years_20c": 12.0,
+        "ir_drop_i10_mv": 18.0,
+    },
+}
+
+
+def synthesize_btr_from_datasheet(
+    *,
+    manufacturer: str,
+    model: str,
+    chemistry: str = "LFP",
+    capacity_ah: float | None = None,
+    energy_kwh: float | None = None,
+    nominal_voltage_v: float | None = None,
+    n_cells_s: int | None = None,
+    n_cells_p: int = 1,
+    internal_resistance_mohm: float | None = None,
+    coulombic_efficiency: float | None = None,
+    max_charge_current_a: float | None = None,
+    max_discharge_current_a: float | None = None,
+    cycle_life_80dod: int | None = None,
+    soh_eol: float = 0.80,
+    lifetime_years_20c: float | None = None,
+    width_m: float = 0.60,
+    height_m: float = 0.25,
+    depth_m: float = 0.55,
+    weight_kg: float = 85.0,
+    source_note: str = "Zero-template datasheet synthesis",
+) -> tuple[str, dict[str, Any]]:
+    """Generate a complete PVsyst 8.1.7 UTF-8 CRLF Li-ion (LFP/NMC) .BTR file directly from datasheet values."""
+    chem_key = str(chemistry or "LFP").strip().upper()
+    if chem_key not in _LI_CHEM_DEFAULTS:
+        raise ValueError("chemistry must be 'LFP' or 'NMC'")
+    chem = _LI_CHEM_DEFAULTS[chem_key]
+    v_cell = chem["v_nom_cell"]
+
+    if type(n_cells_p) is not int or not 1 <= n_cells_p <= 200:
+        raise ValueError("NCellParall must be an integer in 1..200")
+
+    if n_cells_s is not None:
+        if type(n_cells_s) is not int or not 1 <= n_cells_s <= 500:
+            raise ValueError("NCellSerie must be an integer in 1..500")
+        eff_ns = n_cells_s
+        eff_vnom = round(eff_ns * v_cell, 2) if nominal_voltage_v is None else _pos_finite(nominal_voltage_v, "VNom")
+    elif nominal_voltage_v is not None:
+        eff_vnom = _pos_finite(nominal_voltage_v, "VNom")
+        eff_ns = max(1, int(round(eff_vnom / v_cell)))
+    else:
+        eff_ns = 16 if chem_key == "LFP" else 14
+        eff_vnom = round(eff_ns * v_cell, 2)
+
+    if capacity_ah is not None:
+        cap_ah = _pos_finite(capacity_ah, "CapNomC10")
+    elif energy_kwh is not None:
+        e_kwh = _pos_finite(energy_kwh, "EnergyKWh")
+        cap_ah = (e_kwh * 1000.0) / eff_vnom
+    else:
+        raise ValueError("Zero-template BTR synthesis requires capacity_ah (CapNomC10) or energy_kwh (EnergyKWh)")
+
+    v_cell_eff = eff_vnom / eff_ns
+    eff_energy_kwh = round((cap_ah * eff_vnom) / 1000.0, 3)
+
+    if internal_resistance_mohm is not None:
+        # PVsyst stores ResInterne per cell in Ohm and checks (CapNomC10/10)*ResInterne*1000 <= 40 mV for Li-ion
+        res_ohm = _pos_finite(internal_resistance_mohm, "ResInterne") / 1000.0
+        drop_mv = (cap_ah / 10.0) * res_ohm * 1000.0
+        if drop_mv > 40.0:
+            raise ValueError(
+                f"Per-cell internal resistance {internal_resistance_mohm} mOhm produces {drop_mv:.1f} mV drop at I10, "
+                "exceeding PVsyst Li-ion limit of 40 mV/cell (pass per-cell mOhm, e.g. 0.5..1.5 mOhm for 200Ah)"
+            )
+    else:
+        # Match PVsyst TBattery.ValDefault: ~16 mV voltage drop per cell at I10 (C10 / 10)
+        res_ohm = max(0.0001, round((chem["ir_drop_i10_mv"] / 1000.0) / max(0.1, cap_ah / 10.0), 5))
+
+    eff_i = _pos_finite(coulombic_efficiency, "EfficI") if coulombic_efficiency is not None else chem["coulombic_eff"]
+    if not 0.88 <= eff_i <= 0.99:
+        raise ValueError("coulombic_efficiency (EfficI) must be in [0.88, 0.99] for Li-ion")
+    i_max_ch = _pos_finite(max_charge_current_a, "IMaxCharge") if max_charge_current_a is not None else round(0.5 * cap_ah, 2)
+    i_max_dis = _pos_finite(max_discharge_current_a, "IMaxDischarge") if max_discharge_current_a is not None else round(1.0 * cap_ah, 2)
+    soh_end = _pos_finite(soh_eol, "SOHEOL")
+    if not 0.5 <= soh_end <= 0.95:
+        raise ValueError("SOHEOL must be in [0.50, 0.95]")
+    life_yr = _pos_finite(lifetime_years_20c, "DureeVie20") if lifetime_years_20c is not None else chem["lifetime_years_20c"]
+    cyc_80 = int(cycle_life_80dod) if cycle_life_80dod is not None else int(chem["cycle_life_80dod"])
+    if not 500 <= cyc_80 <= 30000:
+        raise ValueError("cycle_life_80dod must be in 500..30000")
+
+    # Mode-1 Li-ion capacity vs discharge duration (h) relative to C10 (flat Li-ion Peukert behavior)
+    capa_curve = [
+        (0.5, 0.94),
+        (1.0, 0.97),
+        (2.0, 0.99),
+        (5.0, 1.00),
+        (10.0, 1.00),
+        (20.0, 1.01),
+        (100.0, 1.02),
+    ]
+    # Mode-1 temperature capacity derating curve (degC -> relative capacity)
+    temp_curve = [
+        (-10.0, 0.72),
+        (0.0, 0.85),
+        (10.0, 0.95),
+        (20.0, 1.00),
+        (25.0, 1.00),
+        (45.0, 1.01),
+    ]
+    # Mode-1 cycling life vs DOD (%)
+    cycle_curve = [
+        (10.0, round(cyc_80 * 4.5, 0)),
+        (20.0, round(cyc_80 * 2.8, 0)),
+        (50.0, round(cyc_80 * 1.5, 0)),
+        (80.0, float(cyc_80)),
+        (90.0, round(cyc_80 * 0.82, 0)),
+        (100.0, round(cyc_80 * 0.65, 0)),
+    ]
+
+    # PVsyst TBattery stores VMax_Charge and VMinDischarge per cell (checked against V_cell in VerifBattery)
+    v_max_cell = round(chem["v_max_charge_cell"], 3)
+    v_min_cell = round(chem["v_min_discharge_cell"], 3)
+    v_half_cell = round(chem["v_half_soc"], 3)
+    alpha_soc = round(chem["alpha_soc"], 3)
+
+    lines = [
+        "PVObject_=pvBattery",
+        f"  Comment={manufacturer}\t{model}\t{source_note}",
+        "  Version=8.1.7",
+        "  Flags=$0000",
+        "  PVObject_Commercial=pvCommercial",
+        "    Flags=$0041",
+        f"    Manufacturer={manufacturer}",
+        f"    Model={model}",
+        f"    DataSource={source_note}",
+        f"    Width={width_m:.3f}",
+        f"    Height={height_m:.3f}",
+        f"    Depth={depth_m:.3f}",
+        f"    Weight={weight_kg:.2f}",
+        "  End of PVObject pvCommercial",
+        "  BattModeAff=PackBatt",
+        f"  BattTechnol={chem['batt_technol']}",
+        "  Category=BatteryModule",
+        f"  NCellSerie={eff_ns}",
+        f"  NCellParall={n_cells_p}",
+        "  NBlockSerie=1",
+        "  NBlockParall=1",
+        f"  CapNomC10={cap_ah:.2f}",
+        f"  DataSheetCap={cap_ah:.2f}",
+        "  DataShDishHours=10.0",
+        "  PeukertCoeff=1.02",
+        f"  VNomCell={v_cell_eff:.3f}",
+        f"  VHalfSOC_TRef={v_half_cell:.3f}",
+        f"  AlphaSOC={alpha_soc:.3f}",
+        "  BattTempRef=25.0",
+        "  BattCoeffTemp=-0.0005",
+        f"  ResInterne={res_ohm:.5f}",
+        f"  EfficI={eff_i:.4f}",
+        "  SOCLD=0.10",
+        "  DVDech=0.15",
+        "  SOCLG=0.95",
+        f"  VMax_Charge={v_max_cell:.3f}",
+        f"  VMinDischarge={v_min_cell:.3f}",
+        f"  IMaxCharge={i_max_ch:.2f}",
+        f"  IMaxDischarge={i_max_dis:.2f}",
+        "  TempMinCharge=0.0",
+        "  TempMinDisch=-10.0",
+        "  ActivE_ResInt=0.0",
+        "  IAutoDech=0.001",
+        f"  DureeVie20={life_yr:.1f}",
+        f"  SOHEOL={soh_end:.2f}",
+    ]
+    lines.extend(_emit_cubic_profile("CapaCourant", capa_curve, indent="  "))
+    lines.extend(_emit_cubic_profile("CapaTemper", temp_curve, indent="  "))
+    lines.extend(_emit_cubic_profile("NbCycleMax", cycle_curve, indent="  "))
+    lines.append("End of PVObject pvBattery")
+
+    text = "\r\n".join(lines) + "\r\n"
+    return text, {
+        "chemistry": chem_key,
+        "batt_technol": chem["batt_technol"],
+        "n_cells_s": eff_ns,
+        "n_cells_p": n_cells_p,
+        "nominal_voltage_v": round(eff_vnom, 2),
+        "capacity_ah": round(cap_ah, 2),
+        "energy_kwh": eff_energy_kwh,
+        "internal_resistance_ohm": round(res_ohm, 5),
+        "coulombic_efficiency": eff_i,
+        "max_charge_current_a": i_max_ch,
+        "max_discharge_current_a": i_max_dis,
+        "cycle_life_80dod": cyc_80,
     }

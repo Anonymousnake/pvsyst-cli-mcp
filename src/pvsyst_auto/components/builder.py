@@ -6,6 +6,7 @@ import json
 from pvsyst_auto.components.commercial import replace_commercial
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.components.single_diode import (
+    synthesize_btr_from_datasheet,
     synthesize_ond_from_datasheet,
     synthesize_pan_from_datasheet,
 )
@@ -45,14 +46,37 @@ SCALAR_UNITS = {
         "NbMPPT": ("count",),
         "NbInputs": ("count",),
         "IDCMax": ("A",),
+        "VNomEff1": ("V",),
+        "VNomEff2": ("V",),
+        "VNomEff3": ("V",),
+        "EfficMaxV1": ("%",),
+        "EfficMaxV2": ("%",),
+        "EfficMaxV3": ("%",),
+        "EfficEuroV1": ("%",),
+        "EfficEuroV2": ("%",),
+        "EfficEuroV3": ("%",),
+    },
+    "BTR": {
+        "CapNomC10": ("Ah",),
+        "EnergyKWh": ("kWh",),
+        "VNom": ("V",),
+        "NCellSerie": ("count", "cells"),
+        "NCellParall": ("count", "strings"),
+        "ResInterne": ("mOhm", "Ohm"),
+        "EfficI": ("ratio", "%"),
+        "IMaxCharge": ("A",),
+        "IMaxDischarge": ("A",),
+        "CycleLife80DOD": ("count", "cycles"),
+        "SOHEOL": ("ratio", "%"),
+        "DureeVie20": ("years", "yr"),
     },
 }
 DIMENSION_UNITS = {"Width": ("m", "mm"), "Height": ("m", "mm"),
                    "Depth": ("m", "mm"), "Weight": ("kg",)}
 
 
-def _build_zero_template_candidate(component_type, *, manufacturer, model, values, source_note):
-    """Synthesize a complete PVsyst 8.1.7 PAN or OND directly from cited datasheet values."""
+def _build_zero_template_candidate(component_type, *, manufacturer, model, values, source_note, chemistry="LFP"):
+    """Synthesize a complete PVsyst 8.1.7 PAN, OND, or BTR directly from cited datasheet values."""
     conversions = []
     parsed: dict[str, tuple[float, str]] = {}
     for key, entries in values.items():
@@ -63,16 +87,45 @@ def _build_zero_template_candidate(component_type, *, manufacturer, model, value
             val /= 1000.0
             conversions.append({"field": key, "from": "mm", "to": "m", "factor": 0.001})
             unit = "m"
-        elif key == "BifacialityFactor" and unit == "%":
+        elif key in ("BifacialityFactor", "EfficI", "SOHEOL") and unit == "%":
             val /= 100.0
             conversions.append({"field": key, "from": "%", "to": "ratio", "factor": 0.01})
             unit = "ratio"
+        elif key == "ResInterne" and unit == "Ohm":
+            val *= 1000.0
+            conversions.append({"field": key, "from": "Ohm", "to": "mOhm", "factor": 1000.0})
+            unit = "mOhm"
         parsed[key] = (val, unit)
 
     def req(key):
         if key not in parsed:
             raise ValueError(f"Zero-template {component_type} synthesis requires declared field: {key}")
         return parsed[key][0]
+
+    if component_type == "BTR":
+        text, meta = synthesize_btr_from_datasheet(
+            manufacturer=manufacturer,
+            model=model,
+            chemistry=chemistry,
+            capacity_ah=parsed["CapNomC10"][0] if "CapNomC10" in parsed else None,
+            energy_kwh=parsed["EnergyKWh"][0] if "EnergyKWh" in parsed else None,
+            nominal_voltage_v=parsed["VNom"][0] if "VNom" in parsed else None,
+            n_cells_s=int(round(parsed["NCellSerie"][0])) if "NCellSerie" in parsed else None,
+            n_cells_p=int(round(parsed["NCellParall"][0])) if "NCellParall" in parsed else 1,
+            internal_resistance_mohm=parsed["ResInterne"][0] if "ResInterne" in parsed else None,
+            coulombic_efficiency=parsed["EfficI"][0] if "EfficI" in parsed else None,
+            max_charge_current_a=parsed["IMaxCharge"][0] if "IMaxCharge" in parsed else None,
+            max_discharge_current_a=parsed["IMaxDischarge"][0] if "IMaxDischarge" in parsed else None,
+            cycle_life_80dod=int(round(parsed["CycleLife80DOD"][0])) if "CycleLife80DOD" in parsed else None,
+            soh_eol=parsed["SOHEOL"][0] if "SOHEOL" in parsed else 0.80,
+            lifetime_years_20c=parsed["DureeVie20"][0] if "DureeVie20" in parsed else None,
+            width_m=parsed["Width"][0] if "Width" in parsed else 0.60,
+            height_m=parsed["Height"][0] if "Height" in parsed else 0.25,
+            depth_m=parsed["Depth"][0] if "Depth" in parsed else 0.55,
+            weight_kg=parsed["Weight"][0] if "Weight" in parsed else 85.0,
+            source_note=source_note,
+        )
+        return text, meta, conversions, {k: str(v[0]) for k, v in parsed.items()}
 
     if component_type == "PAN":
         isc = req("ISC")
@@ -125,6 +178,22 @@ def _build_zero_template_candidate(component_type, *, manufacturer, model, value
         )
         return text, meta, conversions, {k: str(v[0]) for k, v in parsed.items()}
 
+    v_tri = (
+        (parsed["VNomEff1"][0], parsed["VNomEff2"][0], parsed["VNomEff3"][0])
+        if all(k in parsed for k in ("VNomEff1", "VNomEff2", "VNomEff3"))
+        else None
+    )
+    emax_tri = (
+        (parsed["EfficMaxV1"][0], parsed["EfficMaxV2"][0], parsed["EfficMaxV3"][0])
+        if all(k in parsed for k in ("EfficMaxV1", "EfficMaxV2", "EfficMaxV3"))
+        else None
+    )
+    eeuro_tri = (
+        (parsed["EfficEuroV1"][0], parsed["EfficEuroV2"][0], parsed["EfficEuroV3"][0])
+        if all(k in parsed for k in ("EfficEuroV1", "EfficEuroV2", "EfficEuroV3"))
+        else None
+    )
+
     text, meta = synthesize_ond_from_datasheet(
         manufacturer=manufacturer,
         model=model,
@@ -143,6 +212,9 @@ def _build_zero_template_candidate(component_type, *, manufacturer, model, value
         height_m=parsed["Height"][0] if "Height" in parsed else 0.65,
         depth_m=parsed["Depth"][0] if "Depth" in parsed else 0.35,
         weight_kg=parsed["Weight"][0] if "Weight" in parsed else 75.0,
+        three_voltage_voltages=v_tri,
+        three_voltage_effic_max=emax_tri,
+        three_voltage_effic_euro=eeuro_tri,
         source_note=source_note,
     )
     return text, meta, conversions, {k: str(v[0]) for k, v in parsed.items()}
@@ -151,6 +223,7 @@ def _build_zero_template_candidate(component_type, *, manufacturer, model, value
 def build_sourced_component(store, *, component_type, new_name,
                            manufacturer, model, sources, declarations,
                            template_name=None,
+                           chemistry="LFP",
                            source_library="workspace", dry_run=True,
                            acknowledge_inherited_model=False):
     """Preview or create a new component from cited values (template-derived or zero-template)."""
@@ -161,7 +234,7 @@ def build_sourced_component(store, *, component_type, new_name,
         result["issues"].append({"field": field, "message": str(message)})
 
     if not isinstance(component_type, str) or component_type not in SCALAR_UNITS:
-        issue("component_type", "Use PAN or OND")
+        issue("component_type", "Use PAN, OND, or BTR")
     for name, value in (("manufacturer", manufacturer), ("model", model)):
         if (not isinstance(value, str) or not value or value != value.strip()
                 or not value.isprintable() or len(value.encode("utf-8")) > 80):
@@ -199,6 +272,7 @@ def build_sourced_component(store, *, component_type, new_name,
                     model=model,
                     values=binding["values"],
                     source_note=source_note,
+                    chemistry=chemistry,
                 )
                 bom = not candidate.isascii()
                 data = (b"\xef\xbb\xbf" if bom else b"") + candidate.encode("utf-8")

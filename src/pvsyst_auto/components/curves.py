@@ -10,6 +10,9 @@ from pvsyst_auto.components.editor import MAX_POINTS, checked_points
 
 HEADERS = {
     ("OND", "Converter/ProfilPIO"): ("input_watts", "output_watts"),
+    ("OND", "Converter/ProfilPIOV1"): ("input_watts", "output_watts"),
+    ("OND", "Converter/ProfilPIOV2"): ("input_watts", "output_watts"),
+    ("OND", "Converter/ProfilPIOV3"): ("input_watts", "output_watts"),
     ("BTR", "CapaCourant"): ("discharge_hours", "relative_capacity"),
     ("BTR", "Capa_DischRate"): ("discharge_hours", "relative_capacity"),
 }

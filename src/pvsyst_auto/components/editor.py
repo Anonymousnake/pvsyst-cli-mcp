@@ -21,6 +21,8 @@ ASSIGNMENT = re.compile(r"^([ \t]*)([A-Za-z_][A-Za-z0-9_#]*)([ \t]*=[ \t]*)(.*?)
 LINE_BREAK = re.compile(r"[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
 CURVE_PATHS = frozenset(f"Converter/{name}" for name in
                         ("ProfilPIO", "ProfilPIOV1", "ProfilPIOV2", "ProfilPIOV3"))
+THREE_VOLTAGE_CURVES = frozenset(f"Converter/{name}" for name in
+                                 ("ProfilPIOV1", "ProfilPIOV2", "ProfilPIOV3"))
 MAX_POINTS = 256
 MAIN_CURVE = "Converter/ProfilPIO"
 AUTO_CURVE_MASK = 0x10
@@ -333,20 +335,29 @@ def _curve_control(objects: list[ObjectBlock]) -> tuple[dict, tuple[int, str] | 
         control["version"] = version[:256]
         if version not in NATIVE_TEXT:
             raise ValueError(f"Curve editing is verified only for OND Version={TEXT_LABEL}")
-        if control["three_voltage"]:
-            raise ValueError("Three-voltage OND curve editing is not supported")
         converters = [b for b in objects if b.path == "Converter"]
         if len(converters) != 1 or converters[0].object_type != "TConverter":
             raise ValueError("Expected exactly one root Converter=TConverter")
+        if control["three_voltage"]:
+            conv = converters[0]
+            if not conv.fields.get("VNomEff"):
+                raise ValueError("Three-voltage OND curve editing requires VNomEff and ProfilPIOV1..ProfilPIOV3")
+            found_3v = {b.path for b in objects if isinstance(b, Profile) and b.path in THREE_VOLTAGE_CURVES}
+            if found_3v != THREE_VOLTAGE_CURVES:
+                raise ValueError("Three-voltage OND curve editing requires VNomEff and ProfilPIOV1..ProfilPIOV3")
     except ValueError as exc:
         control["errors"].append(str(exc))
     return control, flag_field
 
 
-def _edit_errors(profile: Profile, points: list[list[float]]) -> list[str]:
+def _edit_errors(profile: Profile, points: list[list[float]], *, three_voltage: bool = False) -> list[str]:
     errors = []
-    if profile.path != MAIN_CURVE:
-        errors.append("Only Converter/ProfilPIO is editable")
+    allowed = THREE_VOLTAGE_CURVES if three_voltage else {MAIN_CURVE}
+    if profile.path not in allowed:
+        errors.append(
+            "Three-voltage OND edits support Converter/ProfilPIOV1..ProfilPIOV3 only"
+            if three_voltage else "Only Converter/ProfilPIO is editable"
+        )
     if len(points) < 4:
         errors.append("Curve editing requires at least four active points")
     try:
@@ -366,6 +377,7 @@ def curve_inventory(kind: str, text: str) -> dict:
     except ValueError as exc:
         return {"items": [], "errors": [str(exc)], "truncated": False}
     control, _ = _curve_control(blocks)
+    is_3v = bool(control["three_voltage"]) and not control["errors"]
     items = []
     for profile in found[:16]:
         errors = list(profile.problems)
@@ -377,7 +389,7 @@ def curve_inventory(kind: str, text: str) -> dict:
         if sum(other.path == profile.path for other in blocks) != 1:
             errors.append("Ambiguous duplicate curve path")
         supported = profile.path in CURVE_PATHS
-        edit_errors = errors + control["errors"] + _edit_errors(profile, points)
+        edit_errors = errors + control["errors"] + _edit_errors(profile, points, three_voltage=is_3v)
         items.append({"path": profile.path, "line": profile.line,
                       "editable": not edit_errors, "structure_complete": not errors, "errors": errors,
                       "edit_errors": edit_errors,
@@ -394,25 +406,38 @@ def curve_inventory(kind: str, text: str) -> dict:
 
 def replace_curves(kind: str, text: str, updates: dict[str, list[list[float]]],
                    use_file_curve: bool = False) -> str:
-    if kind != "OND" or not isinstance(updates, dict) or set(updates) != {MAIN_CURVE}:
-        raise ValueError("Curve edits support only OND Converter/ProfilPIO")
+    if kind != "OND" or not isinstance(updates, dict) or not updates:
+        raise ValueError("Curve edits support only OND Converter/ProfilPIO (or ProfilPIOV1..V3 in 3-voltage mode)")
     blocks = objects(text)
     control, flag_field = _curve_control(blocks)
     if control["errors"]:
         raise ValueError("; ".join(control["errors"]))
+    is_3v = bool(control["three_voltage"])
+    allowed_paths = THREE_VOLTAGE_CURVES if is_3v else {MAIN_CURVE}
+    if not set(updates) <= allowed_paths:
+        raise ValueError(
+            "Three-voltage OND curve edits support Converter/ProfilPIOV1..ProfilPIOV3 only"
+            if is_3v else "Curve edits support only OND Converter/ProfilPIO"
+        )
     if control["source"] == "automatic" and not use_file_curve:
         raise ValueError("Automatic curve is enabled; supply use_file_curve=true to use supplied points")
-    matches = [b for b in blocks if b.path == MAIN_CURVE]
-    if len(matches) != 1 or not isinstance(matches[0], Profile):
-        raise ValueError(f"{MAIN_CURVE} must identify exactly one supported curve")
-    profile = matches[0]
-    previous = profile.points()
-    errors = profile.problems + _edit_errors(profile, previous)
-    if errors:
-        raise ValueError("; ".join(errors))
-    points = checked_points(updates[MAIN_CURVE])
-    if any(not 0 <= y <= x for x, y in points):
-        raise ValueError("Supported power points require 0 <= output <= input")
+
+    # Validate all target profiles and points before mutating any line; apply bottom-up so line offsets never shift!
+    plan: list[tuple[Profile, list, list]] = []
+    for target_path, raw_pts in updates.items():
+        matches = [b for b in blocks if b.path == target_path]
+        if len(matches) != 1 or not isinstance(matches[0], Profile):
+            raise ValueError(f"{target_path} must identify exactly one supported curve")
+        profile = matches[0]
+        previous = profile.points()
+        errors = profile.problems + _edit_errors(profile, previous, three_voltage=is_3v)
+        if errors:
+            raise ValueError("; ".join(errors))
+        points = checked_points(raw_pts)
+        if any(not 0 <= y <= x for x, y in points):
+            raise ValueError("Supported power points require 0 <= output <= input")
+        plan.append((profile, previous, points))
+
     lines = text.splitlines(keepends=True)
     if control["source"] == "automatic":
         index, raw = flag_field
@@ -420,5 +445,6 @@ def replace_curves(kind: str, text: str, updates: dict[str, list[list[float]]],
         # Replace only that digit, preserving even mixed-case surrounding hex.
         digit = format(int(raw[-2], 16) & ~1, "x" if raw[-2].islower() else "X")
         lines[index] = replace_value(lines[index], raw[:-2] + digit + raw[-1])
-    write_points(lines, profile, previous, points)
+    for profile, previous, points in sorted(plan, key=lambda item: item[0].line, reverse=True):
+        write_points(lines, profile, previous, points)
     return "".join(lines)

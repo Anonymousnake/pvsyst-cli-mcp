@@ -54,13 +54,15 @@ def pvsyst_update_component(component_type: str, filename: str,
                            use_file_curve: StrictBool = False,
                            commercial_updates: dict[str, str] | None = None,
                            remarks: list[str] | None = None,
-                           curve_csv: dict[str, str] | None = None) -> dict:
+                           curve_csv: dict[str, str] | None = None,
+                           refit_single_diode: StrictBool = False) -> dict:
     """Update allowlisted scalar fields, commercial metadata, remarks (up to 5 lines),
-    or Mode 1 OND/BTR curve tables (4..256 points via curve_updates or curve_csv)
-    in a workspace component with SHA-256 optimistic locking and automatic backup."""
+    or Mode 1 OND (single- or 3-voltage ProfilPIOV1..3) / BTR curve tables (4..256 points
+    via curve_updates or curve_csv) in a workspace component with SHA-256 optimistic locking
+    and automatic backup. Set refit_single_diode=true on PAN STC edits to refit single-diode params."""
     return component_call("update", component_type, filename, updates,
                           expected_sha256, dry_run, curve_updates, use_file_curve,
-                          commercial_updates, remarks, curve_csv)
+                          commercial_updates, remarks, curve_csv, refit_single_diode)
 
 @categorized_tool()
 def pvsyst_compare_components(component_type: str, first: str, second: str,
@@ -75,21 +77,23 @@ def pvsyst_project_components(project: str, variant: str) -> dict:
 
 @categorized_tool()
 def pvsyst_build_sourced_component(
-        component_type: Literal["PAN", "OND"], new_name: StrictStr,
+        component_type: Literal["PAN", "OND", "BTR"], new_name: StrictStr,
         manufacturer: StrictStr, model: StrictStr,
         sources: Annotated[dict[str, SourceTextRequest], Field(min_length=1, max_length=16)],
         declarations: Annotated[list[SourceDeclarationRequest], Field(min_length=1, max_length=32)],
         template_name: StrictStr | None = None,
+        chemistry: Literal["LFP", "NMC"] = "LFP",
         source_library: Literal["workspace", "builtin"] = "workspace", dry_run: StrictBool = True,
         acknowledge_inherited_model: StrictBool = False) -> dict:
-    """Build a new user-defined PAN or OND from cited datasheet values: either derived from
-    a template (template_name set) or synthesized zero-template with single-diode / Mode-1
-    efficiency derivation (template_name omitted). Requires acknowledge_inherited_model=true
-    when dry_run=false."""
+    """Build a new user-defined PAN, OND, or Li-ion BTR from cited datasheet values: either derived
+    from a template (template_name set) or synthesized zero-template with single-diode / single- or
+    3-voltage Mode-1 OND / Li-ion LFP-NMC BTR derivation (template_name omitted). Requires
+    acknowledge_inherited_model=true when dry_run=false."""
     return build_sourced_component(
         components(), component_type=component_type, template_name=template_name, new_name=new_name,
         manufacturer=manufacturer, model=model,
         sources={key: entry.model_dump(exclude_none=True) for key, entry in sources.items()},
         declarations=[entry.model_dump(exclude_none=True) for entry in declarations],
+        chemistry=chemistry,
         source_library=source_library, dry_run=dry_run,
         acknowledge_inherited_model=acknowledge_inherited_model)
