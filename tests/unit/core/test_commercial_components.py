@@ -59,6 +59,10 @@ class CommercialComponentTests(unittest.TestCase):
         self.assertEqual(report["structural_errors"], [])
         self.assertEqual(report["known_value_errors"], [])
 
+    def test_fallback_reports_actual_mpp_slope_residual(self):
+        diode = derive_single_diode_parameters(voc=50.0, isc=13.0, vmp=42.0, imp=12.74, n_cells_s=96)
+        self.assertGreater(diode["mpp_slope_residual_a"], 1.0)
+
     def test_zero_template_ond_synthesis_validates_cleanly(self):
         ond_text, meta = synthesize_ond_from_datasheet(
             manufacturer="GridPower",
