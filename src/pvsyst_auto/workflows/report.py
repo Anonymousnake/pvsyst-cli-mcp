@@ -34,15 +34,33 @@ _I18N = {
         "kpi_npv": "净现值 NPV",
         "kpi_irr": "内部收益率 IRR",
         "kpi_payback": "静态回收期",
+        "kpi_demand_savings": "年需量电费节省",
         "kpi_diag": "物理诊断",
         "status_ok": "诊断通过",
         "status_review": "需工程复核",
         "sec_monthly": "月度发电量与性能比 (PR)",
         "sec_losses": "光伏系统能量损失瀑布图",
         "sec_typical_day": "典型 24 小时功率与分时电价曲线",
+        "sec_demand": "两部制月度最大需量削峰对比",
         "sec_cashflow": "全生命周期累计现金流与财务对比",
+        "sec_sensitivity": "财务敏感性分析龙卷风图 (NPV)",
+        "sec_bess_opt": "光储容量寻优收益热力图与 Pareto 前沿",
         "sec_ranking": "多方案综合排名对比表",
         "sec_diag": "物理与时序诊断明细",
+        "demand_base": "基准最大需量 (kW)",
+        "demand_actual": "加装光储后最大需量 (kW)",
+        "sens_factor_labels": {
+            "tariff": "电价水平",
+            "capex": "初始投资 CAPEX",
+            "yield": "年发电量 / 辐照",
+            "degradation": "衰减率",
+        },
+        "sens_low": "下调",
+        "sens_high": "上调",
+        "bess_cap_axis": "储能容量 (kWh)",
+        "bess_pcs_axis": "PCS 功率 (kW)",
+        "bess_pareto_capex": "总投资 CAPEX",
+        "bess_pareto_metric": "净现值 NPV",
         "no_findings": "未检出异常告警，所有物理与时序指标均处于正常阈值内。",
         "col_rank": "排名",
         "col_scenario": "方案",
@@ -84,15 +102,33 @@ _I18N = {
         "kpi_npv": "NPV",
         "kpi_irr": "IRR",
         "kpi_payback": "Simple Payback",
+        "kpi_demand_savings": "Annual Demand Savings",
         "kpi_diag": "Diagnostics",
         "status_ok": "Healthy",
         "status_review": "Needs Review",
         "sec_monthly": "Monthly Generation & Performance Ratio (PR)",
         "sec_losses": "PV Energy Loss Waterfall",
         "sec_typical_day": "Typical 24-Hour Power & TOU Tariff Profile",
+        "sec_demand": "Monthly Peak Demand Shaving Comparison",
         "sec_cashflow": "Lifetime Cumulative Cashflow & Financial Comparison",
+        "sec_sensitivity": "Financial Sensitivity Tornado Chart (NPV)",
+        "sec_bess_opt": "PV+BESS Sizing Heatmap & Pareto Frontier",
         "sec_ranking": "Multi-Scenario Ranking Summary",
         "sec_diag": "Physics & Time-Series Diagnostics",
+        "demand_base": "Baseline Peak Demand (kW)",
+        "demand_actual": "Post-PV/BESS Peak Demand (kW)",
+        "sens_factor_labels": {
+            "tariff": "Tariff Rate",
+            "capex": "Initial CAPEX",
+            "yield": "Annual Yield / Irradiance",
+            "degradation": "Degradation Rate",
+        },
+        "sens_low": "Downside",
+        "sens_high": "Upside",
+        "bess_cap_axis": "BESS Energy (kWh)",
+        "bess_pcs_axis": "PCS Power (kW)",
+        "bess_pareto_capex": "Total CAPEX",
+        "bess_pareto_metric": "NPV",
         "no_findings": "No anomalies detected; all physics and time-series checks are within thresholds.",
         "col_rank": "Rank",
         "col_scenario": "Scenario",
@@ -241,6 +277,8 @@ def generate_report(
     scenarios: list[dict[str, Any]],
     financial: dict[str, Any] | None = None,
     tariff: dict[str, Any] | None = None,
+    sensitivity: dict[str, Any] | None = None,
+    bess_optimization: dict[str, Any] | None = None,
     language: str = "zh",
     plotlyjs: str = "cdn",
     thresholds: dict[str, float] | None = None,
@@ -312,6 +350,7 @@ def generate_report(
             scenarios=econ_inputs,
             financial=financial,
             tariff=tariff,
+            sensitivity=sensitivity,
             include_cashflow_schedule=True,
         )
 
@@ -462,6 +501,101 @@ def generate_report(
         )
         chart_sections.append((t["sec_cashflow"], _plotly_div(fig_cf, include_js=next_js())))
 
+    # 5. Monthly Peak Demand Shaving Comparison (two-part demand tariff)
+    primary_dc_summary = ((primary_econ.get("settlement") or {}).get("demand_charge_summary") if primary_econ else None)
+    if primary_dc_summary and primary_dc_summary.get("monthly_peaks"):
+        peaks = primary_dc_summary["monthly_peaks"]
+        fig_dc = go.Figure()
+        fig_dc.add_trace(go.Bar(
+            name=t["demand_base"], x=months, y=[p["baseline_peak_kw"] for p in peaks],
+            marker_color="#94a3b8", opacity=0.85,
+        ))
+        fig_dc.add_trace(go.Bar(
+            name=t["demand_actual"], x=months, y=[p["actual_peak_kw"] for p in peaks],
+            marker_color="#059669", opacity=0.9,
+        ))
+        fig_dc.update_layout(
+            barmode="group", template="plotly_white", height=380,
+            margin=dict(l=55, r=30, t=30, b=45), yaxis_title="kW",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+        )
+        chart_sections.append((t["sec_demand"], _plotly_div(fig_dc, include_js=next_js())))
+
+    # 6. Financial Sensitivity Tornado Chart (NPV impact around base)
+    primary_sens = primary_econ.get("sensitivity") if primary_econ else None
+    if primary_sens and primary_sens.get("factors"):
+        base_npv = float(primary_sens["base"]["npv"])
+        # Reverse order so the highest-impact factor appears at the top of the horizontal bar chart
+        s_rows = list(reversed(primary_sens["factors"]))
+        lbl_map = t["sens_factor_labels"]
+        y_labels = [lbl_map.get(r["factor"], r["factor"]) for r in s_rows]
+        low_deltas = [round(float(r["low"]["npv"]) - base_npv, 2) for r in s_rows]
+        high_deltas = [round(float(r["high"]["npv"]) - base_npv, 2) for r in s_rows]
+        var_pct = primary_sens.get("variation_pct", 15)
+        fig_tor = go.Figure()
+        fig_tor.add_trace(go.Bar(
+            name=f"{t['sens_low']} (-{var_pct:g}%)",
+            y=y_labels, x=low_deltas, base=base_npv, orientation="h",
+            marker_color="#ef4444", opacity=0.85,
+            hovertemplate="%{y} (-" + f"{var_pct:g}%): NPV=%{{x:,.0f}} ({econ_result['currency']})<extra></extra>",
+        ))
+        fig_tor.add_trace(go.Bar(
+            name=f"{t['sens_high']} (+{var_pct:g}%)",
+            y=y_labels, x=high_deltas, base=base_npv, orientation="h",
+            marker_color="#2563eb", opacity=0.85,
+            hovertemplate="%{y} (+" + f"{var_pct:g}%): NPV=%{{x:,.0f}} ({econ_result['currency']})<extra></extra>",
+        ))
+        fig_tor.add_vline(x=base_npv, line_width=2, line_dash="dash", line_color="#0f172a")
+        fig_tor.update_layout(
+            barmode="overlay", template="plotly_white", height=360,
+            margin=dict(l=140, r=30, t=30, b=45),
+            xaxis_title=f"NPV ({econ_result['currency']})",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+        )
+        chart_sections.append((t["sec_sensitivity"], _plotly_div(fig_tor, include_js=next_js())))
+
+    # 7. Optional BESS Sizing 2D Heatmap & Pareto Frontier (from pvsyst_optimize_bess_sizing)
+    if isinstance(bess_optimization, dict):
+        hm = bess_optimization.get("heatmap")
+        pareto = bess_optimization.get("pareto_frontier") or []
+        if hm and hm.get("bess_kwh") and hm.get("pcs_kw") and hm.get("z"):
+            fig_bess = make_subplots(
+                rows=1, cols=2 if pareto else 1,
+                subplot_titles=(
+                    [f"{hm.get('metric', 'npv').upper()} Heatmap", "Pareto Frontier"]
+                    if pareto else [f"{hm.get('metric', 'npv').upper()} Heatmap"]
+                ),
+            )
+            fig_bess.add_trace(
+                go.Heatmap(
+                    x=[str(v) for v in hm["bess_kwh"]],
+                    y=[str(v) for v in hm["pcs_kw"]],
+                    z=hm["z"],
+                    colorscale="Viridis",
+                    colorbar=dict(title=str(hm.get("metric", "npv")).upper(), x=0.45 if pareto else 1.02),
+                ),
+                row=1, col=1,
+            )
+            fig_bess.update_xaxes(title_text=t["bess_cap_axis"], row=1, col=1)
+            fig_bess.update_yaxes(title_text=t["bess_pcs_axis"], row=1, col=1)
+            if pareto:
+                fig_bess.add_trace(
+                    go.Scatter(
+                        name="Pareto",
+                        x=[p["capex_total"] for p in pareto],
+                        y=[p["npv"] for p in pareto],
+                        text=[f"{p.get('bess_kwh')} kWh / {p.get('pcs_kw')} kW (IRR {p.get('irr_pct')}%)" for p in pareto],
+                        mode="lines+markers",
+                        line=dict(color="#2563eb", width=2.5),
+                        marker=dict(size=9, color="#10b981"),
+                    ),
+                    row=1, col=2,
+                )
+                fig_bess.update_xaxes(title_text=t["bess_pareto_capex"], row=1, col=2)
+                fig_bess.update_yaxes(title_text=t["bess_pareto_metric"], row=1, col=2)
+            fig_bess.update_layout(template="plotly_white", height=420, margin=dict(l=60, r=40, t=45, b=50), showlegend=False)
+            chart_sections.append((t["sec_bess_opt"], _plotly_div(fig_bess, include_js=next_js())))
+
     # --- Assemble Clean Responsive HTML Document ---
     primary_diag = primary["diagnostics"]
     primary_yield = primary["stats"]["annual_e_grid_kwh"]
@@ -484,6 +618,8 @@ def generate_report(
             (t["kpi_irr"], _fmt_num(pf.get("irr_pct"), 2, " %")),
             (t["kpi_payback"], _fmt_num(pf.get("simple_payback_years"), 2, f" {t['yr_unit']}")),
         ])
+        if primary_dc_summary is not None:
+            kpis.append((t["kpi_demand_savings"], _fmt_num(primary_dc_summary.get("annual_demand_savings"), 0, f" {curr}")))
 
     kpi_html = "".join(
         f'<div class="kpi"><div class="kpi-label">{html.escape(lbl)}</div><div class="kpi-val">{html.escape(val)}</div></div>'

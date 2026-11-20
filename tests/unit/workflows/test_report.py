@@ -146,6 +146,57 @@ class InteractiveReportTests(unittest.TestCase):
         en_html = Path(en_res["report_path"]).read_text(encoding="utf-8")
         self.assertIn("Monthly Generation &amp; Performance Ratio", en_html)
 
+    def test_report_with_demand_charge_sensitivity_and_bess_heatmap(self) -> None:
+        csv_pv = self.root / "Results" / "ci_bess.csv"
+        _write_report_csv(csv_pv, scale=1.0, with_load_bess=True)
+        tariff_dc = {
+            "mode": "self_consumption_flat",
+            "import_tariff": 0.9,
+            "feed_in_tariff": 0.35,
+            "demand_charge": {"billing_mode": "demand", "demand_rate_per_kw_month": 40.0},
+        }
+        fin = {
+            "currency": "CNY",
+            "project_life_years": 20,
+            "discount_rate_pct": 6.0,
+            "capex_per_kw": 3500.0,
+            "battery_capex_per_kwh": 1000.0,
+            "battery_replacement_year": 12,
+            "battery_replacement_cost_ratio": 0.6,
+        }
+        bess_opt = {
+            "heatmap": {
+                "metric": "npv",
+                "bess_kwh": [100, 200],
+                "pcs_kw": [50, 100],
+                "z": [[120000, 150000], [130000, 165000]],
+            },
+            "pareto_frontier": [
+                {"bess_kwh": 100, "pcs_kw": 50, "capex_total": 450000, "npv": 120000, "irr_pct": 14.5},
+                {"bess_kwh": 200, "pcs_kw": 100, "capex_total": 550000, "npv": 165000, "irr_pct": 15.8},
+            ],
+        }
+        res = generate_report(
+            workspace=self.root,
+            title="工商业两部制光储可研",
+            output_name="ci_bess_report.html",
+            scenarios=[{"label": "光储方案", "csv_name": csv_pv.name, "installed_dc_kw": 100.0, "battery_kwh": 200.0}],
+            financial=fin,
+            tariff=tariff_dc,
+            sensitivity={"enabled": True, "variation_pct": 15.0},
+            bess_optimization=bess_opt,
+            language="zh",
+            plotlyjs="cdn",
+            dry_run=False,
+        )
+        self.assertEqual(res["status"], "generated")
+        # 4 base charts + demand peak + sensitivity tornado + bess heatmap = 7 charts
+        self.assertEqual(res["chart_count"], 7)
+        body = Path(res["report_path"]).read_text(encoding="utf-8")
+        self.assertIn("两部制月度最大需量削峰对比", body)
+        self.assertIn("财务敏感性分析龙卷风图", body)
+        self.assertIn("光储容量寻优收益热力图", body)
+
 
 if __name__ == "__main__":
     unittest.main()

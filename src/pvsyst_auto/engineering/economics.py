@@ -16,6 +16,90 @@ from pvsyst_auto.project.paths import safe_filename, workspace_file
 _POWER_TO_KW = {"W": 0.001, "kW": 1.0}
 _ENERGY_TO_KWH = {"Wh": 0.001, "kWh": 1.0}
 _VALID_RANK_KEYS = ("npv", "irr", "lcoe", "simple_payback_years", "discounted_payback_years", "year1_net_benefit")
+_VALID_SENSITIVITY_FACTORS = ("tariff", "capex", "yield", "degradation")
+
+
+def _validate_demand_charge(raw_dc: dict | None) -> dict | None:
+    if raw_dc is None:
+        return None
+    if not isinstance(raw_dc, dict):
+        raise ValueError("tariff.demand_charge must be an object")
+    billing_mode = raw_dc.get("billing_mode", "demand")
+    if billing_mode not in ("demand", "capacity", "compare"):
+        raise ValueError("tariff.demand_charge.billing_mode must be 'demand', 'capacity', or 'compare'")
+    demand_rate = _finite(
+        raw_dc.get("demand_rate_per_kw_month", 0.0),
+        "tariff.demand_charge.demand_rate_per_kw_month",
+        minimum=0.0,
+    )
+    cap_rate = (
+        _finite(
+            raw_dc["capacity_rate_per_kva_month"],
+            "tariff.demand_charge.capacity_rate_per_kva_month",
+            minimum=0.0,
+        )
+        if raw_dc.get("capacity_rate_per_kva_month") is not None else None
+    )
+    contract_kva = (
+        _finite(
+            raw_dc["contract_capacity_kva"],
+            "tariff.demand_charge.contract_capacity_kva",
+            minimum=0.0,
+        )
+        if raw_dc.get("contract_capacity_kva") is not None else None
+    )
+    if billing_mode in ("capacity", "compare") and (cap_rate is None or contract_kva is None):
+        raise ValueError(
+            "tariff.demand_charge requires capacity_rate_per_kva_month and contract_capacity_kva "
+            "when billing_mode is 'capacity' or 'compare'"
+        )
+    pf = _finite(raw_dc.get("power_factor", 0.95), "tariff.demand_charge.power_factor", minimum=0.5, maximum=1.0)
+    months_raw = raw_dc.get("months")
+    if months_raw is not None:
+        if (not isinstance(months_raw, list) or not months_raw
+                or any(type(m) is not int or not 1 <= m <= 12 for m in months_raw)):
+            raise ValueError("tariff.demand_charge.months must be integers in 1..12")
+        active_months = frozenset(months_raw)
+    else:
+        active_months = frozenset(range(1, 13))
+    return {
+        "billing_mode": billing_mode,
+        "demand_rate_per_kw_month": demand_rate,
+        "capacity_rate_per_kva_month": cap_rate,
+        "contract_capacity_kva": contract_kva,
+        "power_factor": pf,
+        "months": active_months,
+    }
+
+
+def _validate_sensitivity(raw_sens: dict | None) -> dict | None:
+    if raw_sens is None:
+        return None
+    if not isinstance(raw_sens, dict):
+        raise ValueError("sensitivity must be an object")
+    enabled = raw_sens.get("enabled", True)
+    if type(enabled) is not bool:
+        raise ValueError("sensitivity.enabled must be a strict boolean")
+    if not enabled:
+        return None
+    raw_factors = raw_sens.get("factors")
+    if raw_factors is None:
+        factors = list(_VALID_SENSITIVITY_FACTORS)
+    else:
+        if not isinstance(raw_factors, list) or not raw_factors:
+            raise ValueError("sensitivity.factors must be a non-empty list")
+        factors = []
+        for f in raw_factors:
+            if f not in _VALID_SENSITIVITY_FACTORS:
+                raise ValueError(f"sensitivity.factors entries must be in {_VALID_SENSITIVITY_FACTORS}")
+            if f not in factors:
+                factors.append(f)
+    variation = _finite(raw_sens.get("variation_pct", 15.0), "sensitivity.variation_pct", minimum=0.1, maximum=80.0)
+    return {
+        "enabled": True,
+        "factors": factors,
+        "variation_pct": variation,
+    }
 
 
 def _finite(value: Any, name: str, *, minimum: float | None = None, maximum: float | None = None) -> float:
@@ -91,6 +175,7 @@ def _validate_tariff(tariff: dict | None) -> dict:
         "import_tariff": import_rate,
         "self_consumption_ratio": sc_ratio,
         "tou_schedule": periods,
+        "demand_charge": _validate_demand_charge(raw.get("demand_charge")),
     }
 
 
@@ -120,6 +205,19 @@ def _validate_financial(financial: dict | None) -> dict:
     opex_pct_capex = _finite(raw.get("opex_pct_capex", 0.0), "financial.opex_pct_capex", minimum=0.0, maximum=50.0)
     salvage_pct = _finite(raw.get("salvage_value_pct", 0.0), "financial.salvage_value_pct", minimum=0.0, maximum=100.0)
 
+    bat_rep_year = raw.get("battery_replacement_year")
+    if bat_rep_year is not None:
+        if type(bat_rep_year) is not int or not 1 <= bat_rep_year <= life:
+            raise ValueError(f"financial.battery_replacement_year must be an integer in 1..{life}")
+    bat_rep_ratio = (
+        _finite(raw["battery_replacement_cost_ratio"], "financial.battery_replacement_cost_ratio", minimum=0.0, maximum=2.0)
+        if raw.get("battery_replacement_cost_ratio") is not None else None
+    )
+    bat_rep_cost = (
+        _finite(raw["battery_replacement_cost"], "financial.battery_replacement_cost", minimum=0.0)
+        if raw.get("battery_replacement_cost") is not None else None
+    )
+
     replacements: list[dict] = []
     for idx, ev in enumerate(raw.get("replacement_events") or ()):
         if not isinstance(ev, dict):
@@ -147,6 +245,9 @@ def _validate_financial(financial: dict | None) -> dict:
         "opex_per_kw_year": opex_per_kw_yr,
         "opex_pct_capex": opex_pct_capex,
         "salvage_value_pct": salvage_pct,
+        "battery_replacement_year": bat_rep_year,
+        "battery_replacement_cost_ratio": bat_rep_ratio,
+        "battery_replacement_cost": bat_rep_cost,
         "replacement_events": replacements,
     }
 
@@ -213,7 +314,8 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
     # Monthly (1..12) and 24-hour (0..23) accumulators
     monthly = {
         m: {"e_grid": 0.0, "e_user": 0.0, "e_from_grid": 0.0, "e_bat_ch": 0.0, "e_bat_dis": 0.0,
-            "export_rev": 0.0, "baseline_bill": 0.0, "import_cost": 0.0, "self_cons": 0.0}
+            "export_rev": 0.0, "baseline_bill": 0.0, "import_cost": 0.0, "self_cons": 0.0,
+            "baseline_peak_kw": 0.0, "actual_peak_kw": 0.0}
         for m in range(1, 13)
     }
     hourly_prof = {
@@ -342,6 +444,13 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
         m_rec["baseline_bill"] += baseline_bill
         m_rec["import_cost"] += import_cost
         m_rec["self_cons"] += self_cons
+        if dt_hours > 0:
+            load_kw = e_user / dt_hours
+            imp_kw = e_imp / dt_hours
+            if load_kw > m_rec["baseline_peak_kw"]:
+                m_rec["baseline_peak_kw"] = load_kw
+            if imp_kw > m_rec["actual_peak_kw"]:
+                m_rec["actual_peak_kw"] = imp_kw
 
         h_rec = hourly_prof[stamp.hour]
         h_rec["count"] += 1
@@ -395,7 +504,7 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
 
     eff_step_min = step_minutes if (regular and step_minutes is not None) else 60.0
     total_pv_utilized_kwh = totals["pv_export_kwh"] + totals["self_consumed_kwh"]
-    year1_gross_benefit = totals["export_revenue"] + totals["avoided_import_savings"]
+    year1_energy_benefit = totals["export_revenue"] + totals["avoided_import_savings"]
 
     warnings: list[str] = []
     if not has_load and tariff["mode"] != "feed_in" and tariff["self_consumption_ratio"] is None:
@@ -403,6 +512,77 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
             "CSV has no E_User column and tariff.self_consumption_ratio was omitted; "
             "all PV generation was valued at export_rate."
         )
+
+    demand_summary: dict[str, Any] | None = None
+    year1_demand_savings = 0.0
+    dc_cfg = tariff.get("demand_charge")
+    if dc_cfg is not None:
+        if not has_load:
+            warnings.append(
+                "tariff.demand_charge was configured, but the CSV has no E_User load column; "
+                "monthly demand charges and peak shaving savings were skipped."
+            )
+        else:
+            rate = dc_cfg["demand_rate_per_kw_month"]
+            active_months = dc_cfg["months"]
+            monthly_demand: list[dict[str, Any]] = []
+            base_dc_total = 0.0
+            act_dc_total = 0.0
+            for m in range(1, 13):
+                rec = monthly[m]
+                b_kw = rec["baseline_peak_kw"]
+                a_kw = rec["actual_peak_kw"]
+                red_kw = b_kw - a_kw
+                if m in active_months:
+                    b_cost = b_kw * rate
+                    a_cost = a_kw * rate
+                else:
+                    b_cost = 0.0
+                    a_cost = 0.0
+                base_dc_total += b_cost
+                act_dc_total += a_cost
+                monthly_demand.append({
+                    "month": m,
+                    "active": m in active_months,
+                    "baseline_peak_kw": round(b_kw, 3),
+                    "actual_peak_kw": round(a_kw, 3),
+                    "peak_reduction_kw": round(red_kw, 3),
+                    "baseline_demand_charge": round(b_cost, 2),
+                    "actual_demand_charge": round(a_cost, 2),
+                    "demand_savings": round(b_cost - a_cost, 2),
+                })
+
+            cap_charge: float | None = None
+            recommended_mode = dc_cfg["billing_mode"]
+            if dc_cfg["capacity_rate_per_kva_month"] is not None and dc_cfg["contract_capacity_kva"] is not None:
+                cap_charge = len(active_months) * dc_cfg["contract_capacity_kva"] * dc_cfg["capacity_rate_per_kva_month"]
+                recommended_mode = "demand" if act_dc_total <= cap_charge else "capacity"
+
+            if dc_cfg["billing_mode"] == "demand":
+                year1_demand_savings = base_dc_total - act_dc_total
+            elif dc_cfg["billing_mode"] == "capacity":
+                year1_demand_savings = 0.0
+            else:  # compare: optimal post-system vs optimal baseline billing
+                assert cap_charge is not None
+                year1_demand_savings = min(base_dc_total, cap_charge) - min(act_dc_total, cap_charge)
+
+            demand_summary = {
+                "billing_mode": dc_cfg["billing_mode"],
+                "recommended_billing_mode": recommended_mode,
+                "demand_rate_per_kw_month": rate,
+                "annual_baseline_peak_max_kw": round(max(r["baseline_peak_kw"] for r in monthly_demand), 3),
+                "annual_actual_peak_max_kw": round(max(r["actual_peak_kw"] for r in monthly_demand), 3),
+                "avg_monthly_peak_reduction_kw": round(
+                    sum(r["peak_reduction_kw"] for r in monthly_demand if r["active"]) / max(1, len(active_months)), 3
+                ),
+                "baseline_annual_demand_charge": round(base_dc_total, 2),
+                "actual_annual_demand_charge": round(act_dc_total, 2),
+                "annual_capacity_charge": round(cap_charge, 2) if cap_charge is not None else None,
+                "annual_demand_savings": round(year1_demand_savings, 2),
+                "monthly_peaks": monthly_demand,
+            }
+
+    year1_gross_benefit = year1_energy_benefit + year1_demand_savings
 
     monthly_summary = [
         {
@@ -416,6 +596,8 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
             "export_revenue": round(rec["export_rev"], 2),
             "avoided_import_savings": round(rec["baseline_bill"] - rec["import_cost"], 2),
             "gross_benefit": round(rec["export_rev"] + (rec["baseline_bill"] - rec["import_cost"]), 2),
+            "baseline_peak_kw": round(rec["baseline_peak_kw"], 3),
+            "actual_peak_kw": round(rec["actual_peak_kw"], 3),
         }
         for m, rec in sorted(monthly.items())
     ]
@@ -445,8 +627,11 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
         "has_load": has_load,
         "has_storage": has_storage,
         "year1_energy_kwh": total_pv_utilized_kwh,
+        "year1_energy_benefit": year1_energy_benefit,
+        "year1_demand_savings": year1_demand_savings,
         "year1_gross_benefit": year1_gross_benefit,
         "energy_summary": {k: round(v, 2) for k, v in totals.items()},
+        "demand_charge_summary": demand_summary,
         "tou_breakdown": tou_summary,
         "monthly_summary": monthly_summary,
         "typical_day_profile": typical_day,
@@ -501,6 +686,7 @@ def _compute_cashflow_metrics(
     base_annual_opex: float,
     replacement_events: list[dict],
     financial: dict,
+    year1_demand_savings: float = 0.0,
 ) -> dict:
     life = financial["project_life_years"]
     r = financial["discount_rate_pct"] / 100.0
@@ -509,6 +695,7 @@ def _compute_cashflow_metrics(
     opex_esc = financial["opex_escalation_pct"] / 100.0
     tariff_esc = financial["tariff_escalation_pct"] / 100.0
     salvage_pct = financial["salvage_value_pct"] / 100.0
+    year1_energy_benefit = year1_gross_benefit - year1_demand_savings
 
     rep_by_year: dict[int, float] = {}
     for ev in replacement_events:
@@ -530,7 +717,7 @@ def _compute_cashflow_metrics(
     for year in range(1, life + 1):
         deg_factor = (1.0 - deg1) * ((1.0 - deg_ann) ** (year - 1))
         energy_y = year1_energy_kwh * deg_factor
-        gross_y = year1_gross_benefit * deg_factor * ((1.0 + tariff_esc) ** (year - 1))
+        gross_y = (year1_energy_benefit * deg_factor + year1_demand_savings) * ((1.0 + tariff_esc) ** (year - 1))
         opex_y = base_annual_opex * ((1.0 + opex_esc) ** (year - 1))
         rep_y = rep_by_year.get(year, 0.0)
         salvage_y = capex_total * salvage_pct if year == life else 0.0
@@ -575,6 +762,8 @@ def _compute_cashflow_metrics(
         "currency": financial["currency"],
         "capex_total": round(capex_total, 2),
         "year1_opex": round(base_annual_opex, 2),
+        "year1_energy_benefit": round(year1_energy_benefit, 2),
+        "year1_demand_savings": round(year1_demand_savings, 2),
         "year1_gross_benefit": round(year1_gross_benefit, 2),
         "year1_net_benefit": round(year1_gross_benefit - base_annual_opex, 2),
         "lifetime_energy_kwh": round(lifetime_energy, 2),
@@ -589,6 +778,89 @@ def _compute_cashflow_metrics(
     }
 
 
+def _compute_sensitivity(
+    *,
+    sens_cfg: dict,
+    base_metrics: dict,
+    year1_energy_kwh: float,
+    year1_energy_benefit: float,
+    year1_demand_savings: float,
+    capex_total: float,
+    base_annual_opex: float,
+    replacement_events: list[dict],
+    financial: dict,
+) -> dict:
+    """Deterministic +/- variation_pct one-at-a-time sensitivity sweep sorted for tornado plotting."""
+    var_pct = sens_cfg["variation_pct"]
+    frac = var_pct / 100.0
+
+    def _run_case(factor: str, sign: float) -> dict:
+        scale = 1.0 + sign * frac
+        e_kwh = year1_energy_kwh
+        e_ben = year1_energy_benefit
+        d_sav = year1_demand_savings
+        capex = capex_total
+        fin = financial
+        if factor == "tariff":
+            e_ben = year1_energy_benefit * scale
+            d_sav = year1_demand_savings * scale
+        elif factor == "capex":
+            capex = capex_total * scale
+        elif factor == "yield":
+            e_kwh = year1_energy_kwh * scale
+            e_ben = year1_energy_benefit * scale
+        elif factor == "degradation":
+            fin = dict(financial)
+            fin["first_year_degradation_pct"] = max(0.0, min(25.0, financial["first_year_degradation_pct"] * scale))
+            fin["annual_degradation_pct"] = max(0.0, min(10.0, financial["annual_degradation_pct"] * scale))
+        m = _compute_cashflow_metrics(
+            year1_energy_kwh=e_kwh,
+            year1_gross_benefit=e_ben + d_sav,
+            year1_demand_savings=d_sav,
+            capex_total=capex,
+            base_annual_opex=base_annual_opex,
+            replacement_events=replacement_events,
+            financial=fin,
+        )
+        return {
+            "npv": m["npv"],
+            "irr_pct": m["irr_pct"],
+            "lcoe": m["lcoe"],
+            "simple_payback_years": m["simple_payback_years"],
+        }
+
+    rows: list[dict] = []
+    for factor in sens_cfg["factors"]:
+        low = _run_case(factor, -1.0)
+        high = _run_case(factor, +1.0)
+        npv_swing = round(abs(high["npv"] - low["npv"]), 2)
+        irr_swing = (
+            round(abs(high["irr_pct"] - low["irr_pct"]), 3)
+            if (low["irr_pct"] is not None and high["irr_pct"] is not None) else None
+        )
+        rows.append({
+            "factor": factor,
+            "low_label": f"-{var_pct:g}%",
+            "high_label": f"+{var_pct:g}%",
+            "low": low,
+            "high": high,
+            "npv_swing": npv_swing,
+            "irr_swing_pct": irr_swing,
+        })
+
+    rows.sort(key=lambda item: -item["npv_swing"])
+    return {
+        "variation_pct": var_pct,
+        "base": {
+            "npv": base_metrics["npv"],
+            "irr_pct": base_metrics["irr_pct"],
+            "lcoe": base_metrics["lcoe"],
+            "simple_payback_years": base_metrics["simple_payback_years"],
+        },
+        "factors": rows,
+    }
+
+
 def evaluate_economics(
     *,
     workspace: Path | None = None,
@@ -596,10 +868,11 @@ def evaluate_economics(
     batch_summary_csv: str | None = None,
     financial: dict | None = None,
     tariff: dict | None = None,
+    sensitivity: dict | None = None,
     rank_by: str = "npv",
     include_cashflow_schedule: bool = True,
 ) -> dict:
-    """Evaluate single or multi-scenario PV/PV+BESS financial KPIs, TOU settlement, and rankings."""
+    """Evaluate single or multi-scenario PV/PV+BESS financial KPIs, TOU/demand settlement, sensitivity, and rankings."""
     if rank_by not in _VALID_RANK_KEYS:
         raise ValueError(f"rank_by must be one of: {', '.join(_VALID_RANK_KEYS)}")
     if type(include_cashflow_schedule) is not bool:
@@ -607,6 +880,7 @@ def evaluate_economics(
 
     fin_cfg = _validate_financial(financial)
     tar_cfg = _validate_tariff(tariff)
+    sens_cfg = _validate_sensitivity(sensitivity)
 
     resolved_scenarios: list[dict] = list(scenarios or [])
     if batch_summary_csv:
@@ -678,8 +952,30 @@ def evaluate_economics(
                     )
                 opex += dc_kw * fin_cfg["opex_per_kw_year"]
 
-        # Scenario-specific or shared replacement events
+        # Scenario-specific or shared replacement events (plus optional mid-life battery replacement)
         sc_replacements = list(fin_cfg["replacement_events"])
+        if fin_cfg["battery_replacement_year"] is not None:
+            if fin_cfg["battery_replacement_cost"] is not None:
+                rep_cost = fin_cfg["battery_replacement_cost"]
+            elif bat_kwh > 0:
+                if fin_cfg["battery_capex_per_kwh"] is None:
+                    raise ValueError(
+                        f"scenarios[{index}] ({label}): financial.battery_capex_per_kwh or "
+                        "financial.battery_replacement_cost is required when financial.battery_replacement_year is set"
+                    )
+                ratio = (
+                    fin_cfg["battery_replacement_cost_ratio"]
+                    if fin_cfg["battery_replacement_cost_ratio"] is not None else 0.7
+                )
+                rep_cost = bat_kwh * fin_cfg["battery_capex_per_kwh"] * ratio
+            else:
+                rep_cost = 0.0
+            if rep_cost > 0:
+                sc_replacements.append({
+                    "year": fin_cfg["battery_replacement_year"],
+                    "cost": rep_cost,
+                    "label": f"battery_replacement_year_{fin_cfg['battery_replacement_year']}",
+                })
         for ev_i, ev in enumerate(sc.get("replacement_events") or ()):
             if not isinstance(ev, dict):
                 raise ValueError(f"scenarios[{index}].replacement_events[{ev_i}] must be an object")
@@ -693,10 +989,12 @@ def evaluate_economics(
             })
 
         settlement: dict | None = None
+        y1_demand_savings = 0.0
         if sc.get("csv_name") or sc.get("csv_path"):
             csv_path = _resolve_result_csv(workspace, sc.get("csv_path") or sc["csv_name"])
             settlement = _settle_csv_year1(csv_path, tar_cfg)
             y1_energy = settlement["year1_energy_kwh"]
+            y1_demand_savings = settlement["year1_demand_savings"]
             y1_benefit = settlement["year1_gross_benefit"]
             sc_warnings = list(settlement["warnings"])
         elif sc.get("annual_yield_kwh") is not None:
@@ -714,16 +1012,35 @@ def evaluate_economics(
                 sc_warnings.append(
                     "annual_yield_kwh summary input has no hourly profile; valued using flat tariff fallback."
                 )
+            if tar_cfg.get("demand_charge") is not None:
+                sc_warnings.append(
+                    "annual_yield_kwh summary input has no hourly profile; demand_charge was skipped."
+                )
         else:
             raise ValueError(f"scenarios[{index}] ({label}) must provide csv_name, csv_path, or annual_yield_kwh")
 
         metrics = _compute_cashflow_metrics(
             year1_energy_kwh=y1_energy,
             year1_gross_benefit=y1_benefit,
+            year1_demand_savings=y1_demand_savings,
             capex_total=capex,
             base_annual_opex=opex,
             replacement_events=sc_replacements,
             financial=fin_cfg,
+        )
+        sens_result = (
+            _compute_sensitivity(
+                sens_cfg=sens_cfg,
+                base_metrics=metrics,
+                year1_energy_kwh=y1_energy,
+                year1_energy_benefit=y1_benefit - y1_demand_savings,
+                year1_demand_savings=y1_demand_savings,
+                capex_total=capex,
+                base_annual_opex=opex,
+                replacement_events=sc_replacements,
+                financial=fin_cfg,
+            )
+            if sens_cfg is not None else None
         )
         if not include_cashflow_schedule:
             metrics.pop("cashflow_schedule", None)
@@ -737,6 +1054,8 @@ def evaluate_economics(
             "financials": metrics,
             "warnings": sc_warnings,
         }
+        if sens_result is not None:
+            entry["sensitivity"] = sens_result
         if sc.get("batch_parameters"):
             entry["batch_parameters"] = sc["batch_parameters"]
         if settlement is not None:
@@ -746,6 +1065,7 @@ def evaluate_economics(
                 "has_load": settlement["has_load"],
                 "has_storage": settlement["has_storage"],
                 "energy_summary": settlement["energy_summary"],
+                "demand_charge_summary": settlement["demand_charge_summary"],
                 "tou_breakdown": settlement["tou_breakdown"],
                 "monthly_summary": settlement["monthly_summary"],
                 "typical_day_profile": settlement["typical_day_profile"],

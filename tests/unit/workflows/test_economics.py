@@ -187,6 +187,111 @@ class EconomicsEngineTests(unittest.TestCase):
                 financial={"capex_per_kw": 3500.0},
             )
 
+    def test_two_part_demand_charge_and_capacity_comparison(self) -> None:
+        # 2 months (Jan & Feb): load peak 200 kW, post-PV/BESS import peak 120 kW -> 80 kW shaved each month
+        rows = [
+            ("01/01/24 12:00", 80.0, 200.0, 120.0, 0.0, 0.0),
+            ("01/01/24 13:00", 60.0, 150.0, 90.0, 0.0, 0.0),
+            ("01/02/24 12:00", 80.0, 200.0, 120.0, 0.0, 0.0),
+            ("01/02/24 13:00", 50.0, 140.0, 90.0, 0.0, 0.0),
+        ]
+        csv_path = self.root / "Results" / "demand_case.csv"
+        _write_sfi_csv(
+            csv_path,
+            [("EToGrid", "kW"), ("E_User", "kW"), ("EFrGrid", "kW"), ("EBatCh", "kW"), ("EBatDis", "kW")],
+            [list(r) for r in rows],
+        )
+        tariff_demand = {
+            "mode": "self_consumption_flat",
+            "import_tariff": 0.8,
+            "feed_in_tariff": 0.3,
+            "demand_charge": {
+                "billing_mode": "demand",
+                "demand_rate_per_kw_month": 40.0,
+                "months": [1, 2],
+            },
+        }
+        res_dc = evaluate_economics(
+            workspace=self.root,
+            scenarios=[{"label": "Demand", "csv_name": csv_path.name, "capex_total": 100000.0}],
+            financial={"project_life_years": 10, "discount_rate_pct": 6.0},
+            tariff=tariff_demand,
+        )
+        dc = res_dc["scenarios"][0]["settlement"]["demand_charge_summary"]
+        self.assertIsNotNone(dc)
+        # 2 active months * (200 - 120) kW * 40 CNY/kW = 6400 CNY
+        self.assertAlmostEqual(dc["baseline_annual_demand_charge"], 16000.0, places=2)
+        self.assertAlmostEqual(dc["actual_annual_demand_charge"], 9600.0, places=2)
+        self.assertAlmostEqual(dc["annual_demand_savings"], 6400.0, places=2)
+        self.assertAlmostEqual(res_dc["scenarios"][0]["financials"]["year1_demand_savings"], 6400.0, places=2)
+
+        # Compare mode vs transformer capacity billing (400 kVA * 28 CNY/kVA * 2 mo = 22400 > 9600 => recommend demand)
+        tariff_cmp = {
+            "mode": "self_consumption_flat",
+            "import_tariff": 0.8,
+            "feed_in_tariff": 0.3,
+            "demand_charge": {
+                "billing_mode": "compare",
+                "demand_rate_per_kw_month": 40.0,
+                "capacity_rate_per_kva_month": 28.0,
+                "contract_capacity_kva": 400.0,
+                "months": [1, 2],
+            },
+        }
+        res_cmp = evaluate_economics(
+            workspace=self.root,
+            scenarios=[{"label": "Compare", "csv_name": csv_path.name, "capex_total": 100000.0}],
+            financial={"project_life_years": 10, "discount_rate_pct": 6.0},
+            tariff=tariff_cmp,
+        )
+        dc_cmp = res_cmp["scenarios"][0]["settlement"]["demand_charge_summary"]
+        self.assertEqual(dc_cmp["recommended_billing_mode"], "demand")
+        self.assertAlmostEqual(dc_cmp["annual_capacity_charge"], 22400.0, places=2)
+
+    def test_battery_replacement_and_sensitivity_tornado(self) -> None:
+        base = evaluate_economics(
+            scenarios=[{"label": "BESS", "annual_yield_kwh": 150000.0, "installed_dc_kw": 100.0, "battery_kwh": 200.0}],
+            financial={
+                "project_life_years": 20,
+                "discount_rate_pct": 6.0,
+                "capex_per_kw": 3500.0,
+                "battery_capex_per_kwh": 1000.0,
+                "opex_pct_capex": 1.0,
+            },
+            tariff={"mode": "self_consumption_flat", "import_tariff": 0.9, "feed_in_tariff": 0.35, "self_consumption_ratio": 0.8},
+        )
+        with_rep = evaluate_economics(
+            scenarios=[{"label": "BESS", "annual_yield_kwh": 150000.0, "installed_dc_kw": 100.0, "battery_kwh": 200.0}],
+            financial={
+                "project_life_years": 20,
+                "discount_rate_pct": 6.0,
+                "capex_per_kw": 3500.0,
+                "battery_capex_per_kwh": 1000.0,
+                "opex_pct_capex": 1.0,
+                "battery_replacement_year": 12,
+                "battery_replacement_cost_ratio": 0.6,
+            },
+            tariff={"mode": "self_consumption_flat", "import_tariff": 0.9, "feed_in_tariff": 0.35, "self_consumption_ratio": 0.8},
+            sensitivity={"enabled": True, "variation_pct": 15.0},
+        )
+        sc_rep = with_rep["scenarios"][0]
+        # Year 12 replacement = 200 kWh * 1000 * 0.6 = 120,000
+        yr12 = sc_rep["financials"]["cashflow_schedule"][11]
+        self.assertEqual(yr12["year"], 12)
+        self.assertAlmostEqual(yr12["replacement_cost"], 120000.0, places=2)
+        self.assertLess(sc_rep["financials"]["npv"], base["scenarios"][0]["financials"]["npv"])
+
+        sens = sc_rep["sensitivity"]
+        self.assertEqual(sens["variation_pct"], 15.0)
+        self.assertEqual(len(sens["factors"]), 4)
+        # Factors must be sorted descending by npv_swing
+        swings = [f["npv_swing"] for f in sens["factors"]]
+        self.assertEqual(swings, sorted(swings, reverse=True))
+        # Tariff +15% raises NPV; CAPEX +15% lowers NPV
+        by_name = {f["factor"]: f for f in sens["factors"]}
+        self.assertGreater(by_name["tariff"]["high"]["npv"], by_name["tariff"]["low"]["npv"])
+        self.assertLess(by_name["capex"]["high"]["npv"], by_name["capex"]["low"]["npv"])
+
 
 if __name__ == "__main__":
     unittest.main()

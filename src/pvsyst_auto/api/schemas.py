@@ -905,6 +905,23 @@ class EconomicsTouPeriod(BaseModel):
     day_type: Literal["all", "weekday", "weekend"] = "all"
 
 
+class EconomicsDemandChargeConfig(BaseModel):
+    model_config = _STRICT_CONFIG
+    billing_mode: Literal["demand", "capacity", "compare"] = "demand"
+    demand_rate_per_kw_month: StrictNum = 0.0
+    capacity_rate_per_kva_month: StrictNum | None = None
+    contract_capacity_kva: StrictNum | None = None
+    power_factor: StrictNum = 0.95
+    months: list[StrictInt] | None = None
+
+
+class EconomicsSensitivityConfig(BaseModel):
+    model_config = _STRICT_CONFIG
+    enabled: StrictBool = True
+    factors: list[Literal["tariff", "capex", "yield", "degradation"]] | None = None
+    variation_pct: StrictNum = 15.0
+
+
 class EconomicsTariffConfig(BaseModel):
     model_config = _STRICT_CONFIG
     mode: Literal["feed_in", "self_consumption_flat", "tou"] = "feed_in"
@@ -912,6 +929,7 @@ class EconomicsTariffConfig(BaseModel):
     import_tariff: StrictNum = 0.0
     self_consumption_ratio: StrictNum | None = None
     tou_schedule: list[EconomicsTouPeriod] | None = None
+    demand_charge: EconomicsDemandChargeConfig | None = None
 
 
 class EconomicsFinancialConfig(BaseModel):
@@ -929,6 +947,9 @@ class EconomicsFinancialConfig(BaseModel):
     opex_per_kw_year: StrictNum = 0.0
     opex_pct_capex: StrictNum = 0.0
     salvage_value_pct: StrictNum = 0.0
+    battery_replacement_year: Annotated[StrictInt, Field(ge=1, le=50)] | None = None
+    battery_replacement_cost_ratio: StrictNum | None = None
+    battery_replacement_cost: StrictNum | None = None
     replacement_events: list[EconomicsReplacementEvent] | None = None
 
 
