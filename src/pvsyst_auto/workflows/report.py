@@ -191,6 +191,8 @@ def _summarize_csv_for_report(csv_path: Path) -> dict[str, Any]:
 
     if rows == 0:
         raise ValueError("Result CSV has no data rows")
+    if "E_Grid" not in idx and "EToGrid" not in idx:
+        raise ValueError("Result CSV must include E_Grid or EToGrid for report generation")
     if not regular:
         raise ValueError(
             "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
