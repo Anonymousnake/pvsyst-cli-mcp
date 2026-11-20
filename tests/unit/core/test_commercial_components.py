@@ -80,6 +80,18 @@ class CommercialComponentTests(unittest.TestCase):
         self.assertEqual(report["structural_errors"], [])
         self.assertEqual(report["known_value_errors"], [])
 
+    def test_inverter_curve_does_not_exceed_declared_maximum_efficiency(self):
+        text, _ = synthesize_ond_from_datasheet(
+            manufacturer="Lab", model="Inverter", pnom_ac_kw=10,
+            vmpp_min_v=200, vmpp_max_v=850, vabs_max_v=1000,
+            effic_max_pct=90, effic_euro_pct=89,
+        )
+        points = [line.split("=", 1)[1].split(",") for line in text.splitlines()
+                  if line.strip().startswith("Point_")]
+        for p_in, p_out in points:
+            self.assertLessEqual(int(p_out), round(int(p_in) * 0.90))
+        self.assertEqual(max(int(p_out) for _, p_out in points), 10000)
+
     def test_build_sourced_component_zero_template_pan_and_ond_roundtrip(self):
         sources = {
             "DS1": {
