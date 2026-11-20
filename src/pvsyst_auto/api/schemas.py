@@ -1003,3 +1003,53 @@ class BessVerifyConfig(BaseModel):
     static_sow: StrictNum = 0.8
     load_manifest_name: StrictStr | None = None
     variant_prefix: StrictStr = "VB"
+
+
+class FeasibilityInlineComponent(BaseModel):
+    model_config = _STRICT_CONFIG
+    component_type: Literal["PAN", "OND", "BTR"]
+    new_name: StrictStr
+    manufacturer: StrictStr
+    model: StrictStr
+    params: dict[StrictStr, Any]
+
+
+class FeasibilityBessSizingConfig(BaseModel):
+    model_config = _STRICT_CONFIG
+    bess_kwh_values: Annotated[list[StrictNum], Field(min_length=1, max_length=20)]
+    pcs_kw_values: Annotated[list[StrictNum], Field(min_length=1, max_length=15)]
+    strategies: list[Literal["self_consumption", "tou_arbitrage", "peak_shaving"]] | None = None
+    load_profile: ConstantNativeLoad | DailyNativeLoad | None = None
+    bess_params: BessSizingParams | None = None
+    pcs_capex_per_kw: StrictNum = 0.0
+    rank_by: Literal["npv", "irr", "lcoe", "simple_payback_years", "discounted_payback_years"] = "npv"
+    verify_top_k: Annotated[StrictInt, Field(ge=0, le=5)] = 0
+    verify_config: BessVerifyConfig | None = None
+
+
+class FeasibilityReportConfig(BaseModel):
+    model_config = _STRICT_CONFIG
+    title: StrictStr | None = None
+    output_name: StrictStr | None = None
+    language: Literal["zh", "en"] = "zh"
+    plotlyjs: Literal["cdn", "embed"] = "cdn"
+    overwrite: StrictBool = False
+
+
+class FeasibilityStudyRequest(BaseModel):
+    """One-shot end-to-end PV & PV+BESS feasibility study request."""
+    model_config = _STRICT_CONFIG
+    study_name: Annotated[StrictStr, Field(min_length=1, max_length=100)]
+    design: SingleDesignRequest | None = None
+    existing_csv: StrictStr | None = None
+    existing_project: StrictStr | None = None
+    existing_variant: StrictStr | None = None
+    installed_dc_kw: StrictNum | None = None
+    synthesize_components: list[FeasibilityInlineComponent] | None = None
+    auto_tou_schedule: StrictBool = False
+    bess_sizing: FeasibilityBessSizingConfig | None = None
+    financial: EconomicsFinancialConfig | None = None
+    tariff: EconomicsTariffConfig | None = None
+    sensitivity: EconomicsSensitivityConfig | None = None
+    report: FeasibilityReportConfig | None = None
+    thresholds: dict[StrictStr, StrictNum] | None = None

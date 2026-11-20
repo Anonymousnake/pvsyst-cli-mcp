@@ -13,6 +13,7 @@ from pvsyst_auto.api.schemas import (
     EngineeringBlock,
     EngineeringRevisionRequest,
     EngineeringScenario,
+    FeasibilityStudyRequest,
     ReportScenarioInput,
     StrictNum,
 )
@@ -163,3 +164,23 @@ def pvsyst_export_engineering_delivery(manifest_name: StrictStr, output_name: St
     from pvsyst_auto.workflows.delivery import export_engineering_delivery
     return export_engineering_delivery(variant_store(), manifest_name=manifest_name,
         output_name=output_name, dry_run=dry_run, comparison_name=comparison_name)
+
+
+@categorized_tool()
+def pvsyst_run_feasibility_study(
+        spec: FeasibilityStudyRequest,
+        dry_run: StrictBool = True,
+        confirm: StrictBool = False) -> dict:
+    """One-shot end-to-end PV & PV+BESS feasibility study orchestrator: chains optional
+    zero-template PAN/OND/BTR synthesis, PV simulation (or reuse of existing_csv), physics
+    diagnostics, TOU PowerShift 48-slot planning, two-stage hybrid BESS sizing optimization,
+    two-part demand/TOU economics with sensitivity tornado analysis, and bilingual Plotly HTML
+    report generation. Defaults to dry_run=true; requires dry_run=false and confirm=true to write."""
+    from pvsyst_auto.workflows.feasibility import run_feasibility_study
+    return run_feasibility_study(
+        cli(),
+        variant_store(),
+        spec=spec.model_dump(exclude_none=True),
+        dry_run=dry_run,
+        confirm=confirm,
+    )

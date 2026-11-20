@@ -11,22 +11,24 @@ SERVER_INSTRUCTIONS = """PVsyst CLI MCP drives a local Windows PVsyst 8.x instal
 
 Quick workflow selection:
 1. Check environment first: call `pvsyst_capabilities` and `pvsyst_license_info` before running simulations.
-2. Search & select components with `pvsyst_list_components` (supports electrical filters: `min_power_w`, `max_power_w`, `bifacial`, `min_system_voltage_v`, `min_mppt`, `manufacturer`) / `pvsyst_get_component`, or synthesize custom commercial `.PAN`/`.OND` from cited datasheets via `pvsyst_build_sourced_component` (omit `template_name` for zero-template single-diode / Mode-1 synthesis).
+2. Search & select components with `pvsyst_list_components` (supports electrical filters: `min_power_w`, `max_power_w`, `bifacial`, `min_system_voltage_v`, `min_mppt`, `manufacturer`) / `pvsyst_get_component`, or synthesize custom commercial `.PAN`/`.OND` (single- or 3-voltage) / Li-ion `.BTR` from cited datasheets via `pvsyst_build_sourced_component` (omit `template_name` for zero-template synthesis). Pass `refit_single_diode=true` on `pvsyst_update_component` to refit `.PAN` single-diode parameters when editing STC values.
 3. Weather: call `pvsyst_resolve_location` -> `pvsyst_acquire_weather(provider="open_meteo_era5" | "pvgis_tmy" | "nasa_power", prepare=true)` to fetch and convert `.SIT`/`.MET` in one step, or pass `weather.mode="open_meteo" | "pvgis_tmy" | "nasa_power"` directly in `pvsyst_simulate_design`.
 4. Fixed-plane or ground utility PV (mono or bifacial sheds/trackers, finite 3D polygon + obstacles + BaseSlope):
    - Use `pvsyst_simulate_design` with `scope="fixed_unshaded_grid" | "ground_sheds" | "ground_tracker"`, optional `ground_layout` (`model_mode="unlimited" | "3d"`, `site_polygon`, `obstacles`, `base_slope_deg`) and `bifacial`.
    - Pass `electrical_design`/`capacity` or call `pvsyst_suggest_sizing` / `sizing_mode="auto_from_components"`.
 5. 3D rooftop house + obstacles + electrical shading (`module_layout`):
    - Call `pvsyst_run_house_task` (omit `source_project`/`source_variant` for zero-template synthesis).
-6. Optimization, parametric sweeps, economics & interactive reporting:
-   - Sweep parameters in one CLI call with `pvsyst_run_batch_sweep` (`dry_run=true` first).
-   - Audit results with `pvsyst_diagnose_results`, auto-remediate on cloned variants via `pvsyst_optimize_variant` (`dry_run=true` first, `confirm=true` bounded loop).
-   - Evaluate fixed/TOU tariffs, PV+BESS arbitrage, LCOE, NPV, IRR, and payback via `pvsyst_evaluate_economics`.
-   - Generate interactive Plotly HTML engineering reports (single- or multi-scenario, zh/en) via `pvsyst_generate_report`, and bundle deliverables via `pvsyst_export_engineering_delivery`.
+6. C&I PV+BESS optimization, economics, feasibility studies & interactive reporting:
+   - Convert TOU tariffs into PVsyst `PowerShift` 48-slot schedules via `pvsyst_plan_tou_storage_schedule`.
+   - Run two-stage hybrid BESS sizing (`bess_kwh x pcs_kw x strategy` + optional Stage 2 PVsystCLI verification) via `pvsyst_optimize_bess_sizing`.
+   - Sweep parameters in one CLI call with `pvsyst_run_batch_sweep` (`dry_run=true` first), audit with `pvsyst_diagnose_results`, and auto-remediate via `pvsyst_optimize_variant`.
+   - Evaluate fixed, TOU, and two-part demand-charge tariffs, battery replacement, sensitivity tornadoes, LCOE, NPV, IRR, and payback via `pvsyst_evaluate_economics`.
+   - Run a complete one-shot feasibility study (synthesis -> simulation/reuse -> diagnostics -> TOU/BESS sizing -> economics -> Plotly report) via `pvsyst_run_feasibility_study` (`dry_run=true` first, then `dry_run=false, confirm=true`).
+   - Generate interactive Plotly HTML engineering reports (zh/en, with demand shaving, tornado, and BESS heatmap charts) via `pvsyst_generate_report`, and bundle deliverables via `pvsyst_export_engineering_delivery`.
 7. Safety & verification conventions:
    - Always preview mutating workflows with `dry_run=true` before executing `dry_run=false`.
    - Never overwrite existing projects/outputs; pick fresh filenames on retry.
-   - Consult on-demand resources `pvsyst://guide/workflows` and `pvsyst://guide/variables` when choosing SFI variables or multi-step flows.
+   - Consult resources `pvsyst://guide/workflows`, `pvsyst://guide/variables`, `pvsyst://workspace/projects`, `pvsyst://workspace/components`, and `pvsyst://workspace/results` for live workspace state and recipes.
 """
 
 WORKFLOW_GUIDE_MD = """# PVsyst CLI MCP — Agent Workflow Playbook
