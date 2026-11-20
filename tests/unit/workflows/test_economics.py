@@ -213,7 +213,34 @@ class EconomicsEngineTests(unittest.TestCase):
         self.assertEqual(res["scenario_count"], 3)
         self.assertEqual(res["best_scenario"], "SIM_2")
         self.assertEqual([r["label"] for r in res["ranking"]], ["SIM_2", "SIM_3", "SIM_1"])
+        self.assertEqual([s["batch_parameters"] for s in res["scenarios"]],
+                         [{"Plane tilt": 15}, {"Plane tilt": 25}, {"Plane tilt": 35}])
         self.assertNotIn("cashflow_schedule", res["scenarios"][0]["financials"])
+
+    def test_batch_summary_multiline_headers_populate_batch_parameters(self):
+        (self.root / "UserBatch" / "MultiHdr_Results.CSV").write_text(
+            "PVsyst simulations Batch mode;;;;;;;;\n"
+            "Ident;Create hourly;Plane;Soiling;Simul;Error;E_Grid;PR\n"
+            ";file;tilt;Loss;Comment;;kWh;ratio\n"
+            ";File name;[deg];[%];;;;\n"
+            "SIM_1;;20;1.5;Tilt20;;13500;0.85\n"
+            "SIM_2;;30;2.0;Tilt30;;14250;0.87\n",
+            encoding="utf-8",
+        )
+        res = evaluate_economics(
+            workspace=self.root,
+            batch_summary_csv="MultiHdr_Results.CSV",
+            financial={"first_year_degradation_pct": 0.0},
+            tariff={"feed_in_tariff": 0.4},
+        )
+        self.assertEqual(
+            res["scenarios"][0]["batch_parameters"],
+            {"Plane tilt": 20, "Soiling Loss": 1.5, "Simul Comment": "Tilt20"},
+        )
+        self.assertEqual(
+            res["scenarios"][1]["batch_parameters"],
+            {"Plane tilt": 30, "Soiling Loss": 2.0, "Simul Comment": "Tilt30"},
+        )
 
     def test_batch_summary_can_omit_performance_ratio(self):
         (self.root / "UserBatch" / "EnergyResults.CSV").write_text(

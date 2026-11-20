@@ -187,6 +187,35 @@ class InteractiveReportTests(unittest.TestCase):
         report = (self.root / "Results" / "ranking.html").read_text(encoding="utf-8")
         self.assertIn("<tr><td>#1</td><td><strong>Large</strong>", report)
         self.assertEqual(result["best_scenario"], "Large")
+        # Multi-scenario report promotes best_scenario to primary and labels it in header & single-scenario charts
+        self.assertIn("Primary scenario: Large", report)
+        self.assertIn("PV Energy Loss Waterfall (Large)", report)
+
+    def test_report_self_consumption_yield_aligns_with_economics(self):
+        # Self-consumption CSV where net E_Grid = EToGrid - EFrGrid is negative overall,
+        # while utilized PV energy = EToGrid + (E_User - EFrGrid) = 20 + 60 = 80 kWh.
+        sc_csv = self.root / "Results" / "self_cons.csv"
+        sc_csv.write_text(
+            "PVSYST 8.1.7\n"
+            "date;GlobInc;EArray;E_Grid;EToGrid;EFrGrid;E_User;PR\n"
+            ";W/m2;kWh;kWh;kWh;kWh;kWh;ratio\n"
+            "01/06/24 12:00;800;85;20;20;0;60;0.84\n"
+            "01/06/24 13:00;0;0;-100;0;100;100;\n",
+            encoding="utf-8",
+        )
+        res = generate_report(
+            workspace=self.root,
+            title="Self Consumption Alignment",
+            output_name="self_cons.html",
+            language="en",
+            scenarios=[{"label": "SC", "csv_name": sc_csv.name}],
+            tariff={"mode": "self_consumption_flat", "import_tariff": 0.8, "feed_in_tariff": 0.3},
+            financial={"fixed_capex": 1000.0},
+        )
+        html_text = Path(res["report_path"]).read_text(encoding="utf-8")
+        # KPI yield and ranking table yield both show 80.0 kWh (not -80.0 from net E_Grid)
+        self.assertIn("80.0 kWh", html_text)
+        self.assertIn("<td>80.0</td>", html_text)
 
     def test_report_rejects_duplicate_labels_and_passes_resolved_csv_path(self):
         csv_a = _write_report_csv(self.root / "Results" / "dup_a.csv", scale=1.0)

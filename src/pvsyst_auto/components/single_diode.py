@@ -131,7 +131,8 @@ def derive_single_diode_parameters(
         if best is None or dp_dv < best[0]:
             best = (dp_dv, gamma, rs, i_l, i_0)
 
-    if best is None:
+    used_fallback = best is None
+    if used_fallback:
         # Fallback for unusual thin-film or ultra-high-FF specs: pick conservative physically valid defaults
         gamma = 1.05
         rs = max(0.05, min(0.5, 0.25 * (voc - vmp) / imp))
@@ -171,6 +172,7 @@ def derive_single_diode_parameters(
         "muGamma": -0.0004,
         "I0Ref_A": i_0,
         "mpp_slope_residual_a": round(dp_dv, 6),
+        "fallback": used_fallback,
     }
 
 
