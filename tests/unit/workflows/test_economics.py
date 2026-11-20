@@ -293,6 +293,19 @@ class EconomicsEngineTests(unittest.TestCase):
                 tariff={"mode": "feed_in", "feed_in_tariff": 0.4},
             )
 
+    def test_no_best_scenario_when_ranking_metric_is_unavailable(self):
+        res = evaluate_economics(
+            scenarios=[
+                {"label": "A", "annual_yield_kwh": 1_000.0},
+                {"label": "B", "annual_yield_kwh": 2_000.0},
+            ],
+            financial={"fixed_capex": 50_000.0},
+            tariff={"feed_in_tariff": 0.4},
+            rank_by="simple_payback_years",
+        )
+        self.assertEqual([row["simple_payback_years"] for row in res["ranking"]], [None, None])
+        self.assertIsNone(res["best_scenario"])
+
 
 if __name__ == "__main__":
     unittest.main()

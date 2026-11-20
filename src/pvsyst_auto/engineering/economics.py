@@ -795,7 +795,7 @@ def evaluate_economics(
         "discount_rate_pct": fin_cfg["discount_rate_pct"],
         "tariff_mode": tar_cfg["mode"],
         "rank_by": rank_by,
-        "best_scenario": ranking_table[0]["label"] if ranking_table else None,
+        "best_scenario": ranked[0]["label"] if _sort_key(ranked[0])[0] == 0 else None,
         "scenario_count": len(results),
         "ranking": ranking_table,
         "scenarios": results,
