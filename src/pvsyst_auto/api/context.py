@@ -52,11 +52,12 @@ TOOL_GROUPS = {
     "Loads & Storage": (
         "pvsyst_prepare_load_profile", "pvsyst_create_native_load_variant",
         "pvsyst_create_grid_storage_variant", "pvsyst_create_grid_storage_system",
+        "pvsyst_plan_tou_storage_schedule",
     ),
     "Simulation": (
         "pvsyst_build_sfi", "pvsyst_run_simulation", "pvsyst_run_batch_sweep",
         "pvsyst_simulate_design", "pvsyst_prepare_sourced_design", "pvsyst_run_house_task",
-        "pvsyst_optimize_variant",
+        "pvsyst_optimize_variant", "pvsyst_optimize_bess_sizing",
     ),
     "Results": ("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results", "pvsyst_diagnose_results"),
     "Engineering": (

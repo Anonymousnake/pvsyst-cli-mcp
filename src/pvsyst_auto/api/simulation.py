@@ -5,11 +5,15 @@ from typing import Annotated, Literal
 from pydantic import Field, StrictBool, StrictInt, StrictStr
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
 from pvsyst_auto.workflows.batch import run_batch_sweep
+from pvsyst_auto.workflows.bess_optimize import optimize_bess_sizing
 from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.optimize import optimize_variant
 from pvsyst_auto.workflows.sourced_design import prepare_sourced_design
 from pvsyst_auto.api.schemas import (
-    BatchSweepRequest, HouseTaskRequest, SingleDesignRequest, StrictNum,
+    BatchSweepRequest, BessSizingParams, BessVerifyConfig,
+    ConstantNativeLoad, DailyNativeLoad,
+    EconomicsFinancialConfig, EconomicsTariffConfig,
+    HouseTaskRequest, SingleDesignRequest, StrictNum,
     SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest,
 )
 from pvsyst_auto.api.context import categorized_tool, cli, components, optional_path, simulation_csv_path, variant_store, workspace_path
@@ -75,6 +79,50 @@ def pvsyst_optimize_variant(
         thresholds=thresholds, sfi_name=sfi_name, time_step=time_step,
         allow_window_creation=allow_window_creation,
         dry_run=dry_run, confirm=confirm,
+    )
+
+
+@categorized_tool()
+def pvsyst_optimize_bess_sizing(
+        baseline_csv: StrictStr,
+        installed_dc_kw: StrictNum,
+        bess_kwh_values: Annotated[list[StrictNum], Field(min_length=1, max_length=20)],
+        pcs_kw_values: Annotated[list[StrictNum], Field(min_length=1, max_length=15)],
+        tariff: EconomicsTariffConfig,
+        financial: EconomicsFinancialConfig,
+        strategies: list[Literal["self_consumption", "tou_arbitrage", "peak_shaving"]] | None = None,
+        load_profile: ConstantNativeLoad | DailyNativeLoad | None = None,
+        bess_params: BessSizingParams | None = None,
+        pcs_capex_per_kw: StrictNum = 0.0,
+        rank_by: Literal["npv", "irr", "lcoe", "simple_payback_years", "discounted_payback_years"] = "npv",
+        verify_top_k: Annotated[StrictInt, Field(ge=0, le=5)] = 0,
+        verify_config: BessVerifyConfig | None = None,
+        dry_run: StrictBool = True,
+        confirm: StrictBool = False) -> dict:
+    """Two-stage hybrid PV+BESS capacity sizing optimizer: Stage 1 runs a fast pure-Python grid sweep
+    over (bess_kwh x pcs_kw x strategy) against TOU and two-part demand-charge tariffs, returning
+    ranked candidates, a CAPEX-vs-NPV Pareto frontier, and a 2D heatmap; optional Stage 2
+    (verify_top_k 1..5 with dry_run=false and confirm=true) runs PVsystCLI to reconcile exact KPIs."""
+    current = cli()
+    return optimize_bess_sizing(
+        workspace=current.workspace,
+        cli=current,
+        store=variant_store(),
+        baseline_csv=baseline_csv,
+        installed_dc_kw=installed_dc_kw,
+        bess_kwh_values=bess_kwh_values,
+        pcs_kw_values=pcs_kw_values,
+        tariff=tariff.model_dump(exclude_none=True),
+        financial=financial.model_dump(exclude_none=True),
+        strategies=strategies,
+        load_profile=load_profile.model_dump(exclude_none=True) if load_profile is not None else None,
+        bess_params=bess_params.model_dump(exclude_none=True) if bess_params is not None else None,
+        pcs_capex_per_kw=pcs_capex_per_kw,
+        rank_by=rank_by,
+        verify_top_k=verify_top_k,
+        verify_config=verify_config.model_dump(exclude_none=True) if verify_config is not None else None,
+        dry_run=dry_run,
+        confirm=confirm,
     )
 
 

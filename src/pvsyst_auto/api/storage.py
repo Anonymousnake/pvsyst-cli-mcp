@@ -1,13 +1,22 @@
 """Loads & Storage MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
-from typing import Literal
-from pydantic import StrictBool, StrictInt, StrictStr
+from typing import Annotated, Literal
+from pydantic import Field, StrictBool, StrictInt, StrictStr
 from pvsyst_auto.energy.profiles import prepare_load_profile
 from pvsyst_auto.energy.storage import create_grid_storage_variant
 from pvsyst_auto.energy.system import create_grid_storage_system
+from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule
 from pvsyst_auto.native.load import create_native_load_variant
-from pvsyst_auto.api.schemas import BatteryPackDesign, GridAvailabilityProfile, GridStorageDesign, GridStorageUpdates, NativeLoadRequest
+from pvsyst_auto.api.schemas import (
+    BatteryPackDesign,
+    EconomicsTouPeriod,
+    GridAvailabilityProfile,
+    GridStorageDesign,
+    GridStorageUpdates,
+    NativeLoadRequest,
+    StrictNum,
+)
 from pvsyst_auto.api.context import categorized_tool, cli, variant_store
 
 
@@ -71,3 +80,35 @@ def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: Strict
                                       dry_run=dry_run,
                                       availability=availability.model_dump() if availability else None,
                                       allow_grid_export=allow_grid_export)
+
+
+@categorized_tool()
+def pvsyst_plan_tou_storage_schedule(
+        tou_schedule: Annotated[list[EconomicsTouPeriod], Field(min_length=1, max_length=48)],
+        charge_power_kw: StrictNum,
+        discharge_power_kw: StrictNum | None = None,
+        usable_energy_kwh: StrictNum | None = None,
+        cycles_per_day: Annotated[StrictInt, Field(ge=1, le=2)] = 2,
+        round_trip_efficiency: StrictNum = 0.88,
+        min_spread: StrictNum = 0.05,
+        month: Annotated[StrictInt, Field(ge=1, le=12)] = 7,
+        day_type: Literal["all", "weekday", "weekend"] = "weekday",
+        charging_strategy: Literal["spec_charg_power", "pv_prod_fraction"] = "spec_charg_power",
+        default_import_rate: StrictNum = 0.0,
+        default_export_rate: StrictNum = 0.0) -> dict:
+    """Deterministically convert a time-of-use (TOU) tariff schedule into PVsyst PowerShift 48-slot
+    half-hourly charge/discharge schedules (1 or 2 cycles/day) and a drop-in storage_updates dict."""
+    return plan_tou_storage_schedule(
+        tou_schedule=[p.model_dump(exclude_none=True) for p in tou_schedule],
+        charge_power_kw=charge_power_kw,
+        discharge_power_kw=discharge_power_kw,
+        usable_energy_kwh=usable_energy_kwh,
+        cycles_per_day=cycles_per_day,
+        round_trip_efficiency=round_trip_efficiency,
+        min_spread=min_spread,
+        month=month,
+        day_type=day_type,
+        charging_strategy=charging_strategy,
+        default_import_rate=default_import_rate,
+        default_export_rate=default_export_rate,
+    )

@@ -976,3 +976,30 @@ class ReportScenarioInput(BaseModel):
     capex_total: StrictNum | None = None
     annual_opex: StrictNum | None = None
     replacement_events: list[EconomicsReplacementEvent] | None = None
+
+
+class BessSizingParams(BaseModel):
+    model_config = _STRICT_CONFIG
+    soc_min: StrictNum = 0.10
+    soc_max: StrictNum = 0.95
+    initial_soc: StrictNum = 0.20
+    round_trip_efficiency: StrictNum = 0.88
+    allow_grid_charging: StrictBool = True
+    cycles_per_day: Annotated[StrictInt, Field(ge=1, le=2)] = 2
+    min_spread: StrictNum = 0.05
+    peak_shaving_limit_kw: StrictNum | None = None
+
+
+class BessVerifyConfig(BaseModel):
+    model_config = _STRICT_CONFIG
+    project: StrictStr
+    source_variant: StrictStr
+    battery_file_name: StrictStr
+    battery_library: Literal["workspace", "builtin"] = "workspace"
+    battery_unit_kwh: StrictNum
+    series_count: Annotated[StrictInt, Field(ge=1, le=100)] = 1
+    monthly_temperature_c: Annotated[list[StrictNum], Field(min_length=12, max_length=12)] | None = None
+    cycle_sow: StrictNum = 0.8
+    static_sow: StrictNum = 0.8
+    load_manifest_name: StrictStr | None = None
+    variant_prefix: StrictStr = "VB"
