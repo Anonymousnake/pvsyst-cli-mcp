@@ -131,6 +131,28 @@ class OptimizeVariantTests(unittest.TestCase):
         self.assertEqual(self.cli.calls, [("OptTest.PRJ", "VCA")])
         self.assertEqual((self.root / "Projects" / "OptTest.VC0").read_bytes(), self.baseline_bytes)
 
+    def test_optimization_uses_distinct_sfi_for_hour_and_subhour(self):
+        sfis: list[Path] = []
+        orig_run = self.cli.run_simulation
+
+        def recording_run(project, variant, *, sfi=None, out_csv=None, **kwargs):
+            sfis.append(Path(sfi))
+            return orig_run(project, variant, sfi=sfi, out_csv=out_csv, **kwargs)
+
+        self.cli.run_simulation = recording_run
+        _write_csv(self.root / "Results" / "base_step.csv", pr=0.60, il_vmax=3.0)
+        optimize_variant(
+            self.cli, self.store, project="OptTest.PRJ", variant="VC0",
+            csv_name="base_step.csv", max_iterations=1, time_step="hour", dry_run=False, confirm=True,
+        )
+        optimize_variant(
+            self.cli, self.store, project="OptTest.PRJ", variant="VC0",
+            csv_name="base_step.csv", max_iterations=1, time_step="subhour", dry_run=False, confirm=True,
+        )
+        self.assertEqual(len(sfis), 2)
+        self.assertNotEqual(sfis[0].name, sfis[1].name)
+        self.assertIn("SubHour", sfis[1].read_text(encoding="utf-8"))
+
     def test_clean_baseline_returns_no_action_needed(self):
         _write_csv(self.root / "Results" / "base_clean.csv", pr=0.84)
         res = optimize_variant(

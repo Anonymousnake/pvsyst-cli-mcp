@@ -188,6 +188,26 @@ class InteractiveReportTests(unittest.TestCase):
         self.assertIn("<tr><td>#1</td><td><strong>Large</strong>", report)
         self.assertEqual(result["best_scenario"], "Large")
 
+    def test_report_rejects_duplicate_labels_and_passes_resolved_csv_path(self):
+        csv_a = _write_report_csv(self.root / "Results" / "dup_a.csv", scale=1.0)
+        csv_b = _write_report_csv(self.root / "Results" / "dup_b.csv", scale=2.0)
+        with self.assertRaisesRegex(ValueError, "Duplicate scenario label"):
+            generate_report(
+                workspace=self.root, title="Dup", output_name="dup.html",
+                scenarios=[{"label": "Base", "csv_name": csv_a.name},
+                           {"label": " Base ", "csv_name": csv_b.name}],
+            )
+        # Direct workspace=None report with economics uses resolved csv_path instead of bare filename
+        res = generate_report(
+            workspace=None, title="Standalone", output_name="standalone_report.html",
+            scenarios=[{"label": "Direct", "csv_name": str(csv_a)}],
+            tariff={"mode": "feed_in", "feed_in_tariff": 0.4},
+            financial={"fixed_capex": 10000.0},
+            dry_run=True,
+        )
+        self.assertEqual(res["status"], "ready")
+        self.assertTrue(res["has_economics"])
+
 
 if __name__ == "__main__":
     unittest.main()

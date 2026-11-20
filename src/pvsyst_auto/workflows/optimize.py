@@ -360,7 +360,8 @@ def optimize_variant(
         if not sfi_path.is_file():
             raise FileNotFoundError(f"Requested SFI not found in Models/: {sfi_name}")
     else:
-        sfi_stem = f"{Path(proj).stem}_{base_var}_opt"
+        step_suffix = "_subhour" if time_step == "subhour" else ""
+        sfi_stem = f"{Path(proj).stem}_{base_var}_opt{step_suffix}"
         sfi_path = workspace_file(cli.workspace, "Models", f"{sfi_stem}.SFI", ".sfi")
         if not sfi_path.is_file():
             build_sfi(sfi_path, list(VAR_GROUPS["all_common"]), time_step=time_step)
