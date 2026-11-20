@@ -1,5 +1,9 @@
 # PVsyst CLI MCP
 
+[![PyPI version](https://img.shields.io/pypi/v/pvsyst-cli-mcp.svg)](https://pypi.org/project/pvsyst-cli-mcp/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pvsyst-cli-mcp.svg)](https://pypi.org/project/pvsyst-cli-mcp/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 [English](README.md) | **简体中文**
 
 Windows 下配合本地 PVsyst 8 使用的 MCP 服务端与 Python 封装库。它一方面封装了官方 `PVsystCLI.exe` 的仿真、气象转换和许可查询命令；另一方面提供全套无 GUI 的原生文本解析与零模板合成引擎（`.PRJ`、`.VCx`、`.PAN`、`.OND`、`.BTR`、`.GEN`、`.SIT`），覆盖双面地面阵列与有限 3D 地块、3D 住宅与遮挡物（`.pvc2` -> `.VCx`）、规格书单二极管组件合成、多源气象获取、物理异常诊断与有界自动优化、TOU 经济性/光储套利评估以及 Plotly 交互式 HTML 工程报告。
@@ -32,6 +36,22 @@ Windows 下配合本地 PVsyst 8 使用的 MCP 服务端与 Python 封装库。�
 - 已安装 `PVsystCLI.exe`（已在 8.0.6、8.1.6 rev49278 与 8.1.7 rev49382 验证）
 - 仅在显式使用旧版 `scene_import_method="gui"` 时需要桌面 GUI（中文版 8.1.6/8.1.7，96 DPI）；3D 住宅场景、周边遮挡物、`module_layout` 与 DC 线缆均已默认免 GUI 原生写入
 
+### 从 PyPI 安装（推荐）
+
+直接安装最新正式版：
+
+```powershell
+pip install pvsyst-cli-mcp
+```
+
+或配合 [`uv`](https://docs.astral.sh/uv/) 免安装运行：
+
+```powershell
+uvx pvsyst-cli-mcp
+```
+
+### 从源码安装（本地开发）
+
 在仓库根目录执行：
 
 ```powershell
@@ -46,7 +66,26 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 
 ## 接入 MCP 客户端
 
-把客户端的启动命令指向虚拟环境里的 Python 解释器。用 `-m pvsyst_auto`（或安装后生成的 `pvsyst-mcp` 命令）启动时不依赖客户端当前所在的工作目录：
+### 方式一：使用 `uvx` 零克隆直接启动（推荐）
+
+```json
+{
+  "mcpServers": {
+    "pvsyst": {
+      "command": "uvx",
+      "args": ["pvsyst-cli-mcp"],
+      "env": {
+        "PVSYST_CLI": "C:/Program Files/PVsyst8.1.7/PVsystCLI.exe",
+        "PVSYST_WORKSPACE": "C:/path/to/PVsyst8.1_Data"
+      }
+    }
+  }
+}
+```
+
+### 方式二：通过 `pip` 或本地虚拟环境启动
+
+如果已通过 `pip install pvsyst-cli-mcp` 安装（或在源码虚拟环境中安装），可直接把客户端启动命令指向 `pvsyst-mcp` 或虚拟环境的 `-m pvsyst_auto`（均不依赖工作目录）：
 
 ```json
 {

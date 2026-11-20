@@ -1,5 +1,9 @@
 # PVsyst CLI MCP
 
+[![PyPI version](https://img.shields.io/pypi/v/pvsyst-cli-mcp.svg)](https://pypi.org/project/pvsyst-cli-mcp/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pvsyst-cli-mcp.svg)](https://pypi.org/project/pvsyst-cli-mcp/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **English** | [简体中文](README.zh-CN.md)
 
 Local MCP server and Python adapter for driving an installed copy of PVsyst 8 on Windows. It wraps `PVsystCLI.exe` for simulations, weather conversion, and license checks, and provides headless parsers, zero-template synthesizers, diagnostics, TOU economics, bounded auto-optimization, and interactive Plotly HTML reporting across `.PRJ`, `.VCx`, `.PAN`, `.OND`, `.BTR`, `.GEN`, `.SIT`, and 3D `.pvc2` shading scenes.
@@ -32,6 +36,22 @@ Requirements:
 - Installed `PVsystCLI.exe` (tested against 8.0.6, 8.1.6 rev49278, and 8.1.7 rev49382)
 - Optional legacy GUI mode only (`scene_import_method="gui"`): PVsyst 8.1.6/8.1.7 GUI in Chinese locale at 96 DPI (100% display scaling); 3D house scenes, obstacles, `module_layout`, and DC cabling run headlessly without driving the desktop GUI by default
 
+### From PyPI (recommended)
+
+Install the latest release directly from PyPI:
+
+```powershell
+pip install pvsyst-cli-mcp
+```
+
+Or run zero-install via [`uv`](https://docs.astral.sh/uv/):
+
+```powershell
+uvx pvsyst-cli-mcp
+```
+
+### From source (development)
+
 From the repository root:
 
 ```powershell
@@ -46,7 +66,26 @@ Dependencies (`mcp` 2.x, `pydantic` 2.x, `plotly` for interactive HTML reports, 
 
 ## MCP client configuration
 
-Point your MCP client at the virtualenv Python executable. Launching via `-m pvsyst_auto` (or the installed `pvsyst-mcp` console script) does not depend on the working directory:
+### Zero-clone launch with `uvx` (recommended)
+
+```json
+{
+  "mcpServers": {
+    "pvsyst": {
+      "command": "uvx",
+      "args": ["pvsyst-cli-mcp"],
+      "env": {
+        "PVSYST_CLI": "C:/Program Files/PVsyst8.1.7/PVsystCLI.exe",
+        "PVSYST_WORKSPACE": "C:/path/to/PVsyst8.1_Data"
+      }
+    }
+  }
+}
+```
+
+### Installed via `pip` or local virtualenv
+
+If you installed `pvsyst-cli-mcp` into a virtualenv (or globally via `pip install pvsyst-cli-mcp`), point your MCP client at the `pvsyst-mcp` console script or `-m pvsyst_auto` (neither depends on the working directory):
 
 ```json
 {
