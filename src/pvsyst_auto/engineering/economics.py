@@ -619,7 +619,7 @@ def evaluate_economics(
             raise ValueError("workspace is required when loading batch_summary_csv")
         safe_batch = safe_filename(batch_summary_csv, ".csv")
         batch_path = workspace_file(workspace, "UserBatch", safe_batch, ".csv")
-        parsed = parse_batch_results(batch_path)
+        parsed = parse_batch_results(batch_path, columns=("E_Grid",))
         for row in parsed.get("scenarios") or ():
             if row.get("error"):
                 continue
@@ -630,8 +630,8 @@ def evaluate_economics(
             if hourly_name and hourly_name.lower().endswith(".csv"):
                 hourly_path = workspace_file(workspace, "UserHourly", hourly_name, ".csv")
                 if hourly_path.is_file():
-                    item["csv_name"] = hourly_name
-            if "csv_name" not in item:
+                    item["csv_path"] = hourly_path
+            if "csv_path" not in item:
                 e_grid = metrics.get("E_Grid")
                 if not isinstance(e_grid, (int, float)) or not math.isfinite(e_grid):
                     continue
