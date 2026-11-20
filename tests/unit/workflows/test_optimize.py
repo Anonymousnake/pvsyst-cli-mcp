@@ -119,6 +119,18 @@ class OptimizeVariantTests(unittest.TestCase):
         # Baseline VC0 must remain byte-for-byte untouched!
         self.assertEqual((self.root / "Projects" / "OptTest.VC0").read_bytes(), self.baseline_bytes)
 
+    def test_optimization_uses_valid_slot_after_vc9(self):
+        for digit in range(1, 10):
+            self.store.clone("OptTest.PRJ", "VC0", f"VC{digit}")
+        _write_csv(self.root / "Results" / "base_bad.csv", pr=0.60, il_vmax=3.0)
+        result = optimize_variant(
+            self.cli, self.store, project="OptTest.PRJ", variant="VC0",
+            csv_name="base_bad.csv", max_iterations=1, dry_run=False, confirm=True,
+        )
+        self.assertEqual(result["iterations"][0]["new_variant"], "VCA")
+        self.assertEqual(self.cli.calls, [("OptTest.PRJ", "VCA")])
+        self.assertEqual((self.root / "Projects" / "OptTest.VC0").read_bytes(), self.baseline_bytes)
+
     def test_clean_baseline_returns_no_action_needed(self):
         _write_csv(self.root / "Results" / "base_clean.csv", pr=0.84)
         res = optimize_variant(
