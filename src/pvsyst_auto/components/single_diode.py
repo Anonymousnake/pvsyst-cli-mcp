@@ -348,21 +348,28 @@ def synthesize_ond_from_datasheet(
     p_seuil = round(max(5.0, 0.005 * pnom_w), 2)
     eta_max = effic_max_pct / 100.0
     eta_delta = max(0.001, (effic_max_pct - eff_euro) / 100.0)
-    # Construct strictly monotonic 8-point Mode-1 P_out(P_in) efficiency profile in W, capped at EfficMax
-    fracs_and_etas = tuple((frac, min(eta, eta_max)) for frac, eta in (
-        (0.03, max(0.85, eta_max - 4.5 * eta_delta)),
-        (0.05, max(0.88, eta_max - 3.0 * eta_delta)),
-        (0.10, max(0.92, eta_max - 1.6 * eta_delta)),
-        (0.20, max(0.94, eta_max - 0.6 * eta_delta)),
-        (0.30, max(0.95, eta_max - 0.2 * eta_delta)),
-        (0.50, eta_max),
-        (1.00, max(0.94, eta_max - 0.4 * eta_delta)),
-    ))
+    # Construct strictly monotonic 8-point Mode-1 P_out(P_in) efficiency profile in W.
+    # Scale the template floors proportionally when EfficMax < 98% so lower-efficiency inverters
+    # preserve a realistic light-load / peak / full-load curve instead of flattening to EfficMax.
+    floor_scale = min(1.0, eta_max / 0.98)
+    fracs_and_etas = tuple(
+        (frac, min(eta_max, max(floor * floor_scale, eta_max - drop * eta_delta)))
+        for frac, floor, drop in (
+            (0.03, 0.85, 4.5),
+            (0.05, 0.88, 3.0),
+            (0.10, 0.92, 1.6),
+            (0.20, 0.94, 0.6),
+            (0.30, 0.95, 0.2),
+            (0.50, 0.98, 0.0),
+            (1.00, 0.94, 0.4),
+        )
+    )
     points: list[tuple[int, int]] = [(int(round(p_seuil)), 0)]
     p_in_max = pnom_w / fracs_and_etas[-1][1]
     for frac, eta in fracs_and_etas:
         p_in = max(points[-1][0] + 1, int(round(p_in_max * frac)))
-        p_out = max(points[-1][1] + 1, min(p_in, int(round(p_in * eta))))
+        p_out_cap = min(p_in, int(math.floor(p_in * eta_max + 1e-9)))
+        p_out = max(points[-1][1] + 1, min(p_out_cap, int(round(p_in * eta))))
         points.append((p_in, p_out))
     p_in_eff_max = float(points[6][0])  # 50% load point
     i_nom_ac = round(pnom_w / (math.sqrt(3.0) * v_out), 3)

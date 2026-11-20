@@ -127,14 +127,16 @@ _I18N = {
 
 
 def _resolve_csv(workspace: Path | None, csv_name: str) -> Path:
-    safe = safe_filename(csv_name, ".csv")
     if workspace is not None:
+        safe = safe_filename(csv_name, ".csv")
         for folder in ("Results", "UserHourly"):
             cand = workspace_file(workspace, folder, safe, ".csv")
             if cand.is_file():
                 return cand
         raise FileNotFoundError(f"Result CSV not found in Results/ or UserHourly/: {safe}")
     p = Path(csv_name)
+    if p.suffix.lower() != ".csv":
+        raise ValueError("Expected a .csv file")
     if not p.is_file():
         raise FileNotFoundError(f"Result CSV not found: {p}")
     return p
@@ -278,10 +280,14 @@ def generate_report(
     parsed_scenarios: list[dict[str, Any]] = []
     econ_inputs: list[dict[str, Any]] = []
 
+    seen_labels: set[str] = set()
     for idx_s, sc in enumerate(scenarios):
         if not isinstance(sc, dict):
             raise ValueError(f"scenarios[{idx_s}] must be an object")
         label = str(sc.get("label") or f"Scenario_{idx_s + 1}").strip()
+        if label in seen_labels:
+            raise ValueError(f"Duplicate scenario label {label!r}; scenario labels must be unique")
+        seen_labels.add(label)
         csv_name = sc.get("csv_name")
         if not csv_name:
             raise ValueError(f"scenarios[{idx_s}] ({label}) requires csv_name")
@@ -306,7 +312,7 @@ def generate_report(
             "stats": csv_stats,
             "diagnostics": diag,
         })
-        econ_entry = {"label": label, "csv_name": csv_path.name}
+        econ_entry = {"label": label, "csv_path": csv_path}
         for k in ("installed_dc_kw", "battery_kwh", "capex_total", "annual_opex", "replacement_events"):
             if sc.get(k) is not None:
                 econ_entry[k] = sc[k]
@@ -477,11 +483,12 @@ def generate_report(
     specific_yield = (primary_yield / primary_dc) if (primary_dc and primary_dc > 0) else None
     curr = econ_result["currency"] if econ_result else ""
 
+    primary_needs_review = bool(primary_diag["needs_review"] or primary_diag.get("status") == "blocked")
     kpis = [
         (t["kpi_yield"], _fmt_num(primary_yield, 1, " kWh")),
         (t["kpi_specific"], _fmt_num(specific_yield, 1, " kWh/kWp")),
         (t["kpi_pr"], _fmt_num(primary_pr, 2, " %")),
-        (t["kpi_diag"], f"{t['status_review']} ({primary_diag['finding_count']})" if primary_diag["needs_review"] else f"{t['status_ok']} ({primary_diag['finding_count']})"),
+        (t["kpi_diag"], f"{t['status_review']} ({primary_diag['finding_count']})" if primary_needs_review else f"{t['status_ok']} ({primary_diag['finding_count']})"),
     ]
     if primary_econ:
         pf = primary_econ["financials"]
@@ -554,8 +561,8 @@ def generate_report(
         f"<section class='card'><h2>{html.escape(sec_title)}</h2>{div_html}</section>"
         for sec_title, div_html in chart_sections
     )
-    badge_cls = "badge-high" if primary_diag["needs_review"] else "badge-ok"
-    badge_txt = t["status_review"] if primary_diag["needs_review"] else t["status_ok"]
+    badge_cls = "badge-high" if primary_needs_review else "badge-ok"
+    badge_txt = t["status_review"] if primary_needs_review else t["status_ok"]
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     doc = f"""<!DOCTYPE html>

@@ -85,16 +85,23 @@ class CommercialComponentTests(unittest.TestCase):
         self.assertEqual(report["known_value_errors"], [])
 
     def test_inverter_curve_does_not_exceed_declared_maximum_efficiency(self):
-        text, _ = synthesize_ond_from_datasheet(
-            manufacturer="Lab", model="Inverter", pnom_ac_kw=10,
-            vmpp_min_v=200, vmpp_max_v=850, vabs_max_v=1000,
-            effic_max_pct=90, effic_euro_pct=89,
-        )
-        points = [line.split("=", 1)[1].split(",") for line in text.splitlines()
-                  if line.strip().startswith("Point_")]
-        for p_in, p_out in points:
-            self.assertLessEqual(int(p_out), round(int(p_in) * 0.90))
-        self.assertEqual(max(int(p_out) for _, p_out in points), 10000)
+        for emax, eeuro in ((90.0, 89.0), (75.0, 73.0), (50.0, 48.0)):
+            with self.subTest(effic_max_pct=emax, effic_euro_pct=eeuro):
+                text, _ = synthesize_ond_from_datasheet(
+                    manufacturer="Lab", model="Inverter", pnom_ac_kw=10,
+                    vmpp_min_v=200, vmpp_max_v=850, vabs_max_v=1000,
+                    effic_max_pct=emax, effic_euro_pct=eeuro,
+                )
+                points = [tuple(map(int, line.split("=", 1)[1].split(",")))
+                          for line in text.splitlines() if line.strip().startswith("Point_")]
+                active = [(p_in, p_out) for p_in, p_out in points if p_in > 0 and p_out > 0]
+                effs = [p_out / p_in for p_in, p_out in active]
+                for eff in effs:
+                    self.assertLessEqual(eff, emax / 100.0 + 1e-9)
+                # Peak at 50% load (index 5) exceeds both light-load (10%, index 2) and full-load (index 6)
+                self.assertGreater(effs[5], effs[2])
+                self.assertGreater(effs[5], effs[6])
+                self.assertEqual(max(p_out for _, p_out in active), 10000)
 
     def test_build_sourced_component_zero_template_pan_and_ond_roundtrip(self):
         sources = {
