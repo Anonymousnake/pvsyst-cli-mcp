@@ -187,6 +187,20 @@ class EconomicsEngineTests(unittest.TestCase):
                 financial={"capex_per_kw": 3500.0},
             )
 
+    def test_tou_period_name_requires_consistent_rates(self):
+        csv = _write_sfi_csv(self.root / "Results" / "seasons.csv", [("E_Grid", "kWh")], [
+            ["31/05/24 23:00", 10.0],
+            ["01/06/24 00:00", 10.0],
+        ])
+        may = {"name": "off_peak", "months": [5], "hours": [23], "export_rate": 0.3}
+        june = {"name": "off_peak", "months": [6], "hours": [0], "export_rate": 0.4}
+        with self.assertRaisesRegex(ValueError, "off_peak.*different rates"):
+            evaluate_economics(
+                workspace=self.root,
+                scenarios=[{"csv_name": csv.name}],
+                tariff={"mode": "tou", "tou_schedule": [may, june]},
+            )
+
     def test_irregular_timestamp_cadence_is_rejected(self):
         gap_csv = self.root / "Results" / "gap_econ.csv"
         gap_csv.write_text(

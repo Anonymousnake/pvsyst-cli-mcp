@@ -55,6 +55,7 @@ def _validate_tariff(tariff: dict | None) -> dict:
         raw_periods = raw.get("tou_schedule")
         if not isinstance(raw_periods, list) or not raw_periods:
             raise ValueError("tariff.tou_schedule must be a non-empty list when tariff.mode='tou'")
+        rates_by_name = {"default": (import_rate, feed_in)}
         for idx, item in enumerate(raw_periods):
             if not isinstance(item, dict):
                 raise ValueError(f"tariff.tou_schedule[{idx}] must be an object")
@@ -77,6 +78,9 @@ def _validate_tariff(tariff: dict | None) -> dict:
                 f"tariff.tou_schedule[{idx}].export_rate",
                 minimum=0.0,
             )
+            rates = (p_import, p_export)
+            if rates_by_name.setdefault(name, rates) != rates:
+                raise ValueError(f"tariff.tou_schedule uses period name {name!r} with different rates")
             periods.append({
                 "name": name,
                 "hours": frozenset(hours),
