@@ -215,6 +215,40 @@ class EconomicsEngineTests(unittest.TestCase):
         self.assertEqual([r["label"] for r in res["ranking"]], ["SIM_2", "SIM_3", "SIM_1"])
         self.assertNotIn("cashflow_schedule", res["scenarios"][0]["financials"])
 
+    def test_batch_summary_can_omit_performance_ratio(self):
+        (self.root / "UserBatch" / "EnergyResults.CSV").write_text(
+            "Ident;Create hourly;Error;E_Grid\n"
+            "SIM_1;;;142000\n",
+            encoding="utf-8",
+        )
+        res = evaluate_economics(
+            workspace=self.root,
+            batch_summary_csv="EnergyResults.CSV",
+            financial={"first_year_degradation_pct": 0.0},
+            tariff={"feed_in_tariff": 0.4},
+        )
+        self.assertEqual(res["scenarios"][0]["year1_energy_kwh"], 142_000.0)
+        self.assertEqual(res["scenarios"][0]["financials"]["year1_gross_benefit"], 56_800.0)
+
+    def test_batch_hourly_reference_resolves_in_user_hourly(self):
+        csv_name = "Sweep_SIM_1.CSV"
+        for folder, value in (("Results", 40.0), ("UserHourly", 10.0)):
+            _write_sfi_csv(self.root / folder / csv_name, [("E_Grid", "kWh")], [
+                ["01/06/24 12:00", value], ["01/06/24 13:00", value],
+            ])
+        (self.root / "UserBatch" / "SweepResults.CSV").write_text(
+            "Ident;Create hourly;Error;E_Grid;PR\n"
+            f"SIM_1;{csv_name};;20;0.83\n",
+            encoding="utf-8",
+        )
+        res = evaluate_economics(
+            workspace=self.root,
+            scenarios=[{"label": "Standalone", "csv_name": csv_name}],
+            batch_summary_csv="SweepResults.CSV",
+            financial={"first_year_degradation_pct": 0.0},
+        )
+        self.assertEqual([s["year1_energy_kwh"] for s in res["scenarios"]], [80.0, 20.0])
+
     def test_validation_guards(self):
         with self.assertRaisesRegex(ValueError, "rank_by"):
             evaluate_economics(scenarios=[{"label": "A", "annual_yield_kwh": 1000.0}], rank_by="bad")
