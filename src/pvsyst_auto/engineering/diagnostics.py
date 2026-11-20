@@ -128,11 +128,15 @@ def _to_kwh_m2(raw_sum: float, unit: str, step_hours: float) -> float | None:
     return None
 
 
-def _to_w_m2(value: float, unit: str) -> float | None:
-    if unit in ("W/m2", "W/m\u00b2", "Wh/m2", "Wh/m\u00b2"):
+def _to_w_m2(value: float, unit: str, step_hours: float = 1.0) -> float | None:
+    if unit in ("W/m2", "W/m\u00b2"):
         return value
-    if unit in ("kW/m2", "kW/m\u00b2", "kWh/m2", "kWh/m\u00b2"):
+    if unit in ("kW/m2", "kW/m\u00b2"):
         return value * 1000.0
+    if unit in ("Wh/m2", "Wh/m\u00b2") and step_hours > 0:
+        return value / step_hours
+    if unit in ("kWh/m2", "kWh/m\u00b2") and step_hours > 0:
+        return value * 1000.0 / step_hours
     return None
 
 
@@ -170,11 +174,37 @@ def _variant_context(store, project: str | None, variant: str | None) -> tuple[d
     return vc_info, load_ctx
 
 
+def _parse_monthly_tan_phi(raw) -> list[float] | None:
+    if isinstance(raw, list) and len(raw) == 12:
+        vals: list[float] = []
+        for item in raw:
+            if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(float(item)):
+                return None
+            vals.append(float(item))
+        return vals
+    if isinstance(raw, str):
+        parts = [part.strip() for part in raw.removesuffix(",").split(",") if part.strip()]
+        if len(parts) != 12:
+            return None
+        vals = []
+        for part in parts:
+            try:
+                v = float(part)
+            except ValueError:
+                return None
+            if not math.isfinite(v):
+                return None
+            vals.append(v)
+        return vals
+    return None
+
+
 def _extract_grid_limit_context(
     vc_info: dict | None,
     *,
     peak_egrid_kw: float | None,
     peak_eap_kva: float | None,
+    peak_egrid_kw_by_month: dict[int, float] | None = None,
 ) -> dict | None:
     """Resolve active dispatch cap for kW or kVA (apparent) PLimGrid variants."""
     if not vc_info:
@@ -182,6 +212,7 @@ def _extract_grid_limit_context(
     limit = None
     quantity = None
     tan_phi = None
+    monthly_tan_phi: list[float] | None = None
 
     pc = vc_info.get("power_controls")
     if isinstance(pc, dict):
@@ -190,41 +221,87 @@ def _extract_grid_limit_context(
         if isinstance(gl, dict) and gl.get("mode") == "constant" and isinstance(gl.get("limit"), (int, float)):
             limit = float(gl["limit"])
             quantity = gl.get("quantity") or "active"
-        if isinstance(pf, dict) and pf.get("mode") == "constant":
-            raw_tp = pf.get("tan_phi")
-            if isinstance(raw_tp, (int, float)) and math.isfinite(raw_tp):
-                tan_phi = float(raw_tp)
+        if isinstance(pf, dict):
+            if pf.get("mode") == "constant":
+                raw_tp = pf.get("tan_phi")
+                if isinstance(raw_tp, (int, float)) and math.isfinite(raw_tp):
+                    tan_phi = float(raw_tp)
+            elif pf.get("mode") == "monthly":
+                monthly_tan_phi = _parse_monthly_tan_phi(pf.get("monthly_tan_phi"))
+
+    sys_params = vc_info.get("system_parameters") or {}
+    raw_flags = sys_params.get("Flags")
+    sys_flags = int(raw_flags[1:], 16) if isinstance(raw_flags, str) and _HEX_FLAG.fullmatch(raw_flags) else 0
 
     if limit is None:
-        sys_params = vc_info.get("system_parameters") or {}
-        raw_flags = sys_params.get("Flags")
         raw_lim = sys_params.get("PLimGrid")
-        if isinstance(raw_flags, str) and _HEX_FLAG.fullmatch(raw_flags) and raw_lim is not None:
-            sys_flags = int(raw_flags[1:], 16)
-            if sys_flags & _GRID_LIMIT_ENABLED_BIT:
-                try:
-                    parsed_lim = float(raw_lim)
-                except (TypeError, ValueError):
-                    parsed_lim = None
-                if parsed_lim is not None and math.isfinite(parsed_lim) and parsed_lim > 0:
-                    limit = parsed_lim
-                    quantity = "apparent" if (sys_flags & _GRID_LIMIT_APPARENT_BIT) else "active"
-        if tan_phi is None and sys_params.get("TanPhi") is not None:
+        if sys_flags & _GRID_LIMIT_ENABLED_BIT and raw_lim is not None:
+            try:
+                parsed_lim = float(raw_lim)
+            except (TypeError, ValueError):
+                parsed_lim = None
+            if parsed_lim is not None and math.isfinite(parsed_lim) and parsed_lim > 0:
+                limit = parsed_lim
+                quantity = "apparent" if (sys_flags & _GRID_LIMIT_APPARENT_BIT) else "active"
+
+    if tan_phi is None and monthly_tan_phi is None:
+        pf_state = vc_info.get("power_factor")
+        if isinstance(pf_state, dict):
+            if pf_state.get("mode") == "constant":
+                raw_tp = pf_state.get("tan_phi")
+                if isinstance(raw_tp, (int, float)) and math.isfinite(raw_tp):
+                    tan_phi = float(raw_tp)
+            elif pf_state.get("mode") == "monthly":
+                monthly_tan_phi = _parse_monthly_tan_phi(pf_state.get("monthly_tan_phi"))
+
+    if tan_phi is None and monthly_tan_phi is None:
+        if (sys_flags & 0x00300000) == 0x00300000 and sys_params.get("TanPhiM") is not None:
+            monthly_tan_phi = _parse_monthly_tan_phi(sys_params.get("TanPhiM"))
+        elif sys_params.get("TanPhi") is not None:
             try:
                 parsed_tp = float(sys_params["TanPhi"])
                 if math.isfinite(parsed_tp):
                     tan_phi = parsed_tp
             except (TypeError, ValueError):
                 pass
-        if tan_phi is None:
-            pf_state = vc_info.get("power_factor")
-            if isinstance(pf_state, dict) and pf_state.get("mode") == "constant":
-                raw_tp = pf_state.get("tan_phi")
-                if isinstance(raw_tp, (int, float)) and math.isfinite(raw_tp):
-                    tan_phi = float(raw_tp)
 
     if limit is None or not math.isfinite(limit) or limit <= 0:
         return None
+
+    if monthly_tan_phi is not None:
+        monthly_cos = [1.0 / math.sqrt(1.0 + tp * tp) for tp in monthly_tan_phi]
+        monthly_caps = [(limit * cp if quantity == "apparent" else limit) for cp in monthly_cos]
+        uniform = all(math.isclose(tp, monthly_tan_phi[0], rel_tol=1e-9, abs_tol=1e-9) for tp in monthly_tan_phi)
+        scalar_tp = round(monthly_tan_phi[0], 6) if uniform else None
+        scalar_cp = round(monthly_cos[0], 6) if uniform else None
+        scalar_cap = round(monthly_caps[0], 4) if uniform else None
+        if peak_egrid_kw_by_month:
+            binding = any(
+                peak_m >= monthly_caps[m - 1] * 0.995
+                for m, peak_m in peak_egrid_kw_by_month.items()
+                if 1 <= m <= 12 and monthly_caps[m - 1] > 0
+            )
+        else:
+            binding = bool(peak_egrid_kw is not None and scalar_cap is not None and scalar_cap > 0
+                           and peak_egrid_kw >= scalar_cap * 0.995)
+        return {
+            "enabled": True,
+            "quantity": quantity,
+            "power_factor_mode": "monthly",
+            "configured_limit": round(limit, 4),
+            "configured_unit": "kVA" if quantity == "apparent" else "kW",
+            "tan_phi": scalar_tp,
+            "cos_phi": scalar_cp,
+            "active_dispatch_cap_kw": scalar_cap,
+            "monthly_tan_phi": [round(tp, 6) for tp in monthly_tan_phi],
+            "monthly_cos_phi": [round(cp, 6) for cp in monthly_cos],
+            "monthly_active_dispatch_cap_kw": [round(cap, 4) for cap in monthly_caps],
+            "peak_e_grid_kw": round(peak_egrid_kw, 4) if peak_egrid_kw is not None else None,
+            "peak_eap_grid_kva": round(peak_eap_kva, 4) if peak_eap_kva is not None else None,
+            "active_cap_binding": binding,
+            "apparent_exceeds_configured_is_expected": quantity == "apparent",
+        }
+
     eff_tan_phi = tan_phi if tan_phi is not None else 0.0
     cos_phi = 1.0 / math.sqrt(1.0 + eff_tan_phi * eff_tan_phi)
     active_cap_kw = limit * cos_phi if quantity == "apparent" else limit
@@ -259,12 +336,60 @@ def diagnose_simulation_csv(
     vc_info, load_ctx = _variant_context(store, project, variant)
     units = result_units(path, strict=True)
 
+    # Pre-scan timestamp cadence so interval irradiation (Wh/m2, kWh/m2) uses exact step_hours on row 0.
+    prev_stamp = None
+    step_minutes: float | None = None
+    regular = True
+    scan_rows = 0
+    scan_headers: list[str] = []
+    for scan_headers, scan_row in iter_result_csv(path, strict=True):
+        stamp = scan_row[0]
+        if prev_stamp is not None:
+            delta = (stamp - prev_stamp).total_seconds() / 60.0
+            if delta <= 0:
+                regular = False
+            elif step_minutes is None:
+                step_minutes = delta
+            elif abs(delta - step_minutes) > 1e-6:
+                regular = False
+        prev_stamp = stamp
+        scan_rows += 1
+
+    if scan_rows == 0:
+        raise ValueError("Result CSV contains no simulation rows")
+
+    if not regular:
+        return {
+            "status": "blocked",
+            "issues": [
+                "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+                "cannot establish interval duration for diagnostics"
+            ],
+            "max_severity": "none",
+            "finding_count": 0,
+            "counts_by_severity": {"critical": 0, "high": 0, "medium": 0, "info": 0},
+            "needs_review": False,
+            "rows": scan_rows,
+            "step_minutes": None,
+            "is_bifacial": False,
+            "weighted_pr": None,
+            "analyzed_columns": [h for h in scan_headers[1:]],
+            "variant_attribution_used": vc_info is not None,
+            "grid_limit_context": None,
+            "findings": [],
+        }
+
+    eff_step_min = step_minutes if step_minutes is not None else 60.0
+    step_hours = eff_step_min / 60.0
+    has_grid_storage = bool(vc_info and vc_info.get("grid_storage") is not None)
+
     # Accumulators
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
     weighted_pr_num = 0.0
     weighted_pr_den = 0.0
     peak_egrid_raw: float | None = None
+    peak_egrid_raw_by_month: dict[int, float] = {}
     peak_eap_raw: float | None = None
     egrid_exceeds_earray_count = 0
     egrid_exceeds_stamps: list[str] = []
@@ -285,9 +410,6 @@ def diagnose_simulation_csv(
     headers: list[str] = []
     idx: dict[str, int] = {}
     rows = 0
-    prev_stamp = None
-    step_minutes: float | None = None
-    regular = True
 
     for headers, row in iter_result_csv(path, strict=True):
         if rows == 0:
@@ -296,15 +418,6 @@ def diagnose_simulation_csv(
                 sums[name] = 0.0
                 counts[name] = 0
         stamp = row[0]
-        if prev_stamp is not None:
-            delta = (stamp - prev_stamp).total_seconds() / 60.0
-            if delta <= 0:
-                regular = False
-            elif step_minutes is None:
-                step_minutes = delta
-            elif abs(delta - step_minutes) > 1e-6:
-                regular = False
-        prev_stamp = stamp
         rows += 1
 
         for name, col_i in idx.items():
@@ -315,7 +428,7 @@ def diagnose_simulation_csv(
 
         gi_raw = row[idx["GlobInc"]] if "GlobInc" in idx else None
         gi_w_m2 = (
-            _to_w_m2(float(gi_raw), units.get("GlobInc", ""))
+            _to_w_m2(float(gi_raw), units.get("GlobInc", ""), step_hours)
             if isinstance(gi_raw, (int, float)) and math.isfinite(gi_raw) else None
         )
         eg_raw = row[idx["E_Grid"]] if "E_Grid" in idx else None
@@ -324,8 +437,13 @@ def diagnose_simulation_csv(
         eg_ok = isinstance(eg_raw, (int, float)) and math.isfinite(eg_raw)
         ea_ok = isinstance(ea_raw, (int, float)) and math.isfinite(ea_raw)
         eap_ok = isinstance(eap_raw, (int, float)) and math.isfinite(eap_raw)
-        if eg_ok and (peak_egrid_raw is None or float(eg_raw) > peak_egrid_raw):
-            peak_egrid_raw = float(eg_raw)
+        if eg_ok:
+            eg_val = float(eg_raw)
+            if peak_egrid_raw is None or eg_val > peak_egrid_raw:
+                peak_egrid_raw = eg_val
+            month = stamp.month
+            if month not in peak_egrid_raw_by_month or eg_val > peak_egrid_raw_by_month[month]:
+                peak_egrid_raw_by_month[month] = eg_val
         if eap_ok and (peak_eap_raw is None or float(eap_raw) > peak_eap_raw):
             peak_eap_raw = float(eap_raw)
         pr_raw = row[idx["PR"]] if "PR" in idx else None
@@ -346,10 +464,13 @@ def diagnose_simulation_csv(
             power_hour_num += phase_p * hour_of_day
             power_hour_den += phase_p
 
-        # E_Grid > EArray (skip if storage discharge is active)
-        bat_dis = row[idx["EBatDis"]] if "EBatDis" in idx else 0.0
-        has_bat_dis = isinstance(bat_dis, (int, float)) and math.isfinite(bat_dis) and bat_dis > 1e-6
-        if eg_ok and ea_ok and not has_bat_dis:
+        # E_Grid > EArray and Nighttime export (skip if battery discharge is active or unknown on storage variants)
+        bat_dis_raw = row[idx["EBatDis"]] if "EBatDis" in idx else None
+        bat_dis_known = isinstance(bat_dis_raw, (int, float)) and math.isfinite(bat_dis_raw)
+        has_bat_dis = bat_dis_known and float(bat_dis_raw) > 1e-6
+        discharge_unknown = has_grid_storage and not bat_dis_known
+        skip_no_discharge_checks = has_bat_dis or discharge_unknown
+        if eg_ok and ea_ok and not skip_no_discharge_checks:
             eg_u, ea_u = units.get("E_Grid", ""), units.get("EArray", "")
             if eg_u == ea_u and float(eg_raw) > float(ea_raw) + 1e-3 and float(eg_raw) > 0.01:
                 egrid_exceeds_earray_count += 1
@@ -357,7 +478,7 @@ def diagnose_simulation_csv(
                     egrid_exceeds_stamps.append(str(stamp))
 
         # Nighttime positive export (without battery discharge)
-        if gi_w_m2 is not None and gi_w_m2 <= 0.1 and eg_ok and float(eg_raw) > 1e-4 and not has_bat_dis:
+        if gi_w_m2 is not None and gi_w_m2 <= 0.1 and eg_ok and float(eg_raw) > 1e-4 and not skip_no_discharge_checks:
             night_export_kwh_raw += float(eg_raw)
             night_export_count += 1
             if len(night_export_stamps) < 5:
@@ -383,12 +504,6 @@ def diagnose_simulation_csv(
                 elif soc_norm >= 0.95:
                     soc_high_count += 1
 
-    if rows == 0:
-        raise ValueError("Result CSV contains no simulation rows")
-
-    eff_step_min = step_minutes if (regular and step_minutes is not None) else 60.0
-    step_hours = eff_step_min / 60.0
-
     # Detect bifacial presence from CSV columns or .VC0
     vc_bifacial = False
     if vc_info is not None:
@@ -408,12 +523,22 @@ def diagnose_simulation_csv(
         _to_kw(peak_egrid_raw, units.get("E_Grid", ""), step_hours)
         if peak_egrid_raw is not None and "E_Grid" in idx else None
     )
+    peak_egrid_kw_by_month = {}
+    if "E_Grid" in idx:
+        eg_unit = units.get("E_Grid", "")
+        for m, raw_peak in peak_egrid_raw_by_month.items():
+            conv = _to_kw(raw_peak, eg_unit, step_hours)
+            if conv is not None:
+                peak_egrid_kw_by_month[m] = conv
     peak_eap_kva = (
         _to_kva(peak_eap_raw, units.get("EApGrid", ""), step_hours)
         if peak_eap_raw is not None and "EApGrid" in idx else None
     )
     grid_limit_context = _extract_grid_limit_context(
-        vc_info, peak_egrid_kw=peak_egrid_kw, peak_eap_kva=peak_eap_kva,
+        vc_info,
+        peak_egrid_kw=peak_egrid_kw,
+        peak_eap_kva=peak_eap_kva,
+        peak_egrid_kw_by_month=peak_egrid_kw_by_month or None,
     )
 
     findings: list[dict] = []
@@ -593,17 +718,20 @@ def diagnose_simulation_csv(
                         )
 
     # --- 3. Shading, Soiling & Grid Curtailment ---
-    if "GlobShd" in idx and globinc_kwh_m2 and globinc_kwh_m2 > 0:
-        shd_kwh_m2 = _to_kwh_m2(sums["GlobShd"], units.get("GlobShd", ""), step_hours)
-        if shd_kwh_m2 is not None:
-            pct = (abs(shd_kwh_m2) / globinc_kwh_m2) * 100.0
+    before = "GlobHrz" if counts.get("GlobHrz") == rows else "GlobInc"
+    if all(counts.get(col) == rows for col in (before, "GlobShd")):
+        before_shd = _to_kwh_m2(sums[before], units.get(before, ""), step_hours)
+        after_shd = _to_kwh_m2(sums["GlobShd"], units.get("GlobShd", ""), step_hours)
+        if before_shd and after_shd is not None:
+            shd_kwh_m2 = before_shd - after_shd
+            pct = shd_kwh_m2 / before_shd * 100.0
             if pct > cfg["shading_loss_max_pct"]:
                 pitch_note = f" (FieldType={orient0.get('FieldType')}, Pitch={orient0.get('Pitch')})" if orient0 else ""
                 add(
                     code="SHADING_LOSS_HIGH",
                     severity="high" if pct > cfg["shading_loss_max_pct"] * 2 else "medium",
                     category="shading_soiling_curtailment",
-                    metric="GlobShd / GlobInc",
+                    metric=f"({before} - GlobShd) / {before}",
                     observed=pct,
                     threshold=cfg["shading_loss_max_pct"],
                     unit="%",
@@ -841,7 +969,7 @@ def compact_diagnostics_summary(diag: dict, *, max_findings: int = 5) -> dict:
         diag.get("findings") or [],
         key=lambda f: -SEVERITY_ORDER.get(f.get("severity", "info"), 0),
     )
-    return {
+    summary = {
         "status": diag["status"],
         "max_severity": diag["max_severity"],
         "finding_count": diag["finding_count"],
@@ -860,3 +988,6 @@ def compact_diagnostics_summary(diag: dict, *, max_findings: int = 5) -> dict:
             for f in sorted_findings[:max_findings]
         ],
     }
+    if diag.get("issues"):
+        summary["issues"] = list(diag["issues"])
+    return summary

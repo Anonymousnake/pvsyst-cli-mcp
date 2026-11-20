@@ -160,6 +160,59 @@ class SubHourlyPipelineUnitTests(unittest.TestCase):
             self.assertEqual(cmp["regular_step_minutes"], 15.0)
             self.assertAlmostEqual(cmp["signed_energy_delta_kwh_m2"]["GlobHor"], 0.0, places=6)
 
+    def test_summarize_results_sums_wh_and_kwh_interval_energy_directly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stamps = ("01/06/23 08:00", "01/06/23 08:15", "01/06/23 08:30", "01/06/23 08:45")
+            for unit, val in (("kWh", "1.0"), ("Wh", "1000.0")):
+                with self.subTest(unit=unit):
+                    csv_path = Path(tmp) / f"energy_{unit}.csv"
+                    lines = ["PVSYST 8.1.7", "date;E_Grid", f";{unit}"] + [f"{s};{val}" for s in stamps]
+                    csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                    res = summarize_results(csv_path, ("E_Grid",))
+                    self.assertEqual(res["step_minutes"], 15.0)
+                    self.assertAlmostEqual(res["summary"]["E_Grid"]["energy_kwh"], 4.0, places=6)
+                    self.assertAlmostEqual(res["summary"]["E_Grid"]["observed_energy_kwh"], 4.0, places=6)
+
+    def test_prepare_weather_blocks_utc_plus_13_in_preflight_before_writing(self):
+        from pvsyst_auto.native.cli import PVsystCLI
+        from pvsyst_auto.weather.preparation import prepare_weather
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "PVsyst8.1_Data"
+            for sub in ("Meteo", "Sites", "Results"):
+                (ws / sub).mkdir(parents=True, exist_ok=True)
+            tonga_csv = ws / "Meteo" / "tonga_15min.csv"
+            _write_subhourly_weather_csv(tonga_csv, year=2023, step_minutes=15, unit="W/m2")
+            tonga_csv.write_text(
+                tonga_csv.read_text(encoding="utf-8")
+                .replace("#Site;TestSite", "#Site;Nukualofa")
+                .replace("#Country;Switzerland", "#Country;Tonga")
+                .replace("#Latitude;46.24", "#Latitude;-21.14")
+                .replace("#Longitude;6.11", "#Longitude;-175.20")
+                .replace("#Time Zone;1", "#Time Zone;13"),
+                encoding="utf-8",
+            )
+            fake_cli_exe = Path(tmp) / "PVsystCLI.exe"
+            fake_cli_exe.write_bytes(b"stub")
+            cli = PVsystCLI(fake_cli_exe, ws)
+            before_files = set(ws.rglob("*"))
+            for dry_run in (True, False):
+                with self.subTest(dry_run=dry_run):
+                    res = prepare_weather(
+                        cli,
+                        csv_name="tonga_15min.csv",
+                        year=2023,
+                        sit_name="Tonga.SIT",
+                        met_name="Tonga.MET",
+                        country_code="TO",
+                        time_basis="local_standard_interval_start",
+                        step_minutes=15,
+                        dry_run=dry_run,
+                    )
+                    self.assertEqual(res["status"], "blocked", res)
+                    self.assertTrue(any("Timezone outside [-12, 12]" in msg for msg in res["issues"]), res["issues"])
+                    self.assertEqual(set(ws.rglob("*")), before_files)
+
 
 if __name__ == "__main__":
     unittest.main()

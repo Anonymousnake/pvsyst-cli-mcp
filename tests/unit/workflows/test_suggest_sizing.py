@@ -89,7 +89,7 @@ class SuggestSizingTests(unittest.TestCase):
             module={"file_name": "Lab440.PAN"},
             inverter={"file_name": "Lab50.OND"},
             weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
-            ground_layout={"model_mode": "3d", "pitch_m": 12.0, "shed_count": 6},
+            ground_layout={"model_mode": "3d", "pitch_m": 12.0, "shed_count": 6, "module_columns": 20},
             bifacial={"ground_albedo": 0.30, "bifaciality_factor": 0.80, "height_above_ground_m": 2.4},
         )
         with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
@@ -110,10 +110,74 @@ class SuggestSizingTests(unittest.TestCase):
     def test_guidance_resources_contain_key_workflows_and_variables(self):
         self.assertIn("pvsyst_suggest_sizing", SERVER_INSTRUCTIONS)
         self.assertIn("pvsyst://guide/workflows", SERVER_INSTRUCTIONS)
+        self.assertIn("declares a `dry_run` parameter", SERVER_INSTRUCTIONS)
+        self.assertIn("pvsyst_build_sfi", SERVER_INSTRUCTIONS)
         self.assertIn("auto_from_components", WORKFLOW_GUIDE_MD)
         vguide = _variables_guide_md()
         self.assertIn("bifacial", vguide)
         self.assertIn("viGlobBak", vguide)
+
+    def test_suggest_sizing_blocks_asymmetric_mppt_limits_and_caps_uniform_isc(self):
+        unbalanced_ond = UTILITY_OND.replace(
+            "  NbMPPT=2\n",
+            "  NbMPPT=2\n  NbInputsMain=1\n  NbInputsSec=1\n  IscMaxMain=20.0\n  IscMaxSec=10.0\n",
+        )
+        (self.root / "ComposPV/Inverters/Unbalanced.OND").write_bytes(
+            b"\xef\xbb\xbf" + unbalanced_ond.replace("\n", "\r\n").encode("utf-8")
+        )
+        blocked = suggest_sizing(
+            self.store, pan_name="Lab440.PAN", ond_name="Unbalanced.OND", target_dc_kw=8.8
+        )
+        self.assertEqual(blocked["status"], "blocked", blocked)
+        self.assertTrue(
+            any(item["field"] == "mppt_limits" and "IscMaxMain" in item["message"] and "IscMaxSec" in item["message"]
+                for item in blocked["issues"]),
+            blocked["issues"],
+        )
+
+        # Uniform declared IscMax=10 A on both MPPTs is not asymmetric, but still caps short-circuit current.
+        low_isc_ond = UTILITY_OND.replace(
+            "  NbMPPT=2\n",
+            "  NbMPPT=2\n  IscMaxMain=10.0\n  IscMaxSec=10.0\n",
+        )
+        (self.root / "ComposPV/Inverters/LowIsc.OND").write_bytes(
+            b"\xef\xbb\xbf" + low_isc_ond.replace("\n", "\r\n").encode("utf-8")
+        )
+        capped = suggest_sizing(
+            self.store, pan_name="Lab440.PAN", ond_name="LowIsc.OND", target_dc_kw=100.0
+        )
+        self.assertEqual(capped["status"], "blocked", capped)
+        self.assertTrue(any(item["field"] == "current_window" for item in capped["issues"]), capped["issues"])
+
+    def test_storage_prompt_matches_peak_shaving_and_load_strategy_contracts(self):
+        from pvsyst_auto.api.guidance import register_guidance
+
+        prompts = {}
+
+        class _StubServer:
+            def prompt(self, *, name, description):
+                def decorator(fn):
+                    prompts[name] = fn
+                    return fn
+                return decorator
+
+            def resource(self, uri, **_):
+                def decorator(fn):
+                    return fn
+                return decorator
+
+        register_guidance(_StubServer())
+        fn = prompts["design_pv_with_storage"]
+
+        peak = fn(project="Example.PRJ")
+        self.assertIn("pvLoad", peak)
+        self.assertIn("omit `load_manifest_name`", peak)
+        self.assertNotIn("Attach a load profile", peak)
+
+        for strat in ("self_consumption", "weak_grid"):
+            text = fn(project="Example.PRJ", storage_strategy=strat)
+            self.assertIn("pvsyst_prepare_load_profile", text)
+            self.assertIn("load_manifest_name", text)
 
 
 if __name__ == "__main__":

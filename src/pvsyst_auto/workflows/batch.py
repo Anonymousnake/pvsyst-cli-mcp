@@ -235,13 +235,13 @@ def _expand_scenarios(
                 params_norm[key] = norm
                 params_text[key] = formatted
             hourly_name = entry.get("hourly_file", "")
+            if not hourly_name and export_hourly:
+                hourly_name = f"{sweep_stem}_SIM_{idx}.CSV"
             if hourly_name:
                 safe_filename(hourly_name, ".csv")
                 if hourly_name.casefold() in seen_hourly:
                     raise ValueError(f"Duplicate scenario hourly_file: {hourly_name}")
                 seen_hourly.add(hourly_name.casefold())
-            elif export_hourly:
-                hourly_name = f"{sweep_stem}_SIM_{idx}.CSV"
             default_comment = ", ".join(f"{k}={params_text[k]}" for k in param_keys)
             if len(default_comment) > 120:
                 default_comment = default_comment[:117] + "..."

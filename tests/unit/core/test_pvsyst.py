@@ -924,6 +924,27 @@ class PVsystTests(unittest.TestCase):
                 ini_file.write_bytes(payload)
                 self.assertEqual(native_scene._ini_datapath(), expected_dp)
 
+    def test_simulation_error_includes_nonzero_exit_code(self):
+        out_csv = self.workspace / "Results" / "nonzero_exit.csv"
+        out_pdf = self.workspace / "Results" / "nonzero_exit.pdf"
+
+        def _fake_nonzero(*args):
+            out_csv.write_text(CSV_TEXT, encoding="utf-8")
+            out_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+            return subprocess.CompletedProcess(
+                [], 3, "Simulation done in 0min 5sec\nReport PDF generated\nA ", ""
+            )
+
+        with patch.object(self.client, "_run", side_effect=_fake_nonzero):
+            with self.assertRaisesRegex(
+                PVsystError,
+                r"Simulation did not complete or produce requested output \(exit code 3\):",
+            ):
+                self.client.run_simulation(
+                    "Example.PRJ", "VC0", sfi=self.sfi,
+                    out_csv=out_csv, report_pdf=out_pdf,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

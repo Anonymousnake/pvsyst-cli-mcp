@@ -77,7 +77,7 @@ def _write_fake_annual_csv(csv_path: Path, *, project: str, variant: str, site: 
             ge = 480.0
             egrid = (gi * 0.001) * nominal_dc_kw * pr_val
             earr = egrid * 1.02
-            row = [stamp, f"{gi:.2f}", f"{ge:.2f}", f"{earr:.3f}", f"{egrid:.3f}", f"{pr_val:.4f}", "0.000", "10.00"]
+            row = [stamp, f"{gi:.2f}", f"{ge:.2f}", f"{earr:.3f}", f"{egrid:.3f}", f"{pr_val:.4f}", "0.000", "490.00"]
             if bifacial:
                 row.extend(["400.00", "150.00", "50.00", "20.00", "30.00", "0.800", "0.100", "0.8200"])
         else:
@@ -382,7 +382,7 @@ class BifacialAndUtilityTests(unittest.TestCase):
             inverter={"file_name": "Lab50.OND"},
             weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
             capacity=_capacity_spec(),
-            ground_layout={"model_mode": "3d", "pitch_m": 11.0, "shed_count": 6, "module_rows": 2, "module_columns": 20},
+            ground_layout={"model_mode": "3d", "pitch_m": 11.0, "shed_count": 6, "module_rows": 2, "module_columns": 19},
             bifacial={"ground_albedo": 0.30, "bifaciality_factor": 0.80, "height_above_ground_m": 1.2},
         )
         with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
@@ -416,7 +416,7 @@ class BifacialAndUtilityTests(unittest.TestCase):
             weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
             capacity=_capacity_spec(),
             ground_layout={
-                "model_mode": "3d", "pitch_m": 12.0, "shed_count": 8,
+                "model_mode": "3d", "pitch_m": 12.0, "shed_count": 6, "module_columns": 19,
                 "min_phi_deg": -55.0, "max_phi_deg": 55.0, "backtracking": True,
             },
             bifacial={"ground_albedo": 0.28, "bifaciality_factor": 0.78, "height_above_ground_m": 2.4},
@@ -429,6 +429,183 @@ class BifacialAndUtilityTests(unittest.TestCase):
             self.assertEqual(info_t["orientations"][0]["values"]["FieldType"], "TrackHorizNSAxis")
             self.assertEqual(info_t["orientations"][0]["values"]["MinPhi"], "-55.0")
             self.assertEqual(info_t["orientations"][0]["bifacial"]["model"], "Trackers2D")
+
+
+    def test_utility_rejects_options_unavailable_in_model_mode(self):
+        cli = _FakeUtilityCLI(self.root)
+        req = SingleDesignRequest(
+            scope="ground_tracker", new_project="Geometry.PRJ", year=2024, target_dc_kw=100.0,
+            module={"file_name": "Lab440.PAN"}, inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            capacity=_capacity_spec(),
+            ground_layout={"model_mode": "3d", "shed_count": 6, "module_columns": 19},
+        ).model_dump(exclude_none=True)
+        checks = (
+            ({"electrical_effect": True}, "requires model_mode='unlimited'"),
+            ({"model_mode": "unlimited", "wind_stow": True}, "requires model_mode='3d'"),
+        )
+        for overrides, error in checks:
+            spec = {**req, "ground_layout": {**req["ground_layout"], **overrides}}
+            for tool in (prepare_design_project, simulate_design):
+                for dry_run in (True, False):
+                    with self.subTest(overrides=overrides, tool=tool.__name__, dry_run=dry_run):
+                        result = tool(cli, self.store, spec=spec, dry_run=dry_run)
+                        self.assertEqual(result["status"], "blocked")
+                        self.assertIn(error, str(result["issues"]))
+                        self.assertFalse(list((self.root / "Projects").iterdir()))
+                        self.assertFalse(list((self.root / "Results").iterdir()))
+        self.assertEqual(cli.runs, [])
+
+    def test_partial_bifacial_edit_preserves_native_omissions_and_flags(self):
+        # 1. Commercial-style shed pvBiFacial: PitchUser absent, NShedsUser=-9999, ShedTransparentFrac=0.005.
+        shed_synth = synthesize_utility_project(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            field_type="RegularSheds", pan_name="Lab440.PAN", ond_name="Lab50.OND",
+            bifacial={"ground_albedo": 0.30, "bifaciality_factor": 0.80, "height_above_ground_m": 0.5},
+        )
+        comm_vc = (
+            shed_synth["vc0_text"]
+            .replace("      MismatchLossFactor=0.100\r\n",
+                     "      MismatchLossFactor=0.150\r\n      ShedTransparentFrac=0.005\r\n")
+            .replace("        PitchUser=-1.000\r\n", "")
+            .replace("        NShedsUser=-1\r\n", "        NShedsUser=-9999\r\n")
+        )
+        self.store.create_project("CommBifi.PRJ", shed_synth["prj_text"], {"VC0": comm_vc})
+        info_c = self.store.inspect_parameters("CommBifi.PRJ", "VC0")
+        upd_c = self.store.update_parameters(
+            "CommBifi.PRJ", "VC0", expected_sha256=info_c["sha256"],
+            bifacial_updates={"ground_albedo": 0.35}, dry_run=False,
+        )
+        self.assertEqual(upd_c["bifacial"]["action"], "updated")
+        saved_c = (self.root / "Projects/CommBifi.VC0").read_text(encoding="utf-8-sig")
+        self.assertIn("GroundAlbedo=0.350", saved_c)
+        self.assertNotIn("PitchUser=", saved_c)
+        self.assertIn("NShedsUser=-9999", saved_c)
+        self.assertIn("ShedTransparentFrac=0.005", saved_c)
+
+        # 2. Utility-style tracker pvBiFacial: tracker model Flags=$02 must stay $02.
+        trk_synth = synthesize_utility_project(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            field_type="TrackHorizNSAxis", pan_name="Lab440.PAN", ond_name="Lab50.OND",
+            bifacial={"ground_albedo": 0.30, "bifaciality_factor": 0.80, "height_above_ground_m": 2.5},
+        )
+        util_vc = trk_synth["vc0_text"].replace(
+            "      PVObject_BiFacialTrackerModel=pvBiFacialTrackers\r\n        Flags=$00\r\n",
+            "      PVObject_BiFacialTrackerModel=pvBiFacialTrackers\r\n        Flags=$02\r\n",
+        )
+        self.store.create_project("UtilBifi.PRJ", trk_synth["prj_text"], {"VC0": util_vc})
+        info_u = self.store.inspect_parameters("UtilBifi.PRJ", "VC0")
+        upd_u = self.store.update_parameters(
+            "UtilBifi.PRJ", "VC0", expected_sha256=info_u["sha256"],
+            bifacial_updates={"ground_albedo": 0.35}, dry_run=False,
+        )
+        self.assertEqual(upd_u["bifacial"]["action"], "updated")
+        saved_u = (self.root / "Projects/UtilBifi.VC0").read_text(encoding="utf-8-sig")
+        self.assertIn("GroundAlbedo=0.350", saved_u)
+        self.assertIn("PVObject_BiFacialTrackerModel=pvBiFacialTrackers\n        Flags=$02\n", saved_u)
+
+    def test_ground_3d_rejects_chord_override_pitch_overlap_and_module_count_mismatch(self):
+        cli = _FakeUtilityCLI(self.root, year=2024)
+        fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
+
+        # 1. Tracker pitch smaller than 3D scene chord (4.012 m) even when collector_width_m=3.0 is passed.
+        trk_req = SingleDesignRequest(
+            scope="ground_tracker", new_project="TightPitch.PRJ", year=2024, target_dc_kw=100.0,
+            module={"file_name": "Lab440.PAN"}, inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            capacity=_capacity_spec(),
+            ground_layout={"model_mode": "3d", "shed_count": 6, "module_columns": 19,
+                           "collector_width_m": 3.0, "pitch_m": 3.5},
+        ).model_dump(exclude_none=True)
+        with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
+            for dry_run in (True, False):
+                res = simulate_design(cli, self.store, spec=trk_req, dry_run=dry_run)
+                self.assertEqual(res["status"], "blocked", res)
+                self.assertTrue(any("4.012" in i["message"] for i in res["issues"]), res["issues"])
+            self.assertEqual(list((self.root / "Projects").iterdir()), [])
+
+        # 2. Regular 3D shed scene module count (500) vs electrical count (228) is blocked with both counts.
+        shed_req = SingleDesignRequest(
+            scope="ground_sheds", new_project="CountMismatch.PRJ", year=2024, target_dc_kw=100.0,
+            tilt=20.0, azimuth=0.0,
+            module={"file_name": "Lab440.PAN"}, inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            capacity=_capacity_spec(),
+            ground_layout={"model_mode": "3d"},
+        ).model_dump(exclude_none=True)
+        with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
+            for dry_run in (True, False):
+                res = prepare_design_project(cli, self.store, spec=shed_req, dry_run=dry_run)
+                self.assertEqual(res["status"], "blocked", res)
+                msg = " ".join(i["message"] for i in res["issues"])
+                self.assertIn("500", msg)
+                self.assertIn("228", msg)
+            self.assertEqual(list((self.root / "Projects").iterdir()), [])
+
+    def test_variant_update_rejects_mounting_bifacial_on_monofacial_pan(self):
+        (self.root / "ComposPV/PVmodules/Mono440.PAN").write_bytes(
+            b"\xef\xbb\xbf" + UTILITY_MONO_PAN.replace("\n", "\r\n").encode("utf-8")
+        )
+        cli = _FakeUtilityCLI(self.root, year=2024)
+        fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
+        req = SingleDesignRequest(
+            scope="ground_sheds", new_project="MonoShed.PRJ", year=2024, target_dc_kw=100.0,
+            tilt=20.0, azimuth=0.0,
+            module={"file_name": "Mono440.PAN"}, inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            capacity=_capacity_spec(),
+            ground_layout={"model_mode": "unlimited"},
+        ).model_dump(exclude_none=True)
+        with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
+            prep = prepare_design_project(cli, self.store, spec=req, dry_run=False)
+        self.assertEqual(prep["status"], "prepared", prep)
+        info = self.store.inspect_parameters("MonoShed.PRJ", "VC0")
+        with self.assertRaisesRegex(ValueError, "monofacial.*bit 23"):
+            self.store.update_parameters(
+                "MonoShed.PRJ", "VC0", expected_sha256=info["sha256"],
+                bifacial_updates={"ground_albedo": 0.30}, dry_run=True,
+            )
+
+    def test_utility_preserves_default_loss_bits_unless_explicitly_set(self):
+        # Omitted pmism_mpp / module_quality_loss keep both default bits set ($001E0002 / $001E0402).
+        default_synth = synthesize_utility_project(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            field_type="Sheds", pan_name="Lab440.PAN", ond_name="Lab50.OND",
+        )
+        self.assertIn("Flags=$001E0002", default_synth["vc0_text"])
+
+        explicit_synth = synthesize_utility_project(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            field_type="Sheds", pan_name="Lab440.PAN", ond_name="Lab50.OND",
+            pmism_mpp=1.5, module_quality_loss=-0.8,
+        )
+        self.assertIn("Flags=$000A0002", explicit_synth["vc0_text"])
+        self.assertIn("PMismMPP=1.50", explicit_synth["vc0_text"])
+        self.assertIn("PQualityModU=-0.80", explicit_synth["vc0_text"])
+
+    def test_extract_bifacial_metrics_handles_subhourly_and_wh_m2_units(self):
+        from pvsyst_auto.native.cli import result_units
+        from pvsyst_auto.workflows.utility import _extract_bifacial_metrics
+
+        stamps = ("01/06/24 10:00", "01/06/24 10:15", "01/06/24 10:30", "01/06/24 10:45")
+        for label, g_unit, g_val, m_unit, m_val in (
+            ("w_m2_kw", "W/m2", "400.0", "kW", "2.0"),
+            ("wh_m2_kwh", "Wh/m2", "100.0", "kWh", "0.5"),
+        ):
+            with self.subTest(label=label):
+                csv_path = self.root / "Results" / f"bifi_{label}.csv"
+                lines = [
+                    "PVSYST 8.1.7",
+                    "date;GlobBak;GlobGnd;MismBak;PRBifi",
+                    f";{g_unit};{g_unit};{m_unit};ratio",
+                ] + [f"{s};{g_val};{g_val};{m_val};0.85" for s in stamps]
+                csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                metrics = _extract_bifacial_metrics(csv_path, result_units(csv_path, strict=True))
+                # 4 * 15 min = 1 h: 400 W/m2 * 1 h = 0.4 kWh/m2, 2 kW * 1 h = 2.0 kWh
+                self.assertAlmostEqual(metrics["rear_irradiation_kwh_m2"], 0.4, places=6)
+                self.assertAlmostEqual(metrics["ground_irradiation_kwh_m2"], 0.4, places=6)
+                self.assertAlmostEqual(metrics["rear_mismatch_loss_kwh"], 2.0, places=6)
+                self.assertAlmostEqual(metrics["mean_pr_bifi"], 0.85, places=6)
 
 
 if __name__ == "__main__":

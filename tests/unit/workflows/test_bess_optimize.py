@@ -34,29 +34,27 @@ def _write_pv_load_csv(path: Path, *, days: int = 30) -> Path:
         "date;" + ";".join(c for c, _ in cols),
         ";" + ";".join(u for _, u in cols),
     ]
-    # 12 representative days (one per month) scaled or N days across months
-    for month in range(1, 13):
-        n_d = max(1, days // 12)
-        for d in range(1, n_d + 1):
-            start = datetime(2024, month, d, 0, 0)
-            for h in range(24):
-                dt = start + timedelta(hours=h)
-                gi = 800.0 if 9 <= h < 16 else (300.0 if h in (7, 8, 16, 17) else 0.0)
-                pv = 120.0 * (gi / 1000.0) * 0.85 if gi > 0 else 0.0
-                # Commercial load with sharp evening peak (18-21) and morning peak (8-11)
-                if 18 <= h <= 21:
-                    load = 140.0
-                elif 8 <= h <= 11:
-                    load = 110.0
-                elif 12 <= h <= 17:
-                    load = 85.0
-                else:
-                    load = 25.0
-                imp = max(0.0, load - pv)
-                lines.append(
-                    f"{dt.strftime('%d/%m/%y %H:%M')};{gi:.1f};{pv * 1.03:.3f};{pv:.3f};"
-                    f"{'0.85' if gi > 0 else ''};{load:.2f};{imp:.2f}"
-                )
+    # Contiguous hourly timestamps starting Jan 1 so regular-cadence checks always pass
+    start = datetime(2024, 1, 1, 0, 0)
+    for step in range(max(1, days) * 24):
+        dt = start + timedelta(hours=step)
+        h = dt.hour
+        gi = 800.0 if 9 <= h < 16 else (300.0 if h in (7, 8, 16, 17) else 0.0)
+        pv = 120.0 * (gi / 1000.0) * 0.85 if gi > 0 else 0.0
+        # Commercial load with sharp evening peak (18-21) and morning peak (8-11)
+        if 18 <= h <= 21:
+            load = 140.0
+        elif 8 <= h <= 11:
+            load = 110.0
+        elif 12 <= h <= 17:
+            load = 85.0
+        else:
+            load = 25.0
+        imp = max(0.0, load - pv)
+        lines.append(
+            f"{dt.strftime('%d/%m/%y %H:%M')};{gi:.1f};{pv * 1.03:.3f};{pv:.3f};"
+            f"{'0.85' if gi > 0 else ''};{load:.2f};{imp:.2f}"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path

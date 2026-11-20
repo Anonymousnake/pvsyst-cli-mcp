@@ -18,8 +18,8 @@ def _write_csv(path: Path, *, pr: float = 0.84, il_vmax: float = 0.0, il_pmax: f
         "Geographical Site;OptSite.SIT",
         "Weather data;OptMet.MET",
         "Simulation variant;OptTest.VC0",
-        "date;GlobInc;EArray;E_Grid;PR;IL_Vmax;IL_Pmax;GlobShd",
-        ";W/m2;kW;kW;ratio;kW;kW;W/m2",
+        "date;GlobInc;EArray;E_Grid;PR;IL_Vmax;IL_Pmax;GlobHrz;GlobShd",
+        ";W/m2;kW;kW;ratio;kW;kW;W/m2;W/m2",
     ]
     start = datetime(2024, 6, 1, 0, 0)
     for h in range(48):
@@ -30,7 +30,7 @@ def _write_csv(path: Path, *, pr: float = 0.84, il_vmax: float = 0.0, il_pmax: f
         lines.append(
             f"{dt.strftime('%d/%m/%y %H:%M')};{gi:.2f};{ea:.3f};{eg:.3f};"
             f"{pr if gi > 0 else ''};{il_vmax if gi > 0 else 0.0};"
-            f"{il_pmax if gi > 0 else 0.0};{glob_shd if gi > 0 else 0.0}"
+            f"{il_pmax if gi > 0 else 0.0};{gi:.2f};{gi - glob_shd if gi > 0 else 0.0}"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -119,6 +119,40 @@ class OptimizeVariantTests(unittest.TestCase):
         # Baseline VC0 must remain byte-for-byte untouched!
         self.assertEqual((self.root / "Projects" / "OptTest.VC0").read_bytes(), self.baseline_bytes)
 
+    def test_optimization_uses_valid_slot_after_vc9(self):
+        for digit in range(1, 10):
+            self.store.clone("OptTest.PRJ", "VC0", f"VC{digit}")
+        _write_csv(self.root / "Results" / "base_bad.csv", pr=0.60, il_vmax=3.0)
+        result = optimize_variant(
+            self.cli, self.store, project="OptTest.PRJ", variant="VC0",
+            csv_name="base_bad.csv", max_iterations=1, dry_run=False, confirm=True,
+        )
+        self.assertEqual(result["iterations"][0]["new_variant"], "VCA")
+        self.assertEqual(self.cli.calls, [("OptTest.PRJ", "VCA")])
+        self.assertEqual((self.root / "Projects" / "OptTest.VC0").read_bytes(), self.baseline_bytes)
+
+    def test_optimization_uses_distinct_sfi_for_hour_and_subhour(self):
+        sfis: list[Path] = []
+        orig_run = self.cli.run_simulation
+
+        def recording_run(project, variant, *, sfi=None, out_csv=None, **kwargs):
+            sfis.append(Path(sfi))
+            return orig_run(project, variant, sfi=sfi, out_csv=out_csv, **kwargs)
+
+        self.cli.run_simulation = recording_run
+        _write_csv(self.root / "Results" / "base_step.csv", pr=0.60, il_vmax=3.0)
+        optimize_variant(
+            self.cli, self.store, project="OptTest.PRJ", variant="VC0",
+            csv_name="base_step.csv", max_iterations=1, time_step="hour", dry_run=False, confirm=True,
+        )
+        optimize_variant(
+            self.cli, self.store, project="OptTest.PRJ", variant="VC0",
+            csv_name="base_step.csv", max_iterations=1, time_step="subhour", dry_run=False, confirm=True,
+        )
+        self.assertEqual(len(sfis), 2)
+        self.assertNotEqual(sfis[0].name, sfis[1].name)
+        self.assertIn("SubHour", sfis[1].read_text(encoding="utf-8"))
+
     def test_clean_baseline_returns_no_action_needed(self):
         _write_csv(self.root / "Results" / "base_clean.csv", pr=0.84)
         res = optimize_variant(
@@ -128,6 +162,57 @@ class OptimizeVariantTests(unittest.TestCase):
         self.assertEqual(res["status"], "no_action_needed")
         self.assertTrue(res["converged"])
         self.assertEqual(self.cli.calls, [])
+
+    def test_optimize_blocks_irregular_cadence_uses_feasible_series_range_and_subhourly_kwh(self):
+        from unittest.mock import patch
+        from pvsyst_auto.workflows.optimize import propose_remediations
+
+        # 1. Irregular cadence returns status='blocked' (not 'no_action_needed')
+        gap_csv = self.root / "Results" / "gap_opt.csv"
+        gap_csv.write_text(
+            "PVSYST 8.1.7\n"
+            "date;GlobInc;EArray;E_Grid;PR\n"
+            ";W/m2;kW;kW;ratio\n"
+            "01/06/24 08:00;500;0;0;0\n"
+            "01/06/24 08:15;500;0;0;0\n"
+            "01/06/24 08:45;500;0;0;0\n",
+            encoding="utf-8",
+        )
+        blocked = optimize_variant(
+            self.cli, self.store, project="OptTest.PRJ", variant="VC0",
+            csv_name="gap_opt.csv", dry_run=True,
+        )
+        self.assertEqual(blocked["status"], "blocked", blocked)
+        self.assertFalse(blocked["converged"])
+        self.assertTrue(blocked["issues"])
+
+        # 2. Sub-hourly kW E_Grid reports energy_kwh (4 * 15min * 40 kW = 40 kWh, not 160)
+        sub_csv = self.root / "Results" / "sub15_clean.csv"
+        sub_csv.write_text(
+            "PVSYST 8.1.7\n"
+            "date;GlobInc;EArray;E_Grid;PR\n"
+            ";W/m2;kW;kW;ratio\n"
+            "01/06/24 10:00;800;42;40;0.84\n"
+            "01/06/24 10:15;800;42;40;0.84\n"
+            "01/06/24 10:30;800;42;40;0.84\n"
+            "01/06/24 10:45;800;42;40;0.84\n",
+            encoding="utf-8",
+        )
+        clean = optimize_variant(
+            self.cli, self.store, project="OptTest.PRJ", variant="VC0",
+            csv_name="sub15_clean.csv", dry_run=True,
+        )
+        self.assertEqual(clean["status"], "no_action_needed")
+        self.assertAlmostEqual(clean["baseline"]["e_grid_sum"], 40.0, places=2)
+
+        # 3. propose_remediations respects suggest_sizing recommended.feasible_series_range[1]
+        fake_hint = {"status": "ready", "recommended": {"series_modules": 18, "feasible_series_range": [10, 25]}}
+        diag_uv = {"findings": [{"code": "INVERTER_UNDERVOLTAGE", "severity": "high"}]}
+        with patch("pvsyst_auto.workflows.optimize.suggest_sizing", return_value=fake_hint), \
+                patch.object(self.store.components, "list", return_value={"items": [{"name": "Test.PAN", "specs": {"pnom_w": 440.0}}]}):
+            prop = propose_remediations(self.store, "OptTest.PRJ", "VC0", diag_uv)
+        # Current NModSerie=24; +10% would be 26, capped to feasible_series_range[1]=25
+        self.assertEqual(prop["subarray_updates"]["NModSerie"], 25)
 
 
 if __name__ == "__main__":

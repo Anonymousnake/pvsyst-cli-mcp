@@ -67,6 +67,19 @@ class Ground3DLayoutTests(unittest.TestCase):
         self.assertAlmostEqual(l_plan["site_area_m2"], 60 * 20 + 25 * 30, places=1)
         self.assertGreater(l_plan["table_count"], 2)
 
+    def test_vertical_tables_fit_in_narrow_polygon(self):
+        for vertices in (
+            [[0, 0], [10, 0], [10, 2], [0, 2]],
+            [[0, 2], [10, 2], [10, 0], [0, 0]],
+        ):
+            with self.subTest(vertices=vertices):
+                plan = plan_ground_polygon_layout(
+                    vertices, tilt_deg=90, pitch_m=3, module_width_m=1,
+                    module_length_m=1, module_rows=1, spacing_x_m=0, spacing_y_m=0,
+                )
+                self.assertEqual(plan["total_modules"], 10)
+                self.assertEqual(plan["row_count"], 1)
+
     def test_utility_synthesis_with_site_polygon_obstacles_and_nonzero_base_slope(self):
         poly = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
         obstacles = [

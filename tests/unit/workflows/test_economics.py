@@ -106,6 +106,22 @@ class EconomicsEngineTests(unittest.TestCase):
         self.assertEqual(len(fin["cashflow_schedule"]), 25)
         self.assertEqual(fin["cashflow_schedule"][11]["replacement_cost"], 30_000.0)
 
+    def test_first_year_benefit_includes_first_year_degradation(self):
+        res = evaluate_economics(
+            scenarios=[
+                {"label": "A", "annual_yield_kwh": 100_000.0, "annual_opex": 15_900.0},
+                {"label": "B", "annual_yield_kwh": 80_000.0, "annual_opex": 8_000.0},
+            ],
+            financial={"first_year_degradation_pct": 2.0},
+            tariff={"feed_in_tariff": 0.4},
+            rank_by="year1_net_benefit",
+        )
+        fin = res["scenarios"][0]["financials"]
+        year1 = fin["cashflow_schedule"][0]
+        self.assertEqual((fin["year1_gross_benefit"], fin["year1_net_benefit"]),
+                         (year1["gross_benefit"], year1["net_cashflow"]))
+        self.assertEqual(res["best_scenario"], "B")
+
     def test_tou_pv_and_bess_settlement_consistent_across_hourly_and_15min(self):
         csv_60 = _make_ci_tou_csv(self.root / "Results" / "bess_60m.csv", days=10, step_minutes=60, with_battery=True)
         csv_15 = _make_ci_tou_csv(self.root / "Results" / "bess_15m.csv", days=10, step_minutes=15, with_battery=True)
@@ -150,6 +166,29 @@ class EconomicsEngineTests(unittest.TestCase):
         self.assertIn("peak", by_label["BESS_60m"]["settlement"]["tou_breakdown"])
         self.assertEqual(len(by_label["BESS_60m"]["settlement"]["typical_day_profile"]), 24)
 
+    def test_grid_import_cost_is_settled_without_user_load(self):
+        signed = _write_sfi_csv(self.root / "Results" / "signed.csv", [("E_Grid", "kW")], [
+            ["01/06/24 17:45", 20.0],
+            ["01/06/24 18:00", -4.0],
+        ])
+        separate = _write_sfi_csv(self.root / "Results" / "separate.csv",
+                                  [("EToGrid", "Wh"), ("EFrGrid", "Wh")], [
+            ["01/06/24 17:45", 5000.0, 0.0],
+            ["01/06/24 18:00", 0.0, 1000.0],
+        ])
+        res = evaluate_economics(
+            workspace=self.root,
+            scenarios=[{"csv_name": csv.name} for csv in (signed, separate)],
+            financial={"first_year_degradation_pct": 0.0},
+            tariff={"mode": "tou", "feed_in_tariff": 0.4, "import_tariff": 0.3,
+                    "tou_schedule": [{"name": "peak", "hours": [18], "import_rate": 0.8}]},
+        )
+        for scenario in res["scenarios"]:
+            with self.subTest(scenario=scenario["label"]):
+                summary = scenario["settlement"]["energy_summary"]
+                self.assertEqual((summary["grid_import_kwh"], summary["actual_grid_bill"],
+                                  scenario["financials"]["year1_gross_benefit"]), (1.0, 0.8, 1.2))
+
     def test_batch_summary_csv_ranking_and_mcp_tool_roundtrip(self):
         (self.root / "UserBatch" / "Sweep_Results.CSV").write_text(
             "Ident;Create hourly;Plane tilt;Error;E_Grid;PR\n"
@@ -174,7 +213,68 @@ class EconomicsEngineTests(unittest.TestCase):
         self.assertEqual(res["scenario_count"], 3)
         self.assertEqual(res["best_scenario"], "SIM_2")
         self.assertEqual([r["label"] for r in res["ranking"]], ["SIM_2", "SIM_3", "SIM_1"])
+        self.assertEqual([s["batch_parameters"] for s in res["scenarios"]],
+                         [{"Plane tilt": 15}, {"Plane tilt": 25}, {"Plane tilt": 35}])
         self.assertNotIn("cashflow_schedule", res["scenarios"][0]["financials"])
+
+    def test_batch_summary_multiline_headers_populate_batch_parameters(self):
+        (self.root / "UserBatch" / "MultiHdr_Results.CSV").write_text(
+            "PVsyst simulations Batch mode;;;;;;;;\n"
+            "Ident;Create hourly;Plane;Soiling;Simul;Error;E_Grid;PR\n"
+            ";file;tilt;Loss;Comment;;kWh;ratio\n"
+            ";File name;[deg];[%];;;;\n"
+            "SIM_1;;20;1.5;Tilt20;;13500;0.85\n"
+            "SIM_2;;30;2.0;Tilt30;;14250;0.87\n",
+            encoding="utf-8",
+        )
+        res = evaluate_economics(
+            workspace=self.root,
+            batch_summary_csv="MultiHdr_Results.CSV",
+            financial={"first_year_degradation_pct": 0.0},
+            tariff={"feed_in_tariff": 0.4},
+        )
+        self.assertEqual(
+            res["scenarios"][0]["batch_parameters"],
+            {"Plane tilt": 20, "Soiling Loss": 1.5, "Simul Comment": "Tilt20"},
+        )
+        self.assertEqual(
+            res["scenarios"][1]["batch_parameters"],
+            {"Plane tilt": 30, "Soiling Loss": 2.0, "Simul Comment": "Tilt30"},
+        )
+
+    def test_batch_summary_can_omit_performance_ratio(self):
+        (self.root / "UserBatch" / "EnergyResults.CSV").write_text(
+            "Ident;Create hourly;Error;E_Grid\n"
+            "SIM_1;;;142000\n",
+            encoding="utf-8",
+        )
+        res = evaluate_economics(
+            workspace=self.root,
+            batch_summary_csv="EnergyResults.CSV",
+            financial={"first_year_degradation_pct": 0.0},
+            tariff={"feed_in_tariff": 0.4},
+        )
+        self.assertEqual(res["scenarios"][0]["year1_energy_kwh"], 142_000.0)
+        self.assertEqual(res["scenarios"][0]["financials"]["year1_gross_benefit"], 56_800.0)
+
+    def test_batch_hourly_reference_resolves_in_user_hourly(self):
+        csv_name = "Sweep_SIM_1.CSV"
+        for folder, value in (("Results", 40.0), ("UserHourly", 10.0)):
+            _write_sfi_csv(self.root / folder / csv_name, [("E_Grid", "kWh")], [
+                ["01/06/24 12:00", value], ["01/06/24 13:00", value],
+            ])
+        (self.root / "UserBatch" / "SweepResults.CSV").write_text(
+            "Ident;Create hourly;Error;E_Grid;PR\n"
+            f"SIM_1;{csv_name};;20;0.83\n",
+            encoding="utf-8",
+        )
+        res = evaluate_economics(
+            workspace=self.root,
+            scenarios=[{"label": "Standalone", "csv_name": csv_name}],
+            batch_summary_csv="SweepResults.CSV",
+            financial={"first_year_degradation_pct": 0.0},
+        )
+        self.assertEqual([s["year1_energy_kwh"] for s in res["scenarios"]], [80.0, 20.0])
 
     def test_validation_guards(self):
         with self.assertRaisesRegex(ValueError, "rank_by"):
@@ -188,12 +288,12 @@ class EconomicsEngineTests(unittest.TestCase):
             )
 
     def test_two_part_demand_charge_and_capacity_comparison(self) -> None:
-        # 2 months (Jan & Feb): load peak 200 kW, post-PV/BESS import peak 120 kW -> 80 kW shaved each month
+        # 2 months (Jan & Feb) across a contiguous hourly boundary: load peak 200 kW, import peak 120 kW -> 80 kW shaved each month
         rows = [
-            ("01/01/24 12:00", 80.0, 200.0, 120.0, 0.0, 0.0),
-            ("01/01/24 13:00", 60.0, 150.0, 90.0, 0.0, 0.0),
-            ("01/02/24 12:00", 80.0, 200.0, 120.0, 0.0, 0.0),
-            ("01/02/24 13:00", 50.0, 140.0, 90.0, 0.0, 0.0),
+            ("31/01/24 22:00", 80.0, 200.0, 120.0, 0.0, 0.0),
+            ("31/01/24 23:00", 60.0, 150.0, 90.0, 0.0, 0.0),
+            ("01/02/24 00:00", 80.0, 200.0, 120.0, 0.0, 0.0),
+            ("01/02/24 01:00", 50.0, 140.0, 90.0, 0.0, 0.0),
         ]
         csv_path = self.root / "Results" / "demand_case.csv"
         _write_sfi_csv(
@@ -291,6 +391,52 @@ class EconomicsEngineTests(unittest.TestCase):
         by_name = {f["factor"]: f for f in sens["factors"]}
         self.assertGreater(by_name["tariff"]["high"]["npv"], by_name["tariff"]["low"]["npv"])
         self.assertLess(by_name["capex"]["high"]["npv"], by_name["capex"]["low"]["npv"])
+
+    def test_tou_period_name_requires_consistent_rates(self):
+        csv = _write_sfi_csv(self.root / "Results" / "seasons.csv", [("E_Grid", "kWh")], [
+            ["31/05/24 23:00", 10.0],
+            ["01/06/24 00:00", 10.0],
+        ])
+        may = {"name": "off_peak", "months": [5], "hours": [23], "export_rate": 0.3}
+        june = {"name": "off_peak", "months": [6], "hours": [0], "export_rate": 0.4}
+        with self.assertRaisesRegex(ValueError, "off_peak.*different rates"):
+            evaluate_economics(
+                workspace=self.root,
+                scenarios=[{"csv_name": csv.name}],
+                tariff={"mode": "tou", "tou_schedule": [may, june]},
+            )
+
+    def test_irregular_timestamp_cadence_is_rejected(self):
+        gap_csv = self.root / "Results" / "gap_econ.csv"
+        gap_csv.write_text(
+            "PVSYST 8.1.7\n"
+            "date;E_Grid\n"
+            ";kW\n"
+            "01/06/24 08:00;10.0\n"
+            "01/06/24 08:15;10.0\n"
+            "01/06/24 08:45;10.0\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "regular cadence"):
+            evaluate_economics(
+                workspace=self.root,
+                scenarios=[{"label": "Gap", "csv_name": "gap_econ.csv"}],
+                financial={"fixed_capex": 100_000.0},
+                tariff={"mode": "feed_in", "feed_in_tariff": 0.4},
+            )
+
+    def test_no_best_scenario_when_ranking_metric_is_unavailable(self):
+        res = evaluate_economics(
+            scenarios=[
+                {"label": "A", "annual_yield_kwh": 1_000.0},
+                {"label": "B", "annual_yield_kwh": 2_000.0},
+            ],
+            financial={"fixed_capex": 50_000.0},
+            tariff={"feed_in_tariff": 0.4},
+            rank_by="simple_payback_years",
+        )
+        self.assertEqual([row["simple_payback_years"] for row in res["ranking"]], [None, None])
+        self.assertIsNone(res["best_scenario"])
 
 
 if __name__ == "__main__":

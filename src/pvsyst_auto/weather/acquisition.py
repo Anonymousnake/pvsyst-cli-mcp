@@ -792,6 +792,13 @@ def _download_nasa_power(
     hours = _year_hours(year)
     utc_start = datetime(year, 1, 1) - timedelta(hours=offset_hours)
     utc_end = utc_start + timedelta(hours=hours - 1)
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    if utc_end + timedelta(hours=1) > now_utc:
+        raise WeatherAcquisitionError(
+            f"the requested year {year} is not complete yet: the required UTC window ends at "
+            f"{(utc_end + timedelta(hours=1)).isoformat()}Z while current UTC time is "
+            f"{now_utc.replace(microsecond=0).isoformat()}Z; choose a completed historical year"
+        )
     params = {
         "parameters": "ALLSKY_SFC_SW_DWN,ALLSKY_SFC_SW_DIFF,T2M",
         "community": "RE",

@@ -91,6 +91,19 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
     if mode not in ("unlimited", "3d"):
         bad("ground_layout.model_mode", "Choose 'unlimited' or '3d'")
 
+    if mode == "unlimited" and scope == "ground_tracker":
+        for key in ("central_gap_m", "pitch_slope_deg", "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg"):
+            if key in layout:
+                bad(f"ground_layout.{key}", f"{key} requires model_mode='3d'")
+    elif mode == "3d":
+        for key in ("electrical_effect", "shading_factor", "cell_width_m"):
+            if key in layout:
+                bad(f"ground_layout.{key}", f"{key} requires model_mode='unlimited'")
+        if scope == "ground_sheds":
+            for key in ("inactive_band_width_1_m", "inactive_band_width_2_m"):
+                if key in layout:
+                    bad(f"ground_layout.{key}", f"{key} requires model_mode='unlimited' for ground_sheds")
+
     if scope == "ground_sheds":
         for name, low, high in (("tilt", 0, 90), ("azimuth", -180, 180)):
             value = spec.get(name)
@@ -226,20 +239,14 @@ def _pan_physical_fields(store, pan_info: dict) -> dict:
 
 def _pan_is_bifacial(store, pan_info: dict) -> bool | None:
     """Return True/False for readable text .PAN based on TPVModule.isBiFacial (Flags bit 23, $00800000)."""
-    try:
-        pan_path = Path(pan_info["path"]) if pan_info.get("path") else None
-        if pan_path is None or not pan_path.is_file():
-            pan_name = Path(pan_info["name"]).name
-            library = pan_info.get("library") or "workspace"
-            pan_path = store.components._path("PAN", pan_name, library)
-        raw = store.components._read(pan_path)
-        root, _ = pan_blocks(raw.decode("utf-8-sig"))
-        flags_raw = root.one("Flags")[1].strip()
-        if not flags_raw.startswith("$"):
-            return None
-        return bool(int(flags_raw[1:], 16) & 0x00800000)
-    except (ValueError, OSError, KeyError):
-        return None
+    from pvsyst_auto.project.bifacial import pan_is_bifacial
+
+    return pan_is_bifacial(
+        store.components,
+        pan_info.get("name", ""),
+        path=pan_info.get("path"),
+        library=pan_info.get("library"),
+    )
 
 
 def _ond_pnom_kw(ond_electrical: dict) -> float:
@@ -291,6 +298,15 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
     shed_count = int(layout.get("shed_count", 10))
     module_rows = int(layout.get("module_rows", 2))
     module_columns = int(layout.get("module_columns", 25))
+    if include_3d and layout.get("site_polygon") is None:
+        scene_modules = shed_count * module_rows * module_columns
+        electrical_modules = int(plan["module_count"])
+        if scene_modules != electrical_modules:
+            raise ValueError(
+                f"3D scene module count ({scene_modules} = {shed_count}x{module_rows}x{module_columns}) "
+                f"disagrees with electrical module count ({electrical_modules}); "
+                "adjust ground_layout shed_count/module_rows/module_columns to match the electrical design"
+            )
     orient_str = "moLandscape" if layout.get("module_orientation") == "landscape" else "moPortrait"
     axis_azim = (
         float(layout["axis_azimuth_deg"])
@@ -366,32 +382,47 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "base_slope_deg": float(layout.get("base_slope_deg", 0.0)),
         "u_factor": float(losses.get("UFactor", 29.0)),
         "lid_loss": float(losses.get("LIDLoss", 0.0)),
-        "pmism_mpp": float(losses.get("PMismMPP", 2.0)),
-        "module_quality_loss": float(losses.get("ModuleQualityLoss", 3.0)),
+        "pmism_mpp": float(losses["PMismMPP"]) if "PMismMPP" in losses else None,
+        "module_quality_loss": float(losses["ModuleQualityLoss"]) if "ModuleQualityLoss" in losses else None,
         "with_bom": True,
     }
     return kwargs
 
 
 def _extract_bifacial_metrics(csv_path: Path, units: dict) -> dict:
-    """Compute annual bifacial irradiance and loss summaries from SFI CSV."""
+    """Compute annual bifacial irradiance and loss summaries from hourly or sub-hourly SFI CSV."""
     if not units.get("GlobBak"):
         raise ValueError("Bifacial simulation output lacks GlobBak column/unit")
-    irrad_scale = {"W/m2": 0.001, "W/m\u00b2": 0.001, "kW/m2": 1.0, "kW/m\u00b2": 1.0}.get(units["GlobBak"])
-    if irrad_scale is None:
+    irrad_units = {
+        "W/m2": (0.001, True), "W/m\u00b2": (0.001, True),
+        "kW/m2": (1.0, True), "kW/m\u00b2": (1.0, True),
+        "Wh/m2": (0.001, False), "Wh/m\u00b2": (0.001, False),
+        "kWh/m2": (1.0, False), "kWh/m\u00b2": (1.0, False),
+    }
+    power_units = {
+        "W": (0.001, True), "kW": (1.0, True),
+        "Wh": (0.001, False), "kWh": (1.0, False),
+    }
+    bak_info = irrad_units.get(units["GlobBak"])
+    if bak_info is None:
         raise ValueError(f"Unsupported GlobBak unit: {units['GlobBak']!r}")
     present = tuple(c for c in ("GlobBak", "GlobGnd", "DiffGnd", "BeamBak", "DifSBak", "MismBak", "PRBifi")
                     if c in units)
-    summ = summarize_results(csv_path, present)["summary"]
+    res = summarize_results(csv_path, present)
+    if res["rows"] >= 2 and res["step_minutes"] is None:
+        raise ValueError("Bifacial simulation output does not have a regular timestamp cadence")
+    step_hours = (res["step_minutes"] or 60.0) / 60.0
+    summ = res["summary"]
+    bak_scale, bak_is_power = bak_info
     out = {
-        "rear_irradiation_kwh_m2": summ["GlobBak"]["sum"] * irrad_scale,
+        "rear_irradiation_kwh_m2": summ["GlobBak"]["sum"] * bak_scale * (step_hours if bak_is_power else 1.0),
     }
     if "GlobGnd" in summ:
-        gnd_scale = {"W/m2": 0.001, "W/m\u00b2": 0.001, "kW/m2": 1.0, "kW/m\u00b2": 1.0}.get(units["GlobGnd"], 0.001)
-        out["ground_irradiation_kwh_m2"] = summ["GlobGnd"]["sum"] * gnd_scale
+        gnd_scale, gnd_is_power = irrad_units.get(units["GlobGnd"], (0.001, True))
+        out["ground_irradiation_kwh_m2"] = summ["GlobGnd"]["sum"] * gnd_scale * (step_hours if gnd_is_power else 1.0)
     if "MismBak" in summ:
-        p_scale = {"W": 0.001, "Wh": 0.001, "kW": 1.0, "kWh": 1.0}.get(units["MismBak"], 1.0)
-        out["rear_mismatch_loss_kwh"] = summ["MismBak"]["sum"] * p_scale
+        p_scale, p_is_power = power_units.get(units["MismBak"], (1.0, True))
+        out["rear_mismatch_loss_kwh"] = summ["MismBak"]["sum"] * p_scale * (step_hours if p_is_power else 1.0)
     if "PRBifi" in summ and summ["PRBifi"]["mean"] is not None:
         out["mean_pr_bifi"] = summ["PRBifi"]["mean"]
     return out

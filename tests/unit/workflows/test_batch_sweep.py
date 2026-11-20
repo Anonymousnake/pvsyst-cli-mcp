@@ -120,6 +120,15 @@ class BatchSweepUnitTests(unittest.TestCase):
             )
             self.assertEqual(bad_sort["status"], "blocked")
 
+            # Explicit hourly_file equal to another scenario's default name
+            clash = run_batch_sweep(
+                cli, project="Demo.PRJ", variant="VC0", sweep_name="Roof",
+                scenarios=[{"plane_tilt": 20}, {"plane_tilt": 35, "hourly_file": "roof_SIM_1.csv"}],
+                export_hourly=True, dry_run=True,
+            )
+            self.assertEqual(clash["status"], "blocked")
+            self.assertTrue(any("Duplicate scenario hourly_file" in msg for msg in clash["issues"]))
+
     def test_execute_batch_sweep_ranks_scenarios_and_handles_partial_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
             ws = Path(tmp) / "PVsyst8.1_Data"

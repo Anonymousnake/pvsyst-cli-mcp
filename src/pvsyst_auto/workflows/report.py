@@ -27,6 +27,7 @@ _I18N = {
         "subtitle": "光伏系统工程仿真与经济性交互报告",
         "generated_at": "生成时间",
         "scenarios_count": "方案数量",
+        "primary_label": "主展示方案",
         "kpi_yield": "首年发电量",
         "kpi_specific": "等效利用小时",
         "kpi_pr": "加权 PR",
@@ -95,6 +96,7 @@ _I18N = {
         "subtitle": "PV Engineering Simulation & Financial Interactive Report",
         "generated_at": "Generated",
         "scenarios_count": "Scenarios",
+        "primary_label": "Primary scenario",
         "kpi_yield": "Year-1 Yield",
         "kpi_specific": "Specific Yield",
         "kpi_pr": "Weighted PR",
@@ -163,82 +165,149 @@ _I18N = {
 
 
 def _resolve_csv(workspace: Path | None, csv_name: str) -> Path:
-    safe = safe_filename(csv_name, ".csv")
     if workspace is not None:
+        safe = safe_filename(csv_name, ".csv")
         for folder in ("Results", "UserHourly"):
             cand = workspace_file(workspace, folder, safe, ".csv")
             if cand.is_file():
                 return cand
         raise FileNotFoundError(f"Result CSV not found in Results/ or UserHourly/: {safe}")
     p = Path(csv_name)
+    if p.suffix.lower() != ".csv":
+        raise ValueError("Expected a .csv file")
     if not p.is_file():
         raise FileNotFoundError(f"Result CSV not found: {p}")
     return p
 
 
 def _summarize_csv_for_report(csv_path: Path) -> dict[str, Any]:
-    """Single streaming pass to extract monthly E_Grid/PR and loss-chain totals for charts."""
+    """Single streaming pass to extract monthly PV yield/PR and loss-chain totals for charts.
+
+    Aligns monthly and annual PV yield with economics settlement: prefers EToGrid over E_Grid
+    and includes self-consumed PV energy (max(0, E_User - EFrGrid)) when E_User is present so
+    self-consumption and storage reports agree with economics tables.
+    """
     units = result_units(csv_path, strict=True)
     idx: dict[str, int] = {}
     rows = 0
     prev_stamp = None
     step_minutes: float | None = None
     regular = True
+    first_row_data: tuple[Any, list[Any]] | None = None
 
-    monthly_egrid = {m: 0.0 for m in range(1, 13)}
+    export_col: str | None = None
+    has_load = False
+    has_import = False
+    col_scale: dict[str, tuple[float, bool]] = {}
+
+    monthly_pv_kwh = {m: 0.0 for m in range(1, 13)}
     monthly_pr_num = {m: 0.0 for m in range(1, 13)}
     monthly_pr_den = {m: 0.0 for m in range(1, 13)}
     col_sums: dict[str, float] = {}
 
-    for headers, row in iter_result_csv(csv_path, strict=True):
-        if rows == 0:
-            idx = {name: i for i, name in enumerate(headers) if i > 0}
-            col_sums = {name: 0.0 for name in idx}
-        stamp = row[0]
-        if prev_stamp is not None:
-            delta = (stamp - prev_stamp).total_seconds() / 60.0
-            if delta <= 0:
-                regular = False
-            elif step_minutes is None:
-                step_minutes = delta
-            elif abs(delta - step_minutes) > 1e-6:
-                regular = False
-        prev_stamp = stamp
-        rows += 1
+    def _unit_kind(col: str) -> tuple[float, bool]:
+        u = units.get(col, "")
+        if u in _POWER_TO_KW:
+            return _POWER_TO_KW[u], True
+        if u in _ENERGY_TO_KWH:
+            return _ENERGY_TO_KWH[u], False
+        return 1.0, False
+
+    def _val(row_data: list[Any], col: str) -> float:
+        i = idx.get(col)
+        if i is None:
+            return 0.0
+        v = row_data[i]
+        return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
+
+    def _process_row(stamp: Any, row_data: list[Any], dt_hours: float) -> None:
+        def kwh(col: str) -> float:
+            if col not in col_scale:
+                return 0.0
+            factor, needs_dt = col_scale[col]
+            return _val(row_data, col) * factor * (dt_hours if needs_dt else 1.0)
 
         for name, col_i in idx.items():
-            v = row[col_i]
+            v = row_data[col_i]
             if isinstance(v, (int, float)) and math.isfinite(v):
                 col_sums[name] += float(v)
 
-        eg_col = "E_Grid" if "E_Grid" in idx else ("EToGrid" if "EToGrid" in idx else None)
-        if eg_col is not None:
-            v = row[idx[eg_col]]
-            if isinstance(v, (int, float)) and math.isfinite(v):
-                monthly_egrid[stamp.month] += float(v)
+        raw_eg = kwh(export_col) if export_col else 0.0
+        e_exp = max(0.0, raw_eg)
+        if has_load:
+            e_user = max(0.0, kwh("E_User"))
+            if has_import:
+                e_imp = max(0.0, kwh("EFrGrid"))
+            elif "E_Solar" in idx:
+                e_imp = max(0.0, e_user - max(0.0, kwh("E_Solar")))
+            elif raw_eg < 0:
+                e_imp = -raw_eg
+            else:
+                e_imp = 0.0
+            self_cons = max(0.0, e_user - e_imp)
+            monthly_pv_kwh[stamp.month] += e_exp + self_cons
+        else:
+            monthly_pv_kwh[stamp.month] += e_exp
+
         if "PR" in idx and "GlobInc" in idx:
-            gi = row[idx["GlobInc"]]
-            pr = row[idx["PR"]]
+            gi = row_data[idx["GlobInc"]]
+            pr = row_data[idx["PR"]]
             pr_scale = _PR_SCALE.get(units.get("PR", ""), 1.0)
             if (isinstance(gi, (int, float)) and math.isfinite(gi) and gi > 0
                     and isinstance(pr, (int, float)) and math.isfinite(pr)):
                 monthly_pr_num[stamp.month] += float(gi) * float(pr) * pr_scale
                 monthly_pr_den[stamp.month] += float(gi)
 
+    for headers, row in iter_result_csv(csv_path, strict=True):
+        if rows == 0:
+            idx = {name: i for i, name in enumerate(headers) if i > 0}
+            col_sums = {name: 0.0 for name in idx}
+            export_col = "EToGrid" if "EToGrid" in idx else ("E_Grid" if "E_Grid" in idx else None)
+            has_load = "E_User" in idx
+            has_import = "EFrGrid" in idx
+            for col in idx:
+                col_scale[col] = _unit_kind(col)
+            first_row_data = (row[0], list(row))
+            prev_stamp = row[0]
+            rows = 1
+            continue
+
+        stamp = row[0]
+        delta = (stamp - prev_stamp).total_seconds() / 60.0
+        if delta <= 0:
+            regular = False
+            dt_hours = (step_minutes or 60.0) / 60.0
+        else:
+            if step_minutes is None:
+                step_minutes = delta
+                _process_row(first_row_data[0], first_row_data[1], step_minutes / 60.0)
+                first_row_data = None
+            elif abs(delta - step_minutes) > 1e-6:
+                regular = False
+            dt_hours = delta / 60.0
+        _process_row(stamp, row, dt_hours)
+        prev_stamp = stamp
+        rows += 1
+
     if rows == 0:
         raise ValueError("Result CSV has no data rows")
-    step_hours = (step_minutes if (regular and step_minutes) else 60.0) / 60.0
+    if export_col is None:
+        raise ValueError("Result CSV must include E_Grid or EToGrid for report generation")
+    if not regular:
+        raise ValueError(
+            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+            "cannot compute monthly energy or losses reliably"
+        )
+    if first_row_data is not None:
+        step_minutes = 60.0
+        _process_row(first_row_data[0], first_row_data[1], 1.0)
+    step_hours = (step_minutes if step_minutes else 60.0) / 60.0
 
     def to_kwh(col: str, raw: float) -> float:
-        u = units.get(col, "")
-        if u in _POWER_TO_KW:
-            return raw * _POWER_TO_KW[u] * step_hours
-        if u in _ENERGY_TO_KWH:
-            return raw * _ENERGY_TO_KWH[u]
-        return raw
+        factor, needs_dt = col_scale.get(col, (1.0, False))
+        return raw * factor * (step_hours if needs_dt else 1.0)
 
-    eg_col = "E_Grid" if "E_Grid" in idx else ("EToGrid" if "EToGrid" in idx else None)
-    monthly_kwh = [round(to_kwh(eg_col, monthly_egrid[m]), 2) if eg_col else 0.0 for m in range(1, 13)]
+    monthly_kwh = [round(monthly_pv_kwh[m], 2) for m in range(1, 13)]
     monthly_pr_pct = [
         round((monthly_pr_num[m] / monthly_pr_den[m]) * 100.0, 2) if monthly_pr_den[m] > 0 else None
         for m in range(1, 13)
@@ -251,6 +320,7 @@ def _summarize_csv_for_report(csv_path: Path) -> dict[str, Any]:
     return {
         "rows": rows,
         "step_minutes": step_hours * 60.0,
+        "has_load": has_load,
         "monthly_kwh": monthly_kwh,
         "monthly_pr_pct": monthly_pr_pct,
         "losses_kwh": losses,
@@ -309,10 +379,14 @@ def generate_report(
     parsed_scenarios: list[dict[str, Any]] = []
     econ_inputs: list[dict[str, Any]] = []
 
+    seen_labels: set[str] = set()
     for idx_s, sc in enumerate(scenarios):
         if not isinstance(sc, dict):
             raise ValueError(f"scenarios[{idx_s}] must be an object")
         label = str(sc.get("label") or f"Scenario_{idx_s + 1}").strip()
+        if label in seen_labels:
+            raise ValueError(f"Duplicate scenario label {label!r}; scenario labels must be unique")
+        seen_labels.add(label)
         csv_name = sc.get("csv_name")
         if not csv_name:
             raise ValueError(f"scenarios[{idx_s}] ({label}) requires csv_name")
@@ -337,7 +411,7 @@ def generate_report(
             "stats": csv_stats,
             "diagnostics": diag,
         })
-        econ_entry = {"label": label, "csv_name": csv_path.name}
+        econ_entry = {"label": label, "csv_path": csv_path}
         for k in ("installed_dc_kw", "battery_kwh", "capex_total", "annual_opex", "replacement_events"):
             if sc.get(k) is not None:
                 econ_entry[k] = sc[k]
@@ -409,12 +483,24 @@ def generate_report(
     fig_monthly.update_yaxes(title_text="PR (%)", range=[0, 115], secondary_y=True)
     chart_sections.append((t["sec_monthly"], _plotly_div(fig_monthly, include_js=next_js())))
 
+    # Select best scenario as primary for single-scenario KPI cards & charts (fallback to first if None)
+    best_label = (
+        econ_result["best_scenario"]
+        if econ_result is not None
+        else max(parsed_scenarios, key=lambda sc: sc["stats"]["annual_e_grid_kwh"])["label"]
+    )
+    primary = next((sc for sc in parsed_scenarios if sc["label"] == best_label), parsed_scenarios[0])
+    primary_suffix = f" ({primary['label']})" if len(parsed_scenarios) > 1 else ""
+
     # 2. Loss Waterfall (Primary Scenario)
-    primary = parsed_scenarios[0]
     losses = primary["stats"]["losses_kwh"]
     if "EArray" in losses and ("E_Grid" in losses or "EToGrid" in losses):
         e_arr = losses["EArray"]
-        e_grd = losses.get("E_Grid", losses.get("EToGrid", 0.0))
+        e_grd = (
+            primary["stats"]["annual_e_grid_kwh"]
+            if primary["stats"].get("has_load")
+            else losses.get("E_Grid", losses.get("EToGrid", 0.0))
+        )
         il_pmax = abs(losses.get("IL_Pmax", 0.0))
         il_vi = abs(losses.get("IL_Vmax", 0.0)) + abs(losses.get("IL_Vmin", 0.0)) + abs(losses.get("IL_Imax", 0.0))
         shd_el = abs(losses.get("ShdElec", 0.0))
@@ -447,7 +533,7 @@ def generate_report(
             totals={"marker": {"color": "#2563eb"}},
         ))
         fig_wf.update_layout(template="plotly_white", height=400, margin=dict(l=55, r=30, t=30, b=70), yaxis_title="kWh")
-        chart_sections.append((t["sec_losses"], _plotly_div(fig_wf, include_js=next_js())))
+        chart_sections.append((f"{t['sec_losses']}{primary_suffix}", _plotly_div(fig_wf, include_js=next_js())))
 
     # 3. Typical 24-Hour Power & TOU Profile (when economics settlement has typical_day_profile)
     primary_econ = econ_by_label.get(primary["label"])
@@ -471,7 +557,7 @@ def generate_report(
         )
         fig_day.update_yaxes(title_text=t["power_axis"], secondary_y=False)
         fig_day.update_yaxes(title_text=f"{t['tariff_axis']} ({econ_result['currency']}/kWh)", secondary_y=True)
-        chart_sections.append((t["sec_typical_day"], _plotly_div(fig_day, include_js=next_js())))
+        chart_sections.append((f"{t['sec_typical_day']}{primary_suffix}", _plotly_div(fig_day, include_js=next_js())))
 
     # 4. Lifetime Cumulative Cashflow Chart (when economics evaluated)
     if econ_result:
@@ -604,11 +690,12 @@ def generate_report(
     specific_yield = (primary_yield / primary_dc) if (primary_dc and primary_dc > 0) else None
     curr = econ_result["currency"] if econ_result else ""
 
+    primary_needs_review = bool(primary_diag["needs_review"] or primary_diag.get("status") == "blocked")
     kpis = [
         (t["kpi_yield"], _fmt_num(primary_yield, 1, " kWh")),
         (t["kpi_specific"], _fmt_num(specific_yield, 1, " kWh/kWp")),
         (t["kpi_pr"], _fmt_num(primary_pr, 2, " %")),
-        (t["kpi_diag"], f"{t['status_review']} ({primary_diag['finding_count']})" if primary_diag["needs_review"] else f"{t['status_ok']} ({primary_diag['finding_count']})"),
+        (t["kpi_diag"], f"{t['status_review']} ({primary_diag['finding_count']})" if primary_needs_review else f"{t['status_ok']} ({primary_diag['finding_count']})"),
     ]
     if primary_econ:
         pf = primary_econ["financials"]
@@ -683,9 +770,14 @@ def generate_report(
         f"<section class='card'><h2>{html.escape(sec_title)}</h2>{div_html}</section>"
         for sec_title, div_html in chart_sections
     )
-    badge_cls = "badge-high" if primary_diag["needs_review"] else "badge-ok"
-    badge_txt = t["status_review"] if primary_diag["needs_review"] else t["status_ok"]
+    badge_cls = "badge-high" if primary_needs_review else "badge-ok"
+    badge_txt = t["status_review"] if primary_needs_review else t["status_ok"]
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    primary_meta = (
+        f" · {html.escape(t['primary_label'])}: {html.escape(primary['label'])}"
+        if len(parsed_scenarios) > 1
+        else ""
+    )
 
     doc = f"""<!DOCTYPE html>
 <html lang="{html.escape(language)}">
@@ -724,7 +816,7 @@ def generate_report(
   <header>
     <div>
       <h1>{html.escape(title)}</h1>
-      <div class="sub">{html.escape(t["subtitle"])} · {html.escape(t["generated_at"])}: {generated} · {html.escape(t["scenarios_count"])}: {len(parsed_scenarios)}</div>
+      <div class="sub">{html.escape(t["subtitle"])} · {html.escape(t["generated_at"])}: {generated} · {html.escape(t["scenarios_count"])}: {len(parsed_scenarios)}{primary_meta}</div>
     </div>
     <span class="badge {badge_cls}">{html.escape(badge_txt)}</span>
   </header>
@@ -749,5 +841,5 @@ def generate_report(
         "scenario_count": len(parsed_scenarios),
         "chart_count": len(chart_sections),
         "has_economics": econ_result is not None,
-        "best_scenario": econ_result["best_scenario"] if econ_result else primary["label"],
+        "best_scenario": best_label,
     }

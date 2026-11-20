@@ -90,6 +90,8 @@ def pvsyst_acquire_weather(csv_name: StrictStr = "", year: StrictInt | None = No
                 time_basis="local_standard_interval_start",
                 dry_run=False,
             )
+            if acquired["preparation"]["status"] != "prepared":
+                acquired.update(status=acquired["preparation"]["status"], stage="preparation")
     return acquired
 
 @categorized_tool()

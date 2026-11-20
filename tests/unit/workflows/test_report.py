@@ -26,28 +26,28 @@ def _write_report_csv(path: Path, *, scale: float = 1.0, pr: float = 0.84, with_
         "date;" + ";".join(c for c, _ in cols),
         ";" + ";".join(u for _, u in cols),
     ]
-    # Cover 12 representative days (one per month) so every month has data
-    for month in range(1, 13):
-        start = datetime(2024, month, 15, 0, 0)
-        for h in range(24):
-            dt = start + timedelta(hours=h)
-            gi = 750.0 if 7 <= h < 17 else 0.0
-            ea = 100.0 * scale * (gi / 1000.0) * pr if gi > 0 else 0.0
-            clip = 1.5 * scale if 11 <= h <= 13 else 0.0
-            eg = max(0.0, ea - clip) * 0.98
-            row = [
-                dt.strftime("%d/%m/%y %H:%M"),
-                f"{gi:.2f}", f"{ea:.3f}", f"{eg:.3f}",
-                f"{pr:.3f}" if gi > 0 else "",
-                f"{clip:.3f}", "0.0", "0.0",
-            ]
-            if with_load_bess:
-                load = 40.0 if 8 <= h < 20 else 15.0
-                ch = 15.0 if 11 <= h < 15 else 0.0
-                dis = 20.0 if 18 <= h < 20 else 0.0
-                imp = max(0.0, load - eg - dis + ch)
-                row.extend([f"{load:.2f}", f"{imp:.2f}", f"{ch:.2f}", f"{dis:.2f}"])
-            lines.append(";".join(row))
+    # Contiguous full-year hourly timestamps so all 12 months have regular cadence.
+    start = datetime(2024, 1, 1, 0, 0)
+    for step in range(366 * 24):
+        dt = start + timedelta(hours=step)
+        h = dt.hour
+        gi = 750.0 if 7 <= h < 17 else 0.0
+        ea = 100.0 * scale * (gi / 1000.0) * pr if gi > 0 else 0.0
+        clip = 1.5 * scale if 11 <= h <= 13 else 0.0
+        eg = max(0.0, ea - clip) * 0.98
+        row = [
+            dt.strftime("%d/%m/%y %H:%M"),
+            f"{gi:.2f}", f"{ea:.3f}", f"{eg:.3f}",
+            f"{pr:.3f}" if gi > 0 else "",
+            f"{clip:.3f}", "0.0", "0.0",
+        ]
+        if with_load_bess:
+            load = 40.0 if 8 <= h < 20 else 15.0
+            ch = 15.0 if 11 <= h < 15 else 0.0
+            dis = 20.0 if 18 <= h < 20 else 0.0
+            imp = max(0.0, load - eg - dis + ch)
+            row.extend([f"{load:.2f}", f"{imp:.2f}", f"{ch:.2f}", f"{dis:.2f}"])
+        lines.append(";".join(row))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -196,6 +196,97 @@ class InteractiveReportTests(unittest.TestCase):
         self.assertIn("两部制月度最大需量削峰对比", body)
         self.assertIn("财务敏感性分析龙卷风图", body)
         self.assertIn("光储容量寻优收益热力图", body)
+
+    def test_report_rejects_missing_grid_energy(self):
+        csv_path = self.root / "Results" / "no_grid.csv"
+        csv_path.write_text(
+            "PVSYST 8.1.7\ndate;GlobInc;EArray;PR\n;W/m2;kW;ratio\n"
+            "01/06/24 08:00;500;10;0.84\n01/06/24 09:00;500;10;0.84\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "E_Grid or EToGrid"):
+            generate_report(workspace=self.root, title="Missing grid", output_name="missing.html",
+                            scenarios=[{"label": "Base", "csv_name": csv_path.name}])
+
+    def test_report_rejects_irregular_timestamp_cadence(self):
+        gap_csv = self.root / "Results" / "gap_report.csv"
+        gap_csv.write_text(
+            "PVSYST 8.1.7\n"
+            "date;GlobInc;EArray;E_Grid;PR\n"
+            ";W/m2;kW;kW;ratio\n"
+            "01/06/24 08:00;500;10;9.5;0.84\n"
+            "01/06/24 08:15;500;10;9.5;0.84\n"
+            "01/06/24 08:45;500;10;9.5;0.84\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "regular cadence"):
+            generate_report(
+                workspace=self.root,
+                title="Gap",
+                output_name="gap_report.html",
+                scenarios=[{"label": "Gap", "csv_name": "gap_report.csv"}],
+            )
+
+    def test_best_scenario_matches_energy_ranking_without_economics(self):
+        _write_report_csv(self.root / "Results" / "small.csv", scale=1.0)
+        _write_report_csv(self.root / "Results" / "large.csv", scale=2.0)
+        result = generate_report(
+            workspace=self.root, title="Ranking", output_name="ranking.html", language="en",
+            scenarios=[{"label": "Small", "csv_name": "small.csv"},
+                       {"label": "Large", "csv_name": "large.csv"}],
+        )
+        report = (self.root / "Results" / "ranking.html").read_text(encoding="utf-8")
+        self.assertIn("<tr><td>#1</td><td><strong>Large</strong>", report)
+        self.assertEqual(result["best_scenario"], "Large")
+        # Multi-scenario report promotes best_scenario to primary and labels it in header & single-scenario charts
+        self.assertIn("Primary scenario: Large", report)
+        self.assertIn("PV Energy Loss Waterfall (Large)", report)
+
+    def test_report_self_consumption_yield_aligns_with_economics(self):
+        # Self-consumption CSV where net E_Grid = EToGrid - EFrGrid is negative overall,
+        # while utilized PV energy = EToGrid + (E_User - EFrGrid) = 20 + 60 = 80 kWh.
+        sc_csv = self.root / "Results" / "self_cons.csv"
+        sc_csv.write_text(
+            "PVSYST 8.1.7\n"
+            "date;GlobInc;EArray;E_Grid;EToGrid;EFrGrid;E_User;PR\n"
+            ";W/m2;kWh;kWh;kWh;kWh;kWh;ratio\n"
+            "01/06/24 12:00;800;85;20;20;0;60;0.84\n"
+            "01/06/24 13:00;0;0;-100;0;100;100;\n",
+            encoding="utf-8",
+        )
+        res = generate_report(
+            workspace=self.root,
+            title="Self Consumption Alignment",
+            output_name="self_cons.html",
+            language="en",
+            scenarios=[{"label": "SC", "csv_name": sc_csv.name}],
+            tariff={"mode": "self_consumption_flat", "import_tariff": 0.8, "feed_in_tariff": 0.3},
+            financial={"fixed_capex": 1000.0},
+        )
+        html_text = Path(res["report_path"]).read_text(encoding="utf-8")
+        # KPI yield and ranking table yield both show 80.0 kWh (not -80.0 from net E_Grid)
+        self.assertIn("80.0 kWh", html_text)
+        self.assertIn("<td>80.0</td>", html_text)
+
+    def test_report_rejects_duplicate_labels_and_passes_resolved_csv_path(self):
+        csv_a = _write_report_csv(self.root / "Results" / "dup_a.csv", scale=1.0)
+        csv_b = _write_report_csv(self.root / "Results" / "dup_b.csv", scale=2.0)
+        with self.assertRaisesRegex(ValueError, "Duplicate scenario label"):
+            generate_report(
+                workspace=self.root, title="Dup", output_name="dup.html",
+                scenarios=[{"label": "Base", "csv_name": csv_a.name},
+                           {"label": " Base ", "csv_name": csv_b.name}],
+            )
+        # Direct workspace=None report with economics uses resolved csv_path instead of bare filename
+        res = generate_report(
+            workspace=None, title="Standalone", output_name="standalone_report.html",
+            scenarios=[{"label": "Direct", "csv_name": str(csv_a)}],
+            tariff={"mode": "feed_in", "feed_in_tariff": 0.4},
+            financial={"fixed_capex": 10000.0},
+            dry_run=True,
+        )
+        self.assertEqual(res["status"], "ready")
+        self.assertTrue(res["has_economics"])
 
 
 if __name__ == "__main__":

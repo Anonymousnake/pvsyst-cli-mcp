@@ -139,6 +139,7 @@ def _validate_tariff(tariff: dict | None) -> dict:
         raw_periods = raw.get("tou_schedule")
         if not isinstance(raw_periods, list) or not raw_periods:
             raise ValueError("tariff.tou_schedule must be a non-empty list when tariff.mode='tou'")
+        rates_by_name = {"default": (import_rate, feed_in)}
         for idx, item in enumerate(raw_periods):
             if not isinstance(item, dict):
                 raise ValueError(f"tariff.tou_schedule[{idx}] must be an object")
@@ -161,6 +162,9 @@ def _validate_tariff(tariff: dict | None) -> dict:
                 f"tariff.tou_schedule[{idx}].export_rate",
                 minimum=0.0,
             )
+            rates = (p_import, p_export)
+            if rates_by_name.setdefault(name, rates) != rates:
+                raise ValueError(f"tariff.tou_schedule uses period name {name!r} with different rates")
             periods.append({
                 "name": name,
                 "hours": frozenset(hours),
@@ -374,7 +378,7 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
             e_imp = max(0.0, kwh("EFrGrid"))
         elif has_load and "E_Solar" in idx:
             e_imp = max(0.0, e_user - max(0.0, kwh("E_Solar")))
-        elif has_load and raw_eg < 0:
+        elif raw_eg < 0:
             e_imp = -raw_eg
         else:
             e_imp = 0.0
@@ -397,9 +401,9 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
             self_cons = e_exp * sc_ratio
             net_exp = e_exp - self_cons
             baseline_bill = self_cons * imp_rate
-            import_cost = 0.0
+            import_cost = e_imp * imp_rate
             export_rev = net_exp * exp_rate
-            avoided = baseline_bill
+            avoided = baseline_bill - import_cost
             e_exp = net_exp
 
         totals["pv_export_kwh"] += e_exp
@@ -498,6 +502,11 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
 
     if rows == 0:
         raise ValueError("Result CSV contains no simulation rows")
+    if not regular:
+        raise ValueError(
+            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+            "cannot settle energy or tariffs reliably"
+        )
     if first_row_data is not None:
         step_minutes = 60.0
         _process_row(first_row_data[0], first_row_data[1], 1.0)
@@ -758,14 +767,16 @@ def _compute_cashflow_metrics(
     irr = _compute_irr(cashflows)
     lcoe = (pv_costs / pv_energy) if pv_energy > 0 else None
 
+    year1_energy_benefit_deg = year1_energy_benefit * (1.0 - deg1)
+    year1_gross_deg = year1_energy_benefit_deg + year1_demand_savings
     return {
         "currency": financial["currency"],
         "capex_total": round(capex_total, 2),
         "year1_opex": round(base_annual_opex, 2),
-        "year1_energy_benefit": round(year1_energy_benefit, 2),
+        "year1_energy_benefit": round(year1_energy_benefit_deg, 2),
         "year1_demand_savings": round(year1_demand_savings, 2),
-        "year1_gross_benefit": round(year1_gross_benefit, 2),
-        "year1_net_benefit": round(year1_gross_benefit - base_annual_opex, 2),
+        "year1_gross_benefit": round(year1_gross_deg, 2),
+        "year1_net_benefit": round(year1_gross_deg - base_annual_opex, 2),
         "lifetime_energy_kwh": round(lifetime_energy, 2),
         "lifetime_gross_benefit": round(lifetime_revenue, 2),
         "lifetime_opex": round(lifetime_opex, 2),
@@ -888,7 +899,7 @@ def evaluate_economics(
             raise ValueError("workspace is required when loading batch_summary_csv")
         safe_batch = safe_filename(batch_summary_csv, ".csv")
         batch_path = workspace_file(workspace, "UserBatch", safe_batch, ".csv")
-        parsed = parse_batch_results(batch_path)
+        parsed = parse_batch_results(batch_path, columns=("E_Grid",))
         for row in parsed.get("scenarios") or ():
             if row.get("error"):
                 continue
@@ -896,11 +907,13 @@ def evaluate_economics(
             metrics = row.get("values") or {}
             hourly_name = row.get("hourly_file")
             item: dict[str, Any] = {"label": ident}
+            if row.get("parameters"):
+                item["batch_parameters"] = dict(row["parameters"])
             if hourly_name and hourly_name.lower().endswith(".csv"):
                 hourly_path = workspace_file(workspace, "UserHourly", hourly_name, ".csv")
                 if hourly_path.is_file():
-                    item["csv_name"] = hourly_name
-            if "csv_name" not in item:
+                    item["csv_path"] = hourly_path
+            if "csv_path" not in item:
                 e_grid = metrics.get("E_Grid")
                 if not isinstance(e_grid, (int, float)) or not math.isfinite(e_grid):
                     continue
@@ -1106,7 +1119,7 @@ def evaluate_economics(
         "discount_rate_pct": fin_cfg["discount_rate_pct"],
         "tariff_mode": tar_cfg["mode"],
         "rank_by": rank_by,
-        "best_scenario": ranking_table[0]["label"] if ranking_table else None,
+        "best_scenario": ranked[0]["label"] if _sort_key(ranked[0])[0] == 0 else None,
         "scenario_count": len(results),
         "ranking": ranking_table,
         "scenarios": results,

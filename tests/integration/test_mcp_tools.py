@@ -365,7 +365,7 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             "inverter": {"file_name": "Lab50.OND"},
                             "weather": {"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
                             "capacity": _capacity_spec(),
-                            "ground_layout": {"model_mode": "3d", "pitch_m": 12.0, "shed_count": 6,
+                            "ground_layout": {"model_mode": "3d", "pitch_m": 12.0, "shed_count": 6, "module_columns": 19,
                                               "min_phi_deg": -55.0, "max_phi_deg": 55.0, "backtracking": True},
                             "bifacial": {"ground_albedo": 0.30, "bifaciality_factor": 0.80, "height_above_ground_m": 2.4},
                         },

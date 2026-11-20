@@ -53,11 +53,17 @@ class CommercialComponentTests(unittest.TestCase):
             vmax_iec_v=1500.0,
         )
         self.assertTrue(meta["bifacial"])
+        self.assertFalse(meta["single_diode"]["fallback"])
         self.assertEqual(meta["flags"], "$00800000")
         self.assertIn("BifacialityFactor=0.800", pan_text)
         report = self.store._inspect("PAN", pan_text.encode("utf-8"))
         self.assertEqual(report["structural_errors"], [])
         self.assertEqual(report["known_value_errors"], [])
+
+    def test_fallback_reports_actual_mpp_slope_residual(self):
+        diode = derive_single_diode_parameters(voc=50.0, isc=13.0, vmp=42.0, imp=12.74, n_cells_s=96)
+        self.assertTrue(diode["fallback"])
+        self.assertGreater(diode["mpp_slope_residual_a"], 1.0)
 
     def test_zero_template_ond_synthesis_validates_cleanly(self):
         ond_text, meta = synthesize_ond_from_datasheet(
@@ -79,6 +85,25 @@ class CommercialComponentTests(unittest.TestCase):
         report = self.store._inspect("OND", ond_text.encode("utf-8"))
         self.assertEqual(report["structural_errors"], [])
         self.assertEqual(report["known_value_errors"], [])
+
+    def test_inverter_curve_does_not_exceed_declared_maximum_efficiency(self):
+        for emax, eeuro in ((90.0, 89.0), (75.0, 73.0), (50.0, 48.0)):
+            with self.subTest(effic_max_pct=emax, effic_euro_pct=eeuro):
+                text, _ = synthesize_ond_from_datasheet(
+                    manufacturer="Lab", model="Inverter", pnom_ac_kw=10,
+                    vmpp_min_v=200, vmpp_max_v=850, vabs_max_v=1000,
+                    effic_max_pct=emax, effic_euro_pct=eeuro,
+                )
+                points = [tuple(map(int, line.split("=", 1)[1].split(",")))
+                          for line in text.splitlines() if line.strip().startswith("Point_")]
+                active = [(p_in, p_out) for p_in, p_out in points if p_in > 0 and p_out > 0]
+                effs = [p_out / p_in for p_in, p_out in active]
+                for eff in effs:
+                    self.assertLessEqual(eff, emax / 100.0 + 1e-9)
+                # Peak at 50% load (index 5) exceeds both light-load (10%, index 2) and full-load (index 6)
+                self.assertGreater(effs[5], effs[2])
+                self.assertGreater(effs[5], effs[6])
+                self.assertEqual(max(p_out for _, p_out in active), 10000)
 
     def test_build_sourced_component_zero_template_pan_and_ond_roundtrip(self):
         sources = {

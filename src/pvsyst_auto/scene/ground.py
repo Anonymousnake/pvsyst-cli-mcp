@@ -197,9 +197,10 @@ def plan_ground_polygon_layout(
     row_idx = 0
     v = v_min
     while v + proj_depth <= v_max + 1e-6:
-        # Intersect scanlines at front, mid, back of this row strip
-        front_iv = _scanline_intervals(v + 1e-4, poly_rot)
-        back_iv = _scanline_intervals(v + proj_depth - 1e-4, poly_rot)
+        # Keep both scanlines within the projected row strip, including vertical tables.
+        scan_offset = min(1e-4, proj_depth / 2)
+        front_iv = _scanline_intervals(v + scan_offset, poly_rot)
+        back_iv = _scanline_intervals(v + proj_depth - scan_offset, poly_rot)
         # Overlap intervals of front and back
         overlaps: list[tuple[float, float]] = []
         for a0, a1 in front_iv:

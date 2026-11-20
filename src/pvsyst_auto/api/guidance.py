@@ -26,9 +26,9 @@ Quick workflow selection:
    - Run a complete one-shot feasibility study (synthesis -> simulation/reuse -> diagnostics -> TOU/BESS sizing -> economics -> Plotly report) via `pvsyst_run_feasibility_study` (`dry_run=true` first, then `dry_run=false, confirm=true`).
    - Generate interactive Plotly HTML engineering reports (zh/en, with demand shaving, tornado, and BESS heatmap charts) via `pvsyst_generate_report`, and bundle deliverables via `pvsyst_export_engineering_delivery`.
 7. Safety & verification conventions:
-   - Always preview mutating workflows with `dry_run=true` before executing `dry_run=false`.
-   - Never overwrite existing projects/outputs; pick fresh filenames on retry.
-   - Consult resources `pvsyst://guide/workflows`, `pvsyst://guide/variables`, `pvsyst://workspace/projects`, `pvsyst://workspace/components`, and `pvsyst://workspace/results` for live workspace state and recipes.
+   - For mutating tools whose schema declares a `dry_run` parameter, always preview with `dry_run=true` before executing `dry_run=false`.
+   - Direct writers without a `dry_run` parameter (such as `pvsyst_build_sfi`, `pvsyst_create_site`, `pvsyst_build_monthly_weather`, `pvsyst_convert_meteo`, `pvsyst_run_simulation`, `pvsyst_generate_report`) write immediately; never overwrite existing projects/outputs and always pick fresh output filenames.
+   - Consult on-demand resources `pvsyst://guide/workflows`, `pvsyst://guide/variables`, `pvsyst://workspace/projects`, `pvsyst://workspace/components`, and `pvsyst://workspace/results` for live workspace state, SFI variables, and multi-step recipes.
 """
 
 WORKFLOW_GUIDE_MD = """# PVsyst CLI MCP — Agent Workflow Playbook
@@ -50,8 +50,8 @@ WORKFLOW_GUIDE_MD = """# PVsyst CLI MCP — Agent Workflow Playbook
 
 ## 3. Existing Project + AC Storage / Load / Cabling
 1. `pvsyst_project_handoff(project=..., variant=...)` to inspect equipment, counts, weather, load, and storage
-2. Load: `pvsyst_create_native_load_variant` (constant / monthly / daily) or `pvsyst_prepare_load_profile` (hourly CSV in `UserData`)
-3. Storage: `pvsyst_create_grid_storage_system` (`self_consumption`, `weak_grid`, `peak_shaving`, `power_shift`)
+2. Load (skip for `peak_shaving`): `pvsyst_create_native_load_variant` (constant / monthly / daily) or `pvsyst_prepare_load_profile` (hourly CSV in `UserData`; required for `self_consumption` and `weak_grid`)
+3. Storage: `pvsyst_create_grid_storage_system` (`self_consumption` / `weak_grid` require `load_manifest_name`; `peak_shaving` requires a source variant without `pvLoad` and must omit `load_manifest_name`; `power_shift` accepts either)
 4. Simulate & read: `pvsyst_build_sfi(variables="grid_storage")` -> `pvsyst_run_simulation` -> `pvsyst_read_results`
 
 ## 4. Task Status Meanings
@@ -142,12 +142,39 @@ def register_guidance(server) -> None:
         variant: str = "VC0",
         storage_strategy: str = "peak_shaving",
     ) -> str:
+        strategy = storage_strategy.strip().lower()
+        if strategy == "peak_shaving":
+            return (
+                f"Add AC-coupled battery storage ({storage_strategy}) to {project}/{variant}:\n"
+                "1. Inspect the baseline via `pvsyst_project_handoff(project, variant)` to confirm the source variant "
+                "has no self-consumption `pvLoad` block (PVsyst rejects PeakShaving paired with a self-consumption load), "
+                "and list batteries via `pvsyst_list_components(component_type='BTR', library='builtin')`.\n"
+                "2. Do not attach a load profile and omit `load_manifest_name` when creating `peak_shaving` storage.\n"
+                "3. Create the storage variant via `pvsyst_create_grid_storage_system` (`storage={'strategy': 'peak_shaving', ...}`, "
+                "omitting `load_manifest_name`; preview with `dry_run=True` then execute with `dry_run=False`).\n"
+                "4. Build a storage SFI with `pvsyst_build_sfi(variables='grid_storage')`, run `pvsyst_run_simulation`, "
+                "and compare against baseline using `pvsyst_read_results(compare_to=...)` or `pvsyst_compare_engineering_scenarios`."
+            )
+        if strategy in ("self_consumption", "weak_grid"):
+            extra = " and supply a matching `availability` profile" if strategy == "weak_grid" else ""
+            return (
+                f"Add load and AC-coupled battery storage ({storage_strategy}) to {project}/{variant}:\n"
+                "1. Inspect the baseline via `pvsyst_project_handoff(project, variant)` and available batteries via "
+                "`pvsyst_list_components(component_type='BTR', library='builtin')`.\n"
+                "2. Prepare an hourly load profile via `pvsyst_prepare_load_profile` (hourly CSV in `UserData`) and "
+                f"record its `load_manifest_name` (required for `{strategy}`{extra}).\n"
+                "3. Create the storage variant via `pvsyst_create_grid_storage_system` passing `load_manifest_name` "
+                "(`dry_run=True` then `dry_run=False`).\n"
+                "4. Build a storage SFI with `pvsyst_build_sfi(variables='grid_storage')`, run `pvsyst_run_simulation`, "
+                "and compare against baseline using `pvsyst_read_results(compare_to=...)` or `pvsyst_compare_engineering_scenarios`."
+            )
         return (
-            f"Add load and AC-coupled battery storage ({storage_strategy}) to {project}/{variant}:\n"
+            f"Add AC-coupled battery storage ({storage_strategy}) to {project}/{variant}:\n"
             "1. Inspect the baseline via `pvsyst_project_handoff(project, variant)` and available batteries via "
             "`pvsyst_list_components(component_type='BTR', library='builtin')`.\n"
-            "2. Attach a load profile via `pvsyst_create_native_load_variant` (constant/monthly/daily) or "
-            "`pvsyst_prepare_load_profile` (hourly CSV in `UserData`).\n"
+            "2. Load binding depends on strategy: for `self_consumption` or `weak_grid`, prepare an hourly load via "
+            "`pvsyst_prepare_load_profile` and pass `load_manifest_name`; for `peak_shaving`, use a source variant "
+            "without `pvLoad` and omit `load_manifest_name`; for `power_shift`, a load is optional.\n"
             "3. Create the storage variant via `pvsyst_create_grid_storage_system` (`dry_run=True` then `dry_run=False`).\n"
             "4. Build a storage SFI with `pvsyst_build_sfi(variables='grid_storage')`, run `pvsyst_run_simulation`, "
             "and compare against baseline using `pvsyst_read_results(compare_to=...)` or `pvsyst_compare_engineering_scenarios`."

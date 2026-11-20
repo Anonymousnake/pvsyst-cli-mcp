@@ -290,6 +290,26 @@ def _apply_single_control(store, lines, arrays, system, *, subarray_id, orientat
 
     if param_key == "bifacial_updates":
         orient_bounds = store._orientation(lines, orientation_id)
+        if isinstance(payload, dict) and payload.get("enabled", True) is not False:
+            from pvsyst_auto.project.bifacial import bifacial_state, pan_is_bifacial
+
+            before = bifacial_state(lines, orient_bounds)
+            if before.get("enabled") is False:
+                for bounds in arrays.values():
+                    orient_idx = store._field_indices(lines, bounds, "NoOrientation")
+                    if len(orient_idx) != 1:
+                        continue
+                    if FIELD.fullmatch(lines[orient_idx[0]].rstrip("\r\n"))[2].strip() != str(orientation_id):
+                        continue
+                    pan_idx = store._field_indices(lines, bounds, "PVModule")
+                    if len(pan_idx) != 1:
+                        continue
+                    pan_name = FIELD.fullmatch(lines[pan_idx[0]].rstrip("\r\n"))[2].strip()
+                    if pan_is_bifacial(store.components, pan_name) is False:
+                        raise ValueError(
+                            f"Selected PAN {pan_name} is monofacial (pvModule Flags lacks bifacial bit 23 / $00800000); "
+                            "PVsystCLI ignores pvBiFacial unless the .PAN module declares bifaciality"
+                        )
         return {result_key: replace_bifacial(lines, orient_bounds, payload)}
 
     main = store._main_array(lines)

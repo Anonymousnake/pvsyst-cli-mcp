@@ -161,6 +161,34 @@ class MultiProviderWeatherTests(unittest.TestCase):
             self.assertEqual(done["preparation"]["status"], "prepared")
             prep_mock.assert_called_once()
 
+            with patch.object(acquisition, "_provider_get", return_value=(payload, raw_text, "https://re.jrc.ec.europa.eu/api/v5_3/tmy?ok=1")), \
+                    patch.object(api_weather, "prepare_weather", return_value={"status": "blocked", "issues": ["SIT exists"]}):
+                failed = api_weather.pvsyst_acquire_weather(
+                    csv_name="chain_tmy2.csv", year=2021,
+                    latitude=31.32, longitude=120.72, site_name="Suzhou",
+                    country_code="CN", timezone_name="Asia/Shanghai",
+                    provider="pvgis_tmy", prepare=True, dry_run=False,
+                )
+            self.assertEqual((failed["status"], failed["stage"]), ("blocked", "preparation"))
+            self.assertEqual(failed["preparation"]["issues"], ["SIT exists"])
+
+    def test_nasa_power_blocks_future_year_in_preflight_with_zero_requests(self):
+        from datetime import timezone as dt_tz
+
+        future_year = datetime.now(dt_tz.utc).year + 1
+        with patch.object(acquisition, "_provider_get") as mock_get:
+            for dry_run in (True, False):
+                with self.subTest(dry_run=dry_run):
+                    res = acquisition.download_weather(
+                        self.root, csv_name="future.csv", year=future_year,
+                        latitude=31.32, longitude=120.72, site_name="Suzhou",
+                        country_code="CN", timezone_name="Asia/Shanghai",
+                        provider="nasa_power", dry_run=dry_run,
+                    )
+                    self.assertEqual((res["status"], res["stage"]), ("blocked", "preflight"), res)
+                    self.assertTrue(res["issues"])
+        mock_get.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
