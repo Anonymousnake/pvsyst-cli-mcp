@@ -150,6 +150,29 @@ class EconomicsEngineTests(unittest.TestCase):
         self.assertIn("peak", by_label["BESS_60m"]["settlement"]["tou_breakdown"])
         self.assertEqual(len(by_label["BESS_60m"]["settlement"]["typical_day_profile"]), 24)
 
+    def test_grid_import_cost_is_settled_without_user_load(self):
+        signed = _write_sfi_csv(self.root / "Results" / "signed.csv", [("E_Grid", "kW")], [
+            ["01/06/24 17:45", 20.0],
+            ["01/06/24 18:00", -4.0],
+        ])
+        separate = _write_sfi_csv(self.root / "Results" / "separate.csv",
+                                  [("EToGrid", "Wh"), ("EFrGrid", "Wh")], [
+            ["01/06/24 17:45", 5000.0, 0.0],
+            ["01/06/24 18:00", 0.0, 1000.0],
+        ])
+        res = evaluate_economics(
+            workspace=self.root,
+            scenarios=[{"csv_name": csv.name} for csv in (signed, separate)],
+            financial={"first_year_degradation_pct": 0.0},
+            tariff={"mode": "tou", "feed_in_tariff": 0.4, "import_tariff": 0.3,
+                    "tou_schedule": [{"name": "peak", "hours": [18], "import_rate": 0.8}]},
+        )
+        for scenario in res["scenarios"]:
+            with self.subTest(scenario=scenario["label"]):
+                summary = scenario["settlement"]["energy_summary"]
+                self.assertEqual((summary["grid_import_kwh"], summary["actual_grid_bill"],
+                                  scenario["financials"]["year1_gross_benefit"]), (1.0, 0.8, 1.2))
+
     def test_batch_summary_csv_ranking_and_mcp_tool_roundtrip(self):
         (self.root / "UserBatch" / "Sweep_Results.CSV").write_text(
             "Ident;Create hourly;Plane tilt;Error;E_Grid;PR\n"
