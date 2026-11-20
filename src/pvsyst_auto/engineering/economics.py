@@ -272,7 +272,7 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
             e_imp = max(0.0, kwh("EFrGrid"))
         elif has_load and "E_Solar" in idx:
             e_imp = max(0.0, e_user - max(0.0, kwh("E_Solar")))
-        elif has_load and raw_eg < 0:
+        elif raw_eg < 0:
             e_imp = -raw_eg
         else:
             e_imp = 0.0
@@ -295,9 +295,9 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
             self_cons = e_exp * sc_ratio
             net_exp = e_exp - self_cons
             baseline_bill = self_cons * imp_rate
-            import_cost = 0.0
+            import_cost = e_imp * imp_rate
             export_rev = net_exp * exp_rate
-            avoided = baseline_bill
+            avoided = baseline_bill - import_cost
             e_exp = net_exp
 
         totals["pv_export_kwh"] += e_exp
