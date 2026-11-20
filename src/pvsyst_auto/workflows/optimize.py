@@ -19,6 +19,7 @@ from pvsyst_auto.engineering.diagnostics import (
 )
 from pvsyst_auto.engineering.suggest import suggest_sizing
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi, summarize_results
+from pvsyst_auto.native.headless import _next_variant_id
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
 
 MAX_ITERATIONS_CAP = 5
@@ -28,15 +29,6 @@ _ACTIONABLE_CODES = frozenset((
     "INVERTER_CLIPPING_HIGH",
     "SHADING_LOSS_HIGH",
 ))
-
-
-def _next_free_variant(existing: list[str]) -> str:
-    used = {v.upper() for v in existing}
-    for n in range(1, 100):
-        candidate = f"VC{n}" if n < 10 else f"V{n:02d}"
-        if candidate not in used:
-            return candidate
-    raise ValueError("No free variant slot (VC1..V99) available in project")
 
 
 def _parse_int(value: Any) -> int | None:
@@ -386,8 +378,7 @@ def optimize_variant(
     for iteration in range(1, max_iterations + 1):
         if not current_proposal["has_executable_patch"]:
             break
-        existing_vars = store.inspect_project(proj)["variants"]
-        next_var = _next_free_variant(existing_vars)
+        next_var = _next_variant_id(store, proj)
         store.clone(proj, current_var, next_var)
         store.update_parameters(
             proj,
