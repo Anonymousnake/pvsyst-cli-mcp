@@ -87,9 +87,12 @@
 | 商业组件电气筛选与索引缓存 | MCP 已封装 | `pvsyst_list_components` 支持 `min_power_w`/`max_power_w`/`bifacial`/`min_system_voltage_v`/`min_mppt`/`manufacturer` 筛选，工作区自动维护 mtime 缓存 `.mcp-component-index.json` |
 | 规格书无模板 `.PAN`/`.OND` 合成 | MCP 已封装（已过 8.1.7 实测） | `pvsyst_build_sourced_component(template_name=None)` 调用 `single_diode.py` 数值求解五参数单二极管模型（自动写双面 bit 23 `$00800000`）与 Mode-1 8 点逆变器效率曲线；620W 双面 `.PAN` + 110kW `.OND` 已过 PVsystCLI 8.1.7 零警告实测 |
 | 多权威气象数据源与一键制备 | MCP 已封装 | `pvsyst_acquire_weather` 支持 `provider="open_meteo_era5" \| "pvgis_tmy" \| "nasa_power"` 及 `prepare=true` 一键串接 `prepare_weather`；`pvsyst_simulate_design` 的 `weather.mode` 同步支持 `pvgis_tmy` 与 `nasa_power` |
-| 财务 / 分时电价（TOU）与光储套利评估 | MCP 已封装 | `pvsyst_evaluate_economics`（纯 Python，不修改 `.VC0` 的 `TEcoEvaluation`）流式结算小时/子小时 CSV 或批处理汇总表，计算 25 年衰减现金流、LCOE、NPV、IRR、静动态回收期与多方案排名 |
+| 财务 / 分时电价（TOU）、两部制需量电费与敏感性评估 | MCP 已封装 | `pvsyst_evaluate_economics`（纯 Python，不修改 `.VC0` 的 `TEcoEvaluation`）流式结算小时/子小时 CSV 或批处理汇总表，支持两部制月度需量削峰与按容/按需对比、电池中途更换、多因子敏感性龙卷风、25 年衰减现金流、LCOE、NPV、IRR、静动态回收期与多方案排名 |
+| TOU 自动派生 `PowerShift` 48 槽 & PV+BESS 两阶段联合寻优 | MCP 已封装（v0.5.0） | `pvsyst_plan_tou_storage_schedule` 将 TOU 电价转为 1/2 充放 48 槽排程；`pvsyst_optimize_bess_sizing` Stage 1 纯 Python 毫秒级扫描 `BESS kWh × PCS kW × 策略` 输出 Pareto 前沿与 2D 热力图，Stage 2 可选调 `PVsystCLI` 实机精确校验 Top-K |
+| 零模板锂电 `.BTR`、三电压 `.OND` 与 `.PAN` 改参重拟合 | MCP 已封装（v0.5.0，已过 8.1.7 实测） | `pvsyst_build_sourced_component(template_name=None)` 扩展支持 `LFP`/`NMC` 锂电 `.BTR`（按单电芯 ESR ≤ 40 mV@I10 与 `AlphaSOC` 约束校验）与三电压 `.OND`（`$1560` + `VNomEff` + `ProfilPIOV1..3`）；`pvsyst_update_component` 支持三电压曲线编辑及可选 `refit_single_diode=true` `.PAN` 重拟合 |
+| 一站式可研编排、CLI 瞬态重试与动态 MCP 资源 | MCP 已封装（v0.5.0） | `pvsyst_run_feasibility_study` 串联组件合成、仿真/断点复用、诊断、TOU/BESS 寻优、经济性/敏感性与双语报告；`PVsystCLI` 支持可配置无窗口早退瞬态重试（`PVSYST_CLI_TRANSIENT_RETRIES`）；新增 3 个只读动态 MCP Resources（`projects`/`components`/`results`）与 2 个工商业光储 Prompts |
 | 诊断 → 修正 → 重仿有界优化闭环 | MCP 已封装 | `pvsyst_optimize_variant` 默认 `dry_run=true` 返回确定性修复方案与 diff；`dry_run=false, confirm=true` 在克隆变体上迭代（`max_iterations` 1..5，绝不覆盖基线） |
-| Plotly 交互式 HTML 工程报告 | MCP 已封装 | `pvsyst_generate_report` 输出中/英文单方案或多方案对比 HTML 报告（月度发电/PR、损失瀑布图、24h TOU/光储曲线、25 年现金流、诊断明细与打印 PDF 样式） |
+| Plotly 交互式 HTML 工程报告 | MCP 已封装 | `pvsyst_generate_report` 输出中/英文单方案或多方案对比 HTML 报告（月度发电/PR、损失瀑布图、24h TOU/光储曲线、两部制需量削峰对比、25 年现金流、敏感性龙卷风图、BESS 寻优热力图/Pareto、诊断明细与打印 PDF 样式） |
 
 ## 负荷与储能（Loads & Storage）
 

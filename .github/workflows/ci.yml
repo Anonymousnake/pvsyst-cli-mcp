@@ -21,8 +21,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python: ['3.10', '3.12']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - name: Build wheel and source distribution
@@ -41,7 +41,7 @@ jobs:
         env:
           PVSYST_TEST_INSTALLED: '1'
         run: python scripts/run_tests.py --suite unit -v
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: packages-${{ matrix.os }}-${{ matrix.python }}
@@ -55,12 +55,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: packages-ubuntu-latest-3.12
           path: dist
-      - name: Publish tested distributions as a draft
+      - name: Attach tested distributions to tag release (or create draft)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz --verify-tag --draft --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz --verify-tag --draft --generate-notes
+          fi

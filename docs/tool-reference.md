@@ -2,7 +2,7 @@
 
 For setup instructions and package layout, see [README.md](../README.md) or [README.zh-CN.md](../README.zh-CN.md).
 
-By default the MCP server exposes **43 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **72 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
+By default the MCP server exposes **46 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **75 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
 
 ## PVsystCLI version differences
 
@@ -36,7 +36,7 @@ Two CLI flags are intentionally omitted from the MCP surface: `-cof` (options fi
 | `pvsyst_license_activate`, `pvsyst_license_deactivate`, `pvsyst_license_sync` | Activate, deactivate, or sync the CLI license (`confirm=true` required) |
 | `pvsyst_export_logs` | Export PVsyst diagnostic logs to a new ZIP archive under `Results` |
 
-### Engineering (`engineering`, default: 7)
+### Engineering (`engineering`, default: 8)
 
 | Tool | What it does |
 |---|---|
@@ -44,9 +44,10 @@ Two CLI flags are intentionally omitted from the MCP surface: `-cof` (options fi
 | `pvsyst_project_handoff` | Read saved equipment, counts, orientation/circuit relationships, weather, load, and storage settings alongside caller declarations and missing inputs |
 | `pvsyst_run_engineering_task` | Apply an isolated revision (fixed angles/losses, `UnlimTracking` parameters, or centralized AC storage with hourly load) in a new project and run a full-year simulation |
 | `pvsyst_compare_engineering_scenarios` | Compare 2 or 3 completed simulation runs, separating shared conditions from intended/unintended input diffs, and export JSON/CSV/Markdown comparison reports |
-| `pvsyst_evaluate_economics` | Pure-Python PV and PV+BESS financial evaluator computing fixed/TOU tariff settlement, 25-year degraded cashflows, LCOE, NPV, IRR, payback, and multi-scenario rankings over SFI or batch CSVs |
-| `pvsyst_generate_report` | Generate a single- or multi-scenario interactive Plotly HTML engineering report under `Results` (monthly yield/PR, loss waterfall, typical 24h TOU/storage profile, 25-year cashflow, diagnostics, zh/en) |
+| `pvsyst_evaluate_economics` | Pure-Python PV and PV+BESS financial evaluator computing fixed, TOU, and two-part demand-charge tariff settlement, battery replacement cashflows, sensitivity tornadoes, 25-year degraded cashflows, LCOE, NPV, IRR, payback, and multi-scenario rankings over SFI or batch CSVs |
+| `pvsyst_generate_report` | Generate a single- or multi-scenario interactive Plotly HTML engineering report under `Results` (monthly yield/PR, loss waterfall, typical 24h TOU/storage profile, monthly demand peak shaving, 25-year cashflow, sensitivity tornado, optional BESS sizing heatmap/Pareto, diagnostics, zh/en) |
 | `pvsyst_export_engineering_delivery` | Bundle a completed engineering run (and optional scenario comparison) with its `.PRJ`/`.VCx`, result CSV/PDF, and Markdown handoff summary into a ZIP archive under `Results` |
+| `pvsyst_run_feasibility_study` | One-shot end-to-end PV/PV+BESS feasibility study orchestrator chaining optional zero-template component synthesis, simulation (or `existing_csv` reuse), diagnostics, TOU 48-slot planning, two-stage BESS sizing, economics/sensitivity, and interactive Plotly HTML report generation (`dry_run=true` default; requires `confirm=true`) |
 
 Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comparison](engineering-scenarios.md), [AC storage engineering](engineering-storage.md), [block project preparation](block-project-preparation.md), and [brief review](engineering-brief.md).
 
@@ -71,8 +72,8 @@ Detailed guides: [project sources & transactions](project-source-verification.md
 |---|---|
 | `pvsyst_list_components`, `pvsyst_get_component` | List (with electrical filters: power range, bifaciality, system voltage, MPPT count, manufacturer, backed by an mtime metadata index cache) and inspect `.PAN`, `.OND`, `.BTR`, `.GEN`, and `.REV` files |
 | `pvsyst_create_component` | Create a workspace component from UTF-8 `PVObject_` text |
-| `pvsyst_build_sourced_component` | Build a new `.PAN` or `.OND` from cited datasheet values: either derived from a template (`template_name` set) or synthesized zero-template with 5-parameter single-diode / Mode-1 efficiency curve derivation (`template_name` omitted) |
-| `pvsyst_update_component` | Edit allowlisted commercial/electrical fields, remarks, or Mode 1 curve tables with SHA-256 checks and automatic backup |
+| `pvsyst_build_sourced_component` | Build a new `.PAN`, `.OND` (single- or 3-voltage), or Li-ion `.BTR` (`LFP`/`NMC`) from cited datasheet values: either derived from a template (`template_name` set) or synthesized zero-template (`template_name` omitted) |
+| `pvsyst_update_component` | Edit allowlisted commercial/electrical fields, remarks, or Mode 1 single-/3-voltage OND and BTR curve tables with SHA-256 checks, automatic backup, and optional `refit_single_diode=true` for `.PAN` STC updates |
 
 Detailed guides: [sourced components](sourced-components.md), [commercial fields](commercial-verification.md), [Mode 1 curve tables](curve-table-verification.md), [OND efficiency curves](ond-curve-verification.md), [BTR capacity curves](btr-capacity-verification.md), [GUI PAN format](gui-pan-verification.md), and [backup generator settings](generator-verification.md).
 
@@ -87,7 +88,7 @@ Detailed guides: [sourced components](sourced-components.md), [commercial fields
 
 Detailed guides: [weather input checks](weather-input-verification.md), [weather preparation](weather-preparation.md), and [weather engineering review](weather-engineering-review.md).
 
-### Loads & Storage (`storage`, default: 4)
+### Loads & Storage (`storage`, default: 5)
 
 | Tool | What it does |
 |---|---|
@@ -95,20 +96,22 @@ Detailed guides: [weather input checks](weather-input-verification.md), [weather
 | `pvsyst_create_native_load_variant` | Create a PV-only self-consumption variant using a native constant (`kW`), monthly (`12 × kWh`), daily (`24 × kW`), or prepared hourly manifest (`mode="hourly"`) load profile |
 | `pvsyst_create_grid_storage_variant` | Update SOC thresholds, AC charge/discharge power limits, efficiency, `PowerShift` 48-slot schedules, `PeakShaving` limits/discharge timing, or `allow_grid_export` on an existing storage variant |
 | `pvsyst_create_grid_storage_system` | Add workspace or built-in battery hardware and centralized AC-coupled `SelfConsumption`, `WeakGrid`, `PeakShaving`, or `PowerShift` storage (plus optional hourly load and grid-availability bindings) to a PV-only grid variant |
+| `pvsyst_plan_tou_storage_schedule` | Deterministically convert a TOU tariff schedule into PVsyst `PowerShift` 48-slot half-hourly charge/discharge schedules (1 or 2 cycles/day) and a drop-in `storage_updates` payload |
 
 Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parameters](grid-storage-parameters.md), [load & storage internals](native-load-storage-controls.md), and [peak shaving](native-peak-shaving.md).
 
-### Simulation (`simulation`, default: 7)
+### Simulation (`simulation`, default: 8)
 
 | Tool | What it does |
 |---|---|
 | `pvsyst_build_sfi` | Generate a `.SFI` export variable selection file under `Models` (presets include `all_common`, `shading`, `soiling`, `grid_limit`, `grid_storage`, `bifacial`, etc.; supports `time_step="hour" | "subhour" | "day" | "month"`) |
-| `pvsyst_run_simulation` | Run a single or batch simulation via `PVsystCLI.exe` with optional date range, `.SFI`, `.RVT`, `time_step="hour" | "subhour"`, report page selection (`-rp`), and shading recomputation (`-rst`) |
+| `pvsyst_run_simulation` | Run a single or batch simulation via `PVsystCLI.exe` with optional date range, `.SFI`, `.RVT`, `time_step="hour" | "subhour"`, report page selection (`-rp`), shading recomputation (`-rst`), and automatic transient-abort retry |
 | `pvsyst_run_batch_sweep` | Generate `UserBatch/<name>_BatchParams.CSV` + `_BatchVariables.RVT` from a Cartesian grid or explicit scenario rows (<=100 scenarios), run one `PVsystCLI` batch call, and return ranked scenario results with baseline deltas |
 | `pvsyst_run_house_task` | End-to-end 3D house + obstacles workflow: generate `.pvc2`, build native `.VCx` (`scene_import_method="native"` default, `linear` or `module_layout`), and run a full-year CLI simulation with checkpoint resume |
 | `pvsyst_simulate_design` | Unified single-design workflow (`fixed_unshaded_grid`, `ground_sheds`, `ground_tracker`, optional `ground_layout` with finite 3D `site_polygon`/`obstacles`/`base_slope_deg` and `bifacial`) combining component lookup, zero-template synthesis, sizing (`capacity`/`electrical_design`/`auto_from_components`), weather acquisition/preparation (`open_meteo`, `pvgis_tmy`, `nasa_power`, `csv`, `existing`), annual simulation, and automatic diagnostics |
 | `pvsyst_prepare_sourced_design` | Extract an `electrical_design` envelope from cited datasheet snippets and check whether all required voltage/current/temperature inputs are present |
 | `pvsyst_optimize_variant` | Bounded Diagnose -> Clone -> Patch -> Re-simulate loop (`dry_run=true` default previews deterministic fixes and diffs; `confirm=true` iterates up to `max_iterations` 1..5 on cloned variants without mutating baseline) |
+| `pvsyst_optimize_bess_sizing` | Two-stage hybrid PV+BESS capacity optimizer: Stage 1 fast pure-Python grid sweep (`bess_kwh × pcs_kw × strategy`) with Pareto frontier & 2D heatmap; optional Stage 2 (`verify_top_k` 1..5, `dry_run=false`, `confirm=true`) runs `PVsystCLI` to reconcile exact KPIs |
 
 Detailed guides: [automatic simulation](automatic-simulation.md), [single-design inputs](single-design-inputs.md), [capacity sizing](capacity-sizing.md), [tracking template flow](tracking-template-flow.md), [tutorial grid workflow](tutorial-grid-cycle.md), [house PV modeling](house-pv-modeling.md), [native house task](native-house-task.md), and [sourced house task](sourced-house-task.md).
 
@@ -166,7 +169,7 @@ General conventions across all tools:
 
 ## Upgrading from v0.1.0
 
-The `v0.1.0` release exposed 82 MCP tools. As of `v0.4.0`, the server registers **43 tools by default** across 8 core groups and **72 tools** with `PVSYST_TOOL_GROUPS=all` (including new v0.3.0/v0.4.0 tools `pvsyst_suggest_sizing`, `pvsyst_diagnose_results`, `pvsyst_run_batch_sweep`, `pvsyst_evaluate_economics`, `pvsyst_optimize_variant`, and `pvsyst_generate_report`; `pvsyst_license_info`, `pvsyst_project_handoff`, and `pvsyst_export_engineering_delivery` were promoted back into the default groups in `v0.3.0`). `PVSYST_TOOL_GROUPS` is an explicit allow-list: an explicit value replaces the default groups. To retain all defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`.
+The `v0.1.0` release exposed 82 MCP tools. As of `v0.5.0`, the server registers **46 tools by default** across 8 core groups and **75 tools** with `PVSYST_TOOL_GROUPS=all` (including new v0.3.0–v0.5.0 tools `pvsyst_suggest_sizing`, `pvsyst_diagnose_results`, `pvsyst_run_batch_sweep`, `pvsyst_evaluate_economics`, `pvsyst_optimize_variant`, `pvsyst_generate_report`, `pvsyst_plan_tou_storage_schedule`, `pvsyst_optimize_bess_sizing`, and `pvsyst_run_feasibility_study`; `pvsyst_license_info`, `pvsyst_project_handoff`, and `pvsyst_export_engineering_delivery` were promoted back into the default groups in `v0.3.0`). `PVSYST_TOOL_GROUPS` is an explicit allow-list: an explicit value replaces the default groups. To retain all defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`.
 
 The following table lists the 29 tools that remain available in opt-in groups (`admin` and `expert`):
 

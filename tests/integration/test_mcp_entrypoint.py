@@ -66,12 +66,17 @@ class PackageEntrypointTests(unittest.TestCase):
                     self.assertEqual(prompts, {
                         "design_fixed_or_utility_pv", "design_rooftop_3d_pv",
                         "design_pv_with_storage", "diagnose_and_optimize_simulation",
+                        "ci_bess_feasibility_study", "optimize_bess_sizing",
                     })
                     resources = {str(item.uri) for item in (await session.list_resources()).resources}
-                    self.assertEqual(resources, {"pvsyst://guide/workflows", "pvsyst://guide/variables"})
+                    self.assertEqual(resources, {
+                        "pvsyst://guide/workflows", "pvsyst://guide/variables",
+                        "pvsyst://workspace/projects", "pvsyst://workspace/components",
+                        "pvsyst://workspace/results",
+                    })
                     tools = (await session.list_tools()).tools
                     names = {tool.name for tool in tools}
-                    self.assertEqual(len(names), 43)
+                    self.assertEqual(len(names), 46)
                     self.assertTrue({"pvsyst_capabilities", "pvsyst_license_info", "pvsyst_suggest_sizing",
                                      "pvsyst_diagnose_results", "pvsyst_run_batch_sweep",
                                      "pvsyst_project_handoff", "pvsyst_export_engineering_delivery",
@@ -240,11 +245,13 @@ class ToolGroupsTests(unittest.TestCase):
             )
             default_names = {item["name"] for item in default_tools}
             full_names = {item["name"] for item in full}
-            self.assertEqual(len(default_names), 43)
-            self.assertEqual(len(full_names), 72)
+            self.assertEqual(len(default_names), 46)
+            self.assertEqual(len(full_names), 75)
             self.assertTrue({"pvsyst_license_info", "pvsyst_suggest_sizing", "pvsyst_diagnose_results",
                              "pvsyst_run_batch_sweep", "pvsyst_evaluate_economics",
                              "pvsyst_optimize_variant", "pvsyst_generate_report",
+                             "pvsyst_plan_tou_storage_schedule", "pvsyst_optimize_bess_sizing",
+                             "pvsyst_run_feasibility_study",
                              "pvsyst_project_handoff",
                              "pvsyst_export_engineering_delivery"}.issubset(default_names))
             self.assertTrue({"pvsyst_license_activate", "pvsyst_prepare_block_project"}.isdisjoint(default_names))

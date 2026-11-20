@@ -11,7 +11,7 @@ end-to-end MCP tool sequences covering:
      + ``pvsyst_build_sfi`` / ``pvsyst_run_simulation`` / ``pvsyst_read_results``.
   3) v0.3.0/v0.4.0 zero-template ``ground_tracker`` + ``sizing_mode="auto_from_components"`` + ``pvBiFacial``
      + ``pvsyst_diagnose_results`` (``.VC0`` attribution) + ``pvsyst_run_batch_sweep``
-     + MCP guidance surface (``instructions``, 4 prompts, 2 resources, 43 default tools).
+     + MCP guidance surface (``instructions``, 6 prompts, 5 resources, 46 default tools).
   4) v0.3.0 15-minute sub-hourly weather preparation (``pvsyst_prepare_weather(..., step_minutes=15)``)
      + ``PeakShaving`` AC storage ``-ts:subhour`` vs ``-ts:hour`` run & diagnostics.
 
@@ -487,16 +487,26 @@ End of PVObject pvModule
             async with stdio_client(self._mcp_params()) as (read, write):
                 async with ClientSession(read, write) as session:
                     init = await session.initialize()
-                    # Verify v0.4.0 MCP guidance surface & exact 43-tool default budget
+                    # Verify v0.5.0 MCP guidance surface & exact 46-tool default budget
                     self.assertTrue(init.instructions and "pvsyst_run_batch_sweep" in init.instructions)
                     self.assertIn("pvsyst_evaluate_economics", init.instructions)
                     self.assertIn("pvsyst_generate_report", init.instructions)
+                    self.assertIn("pvsyst_run_feasibility_study", init.instructions)
                     prompts = {item.name for item in (await session.list_prompts()).prompts}
-                    self.assertEqual(len(prompts), 4)
+                    self.assertEqual(len(prompts), 6)
                     resources = {str(item.uri) for item in (await session.list_resources()).resources}
-                    self.assertEqual(resources, {"pvsyst://guide/workflows", "pvsyst://guide/variables"})
+                    self.assertEqual(
+                        resources,
+                        {
+                            "pvsyst://guide/workflows",
+                            "pvsyst://guide/variables",
+                            "pvsyst://workspace/projects",
+                            "pvsyst://workspace/components",
+                            "pvsyst://workspace/results",
+                        },
+                    )
                     tools = {item.name for item in (await session.list_tools()).tools}
-                    self.assertEqual(len(tools), 43)
+                    self.assertEqual(len(tools), 46)
 
                     # 1. Read-only sizing recommendation (0 CLI execs)
                     err, sizing = _decode(await session.call_tool("pvsyst_suggest_sizing", {

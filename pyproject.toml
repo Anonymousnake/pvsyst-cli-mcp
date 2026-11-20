@@ -4,11 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pvsyst-cli-mcp"
-version = "0.4.0"
-description = "Workspace-scoped MCP and Python adapter for installed PVsyst software"
+version = "0.5.0"
+description = "Workspace-scoped MCP server and Python engineering adapter for installed PVsyst 8 software (PV/BESS sizing, TOU & two-part demand economics, zero-template components, 3D shading, and Plotly reports)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
+keywords = ["pvsyst", "solar", "photovoltaic", "bess", "energy-storage", "mcp", "simulation", "renewable-energy"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "mcp>=2.0,<3.0",
     "pydantic>=2.0,<3.0",
@@ -20,7 +33,10 @@ dependencies = [
 pvsyst-mcp = "pvsyst_auto.api.app:main"
 
 [project.urls]
+Homepage = "https://github.com/Anonymousnake/pvsyst-cli-mcp"
 Repository = "https://github.com/Anonymousnake/pvsyst-cli-mcp"
+Issues = "https://github.com/Anonymousnake/pvsyst-cli-mcp/issues"
+Releases = "https://github.com/Anonymousnake/pvsyst-cli-mcp/releases"
 
 [tool.setuptools.packages.find]
 where = ["src"]
