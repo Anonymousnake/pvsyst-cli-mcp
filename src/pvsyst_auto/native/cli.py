@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from functools import wraps
 from datetime import datetime
 from pathlib import Path
@@ -207,9 +208,32 @@ def _serialized(method):
     return call
 
 
+_NON_TRANSIENT_SIM_RE = re.compile(
+    r"(?i)("
+    r"no license|license expired|invalid command syntax|unknown command|unknown command line option|"
+    r"simulation cannot be run|is in error|cannot be opened|does not exist|not found|failed to load|"
+    r"\berror\s*:|you must define|should define"
+    r")"
+)
+_STARTUP_PROGRESS_RE = re.compile(
+    r"(?i)(checking license|loading workspace|loading project|loading variant|loading sfi|checking va|simulation from)"
+)
+
+
+def _is_transient_simulation_abort(text: str) -> bool:
+    """True only when PVsystCLI aborted mid-startup/check with no domain, syntax, or license error."""
+    stripped = (text or "").strip()
+    if "Simulation done in " in stripped:
+        return False
+    if _NON_TRANSIENT_SIM_RE.search(stripped):
+        return False
+    return (not stripped) or bool(_STARTUP_PROGRESS_RE.search(stripped))
+
+
 class PVsystCLI:
     def __init__(self, cli_path: str | os.PathLike | None = None,
-                 workspace: str | os.PathLike | None = None, timeout: int = 3600):
+                 workspace: str | os.PathLike | None = None, timeout: int = 3600,
+                 max_transient_retries: int | None = None):
         cli_path = cli_path or os.environ.get("PVSYST_CLI")
         workspace = workspace or os.environ.get("PVSYST_WORKSPACE")
         if not cli_path or not workspace:
@@ -220,7 +244,20 @@ class PVsystCLI:
             raise ValueError("CLI must be a file and workspace must be a directory")
         if timeout < 1:
             raise ValueError("Timeout must be positive")
+        if max_transient_retries is None:
+            raw_retries = os.environ.get("PVSYST_CLI_TRANSIENT_RETRIES", "1").strip()
+            try:
+                retries = int(raw_retries)
+            except ValueError as exc:
+                raise ValueError("PVSYST_CLI_TRANSIENT_RETRIES must be an integer in 0..3") from exc
+        else:
+            if type(max_transient_retries) is not int:
+                raise ValueError("max_transient_retries must be an integer in 0..3")
+            retries = max_transient_retries
+        if not 0 <= retries <= 3:
+            raise ValueError("max_transient_retries must be in 0..3")
         self.timeout = timeout
+        self.max_transient_retries = retries
         self._help_cache: dict[str, str] = {}
         self._lock = threading.RLock()
 
@@ -626,13 +663,36 @@ class PVsystCLI:
             args.append(f"-rpf:{pdf_target}")
         batch_names, batch_before, batch_summary = (self._batch_outputs(inputs["batch-params-file"])
                                                     if batch_params else ([], {}, None))
-        result = self._checked_run("Simulation", *args, allow_window_creation=allow_window_creation)
-        text = self._output(result)
-        if (result.returncode != 0
+        transient_retries = 0
+        transient_evidence: list[str] = []
+        max_retries = 0 if batch_params else self.max_transient_retries
+        while True:
+            result = self._checked_run("Simulation", *args, allow_window_creation=allow_window_creation)
+            text = self._output(result)
+            failed = (
+                result.returncode != 0
                 or (log_level in (None, 3) and "Simulation done in " not in text)
                 or (csv_target and not csv_target.is_file())
-                or (pdf_target and not pdf_target.is_file())):
-            raise PVsystError("Simulation did not complete or produce requested output: " + self._redact(text)[-3000:])
+                or (pdf_target and not pdf_target.is_file())
+            )
+            if not failed:
+                break
+            if transient_retries < max_retries and _is_transient_simulation_abort(text):
+                transient_retries += 1
+                transient_evidence.append(self._redact(text)[-1000:])
+                # Remove any partial output file written by the aborted attempt before retrying.
+                for partial in (csv_target, pdf_target):
+                    if partial is not None and partial.is_file():
+                        try:
+                            partial.unlink()
+                        except OSError:
+                            pass
+                time.sleep(0.25)
+                continue
+            detail = self._redact(text)[-3000:]
+            if transient_retries:
+                detail = f"[after {transient_retries} transient retry(s)]\n" + detail
+            raise PVsystError("Simulation did not complete or produce requested output: " + detail)
         summary = None
         hourly = []
         runs = None
@@ -654,14 +714,18 @@ class PVsystCLI:
             if not runs:
                 raise PVsystError("Batch summary contains no completed scenarios")
         timing = re.search(r"Simulation done in (\d+)min\s*(\d+)sec", text)
-        return {"csv": str(csv_target) if csv_target else None,
-                "pdf": str(pdf_target) if pdf_target else None,
-                "seconds": int(timing[1]) * 60 + int(timing[2]) if timing else None,
-                "batch_summary": str(summary) if summary else None,
-                "batch_hourly": [str(p) for p in hourly], "batch_runs": runs,
-                "warnings": [line.strip() for line in self._redact(text).splitlines()
-                             if re.search(r"\b(warn(?:ing)?s?|caution)\b", line, re.I)],
-                "diagnostics": self._redact(text)[-12000:]}
+        out = {"csv": str(csv_target) if csv_target else None,
+               "pdf": str(pdf_target) if pdf_target else None,
+               "seconds": int(timing[1]) * 60 + int(timing[2]) if timing else None,
+               "batch_summary": str(summary) if summary else None,
+               "batch_hourly": [str(p) for p in hourly], "batch_runs": runs,
+               "warnings": [line.strip() for line in self._redact(text).splitlines()
+                            if re.search(r"\b(warn(?:ing)?s?|caution)\b", line, re.I)],
+               "diagnostics": self._redact(text)[-12000:]}
+        if transient_retries:
+            out["transient_retries"] = transient_retries
+            out["transient_retry_evidence"] = transient_evidence
+        return out
 
     def convert_meteo(self, input_csv: str | os.PathLike, mef: str | os.PathLike,
                       sit: str | os.PathLike, out_met: str | os.PathLike,

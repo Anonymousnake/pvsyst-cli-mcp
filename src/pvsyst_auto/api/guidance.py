@@ -1,5 +1,9 @@
-"""MCP protocol guidance layer: server instructions, workflow prompts, and on-demand reference resources."""
+"""MCP protocol guidance layer: server instructions, workflow prompts, and on-demand reference/workspace resources."""
 from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
 
 from pvsyst_auto.native.cli import REPORT_PAGES, VAR_GROUPS
 
@@ -186,3 +190,127 @@ def register_guidance(server) -> None:
     )
     def variables_guide() -> str:
         return _variables_guide_md()
+
+    def _active_workspace() -> Path | None:
+        raw = os.environ.get("PVSYST_WORKSPACE", "").strip()
+        if not raw:
+            return None
+        p = Path(raw)
+        return p.resolve() if p.is_dir() else None
+
+    @server.resource(
+        "pvsyst://workspace/projects",
+        name="pvsyst_workspace_projects",
+        title="Workspace Projects & Variants",
+        description="Live read-only JSON summary of PVsyst projects and variants in the configured PVSYST_WORKSPACE.",
+        mime_type="application/json",
+    )
+    def workspace_projects_resource() -> str:
+        ws = _active_workspace()
+        if ws is None:
+            return json.dumps({"configured": False, "projects": []}, ensure_ascii=False, indent=2)
+        proj_dir = ws / "Projects"
+        items = []
+        if proj_dir.is_dir():
+            prjs = sorted(p for p in proj_dir.iterdir() if p.is_file() and p.suffix.lower() == ".prj")
+            for prj in prjs[:200]:
+                stem_cf = prj.stem.casefold()
+                variants = sorted(
+                    v.suffix.lstrip(".").upper()
+                    for v in proj_dir.iterdir()
+                    if v.is_file() and v.stem.casefold() == stem_cf and v.suffix.lower().startswith(".vc")
+                )
+                items.append({"project": prj.name, "variants": variants})
+        return json.dumps({"configured": True, "workspace": str(ws), "projects": items}, ensure_ascii=False, indent=2)
+
+    @server.resource(
+        "pvsyst://workspace/components",
+        name="pvsyst_workspace_components",
+        title="Workspace Components Catalog",
+        description="Live read-only JSON catalog of loose PAN, OND, and BTR components with cached electrical metadata.",
+        mime_type="application/json",
+    )
+    def workspace_components_resource() -> str:
+        ws = _active_workspace()
+        if ws is None:
+            return json.dumps({"configured": False, "components": {}}, ensure_ascii=False, indent=2)
+        from pvsyst_auto.components.store import ComponentStore
+
+        comp = ComponentStore(ws)
+        catalog = {}
+        for kind in ("PAN", "OND", "BTR"):
+            try:
+                catalog[kind] = comp.list(kind, "workspace", limit=100).get("items", [])
+            except Exception:
+                catalog[kind] = []
+        return json.dumps({"configured": True, "workspace": str(ws), "components": catalog}, ensure_ascii=False, indent=2)
+
+    @server.resource(
+        "pvsyst://workspace/results",
+        name="pvsyst_workspace_results",
+        title="Workspace Simulation Results & Reports",
+        description="Live read-only JSON listing of recent simulation CSV, PDF, HTML reports, and manifests in Results/ and UserHourly/.",
+        mime_type="application/json",
+    )
+    def workspace_results_resource() -> str:
+        ws = _active_workspace()
+        if ws is None:
+            return json.dumps({"configured": False, "files": []}, ensure_ascii=False, indent=2)
+        entries = []
+        allowed_ext = {".csv", ".pdf", ".html", ".json"}
+        for folder in ("Results", "UserHourly"):
+            d = ws / folder
+            if not d.is_dir():
+                continue
+            for p in d.iterdir():
+                if p.is_file() and p.suffix.lower() in allowed_ext:
+                    st = p.stat()
+                    entries.append({
+                        "folder": folder,
+                        "name": p.name,
+                        "bytes": st.st_size,
+                        "mtime": round(st.st_mtime, 3),
+                    })
+        entries.sort(key=lambda item: -item["mtime"])
+        return json.dumps({"configured": True, "workspace": str(ws), "files": entries[:100]}, ensure_ascii=False, indent=2)
+
+    @server.prompt(
+        name="ci_bess_feasibility_study",
+        description="End-to-end C&I PV+BESS feasibility workflow with two-part demand tariff, TOU PowerShift scheduling, sizing optimization, sensitivity analysis, and bilingual Plotly HTML report.",
+    )
+    def ci_bess_feasibility_study(
+        location: str,
+        target_dc_kw: str = "500",
+        language: str = "zh",
+    ) -> str:
+        return (
+            f"Run a complete C&I PV+BESS feasibility study for a {target_dc_kw} kWp plant at {location} (language={language}):\n"
+            "1. Inspect workspace readiness with `pvsyst_capabilities`, `pvsyst_license_info`, and resources "
+            "`pvsyst://workspace/components` and `pvsyst://workspace/projects`.\n"
+            "2. Resolve location (`pvsyst_resolve_location`) and select or synthesize commercial PAN/OND/BTR components "
+            "via `pvsyst_list_components` or zero-template `pvsyst_build_sourced_component`.\n"
+            "3. Plan two-charge/two-discharge TOU windows with `pvsyst_plan_tou_storage_schedule`.\n"
+            "4. Run `pvsyst_run_feasibility_study(spec=..., dry_run=True)` to preview the full execution graph "
+            "(weather, PV/BESS simulation, diagnostics, two-part demand + TOU economics, sensitivity tornado, optional BESS sizing sweep, "
+            "and interactive Plotly HTML report), then execute with `dry_run=False, confirm=True`.\n"
+            "5. Present annual yield, PR, demand peak shaving savings, NPV, IRR, LCOE, payback, sensitivity drivers, and the generated HTML report path."
+        )
+
+    @server.prompt(
+        name="optimize_bess_sizing",
+        description="Two-stage hybrid PV+BESS sizing optimization workflow (fast pure-Python grid sweep + optional Stage 2 PVsystCLI verification).",
+    )
+    def optimize_bess_sizing_prompt(
+        baseline_csv: str,
+        installed_dc_kw: str = "500",
+        rank_by: str = "npv",
+    ) -> str:
+        return (
+            f"Optimize battery capacity (kWh) and PCS power (kW) for `{baseline_csv}` ({installed_dc_kw} kWp, rank_by={rank_by}):\n"
+            "1. Confirm the baseline CSV and available load/TOU/demand-charge tariff parameters.\n"
+            "2. Run `pvsyst_optimize_bess_sizing` Stage 1 (`verify_top_k=0`, `dry_run=True`) across candidate `bess_kwh_values` "
+            "and `pcs_kw_values` (including `0` for PV-only baseline) to inspect ranked KPIs, Pareto frontier, and 2D heatmap.\n"
+            "3. Optionally run Stage 2 (`verify_top_k=1..3`, `dry_run=False`, `confirm=True`) with a loose or zero-template Li-ion `.BTR` "
+            "to reconcile fast-model estimates against exact `PVsystCLI` simulations.\n"
+            "4. Embed the resulting `bess_optimization` dict into `pvsyst_generate_report` to render the interactive heatmap and Pareto chart."
+        )
