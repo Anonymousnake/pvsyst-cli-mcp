@@ -620,5 +620,7 @@ def generate_report(
         "scenario_count": len(parsed_scenarios),
         "chart_count": len(chart_sections),
         "has_economics": econ_result is not None,
-        "best_scenario": econ_result["best_scenario"] if econ_result else primary["label"],
+        "best_scenario": econ_result["best_scenario"] if econ_result else max(
+            parsed_scenarios, key=lambda sc: sc["stats"]["annual_e_grid_kwh"]
+        )["label"],
     }

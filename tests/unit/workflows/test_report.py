@@ -176,6 +176,18 @@ class InteractiveReportTests(unittest.TestCase):
                 scenarios=[{"label": "Gap", "csv_name": "gap_report.csv"}],
             )
 
+    def test_best_scenario_matches_energy_ranking_without_economics(self):
+        _write_report_csv(self.root / "Results" / "small.csv", scale=1.0)
+        _write_report_csv(self.root / "Results" / "large.csv", scale=2.0)
+        result = generate_report(
+            workspace=self.root, title="Ranking", output_name="ranking.html", language="en",
+            scenarios=[{"label": "Small", "csv_name": "small.csv"},
+                       {"label": "Large", "csv_name": "large.csv"}],
+        )
+        report = (self.root / "Results" / "ranking.html").read_text(encoding="utf-8")
+        self.assertIn("<tr><td>#1</td><td><strong>Large</strong>", report)
+        self.assertEqual(result["best_scenario"], "Large")
+
 
 if __name__ == "__main__":
     unittest.main()
