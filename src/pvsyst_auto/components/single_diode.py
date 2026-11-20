@@ -346,8 +346,8 @@ def synthesize_ond_from_datasheet(
     p_seuil = round(max(5.0, 0.005 * pnom_w), 2)
     eta_max = effic_max_pct / 100.0
     eta_delta = max(0.001, (effic_max_pct - eff_euro) / 100.0)
-    # Construct strictly monotonic 8-point Mode-1 P_out(P_in) efficiency profile in W
-    fracs_and_etas = (
+    # Construct strictly monotonic 8-point Mode-1 P_out(P_in) efficiency profile in W, capped at EfficMax
+    fracs_and_etas = tuple((frac, min(eta, eta_max)) for frac, eta in (
         (0.03, max(0.85, eta_max - 4.5 * eta_delta)),
         (0.05, max(0.88, eta_max - 3.0 * eta_delta)),
         (0.10, max(0.92, eta_max - 1.6 * eta_delta)),
@@ -355,7 +355,7 @@ def synthesize_ond_from_datasheet(
         (0.30, max(0.95, eta_max - 0.2 * eta_delta)),
         (0.50, eta_max),
         (1.00, max(0.94, eta_max - 0.4 * eta_delta)),
-    )
+    ))
     points: list[tuple[int, int]] = [(int(round(p_seuil)), 0)]
     p_in_max = pnom_w / fracs_and_etas[-1][1]
     for frac, eta in fracs_and_etas:
