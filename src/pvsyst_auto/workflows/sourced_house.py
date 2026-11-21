@@ -222,22 +222,18 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
         try:
             if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation, accept_source_review)):
                 raise ValueError("Use strict booleans")
+            method = request.get("scene_import_method") or "native"
+            if method != "native":
+                result.update(status="blocked", stage="house_inputs",
+                              issues=["Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; "
+                                      "use scene_import_method='native' or omit it."])
+                return result
             # Reject an unusable explicit binding before any source-project write, rather than
             # preparing the source and only failing at the child house stage.
-            if request.get("string_layout") is not None and not (
-                    (request.get("scene_import_method") or "native") == "native"
-                    and (request.get("shading_mode") or "linear") == "module_layout"):
+            if request.get("string_layout") is not None and (request.get("shading_mode") or "linear") != "module_layout":
                 result.update(status="blocked", stage="house_inputs",
                               issues=["An explicit string_layout requires scene_import_method='native' "
                                       "and shading_mode='module_layout'; nothing was prepared."])
-                return result
-            # A strict no-window request cannot be delivered by the GUI import method; reject
-            # before any source preparation so a windowless request never prepares a project.
-            if request.get("allow_window_creation") is False and (
-                    (request.get("scene_import_method") or "native") != "native"):
-                result.update(status="blocked", stage="house_inputs",
-                              issues=["allow_window_creation=false requires scene_import_method='native'; "
-                                      "the GUI import method opens the native window, so nothing was prepared."])
                 return result
             if not resume and request.get("allow_window_creation") is False:
                 raise ValueError("House shading recomputation requires allow_window_creation=true or unset")

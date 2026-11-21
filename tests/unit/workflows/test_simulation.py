@@ -575,8 +575,7 @@ class TerminalStateTests(unittest.TestCase):
             raise Unanticipated("scene writer crashed")
 
         with patch.object(house_flow, "_prepare", return_value=(paths, {"scene_name": "Work_house.pvc2"})), \
-                patch.object(house_flow, "create_house_pv_scene", side_effect=scene), \
-                patch.object(house_flow, "open_native_project", return_value={"status": "ready_to_open"}):
+                patch.object(house_flow, "create_house_pv_scene", side_effect=scene):
             with self.assertRaises(Unanticipated):
                 house_flow.run_house_task(store, object(), object(), request=request, dry_run=False, confirm=True)
         record = json.loads(paths["manifest"].read_text())

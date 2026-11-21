@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from pvsyst_auto.native.cli import PVsystCLI, PVsystError, build_monthly_weather_csv, build_sfi, parse_batch_results, parse_result_csv, result_units, summarize
-from pvsyst_auto.native import load as native_load, scene as native_scene
+from pvsyst_auto.native import load as native_load
 from pvsyst_auto.api import app as _registered_app, context as server
 import pvsyst_auto.api.projects as api_projects
 import pvsyst_auto.api.results as api_results
@@ -479,8 +479,6 @@ class PVsystTests(unittest.TestCase):
         with patch.object(self.client, "_run", return_value=subprocess.CompletedProcess([], 0, "", "")):
             with self.assertRaisesRegex(PVsystError, "no output"):
                 self.client.version()
-            with self.assertRaisesRegex(native_scene.NativeBridgeError, "version query"):
-                native_scene._check_cli(self.client)
 
         def run(*args):
             self.assertIn("-v:VC0", args)
@@ -640,12 +638,11 @@ class PVsystTests(unittest.TestCase):
         self.assertEqual(versions.GUI_BUILDS, (("8.1.6", "49278"), ("8.1.7", "49382")))
         for token in ("8.1.5", "8.1.8", "8.2.0", "9.0.0"):
             self.assertNotIn(token, versions.NATIVE_TEXT_OR_SEED)
-        from pvsyst_auto.native import scene as native_scene
-        fake_817 = type("Cli", (), {"cli": str(self.client.cli), "version": lambda _s: "PVsystCLI 8.1.7 (rev. 49382)"})()
-        fake_818 = type("Cli", (), {"cli": str(self.client.cli), "version": lambda _s: "PVsystCLI 8.1.8 (rev. 49527)"})()
-        self.assertIn("49382", native_scene._check_cli(fake_817))
-        with self.assertRaises(native_scene.UnsupportedEnvironment):
-            native_scene._check_cli(fake_818)
+        # Legacy Win32 GUI bridge (native.scene) was removed in v0.6.0
+        with self.assertRaises(ImportError):
+            from pvsyst_auto.native import scene as _removed_scene  # noqa: F401
+        with self.assertRaisesRegex(ValueError, "removed in v0.6.0"):
+            api_projects.pvsyst_import_house_pv_scene("s.pvc2", "V", method="gui")
 
     def test_cli_control_chars_bool_guards_csv_encoding_headers_and_leap_day(self):
         import warnings
@@ -900,29 +897,24 @@ class PVsystTests(unittest.TestCase):
         with patch.dict(os.environ, {"LOCALAPPDATA": ""}, clear=False):
             expected_local = Path.home() / "AppData" / "Local"
             self.assertEqual(
-                native_scene._ini_path(),
-                expected_local / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini",
-            )
-            self.assertEqual(
                 e2e_full._ini_paths()[0],
                 expected_local / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini",
             )
 
-        custom_local = self.workspace / "AppDataLocal"
-        ini_file = custom_local / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini"
-        ini_file.parent.mkdir(parents=True, exist_ok=True)
-        expected_dp = Path(r"C:\Users\René\PVsyst8.1_Data")
-        ini_text = f"[Main]\r\nDataPath={expected_dp}\r\n"
-        with patch.dict(os.environ, {"LOCALAPPDATA": str(custom_local)}, clear=False):
-            for payload in (
-                ini_text.encode("utf-16"),
-                b"\xfe\xff" + ini_text.encode("utf-16-be"),
-                ini_text.encode("utf-8-sig"),
-                ini_text.encode("utf-8"),
-                ini_text.encode("cp1252"),
-            ):
-                ini_file.write_bytes(payload)
-                self.assertEqual(native_scene._ini_datapath(), expected_dp)
+        # Slim viewer-only open_native_project preflight (no Win32 click automation)
+        from pvsyst_auto.native.project import open_native_project
+        from pvsyst_auto.project.variants import VariantStore
+        from pvsyst_auto.components.store import ComponentStore
+        pvsyst_gui = self.client.cli.parent / "PVsyst.exe"
+        pvsyst_gui.write_bytes(b"stub")
+        (self.workspace / "Projects" / "Example.PRJ").write_text(
+            "PVObject_=pvProject\n  Version=8.1.7\nEnd of PVObject pvProject\n", encoding="utf-8"
+        )
+        vstore = VariantStore(self.workspace, ComponentStore(self.workspace))
+        with patch("pvsyst_auto.native.project.find_running_pvsyst", return_value=[]):
+            prev = open_native_project(vstore, self.client, project="Example.PRJ", dry_run=True)
+            self.assertEqual(prev["status"], "ready_to_open")
+            self.assertEqual(prev["planned_action"], "launch_pvsyst_viewer")
 
     def test_simulation_error_includes_nonzero_exit_code(self):
         out_csv = self.workspace / "Results" / "nonzero_exit.csv"

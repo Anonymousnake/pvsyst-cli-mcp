@@ -269,16 +269,17 @@ def pvsyst_read_house_pv_scene(scene_name: StrictStr) -> dict:
 def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
                                    dry_run: StrictBool = True, confirm: StrictBool = False,
                                    shading_mode: Literal["linear", "module_layout"] = "linear",
-                                   method: Literal["gui", "native"] = "native") -> dict:
-    """Import a .pvc2 house/PV scene into a new variant via the headless builder (default, method='native')
-    or the legacy PVsyst GUI path (method='gui'), supporting linear and module_layout shading."""
-    current = cli()
+                                   method: Literal["native"] = "native") -> dict:
+    """Import a .pvc2 house/PV scene into a new variant via the headless native builder,
+    supporting linear and module_layout shading."""
+    if method != "native":
+        raise ValueError("Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; use method='native'")
     store = variant_store()
     with store.lock:
-        if not (method == "native" and shading_mode == "module_layout"):
-            # A scene whose recipe carries an explicit binding must not be fed to the GUI/linear
+        if shading_mode != "module_layout":
+            # A scene whose recipe carries an explicit binding must not be fed to the linear
             # importer, which would silently ignore per-cell wiring. Detect it on the recipe and
-            # stop before any write; old scenes without a binding keep their exact legacy routing.
+            # stop before any write.
             recovered = read_house_pv_scene(store.components, scene_name)
             binding = (recovered.get("create_arguments") or {}).get("string_layout")
             if binding is not None:
@@ -287,17 +288,11 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
                         "native_consumption_verified": False,
                         "issues": ["This scene declares an explicit string_layout; it can only be "
                                    "imported with method='native' and shading_mode='module_layout'. "
-                                   "The GUI/linear importer auto-allocates strings and will not drop "
+                                   "The linear importer auto-allocates strings and will not drop "
                                    "declared per-cell wiring silently."]}
-        if method == "native":
-            from pvsyst_auto.native.headless import import_house_pv_scene_native
-            return import_house_pv_scene_native(store, store.components, scene_name, variant_name,
-                                                dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
-        if method != "gui":
-            raise ValueError("method must be gui or native")
-        from pvsyst_auto.native.scene import import_house_pv_scene
-        return import_house_pv_scene(store, store.components, current, scene_name, variant_name,
-                                     dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
+        from pvsyst_auto.native.headless import import_house_pv_scene_native
+        return import_house_pv_scene_native(store, store.components, scene_name, variant_name,
+                                            dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
 
 @categorized_tool()
 def pvsyst_prepare_design_project(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:

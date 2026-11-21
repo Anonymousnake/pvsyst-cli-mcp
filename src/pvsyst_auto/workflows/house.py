@@ -17,7 +17,6 @@ from pvsyst_auto.results import annual_summary, fingerprint
 from pvsyst_auto.scene.author import create_house_pv_scene, house_profile, obstacle_profiles, table_profiles, check_tables
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.native._prep import _source_snapshot, _source_snapshot_bytes, _verify_new, find_running_pvsyst
-from pvsyst_auto.native.project import _open, open_native_project
 from pvsyst_auto.project.synthesize import synthesize_house_source
 
 PHASES = ("initialized", "project_created", "scene_created", "prepared", "native_saved", "gui_closed", "simulated", "completed")
@@ -29,39 +28,6 @@ def _public(record):
     public["request_summary"] = {key: value for key, value in request.items()
                                  if key not in ("house", "layout", "module_geometry", "obstacles")}
     return public
-
-
-def _close_owned(proc, cli):
-    """Only an actual Popen held by this call is ownership; a checkpoint PID is not."""
-    import pvsyst_auto.native.scene as native
-    if proc.poll() is not None:
-        return {"exited": True, "pid": proc.pid}
-    expected = (Path(cli.cli).parent / "PVsyst.exe").resolve()
-    if Path(native._exe_of(proc.pid)).resolve() != expected:
-        raise ValueError("Owned native executable identity changed")
-    end = time.monotonic() + 20
-    posted, observed = set(), set()
-    unexpected = []
-    while proc.poll() is None and time.monotonic() < end:
-        windows = [native._describe(h) for h in native._tops() if native._pid_of(h) == proc.pid]
-        visible = [row for row in windows if row["visible"] and row["rect"][2] > row["rect"][0]
-                   and row["rect"][3] > row["rect"][1]]
-        observed.update(row["class"] for row in visible)
-        unexpected = [row for row in visible if row["class"] not in ("TProjectForm", "THomeForm")]
-        if unexpected:
-            # Native shutdown can show a splash/progress form. Wait, never dismiss it.
-            time.sleep(0.1)
-            continue
-        project = [row for row in visible if row["class"] == "TProjectForm"]
-        targets = project or [row for row in visible if row["class"] == "THomeForm"]
-        for row in targets:
-            if row["enabled"] and row["hwnd"] not in posted and proc.poll() is None:
-                native._post_close(row["hwnd"])
-                posted.add(row["hwnd"])
-        time.sleep(0.1)
-    return {"exited": proc.poll() is not None, "pid": proc.pid, "windows": unexpected,
-            "observed_window_classes": sorted(observed), "posted_close_handles": sorted(posted),
-            "reason": "Only owned project/home received native close; no dialog dismissal or forced termination"}
 
 
 def _annual(csv_path, pdf_path, request, plan, variant, *, require_pdf=True):
@@ -230,35 +196,17 @@ def _prepare(store, components, request, *, resume=False):
     if mode not in ("linear", "module_layout"):
         raise ValueError("shading_mode must be linear or module_layout")
     method = request.get("scene_import_method") or "native"
+    if method != "native":
+        raise ValueError(
+            "Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; "
+            "use scene_import_method='native' or omit it"
+        )
     binding = request.get("string_layout")
-    # An explicit per-cell string_layout is consumed only by the headless native emitter in
-    # module_layout mode. The GUI importer auto-allocates strings and the linear path has no
-    # per-cell layout, so reject before any project/scene/SFI write instead of silently
-    # dropping the declared wiring.
-    if binding is not None:
-        if method != "native":
-            raise ValueError(
-                "An explicit string_layout requires scene_import_method='native'; the GUI import "
-                "path auto-allocates strings and cannot consume declared per-cell wiring")
-        if mode != "module_layout":
-            raise ValueError("An explicit string_layout requires shading_mode='module_layout'")
-    if mode == "module_layout" and method != "native":
-        import pvsyst_auto.native.scene as native
-        # GUI automatic wiring keeps its proven dual profile; the headless path is gated below.
-        native._module_layout_preflight(snap, tables)
-    if method == "native":
-        # The real evidence gate. With no binding it keeps the released single 1..3 linear /
-        # 2 fine / dual recipes; an explicit binding is validated against native source
-        # capacity and scene identity inside the gate (never inferred from table count), and
-        # there is no caller-side allocator. Decide from the REAL source snapshot, not a
-        # caller-supplied orientation_id.
-        from pvsyst_auto.native.headless import _support_gate
-        _support_gate(snap["source"], tables, source_bytes.decode("utf-8-sig"), mode,
-                      string_layout=binding, check_spacing=not resume)
-    else:
-        import pvsyst_auto.native.scene as native
-        if not 1 <= len(tables) <= native.MAX_TABLES_BRIDGED:
-            raise ValueError("The house task supports only one or two PV regions")
+    if binding is not None and mode != "module_layout":
+        raise ValueError("An explicit string_layout requires shading_mode='module_layout'")
+    from pvsyst_auto.native.headless import _support_gate
+    _support_gate(snap["source"], tables, source_bytes.decode("utf-8-sig"), mode,
+                  string_layout=binding, check_spacing=not resume)
     site_blocks = objects(store._read(paths["site"]).decode("utf-8-sig"))
     if len(site_blocks) != 1 or site_blocks[0].object_type != "pvSite" or any(
             float(site_blocks[0].one(field)[1]) != snap["source"]["site"][field.lower()]
@@ -334,15 +282,11 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
             if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation)):
                 raise ValueError("Use strict booleans")
             method = request.get("scene_import_method") or "native"
-            if method not in ("gui", "native"):
-                raise ValueError("scene_import_method must be gui or native")
-            # A strict no-window request cannot be delivered by the GUI import method, which
-            # inherently opens the native window. Reject in preflight before any project/scene
-            # write or GUI side effect; never silently switch an explicit gui selection to native.
-            if request.get("allow_window_creation") is False and method != "native":
+            if method != "native":
                 raise ValueError(
-                    "allow_window_creation=false requires scene_import_method='native'; the GUI "
-                    "import method opens the native window and cannot honor a windowless request")
+                    "Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; "
+                    "use scene_import_method='native' or omit it"
+                )
             if not resume and request.get("allow_window_creation") is False:
                 raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
             # Any value except an explicit False keeps the original CSV+PDF contract
@@ -390,10 +334,6 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     source_variant_bytes=(synth_payload["vc0_text"].encode("utf-8") if zero_template else None))
                 if preview["status"] != "ready":
                     return {**result, "scene_preflight": preview, "issues": preview["issues"]}
-                if method == "gui":
-                    import pvsyst_auto.native.scene as native
-                    if not 1 <= preview["geometry"]["pv_table_count"] <= native.MAX_TABLES_BRIDGED:
-                        raise ValueError("The house task supports only one or two PV regions")
                 if paths["sfi"].exists():
                     raise FileExistsError("House SFI already exists; choose a new working project")
                 run_stem = Path(request["new_project"]).stem + "_house_run01"
@@ -514,10 +454,6 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                                 for member in candidates],
                             "issues": ["Unrecorded native variants exist; inspect them before resuming. "
                                        "The bridge did not reopen, reimport or modify the checkpoint."]}
-            if method == "gui" and position() < PHASES.index("gui_closed"):
-                ready = open_native_project(store, cli, project=request["source_project"], dry_run=True)
-                if ready["status"] != "ready_to_open":
-                    raise ValueError("A new owned GUI session/configured workspace is required: " + str(ready))
             if dry_run or not confirm:
                 return {**_public(record), "status": "ready" if dry_run else "confirmation_required",
                         "stage": "preflight", "resume": resume, "native_consumption_verified": False}
@@ -552,61 +488,33 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 if record.get("native_import", {}).get("file"):
                     raise ValueError("An unverified native save artifact exists; inspect it instead of reimporting")
                 unchanged()
-                if method == "native":
-                    from pvsyst_auto.native.headless import import_house_pv_scene_native
-                    imported = import_house_pv_scene_native(store, components, plan["scene_name"],
-                                                            request["variant_name"], dry_run=False, confirm=True,
-                                                            shading_mode=plan["shading_mode"])
-                    record["native_import"] = imported
-                    _save(paths["manifest"], record)
-                    if (imported["status"] != "native_variant_created"
-                            or not imported.get("stored_geometry_verified")):
-                        raise ValueError("Native headless house import stopped before a verified stored variant: "
-                                         + str(imported.get("issues")))
-                    if (plan["shading_mode"] == "module_layout"
-                            and imported.get("stored_module_layout_verified") is not True):
-                        raise ValueError("Native headless module-layout import lacks stored layout verification")
-                    # STORED ONLY: PVsyst has not loaded or consumed this variant. imported /
-                    # native_geometry_verified / native_reload_verified stay false; consumption is
-                    # proven only by the later explicit CLI simulation on this new variant.
-                    record["variant"] = variant_id(imported["variant"])
-                    paths["native_variant"] = store._path(request["new_project"], record["variant"])
-                    record["artifacts"]["native_variant"] = str(paths["native_variant"])
-                    stage("native_saved", ("native_variant",))
-                else:
-                    import pvsyst_auto.native.scene as native
-                    opening = {"status": "blocked", "stage": "preflight", "native_actions": []}
-                    record["native_open"] = opening
-                    proc = _open(store, cli, request["new_project"], False, True, opening)
-                    if proc is None:
-                        raise ValueError("The task will not take over an existing unverified user GUI session")
-                    _save(paths["manifest"], record)
-                    imported = native.import_house_pv_scene(store, components, cli, plan["scene_name"],
-                                                            request["variant_name"], dry_run=False, confirm=True,
-                                                            shading_mode=plan["shading_mode"])
-                    record["native_import"] = imported
-                    _save(paths["manifest"], record)
-                    if imported["status"] != "imported" or not imported["native_geometry_verified"]:
-                        raise ValueError("Native house import stopped; current owned window/artifacts are retained")
-                    if plan["source"].get("orientations") and imported.get("native_reload_verified") is not True:
-                        raise ValueError("Grouped house import requires verified native reload before input binding")
-                    record["variant"] = variant_id(imported["variant"])
-                    paths["native_variant"] = store._path(request["new_project"], record["variant"])
-                    record["artifacts"]["native_variant"] = str(paths["native_variant"])
-                    stage("native_saved", ("native_variant",))
+                from pvsyst_auto.native.headless import import_house_pv_scene_native
+                imported = import_house_pv_scene_native(store, components, plan["scene_name"],
+                                                        request["variant_name"], dry_run=False, confirm=True,
+                                                        shading_mode=plan["shading_mode"])
+                record["native_import"] = imported
+                _save(paths["manifest"], record)
+                if (imported["status"] != "native_variant_created"
+                        or not imported.get("stored_geometry_verified")):
+                    raise ValueError("Native headless house import stopped before a verified stored variant: "
+                                     + str(imported.get("issues")))
+                if (plan["shading_mode"] == "module_layout"
+                        and imported.get("stored_module_layout_verified") is not True):
+                    raise ValueError("Native headless module-layout import lacks stored layout verification")
+                # STORED ONLY: PVsyst has not loaded or consumed this variant. imported /
+                # native_geometry_verified / native_reload_verified stay false; consumption is
+                # proven only by the later explicit CLI simulation on this new variant.
+                record["variant"] = variant_id(imported["variant"])
+                paths["native_variant"] = store._path(request["new_project"], record["variant"])
+                record["artifacts"]["native_variant"] = str(paths["native_variant"])
+                stage("native_saved", ("native_variant",))
             if record["phase"] == "native_saved":
                 unchanged()
                 bind_engineering_inputs()
-                if proc is not None:
-                    record["native_cleanup"] = _close_owned(proc, cli)
-                    _save(paths["manifest"], record)
-                    if not record["native_cleanup"]["exited"]:
-                        raise ValueError("Owned GUI remains for inspection; simulation was not started")
-                else:
-                    if find_running_pvsyst((Path(cli.cli).parent / "PVsyst.exe").resolve()):
-                        raise ValueError("A native GUI remains; this resume will not close a checkpoint PID")
-                    record["native_cleanup_recovery"] = {"native_processes_absent": True,
-                        "checkpoint_pid_not_used_for_close": True, "close_performed_by_resume": False}
+                if find_running_pvsyst((Path(cli.cli).parent / "PVsyst.exe").resolve()):
+                    raise ValueError("A native GUI remains; close PVsyst before starting headless simulation")
+                record["native_cleanup_recovery"] = {"native_processes_absent": True,
+                    "checkpoint_pid_not_used_for_close": True, "close_performed_by_resume": False}
                 stage("gui_closed")
             ran_simulation = False
             if record["phase"] == "gui_closed":
