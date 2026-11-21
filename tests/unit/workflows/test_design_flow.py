@@ -8,8 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pvsyst_auto.workflows.design as flow
-from pvsyst_auto.native.cli import PVsystError
 from pvsyst_auto.engineering.sizing import NUMBERS as CAPACITY_NUMBERS
+from pvsyst_auto.native.cli import PVsystError
+from tests._fixtures import FakeCliBase
 
 
 def capacity(**overrides):
@@ -76,28 +77,9 @@ def seeded_template(project="Plant_template.PRJ"):
             "issues": [], "warnings": []}
 
 
-class FakeCLI:
+class FakeCLI(FakeCliBase):
     def __init__(self, workspace, failure=None):
-        self.workspace = workspace
-        self.failure = failure
-        self.calls = []
-
-    def _require(self, command, option, *, allow_window_creation=None):
-        self.calls.append((command, option))
-        if self.failure:
-            raise PVsystError(self.failure)
-
-    def command_help(self, command="", *, allow_window_creation=None):
-        return ""
-
-    def version(self, *, allow_window_creation=None):
-        return "8.1.6"
-
-    def license_info(self, *, allow_window_creation=None):
-        return {"status": "LICENSED", "remaining_days": 30}
-
-    def _redact(self, text):
-        return str(text)
+        super().__init__(workspace, version="8.1.6", failure=failure)
 
 
 class FakeStore:

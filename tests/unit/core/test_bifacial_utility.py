@@ -15,6 +15,7 @@ from pvsyst_auto.project.bifacial import normalize_bifacial_spec, render_bifacia
 from pvsyst_auto.project.synthesize import synthesize_utility_project
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import EXPECTED_WORKSPACE_BASENAME, prepare_design_project, simulate_design
+from tests._fixtures import FakeCliBase
 from tests.unit.core.test_components import OND, PAN
 from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
 
@@ -89,28 +90,13 @@ def _write_fake_annual_csv(csv_path: Path, *, project: str, variant: str, site: 
     csv_path.write_bytes(("\ufeff" + "\r\n".join(lines) + "\r\n").encode("utf-8"))
 
 
-class _FakeUtilityCLI:
+class _FakeUtilityCLI(FakeCliBase):
     def __init__(self, workspace: Path, *, year: int = 2024, nominal_dc_kw: float = 100.0, bifacial: bool = False):
-        self.workspace = workspace
+        super().__init__(workspace, version="8.1.7")
         self.year = year
         self.nominal_dc_kw = nominal_dc_kw
         self.bifacial = bifacial
         self.runs = []
-
-    def _require(self, command, option, *, allow_window_creation=None):
-        return None
-
-    def command_help(self, command="", *, allow_window_creation=None):
-        return ""
-
-    def version(self, *, allow_window_creation=None):
-        return "8.1.7"
-
-    def license_info(self, *, allow_window_creation=None):
-        return {"status": "LICENSED", "remaining_days": 30}
-
-    def _redact(self, text):
-        return str(text)
 
     def run_simulation(self, project, variant, *, sfi=None, out_csv=None, report_pdf=None, **kwargs):
         self.runs.append({"project": project, "variant": variant, "sfi": sfi, "out_csv": out_csv,
