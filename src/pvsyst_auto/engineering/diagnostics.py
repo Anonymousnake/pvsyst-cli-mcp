@@ -991,3 +991,107 @@ def compact_diagnostics_summary(diag: dict, *, max_findings: int = 5) -> dict:
     if diag.get("issues"):
         summary["issues"] = list(diag["issues"])
     return summary
+
+
+def diagnose_standalone(
+    balance: dict[str, float],
+    *,
+    target_lol_pct: float = 5.0,
+    has_genset: bool = False,
+) -> dict:
+    """Evaluate off-grid Stand-Alone PV+BESS (+ optional Genset) health & sizing diagnostics."""
+    findings: list[dict] = []
+
+    def add(code: str, severity: str, metric: str, observed: float, threshold: float, unit: str, message: str, action: str) -> None:
+        findings.append({
+            "code": code,
+            "severity": severity,
+            "category": "stand_alone_offgrid",
+            "metric": metric,
+            "observed": round(observed, 4),
+            "threshold": round(threshold, 4),
+            "unit": unit,
+            "message": message,
+            "recommended_actions": [action],
+        })
+
+    e_user = float(balance.get("e_user_kwh", 0.0))
+    e_miss = float(balance.get("e_missing_kwh", 0.0))
+    e_avail = float(balance.get("e_avail_kwh", 0.0))
+    e_unused = float(balance.get("e_unused_kwh", 0.0))
+    e_bkup = float(balance.get("e_backup_kwh", 0.0))
+    t_lol = float(balance.get("t_lol_hours", 0.0))
+    lol_pct = float(balance.get("lol_pct", 0.0))
+    soc_mean = float(balance.get("soc_mean", 0.0))
+    bkup_h = float(balance.get("backup_runtime_hours", 0.0))
+
+    # 1. Loss of Load (LOL) & missing energy
+    if lol_pct > target_lol_pct or e_miss > 0.0:
+        sev = "high" if lol_pct > max(target_lol_pct, 2.0) else "medium"
+        add(
+            "STANDALONE_LOL_HIGH",
+            sev,
+            "lol_pct",
+            lol_pct,
+            target_lol_pct,
+            "%",
+            f"Off-grid Loss of Load is {lol_pct:.2f}% ({t_lol:.1f} h/yr, missing {e_miss:.1f} kWh vs target {target_lol_pct:.1f}%).",
+            "Increase PV array strings, expand battery parallel strings (n_batt_parall), or enable a backup .GEN generator.",
+        )
+
+    # 2. Excessive PV curtailment when battery is full
+    if e_avail > 0.0:
+        unused_pct = (e_unused / e_avail) * 100.0
+        if unused_pct > 25.0:
+            add(
+                "STANDALONE_UNUSED_ENERGY_HIGH",
+                "medium",
+                "EUnused / E_Avail",
+                unused_pct,
+                25.0,
+                "%",
+                f"Unused/curtailed PV energy is {unused_pct:.1f}% ({e_unused:.1f} kWh) due to full battery.",
+                "Increase battery bank storage capacity or add daytime deferrable loads.",
+            )
+
+    # 3. Chronically low state of charge
+    if 0.0 < soc_mean < 0.45:
+        add(
+            "STANDALONE_SOC_LOW",
+            "medium",
+            "SOCmean",
+            soc_mean * 100.0,
+            45.0,
+            "%",
+            f"Mean annual battery SOC is low ({soc_mean * 100.0:.1f}%), accelerating battery degradation.",
+            "Increase PV nominal power or raise backup generator start threshold (v_bkup_encl).",
+        )
+
+    # 4. Heavy backup generator reliance
+    if has_genset and e_user > 0.0:
+        bkup_share_pct = (e_bkup / e_user) * 100.0
+        if bkup_share_pct > 25.0 or bkup_h > 1500.0:
+            add(
+                "STANDALONE_GENSET_RELIANCE_HIGH",
+                "medium",
+                "E_BkUp / E_User",
+                bkup_share_pct,
+                25.0,
+                "%",
+                f"Backup generator supplies {bkup_share_pct:.1f}% of load ({e_bkup:.1f} kWh, {bkup_h:.1f} h/yr), increasing fuel OPEX.",
+                "Upsize PV array and battery bank to improve solar fraction and cut diesel consumption.",
+            )
+
+    counts = {sev: 0 for sev in SEVERITY_ORDER}
+    for f in findings:
+        counts[f["severity"]] += 1
+    max_sev = max((f["severity"] for f in findings), key=lambda s: SEVERITY_ORDER[s], default="none")
+    needs_review = any(f["severity"] in ("critical", "high", "medium") for f in findings)
+    return {
+        "status": "anomalies_detected" if needs_review else "ok",
+        "max_severity": max_sev,
+        "finding_count": len(findings),
+        "counts_by_severity": counts,
+        "needs_review": needs_review,
+        "findings": findings,
+    }

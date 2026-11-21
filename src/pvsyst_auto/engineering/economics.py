@@ -1124,3 +1124,62 @@ def evaluate_economics(
         "ranking": ranking_table,
         "scenarios": results,
     }
+
+
+def evaluate_standalone_economics(
+    energy_balance: dict[str, float],
+    *,
+    capex_total: float,
+    annual_om_opex: float = 0.0,
+    fuel_price_per_liter: float = 1.50,
+    genset_opex_per_hour: float = 0.0,
+    genset_fuel_rate_l_per_kwh: float | None = None,
+    avoided_tariff_per_kwh: float = 0.0,
+    financial: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate lifetime LCOE, diesel fuel OPEX, and cashflows for Stand-Alone PV+BESS(+Genset) systems."""
+    fin_cfg = _validate_financial(financial)
+    capex = _finite(capex_total, "capex_total", minimum=0.0)
+    om_opex = _finite(annual_om_opex, "annual_om_opex", minimum=0.0)
+    fuel_price = _finite(fuel_price_per_liter, "fuel_price_per_liter", minimum=0.0)
+    gen_opex_h = _finite(genset_opex_per_hour, "genset_opex_per_hour", minimum=0.0)
+    avoided_rate = _finite(avoided_tariff_per_kwh, "avoided_tariff_per_kwh", minimum=0.0)
+
+    e_user = max(0.0, float(energy_balance.get("e_user_kwh", 0.0)))
+    e_bkup = max(0.0, float(energy_balance.get("e_backup_kwh", 0.0)))
+    bkup_h = max(0.0, float(energy_balance.get("backup_runtime_hours", 0.0)))
+    fuel_l = max(0.0, float(energy_balance.get("backup_fuel_liters", 0.0)))
+    if fuel_l <= 0.0 and e_bkup > 0.0 and genset_fuel_rate_l_per_kwh is not None:
+        rate = _finite(genset_fuel_rate_l_per_kwh, "genset_fuel_rate_l_per_kwh", minimum=0.0)
+        fuel_l = e_bkup * rate
+
+    annual_fuel_cost = fuel_l * fuel_price
+    annual_genset_om = bkup_h * gen_opex_h
+    base_annual_opex = om_opex + annual_fuel_cost + annual_genset_om
+    year1_gross_benefit = e_user * avoided_rate
+
+    metrics = _compute_cashflow_metrics(
+        year1_energy_kwh=e_user,
+        year1_gross_benefit=year1_gross_benefit,
+        capex_total=capex,
+        base_annual_opex=base_annual_opex,
+        replacement_events=fin_cfg["replacement_events"],
+        financial=fin_cfg,
+    )
+    return {
+        "currency": fin_cfg["currency"],
+        "project_life_years": fin_cfg["project_life_years"],
+        "capex_total": round(capex, 2),
+        "annual_om_opex": round(om_opex, 2),
+        "annual_fuel_liters": round(fuel_l, 2),
+        "annual_fuel_cost": round(annual_fuel_cost, 2),
+        "annual_genset_maintenance_cost": round(annual_genset_om, 2),
+        "total_year1_opex": round(base_annual_opex, 2),
+        "lcoe": metrics["lcoe"],
+        "npv": metrics["npv"],
+        "irr_pct": metrics["irr_pct"],
+        "simple_payback_years": metrics["simple_payback_years"],
+        "discounted_payback_years": metrics["discounted_payback_years"],
+        "lifetime_energy_kwh": metrics["lifetime_energy_kwh"],
+        "lifetime_opex": metrics["lifetime_opex"],
+    }

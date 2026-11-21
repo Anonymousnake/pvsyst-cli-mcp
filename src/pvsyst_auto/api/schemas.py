@@ -876,12 +876,67 @@ class TransformersConfig(BaseModel):
     hv: HvTransformerSpec | None = None
 
 
+class StandaloneGensetSpec(BaseModel):
+    """Inline backup generator specification (synthesizes a .GEN file in ComposPV/Gensets)."""
+    model_config = _STRICT_CONFIG
+    file_name: StrictStr | None = None
+    model: StrictStr | None = None
+    manufacturer: StrictStr = "Generic"
+    fuel_type: Literal["Diesel", "Gas", "Essence", "Biogas", "Other"] = "Diesel"
+    nominal_power_kw: Annotated[StrictNum, Field(gt=0, le=100000)]
+    fuel_consumption_l_per_h: Annotated[StrictNum, Field(gt=0, le=50000)]
+
+
+class StandaloneEconomicsSpec(BaseModel):
+    """Optional off-grid economics parameters including diesel fuel and genset maintenance OPEX."""
+    model_config = _STRICT_CONFIG
+    capex_total: Annotated[StrictNum, Field(ge=0)]
+    annual_om_opex: Annotated[StrictNum, Field(ge=0)] = 0.0
+    fuel_price_per_liter: Annotated[StrictNum, Field(ge=0)] = 1.50
+    genset_opex_per_hour: Annotated[StrictNum, Field(ge=0)] = 0.0
+    genset_fuel_rate_l_per_kwh: Annotated[StrictNum, Field(ge=0)] | None = None
+    avoided_tariff_per_kwh: Annotated[StrictNum, Field(ge=0)] = 0.0
+    financial: dict[str, Any] | None = None
+
+
+class StandaloneDesignSpec(BaseModel):
+    """Off-grid Stand-Alone PV + BESS + Controller + optional Backup Genset specification (SystemType=Battery)."""
+    model_config = _STRICT_CONFIG
+    project_comment: StrictStr | None = None
+    variant_comment: StrictStr | None = None
+    battery_file: StrictStr
+    n_mod_serie: Annotated[StrictInt, Field(ge=1)] = 2
+    n_string_ch: Annotated[StrictInt, Field(ge=1)] = 4
+    n_batt_serie: Annotated[StrictInt, Field(ge=1)] = 4
+    n_batt_parall: Annotated[StrictInt, Field(ge=1)] = 2
+    controller_type: Literal["mppt", "direct"] = "mppt"
+    controller_file: StrictStr | None = None
+    mppt_effic_max_pct: Annotated[StrictNum, Field(ge=50, le=99.9)] = 96.0
+    mppt_effic_euro_pct: Annotated[StrictNum, Field(ge=50, le=99.9)] = 94.0
+    v_ch_decl: Annotated[StrictNum, Field(ge=0.5, le=1.0)] = 0.90
+    v_ch_encl: Annotated[StrictNum, Field(ge=0.2, le=1.0)] = 0.75
+    v_dech_decl: Annotated[StrictNum, Field(ge=0.05, le=0.8)] = 0.20
+    v_dech_encl: Annotated[StrictNum, Field(ge=0.05, le=0.95)] = 0.45
+    v_bkup_encl: Annotated[StrictNum, Field(ge=0.05, le=0.9)] = 0.25
+    v_bkup_decl: Annotated[StrictNum, Field(ge=0.06, le=0.98)] = 0.55
+    batt_voltage_v: Annotated[StrictNum, Field(ge=12, le=1500)] = 48.0
+    autonomy_days: Annotated[StrictNum, Field(ge=0.2, le=30)] = 3.0
+    target_lol_pct: Annotated[StrictNum, Field(ge=0, le=50)] = 5.0
+    batt_temp_c: StrictNum | list[StrictNum] = 20.0
+    genset_file: StrictStr | None = None
+    genset_spec: StandaloneGensetSpec | None = None
+    backup_operating_power_kw: Annotated[StrictNum, Field(gt=0, le=100000)] | None = None
+    load: dict[str, Any] | None = None
+    daily_load_kwh: Annotated[StrictNum, Field(gt=0)] | None = None
+    economics: StandaloneEconomicsSpec | None = None
+
+
 class SingleDesignRequest(BaseModel):
     """One bounded design request; every nested object rejects unknown keys.
 
     scope selects fixed_unshaded_grid (default), ground_sheds (unlimited or 3D multi-row sheds),
-    or ground_tracker (unlimited or 3D horizontal N-S single-axis trackers), with optional
-    ground_layout and bifacial (pvBiFacial) configuration.
+    ground_tracker (unlimited or 3D horizontal N-S single-axis trackers), or stand_alone
+    (off-grid SystemType=Battery PV+BESS+Controller+optional Backup Genset).
     sizing_mode='strict' (default) requires explicit capacity or electrical_design;
     sizing_mode='auto_from_components' estimates capacity from readable PAN/OND files and
     marks the output needs_review with full assumptions.
@@ -892,7 +947,7 @@ class SingleDesignRequest(BaseModel):
     target_dc_kw: StrictNum | None = None
     tilt: StrictNum | None = None
     azimuth: StrictNum | None = None
-    scope: Literal["fixed_unshaded_grid", "ground_sheds", "ground_tracker"] = "fixed_unshaded_grid"
+    scope: Literal["fixed_unshaded_grid", "ground_sheds", "ground_tracker", "stand_alone"] = "fixed_unshaded_grid"
     sizing_mode: Literal["strict", "auto_from_components"] = "strict"
     auto_sizing: AutoSizingOptions | None = None
     module: EquipmentRequest = Field(default_factory=EquipmentRequest)
@@ -907,6 +962,7 @@ class SingleDesignRequest(BaseModel):
     ground_layout: GroundLayoutRequest | None = None
     bifacial: BifacialUpdates | None = None
     transformers: TransformersConfig | None = None
+    standalone: StandaloneDesignSpec | None = None
 
 class SourceTextRequest(BaseModel):
     """One caller-declared source; its text is checked here and never returned."""

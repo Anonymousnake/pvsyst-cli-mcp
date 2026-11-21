@@ -41,6 +41,11 @@ VAR_GROUPS = {
                  "viBeamBak", "viDifSBak", "viBmSFBak", "viMismBak", "viPRBifi"),
     "transformers": (*VERIFIED_VARIABLES, "viEOutInv", "viEAcOhmL", "viEMVOhmL",
                      "viEMVTrfL", "viEHVOhmL", "viEHVTrfL"),
+    "stand_alone": ("viGlobHor", "viGlobInc", "viGlobEff", "viT_Amb", "viEArray",
+                    "viE_Avail", "viEUnused", "viE_User", "viE_Solar", "viE_Miss",
+                    "viE_BkUp", "viBkUp_ON", "viFuelBU", "viEBatCh", "viEBatDis",
+                    "viEBatLss", "viSOCmean", "viSOC_End", "viT_LOL", "viPr_LOL",
+                    "viSolFrac", "viPR"),
 }
 SFI_TIME_STEPS = {
     "hour": "Hour",

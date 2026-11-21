@@ -34,6 +34,7 @@ from pvsyst_auto.engineering.sizing import NUMBERS as CAPACITY_NUMBERS
 from pvsyst_auto.project.template import SEED_VARIANT, prepare_standard_template
 from pvsyst_auto.weather.acquisition import download_weather
 from pvsyst_auto.weather.preparation import prepare_weather
+from pvsyst_auto.project.standalone import STANDALONE_SCOPE, run_standalone_design
 from pvsyst_auto.workflows.utility import (
     UTILITY_SCOPES,
     plan_utility_capacity,
@@ -42,7 +43,7 @@ from pvsyst_auto.workflows.utility import (
 )
 
 SCOPE = "fixed_unshaded_grid"
-SUPPORTED_SCOPES = (SCOPE, *UTILITY_SCOPES)
+SUPPORTED_SCOPES = (SCOPE, *UTILITY_SCOPES, STANDALONE_SCOPE)
 TIME_BASIS = "local_standard_interval_start"
 # The verified PVsyst 8.1 workspace layout: 17 root folders plus 9 inside ComposPV. This 26-folder
 # superset is what a real bootstrap proved; it is not trimmed to a guessed minimum.
@@ -63,7 +64,7 @@ ISO_COUNTRY = re.compile(r"[A-Z]{2}")
 SPEC_KEYS = frozenset((
     "scope", "sizing_mode", "auto_sizing", "new_project", "year", "target_dc_kw", "tilt", "azimuth",
     "module", "inverter", "template_project", "variant", "capacity", "electrical_design", "losses",
-    "weather", "report_pages", "ground_layout", "bifacial", "transformers",
+    "weather", "report_pages", "ground_layout", "bifacial", "transformers", "standalone",
 ))
 SIZING_MODES = ("strict", "auto_from_components")
 AUTO_SIZING_KEYS = frozenset((
@@ -693,6 +694,19 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         return result
     if isinstance(spec, dict):
         spec = _prune_empty(spec)
+    if isinstance(spec, dict) and spec.get("scope") == STANDALONE_SCOPE:
+        try:
+            return run_standalone_design(
+                cli,
+                store,
+                store.components,
+                spec,
+                dry_run=dry_run,
+                allow_window_creation=allow_window_creation,
+            )
+        except (ValueError, FileNotFoundError, FileExistsError, PVsystError) as exc:
+            _issue(result, "standalone", str(exc))
+            return result
     if issues := _validate_spec(spec):
         result["issues"] = issues
         return result
