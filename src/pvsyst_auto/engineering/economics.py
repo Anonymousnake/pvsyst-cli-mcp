@@ -645,7 +645,7 @@ def _compute_irr(cashflows: list[float]) -> float | None:
     prev_v = npv_at(prev_r)
     for r in grid[1:]:
         v = npv_at(r)
-        if abs(v) < 1e-9:
+        if v == 0:
             return r
         if (prev_v > 0 and v < 0) or (prev_v < 0 and v > 0):
             bracket = (prev_r, r, prev_v, v)
@@ -658,7 +658,7 @@ def _compute_irr(cashflows: list[float]) -> float | None:
     for _ in range(100):
         mid = 0.5 * (lo + hi)
         f_mid = npv_at(mid)
-        if abs(f_mid) < 1e-9 or abs(hi - lo) < 1e-10:
+        if f_mid == 0 or abs(hi - lo) < 1e-10:
             return mid
         if (f_lo > 0 and f_mid > 0) or (f_lo < 0 and f_mid < 0):
             lo, f_lo = mid, f_mid
@@ -897,7 +897,11 @@ def evaluate_economics(
                 e_grid = metrics.get("E_Grid")
                 if not isinstance(e_grid, (int, float)) or not math.isfinite(e_grid):
                     continue
-                item["annual_yield_kwh"] = float(e_grid)
+                unit = parsed.get("units", {}).get("E_Grid", "kWh")
+                scales = {"Wh": 0.001, "kWh": 1.0, "MWh": 1000.0, "GWh": 1_000_000.0}
+                if unit not in scales:
+                    raise ValueError(f"Expected energy unit for batch E_Grid, got {unit!r}")
+                item["annual_yield_kwh"] = e_grid * scales[unit]
             resolved_scenarios.append(item)
 
     if not resolved_scenarios:
