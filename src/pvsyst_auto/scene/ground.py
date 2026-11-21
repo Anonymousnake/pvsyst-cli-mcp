@@ -280,14 +280,15 @@ def build_ground_3d_shading(
     spacing_x_m: float = 0.02,
     spacing_y_m: float = 0.02,
     obstacles: list[dict[str, Any]] | None = None,
+    terrain_mesh: Any = None,
     orientation_id: int = 1,
     version: str = "8.1.7",
 ) -> list[str]:
-    """Emit a complete PVObject_Ombrage=pvShading block for finite ground tables + 3D obstacles."""
+    """Emit a complete PVObject_Ombrage=pvShading block for finite ground tables + optional terrain + 3D obstacles."""
     if not tables:
         raise ValueError("build_ground_3d_shading requires at least one table")
     parsed_obstacles = obstacle_profiles(obstacles) if obstacles else []
-    total_objs = len(tables) + len(parsed_obstacles)
+    total_objs = len(tables) + len(parsed_obstacles) + (1 if terrain_mesh is not None else 0)
 
     lines = [
         "  PVObject_Ombrage=pvShading",
@@ -336,6 +337,11 @@ def build_ground_3d_shading(
             "      TypeOrigine=2",
             "      End of PVObject pvShdArrayTable",
         ])
+
+    if terrain_mesh is not None:
+        from pvsyst_auto.scene.terrain import emit_pvshd_ground
+        obj_idx += 1
+        lines.extend(emit_pvshd_ground(terrain_mesh, object_index=obj_idx, version="8.1.0"))
 
     for obs in parsed_obstacles:
         obj_idx += 1

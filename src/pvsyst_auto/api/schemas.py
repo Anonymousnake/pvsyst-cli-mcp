@@ -675,6 +675,21 @@ class DesignEnvelopeRequest(BaseModel):
     effective_irradiance: EffectiveIrradianceRequest | None = None
     design_basis_extra: StrictStr | None = None
 
+class TerrainSpec(BaseModel):
+    """3D terrain DEM specification (inline XYZ points, workspace CSV, or optional GeoTIFF .tif)."""
+    model_config = _STRICT_CONFIG
+    name: StrictStr = "Terrain_DEM"
+    coordinate_system: Literal["local_m", "lonlat"] = "local_m"
+    points: Annotated[list[list[StrictNum]], Field(min_length=3, max_length=2500)] | None = None
+    csv_name: StrictStr | None = None
+    geotiff_name: StrictStr | None = None
+    max_grid_dim: Annotated[StrictInt, Field(ge=4, le=60)] = 25
+    drape_tables: StrictBool = True
+    follow_slope: StrictBool = True
+    max_base_slope_deg: Annotated[StrictNum, Field(ge=0.0, le=45.0)] = 20.0
+    max_axis_tilt_deg: Annotated[StrictNum, Field(ge=0.0, le=30.0)] = 15.0
+
+
 class GroundLayoutRequest(BaseModel):
     """Ground multi-row fixed sheds or horizontal N-S single-axis tracker geometry."""
     model_config = _STRICT_CONFIG
@@ -708,6 +723,7 @@ class GroundLayoutRequest(BaseModel):
     max_table_columns: Annotated[StrictInt, Field(ge=1, le=500)] | None = None
     obstacles: Annotated[list[ObstacleSpec], Field(min_length=1, max_length=64)] | None = None
     base_slope_deg: StrictNum | None = None
+    terrain: TerrainSpec | None = None
 
 
 class AutoSizingOptions(BaseModel):

@@ -35,7 +35,7 @@ GROUND_LAYOUT_KEYS = frozenset((
     "backtracking", "irrad_optimiz", "central_gap_m", "pitch_slope_deg",
     "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg",
     "site_polygon", "setback_m", "ground_clearance_m", "max_table_columns",
-    "obstacles", "base_slope_deg",
+    "obstacles", "base_slope_deg", "terrain",
 ))
 TRACKER_ONLY_KEYS = frozenset((
     "axis_azimuth_deg", "min_phi_deg", "max_phi_deg",
@@ -61,10 +61,16 @@ def resolve_utility_field_type(scope: str, ground_layout: dict | None) -> tuple[
     layout = ground_layout or {}
     mode = layout.get("model_mode", "unlimited")
     if scope == "ground_sheds":
-        has_3d = (mode == "3d") or (layout.get("site_polygon") is not None) or bool(layout.get("obstacles"))
+        has_3d = (
+            (mode == "3d")
+            or (layout.get("site_polygon") is not None)
+            or bool(layout.get("obstacles"))
+            or (layout.get("terrain") is not None)
+        )
         return ("RegularSheds", True) if has_3d else ("Sheds", False)
     if scope == "ground_tracker":
-        return ("TrackHorizNSAxis", True) if mode == "3d" else ("UnlimTracking", False)
+        has_3d = (mode == "3d") or (layout.get("terrain") is not None)
+        return ("TrackHorizNSAxis", True) if has_3d else ("UnlimTracking", False)
     raise ValueError(f"Not a utility scope: {scope!r}")
 
 
@@ -380,6 +386,7 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "max_table_columns": layout.get("max_table_columns"),
         "obstacles": layout.get("obstacles"),
         "base_slope_deg": float(layout.get("base_slope_deg", 0.0)),
+        "terrain": layout.get("terrain"),
         "u_factor": float(losses.get("UFactor", 29.0)),
         "lid_loss": float(losses.get("LIDLoss", 0.0)),
         "pmism_mpp": float(losses["PMismMPP"]) if "PMismMPP" in losses else None,

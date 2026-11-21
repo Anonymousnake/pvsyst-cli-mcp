@@ -1487,6 +1487,7 @@ def synthesize_utility_project(
     max_table_columns: int | None = None,
     obstacles: list[dict] | None = None,
     base_slope_deg: float = 0.0,
+    terrain: dict | None = None,
     u_factor: float = 29.0,
     lid_loss: float = 0.0,
     pmism_mpp: float | None = None,
@@ -1590,43 +1591,110 @@ def synthesize_utility_project(
 
     shading_lines = None
     ground_3d_layout = None
+    terrain_summary = None
+    terrain_mesh = None
+    if terrain is not None:
+        from pvsyst_auto.scene.terrain import build_terrain_mesh
+        terrain_mesh = build_terrain_mesh(terrain, workspace=store.workspace)
+        terrain_summary = terrain_mesh.summary()
+        need_3d = True
     if need_3d:
         if field_type in ("TrackHorizNSAxis", "UnlimTracking"):
-            shading_lines = synthesize_ground_tracker_shading(
-                tracker_count=shed_count,
-                pitch_ew_m=resolved_pitch,
-                axis_azimuth_deg=axis_azimuth_deg,
-                module_rows=n_rows,
-                module_columns=n_cols,
-                module_width_m=mw,
-                module_length_m=ml,
-                module_name=resolved_mod_name,
-                module_orient=module_orient,
-                spacing_x_m=sx,
-                spacing_y_m=sy,
-                version=version,
-            )
-        elif site_polygon is not None:
+            if terrain_mesh is not None:
+                from pvsyst_auto.scene.terrain import build_terrain_tracker_shading
+                shading_lines, trk_terrain_info = build_terrain_tracker_shading(
+                    terrain_mesh,
+                    tracker_count=shed_count,
+                    pitch_ew_m=resolved_pitch,
+                    axis_azimuth_deg=axis_azimuth_deg,
+                    module_rows=n_rows,
+                    module_columns=n_cols,
+                    module_width_m=mw,
+                    module_length_m=ml,
+                    module_name=resolved_mod_name,
+                    module_orient=module_orient,
+                    spacing_x_m=sx,
+                    spacing_y_m=sy,
+                    ground_clearance_m=ground_clearance_m,
+                    follow_slope=bool(terrain.get("follow_slope", True)),
+                    max_axis_tilt_deg=float(terrain.get("max_axis_tilt_deg", 15.0)),
+                    obstacles=obstacles,
+                    version=version,
+                )
+                terrain_summary = trk_terrain_info
+            else:
+                shading_lines = synthesize_ground_tracker_shading(
+                    tracker_count=shed_count,
+                    pitch_ew_m=resolved_pitch,
+                    axis_azimuth_deg=axis_azimuth_deg,
+                    module_rows=n_rows,
+                    module_columns=n_cols,
+                    module_width_m=mw,
+                    module_length_m=ml,
+                    module_name=resolved_mod_name,
+                    module_orient=module_orient,
+                    spacing_x_m=sx,
+                    spacing_y_m=sy,
+                    version=version,
+                )
+        elif site_polygon is not None or terrain_mesh is not None:
             from pvsyst_auto.scene.ground import build_ground_3d_shading, plan_ground_polygon_layout
-
-            ground_3d_layout = plan_ground_polygon_layout(
-                site_polygon,
-                tilt_deg=tilt_deg,
-                azimuth_deg=azimuth_deg,
-                pitch_m=resolved_pitch,
-                module_width_m=mw,
-                module_length_m=ml,
-                module_rows=n_rows,
-                module_orientation="landscape" if module_orient == "moLandscape" else "portrait",
-                spacing_x_m=sx,
-                spacing_y_m=sy,
-                setback_m=setback_m,
-                ground_clearance_m=ground_clearance_m,
-                max_table_columns=max_table_columns,
-                base_slope_deg=eff_base_slope,
-            )
+            if site_polygon is not None:
+                ground_3d_layout = plan_ground_polygon_layout(
+                    site_polygon,
+                    tilt_deg=tilt_deg,
+                    azimuth_deg=azimuth_deg,
+                    pitch_m=resolved_pitch,
+                    module_width_m=mw,
+                    module_length_m=ml,
+                    module_rows=n_rows,
+                    module_orientation="landscape" if module_orient == "moLandscape" else "portrait",
+                    spacing_x_m=sx,
+                    spacing_y_m=sy,
+                    setback_m=setback_m,
+                    ground_clearance_m=ground_clearance_m,
+                    max_table_columns=max_table_columns,
+                    base_slope_deg=eff_base_slope,
+                )
+                tables_3d = ground_3d_layout["tables"]
+            else:
+                assert terrain_mesh is not None
+                dim_w = ml if module_orient == "moLandscape" else mw
+                dim_h = mw if module_orient == "moLandscape" else ml
+                long_shed = n_cols * dim_w + max(0, n_cols - 1) * sx
+                larg_shed = n_rows * dim_h + max(0, n_rows - 1) * sy
+                cx0 = 0.5 * (terrain_mesh.bounds["min_x"] + terrain_mesh.bounds["max_x"])
+                cy0 = 0.5 * (terrain_mesh.bounds["min_y"] + terrain_mesh.bounds["max_y"])
+                start_y = cy0 - 0.5 * (shed_count - 1) * resolved_pitch
+                tables_3d = [
+                    {
+                        "name": f"TerrainShed_{r + 1:02d}",
+                        "row_index": r + 1,
+                        "module_rows": n_rows,
+                        "module_columns": n_cols,
+                        "module_count": n_rows * n_cols,
+                        "long_shed_m": round(long_shed, 6),
+                        "larg_shed_m": round(larg_shed, 6),
+                        "origin_m": [round(cx0, 6), round(start_y + r * resolved_pitch, 6), round(ground_clearance_m, 6)],
+                        "tilt_deg": tilt_deg,
+                        "azimuth_deg": azimuth_deg,
+                        "base_slope_deg": eff_base_slope,
+                    }
+                    for r in range(shed_count)
+                ]
+            if terrain_mesh is not None and bool(terrain.get("drape_tables", True)):
+                from pvsyst_auto.scene.terrain import drape_shed_tables_on_terrain
+                tables_3d = drape_shed_tables_on_terrain(
+                    tables_3d,
+                    terrain_mesh,
+                    ground_clearance_m=ground_clearance_m,
+                    follow_slope=bool(terrain.get("follow_slope", True)),
+                    max_base_slope_deg=float(terrain.get("max_base_slope_deg", 20.0)),
+                )
+                if ground_3d_layout is not None:
+                    ground_3d_layout["tables"] = tables_3d
             shading_lines = build_ground_3d_shading(
-                ground_3d_layout["tables"],
+                tables_3d,
                 module_name=resolved_mod_name,
                 module_width_m=mw,
                 module_length_m=ml,
@@ -1634,6 +1702,7 @@ def synthesize_utility_project(
                 spacing_x_m=sx,
                 spacing_y_m=sy,
                 obstacles=obstacles,
+                terrain_mesh=terrain_mesh,
                 version=version,
             )
         else:
@@ -1726,5 +1795,6 @@ def synthesize_utility_project(
         "base_slope_deg": eff_base_slope,
         "obstacle_count": len(obstacles or ()),
         **({"ground_3d_layout": ground_3d_layout} if ground_3d_layout is not None else {}),
+        **({"terrain": terrain_summary} if terrain_summary is not None else {}),
     }
     return result
