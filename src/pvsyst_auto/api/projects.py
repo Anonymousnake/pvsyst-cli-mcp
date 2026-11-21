@@ -8,7 +8,7 @@ from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.project.domes import create_dome_allocation_variant
 from pvsyst_auto.scene.author import create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, BifacialUpdates, DCCablingUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, HvTransformerSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, MvTransformerSpec, NamedPVTablesLayout, ObstacleSpec, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StrictNum, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
+from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, BifacialUpdates, DCCablingUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, HvTransformerSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, MvTransformerSpec, NamedPVTablesLayout, NativeEconomicsUpdates, ObstacleSpec, OrientationConvertParams, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, SpectralUpdates, StrictNum, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
 from pvsyst_auto.api.context import categorized_tool, cli, components, variant_call, variant_store
 
 
@@ -135,11 +135,14 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                                       iam_updates: IamUpdates | None = None,
                                       ageing_enabled: StrictBool | None = None,
                                       system_unavailability_updates: SystemUnavailabilityUpdates | None = None,
-                                      bifacial_updates: BifacialUpdates | None = None) -> dict:
+                                      bifacial_updates: BifacialUpdates | None = None,
+                                      spectral_updates: SpectralUpdates | None = None,
+                                      native_economics_updates: NativeEconomicsUpdates | None = None) -> dict:
     """Update variant parameters (subarray/orientation/main_array scalars, generator, power sharing,
     independent MPPT, display name, soiling, grid limit, auxiliaries, seasonal tilt, horizon,
     inverter temperature, power factor, power controls, P50/P90, string mismatch, ageing, IAM,
-    system unavailability periods/removal, or bifacial pvBiFacial model) with SHA-256 optimistic locking and rollback backup."""
+    system unavailability periods/random/removal, bifacial pvBiFacial, spectral correction, or
+    native TEcoEvaluation for PDF financial pages) with SHA-256 optimistic locking and rollback backup."""
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
                         generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
@@ -157,8 +160,37 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
                         ageing_updates.model_dump(exclude_none=True) if ageing_updates is not None else None,
                         iam_updates.model_dump(exclude_none=True) if iam_updates is not None else None,
                         ageing_enabled,
-                        system_unavailability_updates.model_dump() if system_unavailability_updates is not None else None,
-                        bifacial_updates.model_dump(exclude_none=True) if bifacial_updates is not None else None)
+                        system_unavailability_updates.model_dump(exclude_none=True) if system_unavailability_updates is not None else None,
+                        bifacial_updates.model_dump(exclude_none=True) if bifacial_updates is not None else None,
+                        spectral_updates.model_dump(exclude_none=True) if spectral_updates is not None else None,
+                        native_economics_updates.model_dump(exclude_none=True) if native_economics_updates is not None else None)
+
+@categorized_tool()
+def pvsyst_convert_orientation(
+    project: StrictStr,
+    source_variant: StrictStr,
+    new_variant: StrictStr,
+    target_type: Literal["fixed", "seasonal", "sheds", "tracker_ns", "tracker_2axis", "dome"],
+    params: OrientationConvertParams | None = None,
+    dry_run: StrictBool = True,
+    variant_name: StrictStr | None = None,
+    add_utf8_bom: StrictBool = False,
+) -> dict:
+    """Create a new variant converting an existing variant's orientation type in-place
+    (fixed <-> seasonal <-> sheds <-> tracker_ns <-> tracker_2axis <-> dome), automatically stripping
+    incompatible 3D shading and stale simulation caches. Defaults to dry_run=true."""
+    from pvsyst_auto.project.orientation_convert import convert_orientation
+    return convert_orientation(
+        variant_store(),
+        project=project,
+        source_variant=source_variant,
+        new_variant=new_variant,
+        target_type=target_type,
+        params=params.model_dump(exclude_none=True) if params is not None else None,
+        dry_run=dry_run,
+        variant_name=variant_name,
+        add_utf8_bom=add_utf8_bom,
+    )
 
 @categorized_tool()
 def pvsyst_create_tracking_variant(project: StrictStr, source_variant: StrictStr,

@@ -389,7 +389,9 @@ class VariantStore:
                           iam_updates: dict | None = None,
                           ageing_enabled: bool | None = None,
                           system_unavailability_updates: dict | None = None,
-                          bifacial_updates: dict | None = None) -> dict:
+                          bifacial_updates: dict | None = None,
+                          spectral_updates: dict | None = None,
+                          native_economics_updates: dict | None = None) -> dict:
         return variant_updates.update_parameters(
             self, project, variant, expected_sha256, subarray_id, orientation_id,
             subarray_updates=subarray_updates,
@@ -416,6 +418,8 @@ class VariantStore:
             ageing_enabled=ageing_enabled,
             system_unavailability_updates=system_unavailability_updates,
             bifacial_updates=bifacial_updates,
+            spectral_updates=spectral_updates,
+            native_economics_updates=native_economics_updates,
         )
 
     def _backup_folder(self) -> Path:

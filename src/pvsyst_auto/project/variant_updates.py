@@ -66,6 +66,8 @@ _EXCLUSIVE_CONTROLS = (
     ("iam_updates", "IAM model", "iam", "updates require"),
     ("ageing_enabled", "Ageing enable", "ageing", "updates require"),
     ("bifacial_updates", "Bifacial model", "bifacial", "updates require"),
+    ("spectral_updates", "Spectral correction", "spectral", "updates require"),
+    ("native_economics_updates", "Native economics", "native_economics", "updates require"),
 )
 
 
@@ -311,6 +313,14 @@ def _apply_single_control(store, lines, arrays, system, *, subarray_id, orientat
                             "PVsystCLI ignores pvBiFacial unless the .PAN module declares bifaciality"
                         )
         return {result_key: replace_bifacial(lines, orient_bounds, payload)}
+
+    if param_key == "spectral_updates":
+        from pvsyst_auto.energy.spectral import replace_spectral_correction
+        return {result_key: replace_spectral_correction(lines, store._main_array(lines), payload)}
+
+    if param_key == "native_economics_updates":
+        from pvsyst_auto.project.native_economics import replace_native_economics
+        return {result_key: replace_native_economics(lines, payload)}
 
     main = store._main_array(lines)
     versions = [store._field_indices(lines, b, "Version") for b in arrays.values()]

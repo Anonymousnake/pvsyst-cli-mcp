@@ -44,6 +44,55 @@ class BifacialUpdates(BaseModel):
     shed_pitch_from_user: StrictBool | None = None
 
 
+class SpectralUpdates(BaseModel):
+    """Enable, configure, or disable native PVsyst spectral correction (First Solar / precipitable water)."""
+    model_config = _STRICT_CONFIG
+    enabled: StrictBool
+    coeff_set: Literal["SiMono", "SiPoly", "CdTe", "CIS", "aSi", "Custom"] = "SiMono"
+    use_default_coeffs: StrictBool | None = None
+    use_rel_hum: StrictBool = True
+    coefficients: Annotated[list[StrictNum], Field(min_length=6, max_length=6)] | None = None
+
+
+class NativeEconomicsUpdates(BaseModel):
+    """Write or remove native EconomicEval=TEcoEvaluation so PVsyst PDF reports include financial pages."""
+    model_config = _STRICT_CONFIG
+    mode: Literal["set", "none"] = "set"
+    project_life_years: Annotated[StrictInt, Field(ge=1, le=60)] = 25
+    currency: StrictStr = "USD"
+    capex_total: StrictNum | None = None
+    annual_opex: StrictNum = 0.0
+    subsidies: StrictNum = 0.0
+    discount_rate_pct: StrictNum = 5.0
+    inflation_rate_pct: StrictNum = 2.0
+    sale_tariff: StrictNum = 0.08
+    consumption_tariff: StrictNum = 0.15
+    tariff_escalation_pct: StrictNum = 0.0
+    inverter_lifetime_years: StrictNum = 12.0
+    battery_lifetime_years: StrictNum = 10.0
+    fuel_price_per_liter: StrictNum = 1.50
+
+
+class OrientationConvertParams(BaseModel):
+    """Target orientation geometry parameters for pvsyst_convert_orientation."""
+    model_config = _STRICT_CONFIG
+    tilt_deg: StrictNum | None = None
+    azimuth_deg: StrictNum | None = None
+    base_slope_deg: StrictNum | None = None
+    summer_tilt_deg: StrictNum | None = None
+    winter_tilt_deg: StrictNum | None = None
+    winter_months: list[StrictInt] | None = None
+    pitch_m: StrictNum | None = None
+    collector_width_m: StrictNum | None = None
+    shed_count: StrictInt | None = None
+    axis_azimuth_deg: StrictNum | None = None
+    min_phi_deg: StrictNum | None = None
+    max_phi_deg: StrictNum | None = None
+    min_tilt_deg: StrictNum | None = None
+    max_tilt_deg: StrictNum | None = None
+    backtracking: StrictBool | None = None
+
+
 class SystemUnavailabilityUpdates(BaseModel):
     """Configure explicit outage periods, random outage settings, or remove existing native PV-system outages."""
     model_config = _STRICT_CONFIG

@@ -40,7 +40,7 @@ TOOL_GROUPS = {
         "pvsyst_clone_variant", "pvsyst_get_variant_parameters", "pvsyst_update_variant_parameters",
         "pvsyst_create_tracking_variant", "pvsyst_create_shed_geometry_variant",
         "pvsyst_create_ac_cabling_variant", "pvsyst_create_dc_cabling_variant",
-        "pvsyst_configure_transformers",
+        "pvsyst_configure_transformers", "pvsyst_convert_orientation",
     ),
     "Components": (
         "pvsyst_list_components", "pvsyst_get_component",
