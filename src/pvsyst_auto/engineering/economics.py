@@ -367,6 +367,8 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
             if col not in col_scale:
                 return 0.0
             factor, needs_dt = col_scale[col]
+            if factor == 0.0:
+                raise ValueError(f"{col} requires a power or energy unit, got {units.get(col, '')!r}")
             return _val(row, col) * factor * (dt_hours if needs_dt else 1.0)
 
         p_name, imp_rate, exp_rate = _lookup_rate(stamp, tariff)
