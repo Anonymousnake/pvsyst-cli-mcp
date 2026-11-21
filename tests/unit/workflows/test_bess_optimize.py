@@ -107,6 +107,18 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
         self.assertEqual(validated.discharging_strategy, "specified_hours")
         self.assertEqual(len(validated.charging_schedule_48), 48)
 
+    def test_short_charge_window_limits_scheduled_discharge(self) -> None:
+        plan = plan_tou_storage_schedule(
+            tou_schedule=[{"name": "valley", "hours": [0], "import_rate": 0.1}],
+            default_import_rate=0.8, charge_power_kw=10, discharge_power_kw=20,
+            usable_energy_kwh=100, round_trip_efficiency=0.81, cycles_per_day=1,
+        )
+        charged = sum(plan["charging_schedule_48"]) / 2
+        discharged = sum(plan["discharging_schedule_48"]) / 2
+        self.assertEqual(charged, 10)
+        self.assertAlmostEqual(discharged, 8.1, delta=0.023)
+        self.assertLessEqual(discharged, charged * 0.81)
+
     def test_plan_tou_idle_when_spread_too_small(self) -> None:
         flat_tou = [
             {"name": "low", "hours": list(range(0, 12)), "import_rate": 0.50},
