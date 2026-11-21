@@ -90,6 +90,13 @@ def _load_baseline_series(
     prev_stamp = None
     step_minutes: float | None = None
     regular = True
+    has_etogrid = False
+    has_esolar = False
+    has_efrgrid = False
+    etogrid_scale = (0.0, False)
+    esolar_scale = (0.0, False)
+    efrgrid_scale = (0.0, False)
+    raw_rows_ext: list[tuple[Any, float, float, float, float, float]] = []
     for row_i, (headers, row) in enumerate(iter_result_csv(csv_path, strict=True)):
         if row_i == 0:
             idx = {name: i for i, name in enumerate(headers) if i > 0}
@@ -98,8 +105,17 @@ def _load_baseline_series(
                 raise ValueError("Baseline CSV must contain E_Grid or EToGrid")
             pv_scale = _to_kw_scale(pv_col)
             has_load_col = "E_User" in idx
+            has_etogrid = "EToGrid" in idx
+            has_esolar = "E_Solar" in idx
+            has_efrgrid = "EFrGrid" in idx
             if has_load_col:
                 load_scale = _to_kw_scale("E_User")
+            if has_etogrid:
+                etogrid_scale = _to_kw_scale("EToGrid")
+            if has_esolar:
+                esolar_scale = _to_kw_scale("E_Solar")
+            if has_efrgrid:
+                efrgrid_scale = _to_kw_scale("EFrGrid")
         stamp = row[0]
         if prev_stamp is not None:
             delta = (stamp - prev_stamp).total_seconds() / 60.0
@@ -111,22 +127,26 @@ def _load_baseline_series(
                 regular = False
         prev_stamp = stamp
 
-        raw_pv = row[idx[pv_col]]
-        pv_val = float(raw_pv) if isinstance(raw_pv, (int, float)) and math.isfinite(raw_pv) else 0.0
-        load_val = 0.0
-        if ext_mode == "constant":
-            load_val = ext_const_kw
-        elif ext_mode == "daily":
-            load_val = ext_daily_kw[stamp.hour]
-        elif has_load_col:
-            raw_ld = row[idx["E_User"]]
-            load_val = float(raw_ld) if isinstance(raw_ld, (int, float)) and math.isfinite(raw_ld) else 0.0
-        raw_rows.append((stamp, pv_val, load_val))
+        def _num(col_name: str) -> float:
+            val = row[idx[col_name]]
+            return float(val) if isinstance(val, (int, float)) and math.isfinite(val) else 0.0
 
-    if not raw_rows:
+        pv_val = _num(pv_col)
+        eto_val = _num("EToGrid") if has_etogrid else 0.0
+        esol_val = _num("E_Solar") if has_esolar else 0.0
+        efr_val = _num("EFrGrid") if has_efrgrid else 0.0
+        csv_load_val = _num("E_User") if has_load_col else 0.0
+        raw_rows_ext.append((stamp, pv_val, csv_load_val, eto_val, esol_val, efr_val))
+
+    if not raw_rows_ext:
         raise ValueError("Baseline CSV contains no rows")
+    if not regular:
+        raise ValueError(
+            "Baseline CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+            "cannot simulate BESS dispatch reliably"
+        )
 
-    dt_hours = (step_minutes if (regular and step_minutes is not None) else 60.0) / 60.0
+    dt_hours = (step_minutes if step_minutes is not None else 60.0) / 60.0
     months: list[int] = []
     hours: list[int] = []
     pv_kw: list[float] = []
@@ -134,12 +154,32 @@ def _load_baseline_series(
     imp_rates: list[float] = []
     exp_rates: list[float] = []
 
-    for stamp, r_pv, r_ld in raw_rows:
-        p_kw = max(0.0, r_pv * pv_scale[0] / (dt_hours if pv_scale[1] else 1.0))
-        if ext_mode is not None:
-            l_kw = max(0.0, r_ld)
+    def _scaled_kw(val: float, scale: tuple[float, bool]) -> float:
+        return val * scale[0] / (dt_hours if scale[1] else 1.0)
+
+    for stamp, r_pv, r_csv_ld, r_eto, r_esol, r_efr in raw_rows_ext:
+        csv_l_kw = max(0.0, _scaled_kw(r_csv_ld, load_scale)) if has_load_col else 0.0
+        if has_etogrid and (has_esolar or has_load_col):
+            # True PVsyst self-consumption/storage export: reconstruct total AC PV = export + self-consumed PV
+            exp_kw = max(0.0, _scaled_kw(r_eto, etogrid_scale))
+            if has_esolar:
+                sc_kw = max(0.0, _scaled_kw(r_esol, esolar_scale))
+            elif has_efrgrid:
+                sc_kw = max(0.0, csv_l_kw - max(0.0, _scaled_kw(r_efr, efrgrid_scale)))
+            else:
+                sc_kw = 0.0
+            p_kw = exp_kw + sc_kw
+        elif has_esolar:
+            p_kw = max(0.0, _scaled_kw(r_pv, pv_scale)) + max(0.0, _scaled_kw(r_esol, esolar_scale))
+        else:
+            p_kw = max(0.0, _scaled_kw(r_pv, pv_scale))
+
+        if ext_mode == "constant":
+            l_kw = max(0.0, ext_const_kw)
+        elif ext_mode == "daily":
+            l_kw = max(0.0, ext_daily_kw[stamp.hour])
         elif has_load_col:
-            l_kw = max(0.0, r_ld * load_scale[0] / (dt_hours if load_scale[1] else 1.0))
+            l_kw = csv_l_kw
         else:
             l_kw = 0.0
         _, imp_r, exp_r = _lookup_rate(stamp, tariff)
@@ -151,7 +191,7 @@ def _load_baseline_series(
         exp_rates.append(exp_r)
 
     return {
-        "rows": len(raw_rows),
+        "rows": len(raw_rows_ext),
         "dt_hours": dt_hours,
         "has_load": has_load_col or (ext_mode is not None),
         "months": months,
@@ -289,16 +329,9 @@ def _simulate_candidate_fast(
         e_exp = export_kw * dt
         e_imp = import_kw * dt
         e_ld = l_kw * dt
-        e_sc = (direct_pv + dis_ac_kw) * dt if has_load else 0.0
-
-        pv_export_kwh += e_exp
-        grid_import_kwh += e_imp
-        load_kwh += e_ld
-        self_cons_kwh += e_sc
-        bat_ch_ac_kwh += ch_ac_kw * dt
-        bat_dis_ac_kwh += dis_ac_kw * dt
 
         if has_load:
+            e_sc = (direct_pv + dis_ac_kw) * dt
             b_bill = e_ld * imp_r
             a_bill = e_imp * imp_r
             e_rev = e_exp * exp_r
@@ -308,13 +341,18 @@ def _simulate_candidate_fast(
                 if (tariff["mode"] != "feed_in" and tariff["self_consumption_ratio"] is not None)
                 else 0.0
             )
-            e_sc_flat = e_exp * sc_ratio
-            net_exp = e_exp - e_sc_flat
-            b_bill = e_sc_flat * imp_r
-            a_bill = 0.0
-            e_rev = net_exp * exp_r
-            e_sc = e_sc_flat
-            e_exp = net_exp
+            e_sc = e_exp * sc_ratio
+            e_exp = e_exp - e_sc
+            b_bill = e_sc * imp_r
+            a_bill = e_imp * imp_r
+            e_rev = e_exp * exp_r
+
+        pv_export_kwh += e_exp
+        grid_import_kwh += e_imp
+        load_kwh += e_ld
+        self_cons_kwh += e_sc
+        bat_ch_ac_kwh += ch_ac_kw * dt
+        bat_dis_ac_kwh += dis_ac_kw * dt
 
         baseline_bill += b_bill
         actual_bill += a_bill
@@ -388,7 +426,9 @@ def _run_stage2_verify(
     verify_config: dict[str, Any],
     tariff: dict,
     financial: dict,
+    fin_cfg: dict,
     installed_dc_kw: float,
+    pcs_capex_per_kw: float,
     bess_params: dict[str, Any],
     tou_plan: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
@@ -409,7 +449,8 @@ def _run_stage2_verify(
 
     ws = cli.workspace
     sfi_path = ws / "Models" / f"{prefix}_bess_verify.SFI"
-    build_sfi(sfi_path, "grid_storage", time_step="hour")
+    if not sfi_path.is_file():
+        build_sfi(sfi_path, "grid_storage", time_step="hour")
 
     comparisons: list[dict[str, Any]] = []
     for idx, cand in enumerate(top_candidates, start=1):
@@ -473,20 +514,29 @@ def _run_stage2_verify(
             new_variant=new_var,
             battery=battery_cfg,
             storage=storage_cfg,
-            load_manifest_name=load_manifest,
+            load_manifest_name=None if strat == "peak_shaving" else load_manifest,
             dry_run=False,
         )
 
         out_csv = ws / "Results" / f"{prefix}_{idx}_{int(round(actual_kwh))}kWh_{int(round(pcs_kw))}kW.csv"
         sim_res = cli.run_simulation(project, new_var, sfi=sfi_path, out_csv=out_csv, log_level=3)
+        stage2_sc: dict[str, Any] = {
+            "label": cand["label"],
+            "csv_name": out_csv.name,
+            "installed_dc_kw": installed_dc_kw,
+            "battery_kwh": actual_kwh,
+        }
+        if pcs_capex_per_kw > 0:
+            capex = fin_cfg["fixed_capex"]
+            if fin_cfg["capex_per_kw"] is not None:
+                capex += installed_dc_kw * fin_cfg["capex_per_kw"]
+            if fin_cfg["battery_capex_per_kwh"] is not None:
+                capex += actual_kwh * fin_cfg["battery_capex_per_kwh"]
+            capex += pcs_kw * pcs_capex_per_kw
+            stage2_sc["capex_total"] = round(capex, 2)
         exact_econ = evaluate_economics(
             workspace=ws,
-            scenarios=[{
-                "label": cand["label"],
-                "csv_name": out_csv.name,
-                "installed_dc_kw": installed_dc_kw,
-                "battery_kwh": actual_kwh,
-            }],
+            scenarios=[stage2_sc],
             financial=financial,
             tariff=tariff,
             include_cashflow_schedule=False,
@@ -501,6 +551,7 @@ def _run_stage2_verify(
             "actual_battery_kwh": actual_kwh,
             "parallel_count": parallel,
             "pcs_kw": pcs_kw,
+            "capex_total": ef["capex_total"],
             "warnings": sim_res.get("warnings") or [],
             "fast_model": {
                 "npv": cand["npv"],
@@ -779,7 +830,9 @@ def optimize_bess_sizing(
                 verify_config=verify_config,
                 tariff=tariff,
                 financial=financial,
+                fin_cfg=fin_cfg,
                 installed_dc_kw=dc_kw,
+                pcs_capex_per_kw=pcs_capex_kw,
                 bess_params=bp,
                 tou_plan=tou_plan,
             )

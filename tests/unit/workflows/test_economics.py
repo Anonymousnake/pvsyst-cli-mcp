@@ -392,6 +392,25 @@ class EconomicsEngineTests(unittest.TestCase):
         self.assertGreater(by_name["tariff"]["high"]["npv"], by_name["tariff"]["low"]["npv"])
         self.assertLess(by_name["capex"]["high"]["npv"], by_name["capex"]["low"]["npv"])
 
+        # Explicit battery_replacement_cost must NOT be charged to a PV-only (battery_kwh=0) scenario
+        cmp_rep = evaluate_economics(
+            scenarios=[
+                {"label": "PV_Only", "annual_yield_kwh": 150000.0, "installed_dc_kw": 100.0, "battery_kwh": 0.0},
+                {"label": "PV_BESS", "annual_yield_kwh": 150000.0, "installed_dc_kw": 100.0, "battery_kwh": 200.0},
+            ],
+            financial={
+                "project_life_years": 20,
+                "discount_rate_pct": 6.0,
+                "capex_per_kw": 3500.0,
+                "battery_capex_per_kwh": 1000.0,
+                "battery_replacement_year": 12,
+                "battery_replacement_cost": 90000.0,
+            },
+            tariff={"mode": "feed_in", "feed_in_tariff": 0.4},
+        )
+        self.assertEqual(cmp_rep["scenarios"][0]["financials"]["cashflow_schedule"][11]["replacement_cost"], 0.0)
+        self.assertEqual(cmp_rep["scenarios"][1]["financials"]["cashflow_schedule"][11]["replacement_cost"], 90000.0)
+
     def test_tou_period_name_requires_consistent_rates(self):
         csv = _write_sfi_csv(self.root / "Results" / "seasons.csv", [("E_Grid", "kWh")], [
             ["31/05/24 23:00", 10.0],

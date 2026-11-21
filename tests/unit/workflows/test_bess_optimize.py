@@ -277,6 +277,105 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
         self.assertEqual(len(comps), 1)
         self.assertIn("npv_diff", comps[0]["deltas"])
 
+        # Re-running Stage 2 with same prefix + peak_shaving + pcs_capex_per_kw must not crash
+        # on existing SFI, must omit load_manifest for peak_shaving, and must include PCS CAPEX
+        v_cfg_ps = dict(v_cfg, load_manifest_name="load_manifest.json")
+        with patch("pvsyst_auto.energy.system.create_grid_storage_system") as mock_create_ps:
+            verified_ps = optimize_bess_sizing(
+                workspace=self.root,
+                cli=fake_cli,
+                store=fake_store,
+                baseline_csv=csv_path.name,
+                installed_dc_kw=120.0,
+                bess_kwh_values=[100.0],
+                pcs_kw_values=[50.0],
+                strategies=["peak_shaving"],
+                tariff=tariff,
+                financial=financial,
+                pcs_capex_per_kw=600.0,
+                verify_top_k=1,
+                verify_config=v_cfg_ps,
+                dry_run=False,
+                confirm=True,
+            )
+        self.assertEqual(verified_ps["status"], "verified")
+        self.assertIsNone(mock_create_ps.call_args.kwargs["load_manifest_name"])
+        # 120*3500 + 100*900 + 50*600 = 540,000
+        self.assertEqual(verified_ps["stage2_verification"]["verified_comparisons"][0]["capex_total"], 540_000.0)
+
+    def test_tou_wraparound_no_load_sc_totals_self_cons_pv_reconstruction_and_irregular_cadence(self) -> None:
+        # 1. TOU planner must not schedule daytime charge after segment-0 peak when a later peak exists
+        wrap_tou = [
+            {"name": "midnight_peak", "hours": [0, 1], "import_rate": 1.50, "export_rate": 0.30},
+            {"name": "morning_valley", "hours": [2, 3, 4, 5, 6, 7], "import_rate": 0.30, "export_rate": 0.30},
+            {"name": "day_flat", "hours": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17], "import_rate": 0.70, "export_rate": 0.30},
+            {"name": "evening_peak", "hours": [18, 19, 20, 21, 22, 23], "import_rate": 1.50, "export_rate": 0.30},
+        ]
+        plan = plan_tou_storage_schedule(tou_schedule=wrap_tou, charge_power_kw=50.0, cycles_per_day=2)
+        for cyc in plan["cycles"]:
+            # Segment-0 peak [0, 1] must never be paired with daytime hours [2..7] after it
+            if cyc["discharge_hours"] == [0, 1]:
+                self.assertTrue(all(h >= 24 for h in cyc["charge_hours"]))  # impossible -> not paired
+        # Evening peak [18..23] should get the cheapest preceding window [2..7]
+        ev_cycles = [c for c in plan["cycles"] if c["discharge_hours"] == [18, 19, 20, 21, 22, 23]]
+        self.assertEqual(len(ev_cycles), 1)
+        self.assertEqual(ev_cycles[0]["charge_hours"], [2, 3, 4, 5, 6, 7])
+
+        # 2. No-load self_consumption_ratio must reflect in self_consumed_kwh, self_consumption_pct, and pv_export_kwh
+        pv_only_csv = self.root / "Results" / "pv_only_sc.csv"
+        pv_only_csv.write_text(
+            "PVSYST 8.1.7\ndate;E_Grid\n;kWh\n"
+            "01/06/24 12:00;100.0\n01/06/24 13:00;100.0\n",
+            encoding="utf-8",
+        )
+        res_sc = optimize_bess_sizing(
+            workspace=self.root,
+            baseline_csv=pv_only_csv.name,
+            installed_dc_kw=100.0,
+            bess_kwh_values=[0.0],
+            pcs_kw_values=[50.0],
+            tariff={"mode": "self_consumption_flat", "import_tariff": 0.8, "feed_in_tariff": 0.3, "self_consumption_ratio": 0.6},
+            financial={"fixed_capex": 1000.0},
+        )
+        self.assertAlmostEqual(res_sc["candidates"][0]["self_consumption_pct"], 60.0, places=2)
+
+        # 3. True PVsyst self-consumption CSV (EToGrid + EFrGrid + E_User, negative net E_Grid) reconstructs total PV
+        real_sc_csv = self.root / "Results" / "real_sc.csv"
+        real_sc_csv.write_text(
+            "PVSYST 8.1.7\ndate;E_Grid;EToGrid;EFrGrid;E_User\n;kWh;kWh;kWh;kWh\n"
+            "01/06/24 12:00;20;20;0;60\n01/06/24 13:00;-80;0;80;80\n",
+            encoding="utf-8",
+        )
+        res_real = optimize_bess_sizing(
+            workspace=self.root,
+            baseline_csv=real_sc_csv.name,
+            installed_dc_kw=100.0,
+            bess_kwh_values=[0.0],
+            pcs_kw_values=[50.0],
+            tariff={"mode": "self_consumption_flat", "import_tariff": 0.8, "feed_in_tariff": 0.3},
+            financial={"fixed_capex": 1000.0},
+        )
+        # Total PV = 20 export + 60 direct self-consumption = 80 kWh -> self_consumption_pct = 75%
+        self.assertAlmostEqual(res_real["candidates"][0]["self_consumption_pct"], 75.0, places=2)
+
+        # 4. Irregular cadence baseline CSV is rejected instead of falling back to 60 minutes
+        gap_csv = self.root / "Results" / "bess_gap.csv"
+        gap_csv.write_text(
+            "PVSYST 8.1.7\ndate;E_Grid\n;kW\n"
+            "01/06/24 08:00;10\n01/06/24 08:15;10\n01/06/24 08:45;10\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "regular cadence"):
+            optimize_bess_sizing(
+                workspace=self.root,
+                baseline_csv=gap_csv.name,
+                installed_dc_kw=100.0,
+                bess_kwh_values=[0.0],
+                pcs_kw_values=[50.0],
+                tariff={"mode": "feed_in", "feed_in_tariff": 0.4},
+                financial={"fixed_capex": 1000.0},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
