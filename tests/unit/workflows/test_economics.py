@@ -242,10 +242,16 @@ class EconomicsEngineTests(unittest.TestCase):
             {"Plane tilt": 30, "Soiling Loss": 2.0, "Simul Comment": "Tilt30"},
         )
 
+    def test_irr_is_independent_of_cashflow_scale(self):
+        from pvsyst_auto.engineering.economics import _compute_irr
+        for scale in (100, 1e-10):
+            self.assertAlmostEqual(_compute_irr([-scale, scale * 1.1]), 0.1)
+
     def test_batch_summary_can_omit_performance_ratio(self):
         (self.root / "UserBatch" / "EnergyResults.CSV").write_text(
             "Ident;Create hourly;Error;E_Grid\n"
-            "SIM_1;;;142000\n",
+            ";file;;MWh\n"
+            "SIM_1;;;142\n",
             encoding="utf-8",
         )
         res = evaluate_economics(
