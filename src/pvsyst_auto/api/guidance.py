@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 
 from pvsyst_auto.native.cli import REPORT_PAGES, VAR_GROUPS
 
@@ -249,14 +250,19 @@ def register_guidance(server) -> None:
         proj_dir = ws / "Projects"
         items = []
         if proj_dir.is_dir():
-            prjs = sorted(p for p in proj_dir.iterdir() if p.is_file() and p.suffix.lower() == ".prj")
+            prjs: list[Path] = []
+            variants_by_stem: dict[str, list[str]] = {}
+            for entry in proj_dir.iterdir():
+                if not entry.is_file():
+                    continue
+                suf = entry.suffix.lstrip(".")
+                if suf.lower() == "prj":
+                    prjs.append(entry)
+                elif re.fullmatch(r"V[A-Z0-9]{2}", suf.upper()):
+                    variants_by_stem.setdefault(entry.stem.casefold(), []).append(suf.upper())
+            prjs.sort()
             for prj in prjs[:200]:
-                stem_cf = prj.stem.casefold()
-                variants = sorted(
-                    v.suffix.lstrip(".").upper()
-                    for v in proj_dir.iterdir()
-                    if v.is_file() and v.stem.casefold() == stem_cf and v.suffix.lower().startswith(".vc")
-                )
+                variants = sorted(variants_by_stem.get(prj.stem.casefold(), ()))
                 items.append({"project": prj.name, "variants": variants})
         return json.dumps({"configured": True, "workspace": str(ws), "projects": items}, ensure_ascii=False, indent=2)
 

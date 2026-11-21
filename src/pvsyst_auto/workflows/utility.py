@@ -6,7 +6,7 @@ import math
 import subprocess
 from pathlib import Path
 
-from pvsyst_auto.components.pan import pan_blocks, validation_fields as pan_validation_fields
+from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
 from pvsyst_auto.engineering.diagnostics import compact_diagnostics_summary, diagnose_simulation_csv
 from pvsyst_auto.engineering.sizing import plan_capacity
 from pvsyst_auto.native.cli import (
@@ -21,7 +21,7 @@ from pvsyst_auto.project.bifacial import normalize_bifacial_spec
 from pvsyst_auto.project.paths import project_path, workspace_file, write_json
 from pvsyst_auto.project.synthesize import synthesize_project_and_variant, synthesize_utility_project
 from pvsyst_auto.project.template import _mppt_inputs
-from pvsyst_auto.results import annual_summary, fingerprint
+from pvsyst_auto.results import IRRAD_UNIT_KIND, POWER_UNIT_KIND, annual_summary, fingerprint
 from pvsyst_auto.weather.preparation import compare_native_weather, inspect_met_calendar, load_weather_manifest
 
 UTILITY_SCOPES = ("ground_sheds", "ground_tracker")
@@ -400,17 +400,7 @@ def _extract_bifacial_metrics(csv_path: Path, units: dict) -> dict:
     """Compute annual bifacial irradiance and loss summaries from hourly or sub-hourly SFI CSV."""
     if not units.get("GlobBak"):
         raise ValueError("Bifacial simulation output lacks GlobBak column/unit")
-    irrad_units = {
-        "W/m2": (0.001, True), "W/m\u00b2": (0.001, True),
-        "kW/m2": (1.0, True), "kW/m\u00b2": (1.0, True),
-        "Wh/m2": (0.001, False), "Wh/m\u00b2": (0.001, False),
-        "kWh/m2": (1.0, False), "kWh/m\u00b2": (1.0, False),
-    }
-    power_units = {
-        "W": (0.001, True), "kW": (1.0, True),
-        "Wh": (0.001, False), "kWh": (1.0, False),
-    }
-    bak_info = irrad_units.get(units["GlobBak"])
+    bak_info = IRRAD_UNIT_KIND.get(units["GlobBak"])
     if bak_info is None:
         raise ValueError(f"Unsupported GlobBak unit: {units['GlobBak']!r}")
     present = tuple(c for c in ("GlobBak", "GlobGnd", "DiffGnd", "BeamBak", "DifSBak", "MismBak", "PRBifi")
@@ -425,10 +415,10 @@ def _extract_bifacial_metrics(csv_path: Path, units: dict) -> dict:
         "rear_irradiation_kwh_m2": summ["GlobBak"]["sum"] * bak_scale * (step_hours if bak_is_power else 1.0),
     }
     if "GlobGnd" in summ:
-        gnd_scale, gnd_is_power = irrad_units.get(units["GlobGnd"], (0.001, True))
+        gnd_scale, gnd_is_power = IRRAD_UNIT_KIND.get(units["GlobGnd"], (0.001, True))
         out["ground_irradiation_kwh_m2"] = summ["GlobGnd"]["sum"] * gnd_scale * (step_hours if gnd_is_power else 1.0)
     if "MismBak" in summ:
-        p_scale, p_is_power = power_units.get(units["MismBak"], (1.0, True))
+        p_scale, p_is_power = POWER_UNIT_KIND.get(units["MismBak"], (1.0, True))
         out["rear_mismatch_loss_kwh"] = summ["MismBak"]["sum"] * p_scale * (step_hours if p_is_power else 1.0)
     if "PRBifi" in summ and summ["PRBifi"]["mean"] is not None:
         out["mean_pr_bifi"] = summ["PRBifi"]["mean"]

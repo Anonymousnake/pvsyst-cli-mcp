@@ -24,6 +24,7 @@ from pvsyst_auto.workflows.blocks import prepare_block_project
 from pvsyst_auto.workflows.design import _prune_empty
 from pvsyst_auto.workflows.sourced_house import run_sourced_house_task
 
+from tests._fixtures import FakeCliBase
 from tests.unit.workflows.test_design_inputs import FakeComponents, FakeVariants, template_spec
 
 CSV = """PVsyst export
@@ -470,19 +471,7 @@ class EngineeringTests(unittest.TestCase):
     def test_preserve_source_hardware_checks_trial_exhaustion_in_preflight(self):
         root = self.workspace()
         store = VariantStore(root, ComponentStore(root))
-
-        class ExhaustedCLI:
-            def _require(self, command, option, *, allow_window_creation=None):
-                return None
-
-            def version(self, *, allow_window_creation=None):
-                return "8.1.7"
-
-            def license_info(self, *, allow_window_creation=None):
-                return {"status": "TRIAL", "remaining_executions": 0}
-
-            def _redact(self, text):
-                return text
+        exhausted_cli = FakeCliBase(version="8.1.7", license_status="TRIAL", remaining_executions=0)
 
         req = {
             "prepare_mode": "preserve_source_hardware",
@@ -495,7 +484,7 @@ class EngineeringTests(unittest.TestCase):
             "layout": {"module_rows": 1, "module_columns": 1, "orientation": "landscape",
                        "row_spacing_m": 0.0, "column_spacing_m": 0.0, "origin_m": [0.0, 0.0, 0.0], "roof_mesh": "r"},
         }
-        res = run_sourced_house_task(store, store.components, ExhaustedCLI(), request=req, dry_run=True)
+        res = run_sourced_house_task(store, store.components, exhausted_cli, request=req, dry_run=True)
         self.assertEqual(res["status"], "blocked")
         self.assertEqual(res["stage"], "native_preflight")
         self.assertIn("no remaining trial executions", res["issues"][0])

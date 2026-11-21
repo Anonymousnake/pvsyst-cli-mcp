@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from pvsyst_auto.validation import pos_finite as _pos_finite
+
 # Boltzmann constant * 298.15 K / elementary charge (thermal voltage at 25 degC STC)
 _VT_25C = 1.380649e-23 * 298.15 / 1.602176634e-19  # ~0.025692579 V
 _VALID_TECHNOLS = (
@@ -20,15 +22,6 @@ _VALID_TECHNOLS = (
     "mtSiThin",
     "mtGaAs",
 )
-
-
-def _pos_finite(value: Any, label: str, *, allow_zero: bool = False) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{label} must be a finite number")
-    num = float(value)
-    if not math.isfinite(num) or (num < 0 if allow_zero else num <= 0):
-        raise ValueError(f"{label} must be {'non-negative' if allow_zero else 'positive'} and finite")
-    return num
 
 
 def _solve_rs_for_gamma(
@@ -458,9 +451,23 @@ def synthesize_ond_from_datasheet(
         for idx_v, tag in enumerate(("ProfilPIOV1", "ProfilPIOV2", "ProfilPIOV3")):
             if three_voltage_curves and tag in three_voltage_curves:
                 pts_in = three_voltage_curves[tag]
-                if not isinstance(pts_in, list) or len(pts_in) < 4:
-                    raise ValueError(f"{tag} requires at least 4 points")
-                v_curves[tag] = [(float(p[0]), float(p[1])) for p in pts_in]
+                if not isinstance(pts_in, list) or not 4 <= len(pts_in) <= 11:
+                    raise ValueError(f"{tag} requires 4..11 [p_in, p_out] points")
+                parsed_pts: list[tuple[float, float]] = []
+                for p_i, pt in enumerate(pts_in):
+                    if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+                        raise ValueError(f"{tag}[{p_i}] must be a [p_in, p_out] pair")
+                    pin = _pos_finite(pt[0], f"{tag}[{p_i}][0]")
+                    pout = _pos_finite(pt[1], f"{tag}[{p_i}][1]", allow_zero=True)
+                    if pout > pin + 1e-6:
+                        raise ValueError(f"{tag}[{p_i}] p_out ({pout}) cannot exceed p_in ({pin})")
+                    if parsed_pts:
+                        if pin <= parsed_pts[-1][0]:
+                            raise ValueError(f"{tag}[{p_i}] p_in must be strictly increasing")
+                        if pout < parsed_pts[-1][1]:
+                            raise ValueError(f"{tag}[{p_i}] p_out must be non-decreasing")
+                    parsed_pts.append((pin, pout))
+                v_curves[tag] = parsed_pts
             else:
                 v_curves[tag] = _build_ond_curve_points(
                     pnom_w=pnom_w, p_seuil=p_seuil,
@@ -635,6 +642,13 @@ def synthesize_btr_from_datasheet(
         raise ValueError("Zero-template BTR synthesis requires capacity_ah (CapNomC10) or energy_kwh (EnergyKWh)")
 
     v_cell_eff = eff_vnom / eff_ns
+    v_min_cell_chk = chem["v_min_discharge_cell"]
+    v_max_cell_chk = chem["v_max_charge_cell"]
+    if not (v_min_cell_chk < v_cell_eff < v_max_cell_chk):
+        raise ValueError(
+            f"Per-cell nominal voltage VNom/NCellSerie ({v_cell_eff:.3f} V) must lie strictly within "
+            f"({v_min_cell_chk:.2f}, {v_max_cell_chk:.2f}) V for {chem_key}"
+        )
     eff_energy_kwh = round((cap_ah * eff_vnom) / 1000.0, 3)
 
     if internal_resistance_mohm is not None:
@@ -659,7 +673,12 @@ def synthesize_btr_from_datasheet(
     if not 0.5 <= soh_end <= 0.95:
         raise ValueError("SOHEOL must be in [0.50, 0.95]")
     life_yr = _pos_finite(lifetime_years_20c, "DureeVie20") if lifetime_years_20c is not None else chem["lifetime_years_20c"]
-    cyc_80 = int(cycle_life_80dod) if cycle_life_80dod is not None else int(chem["cycle_life_80dod"])
+    if cycle_life_80dod is not None:
+        if isinstance(cycle_life_80dod, bool) or not isinstance(cycle_life_80dod, int):
+            raise ValueError("cycle_life_80dod must be an integer in 500..30000")
+        cyc_80 = cycle_life_80dod
+    else:
+        cyc_80 = int(chem["cycle_life_80dod"])
     if not 500 <= cyc_80 <= 30000:
         raise ValueError("cycle_life_80dod must be in 500..30000")
 

@@ -10,11 +10,11 @@ import math
 from pathlib import Path
 from typing import Any
 
-from pvsyst_auto.native.cli import iter_result_csv, parse_batch_results, result_units
+from pvsyst_auto.native.cli import parse_batch_results
 from pvsyst_auto.project.paths import safe_filename, workspace_file
+from pvsyst_auto.results import RegularResultCsv, energy_unit_scale
+from pvsyst_auto.validation import finite_number as _finite
 
-_POWER_TO_KW = {"W": 0.001, "kW": 1.0}
-_ENERGY_TO_KWH = {"Wh": 0.001, "kWh": 1.0}
 _VALID_RANK_KEYS = ("npv", "irr", "lcoe", "simple_payback_years", "discounted_payback_years", "year1_net_benefit")
 _VALID_SENSITIVITY_FACTORS = ("tariff", "capex", "yield", "degradation")
 
@@ -100,27 +100,6 @@ def _validate_sensitivity(raw_sens: dict | None) -> dict | None:
         "factors": factors,
         "variation_pct": variation,
     }
-
-
-def _finite(value: Any, name: str, *, minimum: float | None = None, maximum: float | None = None) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{name} must be a finite number")
-    num = float(value)
-    if not math.isfinite(num):
-        raise ValueError(f"{name} must be finite")
-    if minimum is not None and num < minimum:
-        raise ValueError(f"{name} must be >= {minimum}")
-    if maximum is not None and num > maximum:
-        raise ValueError(f"{name} must be <= {maximum}")
-    return num
-
-
-def _to_kwh(value: float, unit: str, step_hours: float) -> float | None:
-    if unit in _POWER_TO_KW:
-        return value * _POWER_TO_KW[unit] * step_hours
-    if unit in _ENERGY_TO_KWH:
-        return value * _ENERGY_TO_KWH[unit]
-    return None
 
 
 def _validate_tariff(tariff: dict | None) -> dict:
@@ -292,30 +271,78 @@ def _resolve_result_csv(workspace: Path | None, csv_ref: str | Path) -> Path:
     return path
 
 
+def _resolve_system_capex(
+    fin_cfg: dict,
+    *,
+    dc_kw: float | None,
+    battery_kwh: float = 0.0,
+    pcs_kw: float = 0.0,
+    pcs_capex_per_kw: float = 0.0,
+    context: str = "",
+) -> float:
+    capex = fin_cfg["fixed_capex"]
+    if fin_cfg["capex_per_kw"] is not None:
+        if dc_kw is None:
+            raise ValueError(f"{context}: installed_dc_kw is required when financial.capex_per_kw is set")
+        capex += dc_kw * fin_cfg["capex_per_kw"]
+    if fin_cfg["battery_capex_per_kwh"] is not None and battery_kwh > 0:
+        capex += battery_kwh * fin_cfg["battery_capex_per_kwh"]
+    if pcs_capex_per_kw > 0 and pcs_kw > 0:
+        capex += pcs_kw * pcs_capex_per_kw
+    return capex
+
+
+def _battery_replacement_event(
+    fin_cfg: dict,
+    *,
+    battery_kwh: float,
+    is_pv_only: bool = False,
+    require_cost_basis: bool = False,
+    context: str = "",
+    label: str | None = None,
+) -> dict | None:
+    year = fin_cfg["battery_replacement_year"]
+    if year is None or is_pv_only:
+        return None
+    if fin_cfg["battery_replacement_cost"] is not None:
+        cost = fin_cfg["battery_replacement_cost"]
+    elif battery_kwh > 0:
+        if fin_cfg["battery_capex_per_kwh"] is None:
+            if require_cost_basis:
+                raise ValueError(
+                    f"{context}: financial.battery_capex_per_kwh or "
+                    "financial.battery_replacement_cost is required when financial.battery_replacement_year is set"
+                )
+            return None
+        ratio = (
+            fin_cfg["battery_replacement_cost_ratio"]
+            if fin_cfg["battery_replacement_cost_ratio"] is not None else 0.7
+        )
+        cost = battery_kwh * fin_cfg["battery_capex_per_kwh"] * ratio
+    else:
+        return None
+    if cost <= 0:
+        return None
+    return {
+        "year": year,
+        "cost": cost,
+        "label": label or f"battery_replacement_year_{year}",
+    }
+
+
 def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
     """Single-pass streaming settlement over an hourly or sub-hourly PVsyst SFI CSV."""
-    units = result_units(csv_path, strict=True)
+    reader = RegularResultCsv(
+        csv_path,
+        empty_message="Result CSV contains no simulation rows",
+        irregular_message=(
+            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+            "cannot settle energy or tariffs reliably"
+        ),
+        required_any_of=("EToGrid", "E_Grid"),
+        missing_required_message="Result CSV must include E_Grid or EToGrid for financial evaluation",
+    )
 
-    # First detect step_hours accurately by streaming once into lightweight accumulators.
-    # For energy-unit columns (kWh/Wh) we do not need step_hours until totals; for power-unit
-    # columns (kW/W) multiplying by step_hours is linear, so we accumulate raw power-steps and
-    # scale by step_hours after the loop!
-    idx: dict[str, int] = {}
-    rows = 0
-    prev_stamp = None
-    step_minutes: float | None = None
-    regular = True
-
-    # Accumulate raw (unscaled-by-step-hours for power units, or already-energy for energy units)
-    # Wait: since units are uniform per column, we scale per-column cleanly after the loop for totals,
-    # and for tariff-weighted sums (where every row is multiplied by rate_t), linearity STILL holds
-    # because step_hours is constant across a regular time series!
-    export_col = None
-    has_load = False
-    has_import_col = False
-    has_storage = False
-
-    # Monthly (1..12) and 24-hour (0..23) accumulators
     monthly = {
         m: {"e_grid": 0.0, "e_user": 0.0, "e_from_grid": 0.0, "e_bat_ch": 0.0, "e_bat_dis": 0.0,
             "export_rev": 0.0, "baseline_bill": 0.0, "import_cost": 0.0, "self_cons": 0.0,
@@ -328,27 +355,6 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
         for h in range(24)
     }
     tou_breakdown: dict[str, dict[str, float]] = {}
-
-    def _unit_kind(col: str) -> tuple[float, bool]:
-        """Return (scale_to_kw_or_kwh, needs_step_hours)."""
-        u = units.get(col, "")
-        if u in _POWER_TO_KW:
-            return _POWER_TO_KW[u], True
-        if u in _ENERGY_TO_KWH:
-            return _ENERGY_TO_KWH[u], False
-        return 0.0, False
-
-    col_scale: dict[str, tuple[float, bool]] = {}
-
-    def _val(row, col: str) -> float:
-        if col not in idx:
-            return 0.0
-        raw = row[idx[col]]
-        return float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0.0
-
-    # We collect raw rows only if non-regular timestamps occur; for regular series (99.99% of PVsyst CSVs),
-    # compute delta on the fly using the first observed delta (default 1.0 h for the very first row, reconciled after).
-    first_row_data: tuple | None = None
     totals = {
         "pv_export_kwh": 0.0,
         "grid_import_kwh": 0.0,
@@ -362,12 +368,32 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
         "avoided_import_savings": 0.0,
     }
 
-    def _process_row(stamp, row, dt_hours: float) -> None:
+    idx: dict[str, int] = {}
+    col_scale: dict[str, tuple[float, bool]] = {}
+    export_col: str | None = None
+    has_load = False
+    has_import_col = False
+    has_storage = False
+
+    for stamp, row, dt_hours in reader.iter_rows():
+        if not col_scale:
+            idx = reader.idx
+            export_col = "EToGrid" if "EToGrid" in idx else "E_Grid"
+            has_load = "E_User" in idx
+            has_import_col = "EFrGrid" in idx
+            has_storage = "EBatCh" in idx or "EBatDis" in idx
+            col_scale = {col: energy_unit_scale(reader.units.get(col, "")) for col in idx}
+
         def kwh(col: str) -> float:
-            if col not in col_scale:
+            col_i = idx.get(col)
+            if col_i is None:
                 return 0.0
+            raw = row[col_i]
+            val = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0.0
             factor, needs_dt = col_scale[col]
-            return _val(row, col) * factor * (dt_hours if needs_dt else 1.0)
+            if factor == 0.0:
+                raise ValueError(f"{col} requires a power or energy unit, got {reader.units.get(col, '')!r}")
+            return val * factor * (dt_hours if needs_dt else 1.0)
 
         p_name, imp_rate, exp_rate = _lookup_rate(stamp, tariff)
 
@@ -466,52 +492,8 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
         h_rec["import_rate_sum"] += imp_rate
         h_rec["export_rate_sum"] += exp_rate
 
-    for headers, row in iter_result_csv(csv_path, strict=True):
-        if rows == 0:
-            idx = {name: i for i, name in enumerate(headers) if i > 0}
-            export_col = "EToGrid" if "EToGrid" in idx else ("E_Grid" if "E_Grid" in idx else None)
-            if export_col is None:
-                raise ValueError("Result CSV must include E_Grid or EToGrid for financial evaluation")
-            has_load = "E_User" in idx
-            has_import_col = "EFrGrid" in idx
-            has_storage = "EBatCh" in idx or "EBatDis" in idx
-            for col in idx:
-                col_scale[col] = _unit_kind(col)
-            first_row_data = (row[0], list(row))
-            prev_stamp = row[0]
-            rows = 1
-            continue
-
-        stamp = row[0]
-        delta_min = (stamp - prev_stamp).total_seconds() / 60.0
-        if delta_min <= 0:
-            regular = False
-            dt_hours = (step_minutes or 60.0) / 60.0
-        else:
-            if step_minutes is None:
-                step_minutes = delta_min
-                # Flush buffered first row with true detected step_hours!
-                _process_row(first_row_data[0], first_row_data[1], step_minutes / 60.0)
-                first_row_data = None
-            elif abs(delta_min - step_minutes) > 1e-6:
-                regular = False
-            dt_hours = delta_min / 60.0
-        _process_row(stamp, row, dt_hours)
-        prev_stamp = stamp
-        rows += 1
-
-    if rows == 0:
-        raise ValueError("Result CSV contains no simulation rows")
-    if not regular:
-        raise ValueError(
-            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
-            "cannot settle energy or tariffs reliably"
-        )
-    if first_row_data is not None:
-        step_minutes = 60.0
-        _process_row(first_row_data[0], first_row_data[1], 1.0)
-
-    eff_step_min = step_minutes if (regular and step_minutes is not None) else 60.0
+    rows = reader.rows_count
+    eff_step_min = reader.step_minutes if reader.step_minutes is not None else 60.0
     total_pv_utilized_kwh = totals["pv_export_kwh"] + totals["self_consumed_kwh"]
     year1_energy_benefit = totals["export_revenue"] + totals["avoided_import_savings"]
 
@@ -632,7 +614,7 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
 
     return {
         "rows": rows,
-        "step_minutes": eff_step_min if regular else None,
+        "step_minutes": eff_step_min,
         "has_load": has_load,
         "has_storage": has_storage,
         "year1_energy_kwh": total_pv_utilized_kwh,
@@ -665,7 +647,7 @@ def _compute_irr(cashflows: list[float]) -> float | None:
     prev_v = npv_at(prev_r)
     for r in grid[1:]:
         v = npv_at(r)
-        if abs(v) < 1e-9:
+        if v == 0:
             return r
         if (prev_v > 0 and v < 0) or (prev_v < 0 and v > 0):
             bracket = (prev_r, r, prev_v, v)
@@ -678,7 +660,7 @@ def _compute_irr(cashflows: list[float]) -> float | None:
     for _ in range(100):
         mid = 0.5 * (lo + hi)
         f_mid = npv_at(mid)
-        if abs(f_mid) < 1e-9 or abs(hi - lo) < 1e-10:
+        if f_mid == 0 or abs(hi - lo) < 1e-10:
             return mid
         if (f_lo > 0 and f_mid > 0) or (f_lo < 0 and f_mid < 0):
             lo, f_lo = mid, f_mid
@@ -917,7 +899,11 @@ def evaluate_economics(
                 e_grid = metrics.get("E_Grid")
                 if not isinstance(e_grid, (int, float)) or not math.isfinite(e_grid):
                     continue
-                item["annual_yield_kwh"] = float(e_grid)
+                unit = parsed.get("units", {}).get("E_Grid", "kWh")
+                scales = {"Wh": 0.001, "kWh": 1.0, "MWh": 1000.0, "GWh": 1_000_000.0}
+                if unit not in scales:
+                    raise ValueError(f"Expected energy unit for batch E_Grid, got {unit!r}")
+                item["annual_yield_kwh"] = e_grid * scales[unit]
             resolved_scenarios.append(item)
 
     if not resolved_scenarios:
@@ -925,6 +911,13 @@ def evaluate_economics(
     if len(resolved_scenarios) > 100:
         raise ValueError("At most 100 scenarios can be evaluated in one call")
 
+    any_has_battery = any(
+        isinstance(item, dict)
+        and isinstance(item.get("battery_kwh"), (int, float))
+        and not isinstance(item.get("battery_kwh"), bool)
+        and float(item["battery_kwh"]) > 0.0
+        for item in resolved_scenarios
+    )
     results: list[dict] = []
     for index, sc in enumerate(resolved_scenarios):
         if not isinstance(sc, dict):
@@ -943,15 +936,12 @@ def evaluate_economics(
         if sc.get("capex_total") is not None:
             capex = _finite(sc["capex_total"], f"scenarios[{index}].capex_total", minimum=0.0)
         else:
-            capex = fin_cfg["fixed_capex"]
-            if fin_cfg["capex_per_kw"] is not None:
-                if dc_kw is None:
-                    raise ValueError(
-                        f"scenarios[{index}] ({label}): installed_dc_kw is required when financial.capex_per_kw is set"
-                    )
-                capex += dc_kw * fin_cfg["capex_per_kw"]
-            if fin_cfg["battery_capex_per_kwh"] is not None:
-                capex += bat_kwh * fin_cfg["battery_capex_per_kwh"]
+            capex = _resolve_system_capex(
+                fin_cfg,
+                dc_kw=dc_kw,
+                battery_kwh=bat_kwh,
+                context=f"scenarios[{index}] ({label})",
+            )
 
         # Resolve annual OPEX
         if sc.get("annual_opex") is not None:
@@ -967,28 +957,15 @@ def evaluate_economics(
 
         # Scenario-specific or shared replacement events (plus optional mid-life battery replacement)
         sc_replacements = list(fin_cfg["replacement_events"])
-        if fin_cfg["battery_replacement_year"] is not None:
-            if fin_cfg["battery_replacement_cost"] is not None:
-                rep_cost = fin_cfg["battery_replacement_cost"]
-            elif bat_kwh > 0:
-                if fin_cfg["battery_capex_per_kwh"] is None:
-                    raise ValueError(
-                        f"scenarios[{index}] ({label}): financial.battery_capex_per_kwh or "
-                        "financial.battery_replacement_cost is required when financial.battery_replacement_year is set"
-                    )
-                ratio = (
-                    fin_cfg["battery_replacement_cost_ratio"]
-                    if fin_cfg["battery_replacement_cost_ratio"] is not None else 0.7
-                )
-                rep_cost = bat_kwh * fin_cfg["battery_capex_per_kwh"] * ratio
-            else:
-                rep_cost = 0.0
-            if rep_cost > 0:
-                sc_replacements.append({
-                    "year": fin_cfg["battery_replacement_year"],
-                    "cost": rep_cost,
-                    "label": f"battery_replacement_year_{fin_cfg['battery_replacement_year']}",
-                })
+        bat_rep_ev = _battery_replacement_event(
+            fin_cfg,
+            battery_kwh=bat_kwh,
+            is_pv_only=(bat_kwh == 0.0) and (sc.get("battery_kwh") is not None or any_has_battery),
+            require_cost_basis=True,
+            context=f"scenarios[{index}] ({label})",
+        )
+        if bat_rep_ev is not None:
+            sc_replacements.append(bat_rep_ev)
         for ev_i, ev in enumerate(sc.get("replacement_events") or ()):
             if not isinstance(ev, dict):
                 raise ValueError(f"scenarios[{index}].replacement_events[{ev_i}] must be an object")

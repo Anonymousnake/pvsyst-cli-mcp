@@ -146,6 +146,21 @@ class InteractiveReportTests(unittest.TestCase):
         en_html = Path(en_res["report_path"]).read_text(encoding="utf-8")
         self.assertIn("Monthly Generation &amp; Performance Ratio", en_html)
 
+    def test_report_energy_across_month_boundary_with_explicit_export(self):
+        from pvsyst_auto.workflows.report import _summarize_csv_for_report
+        csv = self.root / "Results" / "boundary.csv"
+        csv.write_text("date;EArray;E_Grid;EToGrid\n;Wh;Wh;Wh\n"
+                       "31/01/24 23:00;50;40;4\n01/02/24 00:00;50;40;4\n", encoding="utf-8")
+        with patch("pvsyst_auto.workflows.report._plotly_div", return_value="") as charts:
+            generate_report(workspace=self.root, title="Energy", output_name="energy.html",
+                            scenarios=[{"csv_name": csv.name}])
+        waterfall, = (call.args[0].data[0] for call in charts.call_args_list
+                      if call.args[0].data[0].type == "waterfall")
+        with self.subTest(metric="waterfall export"):
+            self.assertEqual(waterfall.y[-1], 0.01)
+        with self.subTest(metric="annual yield"):
+            self.assertEqual(_summarize_csv_for_report(csv)["annual_e_grid_kwh"], 0.01)
+
     def test_report_with_demand_charge_sensitivity_and_bess_heatmap(self) -> None:
         csv_pv = self.root / "Results" / "ci_bess.csv"
         _write_report_csv(csv_pv, scale=1.0, with_load_bess=True)
@@ -207,6 +222,35 @@ class InteractiveReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "E_Grid or EToGrid"):
             generate_report(workspace=self.root, title="Missing grid", output_name="missing.html",
                             scenarios=[{"label": "Base", "csv_name": csv_path.name}])
+
+    def test_report_rejects_incompatible_units_and_tornado_uses_actual_npv(self):
+        bad_unit = self.root / "Results" / "bad_unit.csv"
+        bad_unit.write_text("date;E_Grid\n;%\n01/06/24 08:00;10\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "E_Grid.*%"):
+            generate_report(workspace=self.root, title="Bad Unit", output_name="bad_unit.html",
+                            scenarios=[{"label": "Base", "csv_name": bad_unit.name}])
+
+        csv_pv = self.root / "Results" / "tor_pv.csv"
+        _write_report_csv(csv_pv, scale=1.0)
+        with patch("pvsyst_auto.workflows.report._plotly_div", return_value="") as charts:
+            generate_report(
+                workspace=self.root,
+                title="Tornado Check",
+                output_name="tor.html",
+                scenarios=[{"label": "Base", "csv_name": csv_pv.name, "installed_dc_kw": 100.0}],
+                financial={"currency": "CNY", "capex_per_kw": 3500.0, "project_life_years": 20},
+                tariff={"mode": "feed_in", "feed_in_tariff": 0.4},
+                sensitivity={"enabled": True, "variation_pct": 15.0},
+                dry_run=False,
+            )
+        tor_figs = [c.args[0] for c in charts.call_args_list if any(getattr(t, "orientation", None) == "h" for t in c.args[0].data)]
+        self.assertEqual(len(tor_figs), 1)
+        for trace in tor_figs[0].data:
+            self.assertIn("%{customdata", trace.hovertemplate)
+            self.assertNotIn("%{x", trace.hovertemplate)
+            self.assertEqual(len(trace.customdata), len(trace.x))
+            # customdata holds actual post-shock NPV (= base + delta), not the delta itself
+            self.assertAlmostEqual(trace.customdata[0], trace.base + trace.x[0], places=1)
 
     def test_report_rejects_irregular_timestamp_cadence(self):
         gap_csv = self.root / "Results" / "gap_report.csv"

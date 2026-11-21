@@ -16,10 +16,7 @@ from pvsyst_auto.scene.author import obstacle_profiles
 _EPS = 1e-9
 
 
-def _finite(value: Any, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise ValueError(f"{name} must be a finite number")
-    return float(value)
+from pvsyst_auto.validation import finite_number as _finite
 
 
 def validate_site_polygon(vertices: Any) -> list[tuple[float, float]]:

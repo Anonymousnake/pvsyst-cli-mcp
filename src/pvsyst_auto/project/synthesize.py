@@ -14,6 +14,7 @@ from pvsyst_auto.components.store import FIELD
 from pvsyst_auto.project.bifacial import render_bifacial_block
 from pvsyst_auto.project.circuit import MAX_COUNT, inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
+from pvsyst_auto.validation import finite_number as _finite
 from pvsyst_auto.weather.preparation import read_object_prefix
 
 SYNTH_VERSION = "8.1.7"
@@ -82,24 +83,6 @@ def _pos_int(value, context: str) -> int:
     if type(value) is not int or not 1 <= value <= MAX_COUNT:
         raise ValueError(f"{context} must be a positive 32-bit integer")
     return value
-
-
-def _finite(value, context: str, *, minimum: float | None = None, maximum: float | None = None) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{context} must be a finite number")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{context} must be finite")
-    if minimum is not None and number < minimum:
-        raise ValueError(f"{context} must be >= {minimum}")
-    if maximum is not None and number > maximum:
-        raise ValueError(f"{context} must be <= {maximum}")
-    return number
-
-
-def _fmt(value: float, decimals: int = 1) -> str:
-    number = 0.0 if abs(value) < 1e-9 else float(value)
-    return f"{number:.{decimals}f}"
 
 
 def _fmt_angle(value: float, max_decimals: int = 3) -> str:
@@ -281,117 +264,6 @@ def synthesize_meteo_from_site(met_name: str, site_identity: str, site_body: lis
     lines.append("    End of PVObject pvSite")
     lines.append("  End of PVObject pvMeteo")
     return lines
-
-
-def synthesize_site_block(site_name: str, site_identity: str, lat: float, lon: float, alt: float) -> list[str]:
-    """Synthesize a standalone pvSite block."""
-    safe_filename(site_name, ".SIT")
-    ident = _clean_text(site_identity, "site_identity")
-    return [
-        "PVObject_=pvSite",
-        f"  Comment={ident};;",
-        f"  Version={SYNTH_VERSION}",
-        "  Flags=$0006083F",
-        f"  NomF={site_name}",
-        f"  Site={ident}",
-        f"  Latitude={_finite(lat, 'lat', minimum=-90.0, maximum=90.0):.4f}",
-        f"  Longitude={_finite(lon, 'lon', minimum=-180.0, maximum=180.0):.4f}",
-        f"  Altitude={int(round(_finite(alt, 'alt')))}",
-        "  TimeZone=0.0",
-        "  HLeg=False",
-        "  UnitsDisp=kWh_m2_m",
-        "  Albedo=0.20",
-        "End of PVObject pvSite",
-    ]
-
-
-def synthesize_meteo_block(met_name: str, site_identity: str) -> list[str]:
-    """Synthesize a minimal standalone pvMeteo block."""
-    safe_filename(met_name, ".MET")
-    ident = _clean_text(site_identity, "site_identity")
-    return [
-        "PVObject_=pvMeteo",
-        "  Flags=$010084E1",
-        f"  NomF={met_name}",
-        f"  SiteM={ident}",
-        "End of PVObject pvMeteo",
-    ]
-
-
-def synthesize_tracker_shading_object(id: int, comment: str, origin: tuple[float, float, float],
-                                      inclination: float) -> list[str]:
-    """Synthesize a tracker shading array tracking object."""
-    return [
-        f"      PVObject_{id}=pvShdArrayTracking",
-        f"        Comment={comment}",
-        f"        Version={SYNTH_VERSION}",
-        "        Flags=$02208064",
-        f"        NoObjCreated={1000 + id}",
-        "        ColorTechn=$00FF0000",
-        "        ColorSurf=$00FF9999",
-        "        ColorBord=$00505050",
-        f"        DOrigine={origin[0]:.6f},{origin[1]:.6f},{origin[2]:.6f}",
-        f"        DInclin={inclination:.6f}",
-        "        BaseSlope=0.000000",
-        "        DAzimut=0.000000",
-        "        Source=osPVsyst",
-        "      NElemChamps=1",
-        "      NoOrient=2",
-        "      PanneauPVName=TemplateModule;1.000;2.000",
-        "      ModSpacingX=0.020",
-        "      ModSpacingY=0.020",
-        "      NModInHeight=2",
-        "      NModInWidth=25",
-        "      ModuleOrient=moPortrait",
-        "      DXModule=2.141",
-        "      DYModule=26.780",
-        "        LongShed=4.282000",
-        "        LargShed=26.780000",
-        "        Cadre=0.000,0.000,0.000,0.000,",
-        "        TypeOrigine=2",
-        "        PitchNS=0.000",
-        "        PitchEW=0.000",
-        "        AxisOrig=2",
-        "      End of PVObject pvShdArrayTracking",
-    ]
-
-
-def synthesize_shed_shading_object(id: int, comment: str, origin: tuple[float, float, float],
-                                   tilt: float) -> list[str]:
-    """Synthesize a fixed-shed shading array object."""
-    return [
-        f"      PVObject_{id}=pvShdArray",
-        f"        Comment={comment}",
-        f"        Version={SYNTH_VERSION}",
-        "        Flags=$02208064",
-        f"        NoObjCreated={2000 + id}",
-        "        ColorTechn=$00FF0000",
-        "        ColorSurf=$00FF9999",
-        "        ColorBord=$00505050",
-        f"        DOrigine={origin[0]:.6f},{origin[1]:.6f},{origin[2]:.6f}",
-        f"        DInclin={tilt:.6f}",
-        "        BaseSlope=0.000000",
-        "        DAzimut=0.000000",
-        "        Source=osPVsyst",
-        "      NElemChamps=1",
-        "      NoOrient=2",
-        "      PanneauPVName=TemplateModule;1.000;2.000",
-        "      ModSpacingX=0.020",
-        "      ModSpacingY=0.020",
-        "      NModInHeight=2",
-        "      NModInWidth=25",
-        "      ModuleOrient=moPortrait",
-        "      DXModule=2.141",
-        "      DYModule=26.780",
-        "        LongShed=4.282000",
-        "        LargShed=26.780000",
-        "        Cadre=0.000,0.000,0.000,0.000,",
-        "        TypeOrigine=2",
-        "        PitchNS=0.000",
-        "        PitchEW=0.000",
-        "        AxisOrig=2",
-        "      End of PVObject pvShdArray",
-    ]
 
 
 def _normalize_orientation(item: dict) -> dict:

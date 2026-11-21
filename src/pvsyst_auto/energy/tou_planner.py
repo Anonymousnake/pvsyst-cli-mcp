@@ -6,18 +6,11 @@ directly into ``pvsyst_create_grid_storage_system`` or ``pvsyst_create_grid_stor
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 from typing import Any
 
 from pvsyst_auto.engineering.economics import _validate_tariff
-
-
-def _pos_finite(value: Any, name: str, *, allow_zero: bool = False) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{name} must be a finite number")
-    num = float(value)
-    if not math.isfinite(num) or (num < 0.0 if allow_zero else num <= 0.0):
-        raise ValueError(f"{name} must be {'non-negative' if allow_zero else 'positive'} and finite")
-    return num
+from pvsyst_auto.validation import pos_finite as _pos_finite
 
 
 def _resolve_hourly_rates(tariff: dict, *, month: int, day_type: str) -> list[dict[str, Any]]:
@@ -105,34 +98,30 @@ def plan_tou_storage_schedule(
     rates = [h["import_rate"] for h in hourly]
     segments = _segment_day(hourly)
 
-    # Identify candidate chronological (charge_seg, discharge_seg) pairs where discharge follows charge
-    # (or overnight valley wraps into morning peak via contiguous early-morning segment).
-    # First find local/high-tier peaks and preceding lower-tier troughs.
     min_rate = min(rates)
     max_rate = max(rates)
     warnings: list[str] = []
 
     raw_cycles: list[dict[str, Any]] = []
-    if max_rate - (min_rate / rte) < min_sp:
+    def meets_spread(high, low):
+        return (Decimal(str(high)) - Decimal(str(min_sp))) * Decimal(str(rte)) >= Decimal(str(low))
+
+    if not meets_spread(max_rate, min_rate):
         warnings.append(
             f"Maximum effective spread ({max_rate - min_rate / rte:.4f}) is below min_spread ({min_sp:.4f}); "
             "returning idle 48-slot schedules to avoid unprofitable cycling."
         )
     else:
-        # Build all valid chronological non-overlapping (charge_idx, discharge_idx) pairs within segments
         n_seg = len(segments)
-        # Partition into early half and late half for 2 cycles when at least 2 distinct peak crests exist
         peak_indices = [
             i for i, seg in enumerate(segments)
-            if seg["rate"] >= min_rate / rte + min_sp
+            if meets_spread(seg["rate"], min_rate)
             and (i == 0 or seg["rate"] >= segments[i - 1]["rate"])
             and (i == n_seg - 1 or seg["rate"] >= segments[i + 1]["rate"])
         ]
-        # Fallback if monotonic / flat plateau: pick highest-rate segments
         if not peak_indices:
             peak_indices = [i for i, seg in enumerate(segments) if abs(seg["rate"] - max_rate) < 1e-9]
 
-        # Rank peak segments by rate descending, pick up to cycles_per_day chronological peaks
         chosen_peaks = sorted(
             sorted(peak_indices, key=lambda i: (-segments[i]["rate"], segments[i]["hours"][0]))[:cycles_per_day]
         )
@@ -149,17 +138,13 @@ def plan_tou_storage_schedule(
                 j for j in range(prev_peak_idx + 1, peak_idx)
                 if not (used_hours & set(segments[j]["hours"]))
             ]
-            # If the first peak is at segment 0 (hour 0), allow trailing late-night segment
-            if not cand_indices and prev_peak_idx == -1:
-                cand_indices = [
-                    j for j in range(peak_idx + 1, n_seg)
-                    if not (used_hours & set(segments[j]["hours"]))
-                ]
+            if peak_idx == chosen_peaks[0]:
+                cand_indices.extend(range(chosen_peaks[-1] + 1, n_seg))
             best_ch_idx = None
             best_spread = -1e9
             for j in cand_indices:
                 spread = peak_seg["rate"] - (segments[j]["rate"] / rte)
-                if spread >= min_sp and spread > best_spread:
+                if meets_spread(peak_seg["rate"], segments[j]["rate"]) and spread > best_spread:
                     best_spread = spread
                     best_ch_idx = j
             if best_ch_idx is not None:
@@ -208,6 +193,9 @@ def plan_tou_storage_schedule(
 
         eff_ch_kw = round(eff_ch_kw, 3)
         eff_dis_kw = round(eff_dis_kw, 3)
+        if charging_strategy == "spec_charg_power":
+            available_kw = eff_ch_kw * len(ch_slots) * rte / len(dis_slots)
+            eff_dis_kw = min(eff_dis_kw, math.floor(available_kw * 1000) / 1000)
         for s in ch_slots:
             ch_48[s] = eff_ch_kw
         for s in dis_slots:
