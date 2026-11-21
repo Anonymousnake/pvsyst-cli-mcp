@@ -91,6 +91,7 @@ class CliTransientRetryAndResourcesTests(unittest.TestCase):
 
         (self.root / "Results" / "report_a.html").write_text("<html></html>", encoding="utf-8")
         (self.root / "Results" / "run_a.csv").write_text("date;E_Grid\n", encoding="utf-8")
+        (self.root / "Projects" / "Demo.VB1").write_text("PVObject_=pvVCalcul\n", encoding="utf-8")
 
         async def _check():
             resources = await mcp.list_resources()
@@ -120,7 +121,9 @@ class CliTransientRetryAndResourcesTests(unittest.TestCase):
                 raw_proj = await mcp.read_resource("pvsyst://workspace/projects")
                 proj_data = json.loads(raw_proj[0].content)
                 self.assertTrue(proj_data["configured"])
-                self.assertTrue(any("Demo.PRJ" in str(p) for p in proj_data["projects"]))
+                demo = next(p for p in proj_data["projects"] if p["project"] == "Demo.PRJ")
+                self.assertIn("VC0", demo["variants"])
+                self.assertIn("VB1", demo["variants"])
 
                 raw_res = await mcp.read_resource("pvsyst://workspace/results")
                 res_data = json.loads(raw_res[0].content)

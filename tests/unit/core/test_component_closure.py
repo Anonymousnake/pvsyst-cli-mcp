@@ -195,6 +195,50 @@ class ComponentClosureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "PAN components only"):
             self.store.update("OND", "any.OND", {"PNomConv": "50"}, refit_single_diode=True)
 
+        # PAN missing required STC fields raises clean ValueError (not raw KeyError/TypeError)
+        incomplete_pan = "\r\n".join(
+            line for line in pan_text.splitlines() if not line.strip().startswith("Imp=")
+        ) + "\r\n"
+        (self.root / "ComposPV" / "PVmodules" / "Incomplete.PAN").write_text(incomplete_pan, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "requires STC fields: Imp"):
+            self.store.update("PAN", "Incomplete.PAN", {"Voc": "54.0"}, dry_run=True, refit_single_diode=True)
+
+    def test_three_voltage_curve_and_btr_cell_voltage_validation(self) -> None:
+        # 1. Invalid 3V custom curves (p_out > p_in, non-increasing p_in, > 11 points) must be rejected
+        with self.assertRaisesRegex(ValueError, "cannot exceed p_in"):
+            synthesize_ond_from_datasheet(
+                manufacturer="Lab", model="Inv3V", pnom_ac_kw=10.0,
+                vmpp_min_v=200, vmpp_max_v=850, vabs_max_v=1000,
+                three_voltage_voltages=[300, 600, 800],
+                three_voltage_curves={"ProfilPIOV1": [[100, 0], [500, 600], [5000, 4800], [10500, 10000]]},
+            )
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
+            synthesize_ond_from_datasheet(
+                manufacturer="Lab", model="Inv3V", pnom_ac_kw=10.0,
+                vmpp_min_v=200, vmpp_max_v=850, vabs_max_v=1000,
+                three_voltage_voltages=[300, 600, 800],
+                three_voltage_curves={"ProfilPIOV1": [[500, 0], [500, 400], [5000, 4800], [10500, 10000]]},
+            )
+        with self.assertRaisesRegex(ValueError, "4..11"):
+            synthesize_ond_from_datasheet(
+                manufacturer="Lab", model="Inv3V", pnom_ac_kw=10.0,
+                vmpp_min_v=200, vmpp_max_v=850, vabs_max_v=1000,
+                three_voltage_voltages=[300, 600, 800],
+                three_voltage_curves={"ProfilPIOV1": [[100 * i, 90 * i] for i in range(1, 13)]},
+            )
+
+        # 2. Mismatched BTR nominal_voltage_v / n_cells_s outside cell window must be rejected
+        with self.assertRaisesRegex(ValueError, "Per-cell nominal voltage"):
+            synthesize_btr_from_datasheet(
+                manufacturer="Lab", model="BadBTR", chemistry="LFP",
+                capacity_ah=100.0, n_cells_s=16, nominal_voltage_v=100.0,
+            )
+        with self.assertRaisesRegex(ValueError, "cycle_life_80dod must be an integer"):
+            synthesize_btr_from_datasheet(
+                manufacturer="Lab", model="BadBTR", chemistry="LFP",
+                capacity_ah=100.0, cycle_life_80dod=True,  # type: ignore[arg-type]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

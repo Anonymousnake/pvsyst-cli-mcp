@@ -823,11 +823,23 @@ class ComponentStore:
                     from pvsyst_auto.components.single_diode import derive_single_diode_parameters
 
                     post_fields = pan_validation_fields(edited)
+                    isc_entries = post_fields.get("ISC") or post_fields.get("Isc")
+                    missing_stc = [
+                        k for k, v in (
+                            ("Voc", post_fields.get("Voc")),
+                            ("ISC", isc_entries),
+                            ("Vmp", post_fields.get("Vmp")),
+                            ("Imp", post_fields.get("Imp")),
+                        )
+                        if not v
+                    ]
+                    if missing_stc:
+                        raise ValueError(f"PAN single-diode refit requires STC fields: {', '.join(missing_stc)}")
                     voc_v = float(post_fields["Voc"][0])
-                    isc_v = float((post_fields.get("ISC") or post_fields.get("Isc"))[0])
+                    isc_v = float(isc_entries[0])
                     vmp_v = float(post_fields["Vmp"][0])
                     imp_v = float(post_fields["Imp"][0])
-                    ncels_v = int(round(float(post_fields["NCelS"][0]))) if "NCelS" in post_fields else 72
+                    ncels_v = int(round(float(post_fields["NCelS"][0]))) if post_fields.get("NCelS") else 72
                     diode = derive_single_diode_parameters(
                         voc=voc_v, isc=isc_v, vmp=vmp_v, imp=imp_v, n_cells_s=ncels_v,
                     )
