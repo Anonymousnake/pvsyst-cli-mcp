@@ -146,6 +146,21 @@ class InteractiveReportTests(unittest.TestCase):
         en_html = Path(en_res["report_path"]).read_text(encoding="utf-8")
         self.assertIn("Monthly Generation &amp; Performance Ratio", en_html)
 
+    def test_report_energy_across_month_boundary_with_explicit_export(self):
+        from pvsyst_auto.workflows.report import _summarize_csv_for_report
+        csv = self.root / "Results" / "boundary.csv"
+        csv.write_text("date;EArray;E_Grid;EToGrid\n;Wh;Wh;Wh\n"
+                       "31/01/24 23:00;50;40;4\n01/02/24 00:00;50;40;4\n", encoding="utf-8")
+        with patch("pvsyst_auto.workflows.report._plotly_div", return_value="") as charts:
+            generate_report(workspace=self.root, title="Energy", output_name="energy.html",
+                            scenarios=[{"csv_name": csv.name}])
+        waterfall, = (call.args[0].data[0] for call in charts.call_args_list
+                      if call.args[0].data[0].type == "waterfall")
+        with self.subTest(metric="waterfall export"):
+            self.assertEqual(waterfall.y[-1], 0.01)
+        with self.subTest(metric="annual yield"):
+            self.assertEqual(_summarize_csv_for_report(csv)["annual_e_grid_kwh"], 0.01)
+
     def test_report_with_demand_charge_sensitivity_and_bess_heatmap(self) -> None:
         csv_pv = self.root / "Results" / "ci_bess.csv"
         _write_report_csv(csv_pv, scale=1.0, with_load_bess=True)
