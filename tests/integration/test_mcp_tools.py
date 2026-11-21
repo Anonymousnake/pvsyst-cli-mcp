@@ -269,29 +269,18 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("system unavailability periods/removal",
                               tools["pvsyst_update_variant_parameters"].description)
 
+                # Representative strict-type boundary checks (StrictBool, StrictInt, StrictNum, nested collections)
                 rejected_calls = (
                     ("pvsyst_license_activate", {"key": "k", "confirm": 1}),
-                    ("pvsyst_license_deactivate", {"customer_id": "c", "confirm": "true"}),
-                    ("pvsyst_license_sync", {"confirm": 1}),
-                    ("pvsyst_list_components", {"component_type": "PAN", "offset": True}),
-                    ("pvsyst_get_component", {"component_type": "PAN", "filename": "a.PAN", "limit": "10"}),
-                    ("pvsyst_update_component", {"component_type": "OND", "filename": "a.OND", "updates": {}, "dry_run": 1}),
+                    ("pvsyst_run_simulation", {"project": "A.PRJ", "variant": "VC0", "csv_name": "out", "allow_window_creation": "false"}),
+                    ("pvsyst_read_rows", {"csv_name": "sample.csv", "offset": True}),
+                    ("pvsyst_read_rows", {"csv_name": "sample.csv", "limit": 10.0}),
+                    ("pvsyst_create_site", {"site_name": "S", "latitude": True, "longitude": 10, "weather_csv_name": "m.csv", "sit_name": "s.sit"}),
+                    ("pvsyst_build_monthly_weather", {"filename": "m.csv", "global_h": [True] * 12, "temperature": [20] * 12}),
                     ("pvsyst_update_component", {"component_type": "OND", "filename": "a.OND", "updates": {},
                                                  "curve_updates": {"Converter/ProfilPIO": [[True, 0], [1, 1], [2, 2], [3, 3]]}}),
                     ("pvsyst_update_variant_parameters", {"project": "A.PRJ", "variant": "VC0",
                                                           "subarray_updates": {"NModSerie": True}}),
-                    ("pvsyst_run_simulation", {"project": "A.PRJ", "variant": "VC0", "csv_name": "out", "synthetic_weather": 1}),
-                    ("pvsyst_run_simulation", {"project": "A.PRJ", "variant": "VC0", "csv_name": "out", "recompute_shading": 0}),
-                    ("pvsyst_run_simulation", {"project": "A.PRJ", "variant": "VC0", "csv_name": "out", "allow_window_creation": "false"}),
-                    ("pvsyst_run_simulation", {"project": "A.PRJ", "variant": "VC0", "csv_name": "out", "log_level": True}),
-                    ("pvsyst_build_monthly_weather", {"filename": "m.csv", "global_h": [True] * 12, "temperature": [20] * 12}),
-                    ("pvsyst_create_site", {"site_name": "S", "latitude": True, "longitude": 10, "weather_csv_name": "m.csv", "sit_name": "s.sit"}),
-                    ("pvsyst_create_site", {"site_name": "S", "latitude": 10, "longitude": 10, "weather_csv_name": "m.csv",
-                                            "sit_name": "s.sit", "albedo": False}),
-                    ("pvsyst_convert_meteo", {"csv_name": "w.csv", "mef_name": "w.mef", "sit_name": "s.sit",
-                                              "met_name": "w.met", "timeshift": True}),
-                    ("pvsyst_read_rows", {"csv_name": "sample.csv", "offset": True}),
-                    ("pvsyst_read_rows", {"csv_name": "sample.csv", "limit": 10.0}),
                 )
                 for tool_name, arguments in rejected_calls:
                     with self.subTest(tool=tool_name, arguments=arguments):

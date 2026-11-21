@@ -15,114 +15,18 @@ from pvsyst_auto.scene.author import SceneValidationError, create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.scene.state import shading_state
 from pvsyst_auto.workflows.house import run_house_task
+from tests._fixtures import build_grid_vc0, init_workspace, roof_mesh as _roof_mesh, sloped_roof_mesh
 
-
-def _roof_mesh(name, ox, oy, tilt_deg, rot_deg=0.0):
-    t, r = math.radians(tilt_deg), math.radians(rot_deg)
-
-    def pt(x, y):
-        dy, dz = y * math.cos(t), y * math.sin(t)
-        return [round(ox + x * math.cos(r) - dy * math.sin(r), 6),
-                round(oy + x * math.sin(r) + dy * math.cos(r), 6), round(dz, 6)]
-
-    return {"name": name, "vertices": [pt(-2, -2), pt(40, -2), pt(40, 25), pt(-2, 25)],
-            "triangles": [[0, 1, 2], [0, 2, 3]]}
-
-
-SINGLE_2T_VC0 = """PVObject_=pvVCalcul
-  Version=8.1.6
-  Flags=$00100000
-  Comment=BaseSingle
-  PVObject_SiteSimul=pvSite
-    NomF=Demo.SIT
-    Site=Demo
-    Latitude=45.0
-    Longitude=5.0
-    Altitude=10.0
-  End of PVObject pvSite
-  PVObject_MeteoSimul=pvMeteo
-    NomF=Demo.MET
-    SiteM=Demo
-    PVObject_SiteMet=pvSite
-      NomF=Demo.SIT
-      Site=Demo
-      Latitude=45.0
-      Longitude=5.0
-      Altitude=10.0
-    End of PVObject pvSite
-  End of PVObject pvMeteo
-  Orientations, list of=1 TOrientGroup
-    PVObject_=pvOrient
-      NoOrient=1
-      Flags=$00
-      FieldType=FixedPlane
-      FieldTilt=25.0
-      FieldAzim=20.0
-      BaseSlope=0.0
-      UsesTiltAver=False
-      UsesAzimAver=False
-      UsesSlopeAver=False
-    End of TOrientGroup
-  End of Orientations
-  PVObject_PVMainArray=pvMainArray
-    Flags=$00100400
-    Flags2=$082A
-    MVNbTransfos=0
-    PVObject_SystemCircuit=pvCircuit
-      Version=8.1.6
-      Flags=$00
-      InjectionPointNode Start;
-        Children=Start
-          InverterNode Start;
-            NElements=2
-            SubArrayId=1
-            SubArrayName=PV Array
-            Children=Start
-              MPPTNode Start;
-                NElements=1
-                SubArrayId=1
-                SubArrayName=PV Array
-                Children=Start
-                  StringNode Start;
-                    NElements=1
-                    SubArrayId=1
-                    SubArrayName=PV Array
-                  StringNode End;
-                Children=End
-              MPPTNode End;
-            Children=End
-          InverterNode End;
-        Children=End
-      InjectionPointNode End;
-    End of PVObject pvCircuit
-    SubArrays=Start
-      PVObject_=pvSubArray
-        Comment=PV Array
-        Version=8.1.6
-        Flags=$001E0402
-        Flags2=$20
-        SubArrayId=1
-        PVModule=Mod600.PAN
-        GInverter=Inv50.OND
-        NoOrientation=1
-        NModSerie=12
-        NStringCh=2
-        NStrOrient1=2
-        NInverter=2
-        NInvMPPT=2
-        PowerSharingInverterId=-1
-      End of PVObject pvSubArray
-    EndTags
-  End of PVObject pvMainArray
-  PVObject_Ombrage=pvShading
-    Flags=$00
-  End of PVObject pvShading
-  PVObject_System=pvSystem
-    Flags=$00
-    SystemType=Grid
-  End of PVObject pvSystem
-End of PVObject pvVCalcul
-"""
+SINGLE_2T_VC0 = build_grid_vc0(
+    comment="BaseSingle",
+    version="8.1.6",
+    orientations=[{"id": 1, "tilt": 25.0, "azim": 20.0}],
+    subarrays=[{
+        "id": 1, "orient": 1, "name": "PV Array", "pan": "Mod600.PAN", "ond": "Inv50.OND",
+        "n_mod": 12, "n_str": 2, "n_inv": 2, "n_mppt": 2, "flags": "$001E0402", "flags2": "$20",
+    }],
+    mv_nb_transfos=0,
+)
 
 MG = {"model_name": "Mod600", "nom_power_wp": 600.0, "width_m": 1.134, "length_m": 2.465, "geometry_depth_m": 0.03}
 
@@ -131,10 +35,7 @@ class ObstaclePipelineTests(unittest.TestCase):
     def _setup_ws(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        ws = Path(tmp.name).resolve() / "ws"
-        for sub in ("Projects", "Sites", "Meteo", "UserData", "Models", "Results",
-                    "ComposPV/PVmodules", "ComposPV/Inverters"):
-            (ws / sub).mkdir(parents=True, exist_ok=True)
+        ws = init_workspace(Path(tmp.name).resolve() / "ws")
         (ws / "Projects/Demo.PRJ").write_text(
             "PVObject_=pvProject\n  PVObject_SitePrj=pvSite\n    NomF=Demo.SIT\n  End of PVObject pvSite\n  MeteoFileName=Demo.MET\nEnd of PVObject pvProject\n",
             encoding="utf-8",
@@ -283,184 +184,44 @@ class ObstaclePipelineTests(unittest.TestCase):
                 self.assertEqual(set(ws.rglob("*")), before)
 
     def test_portrait_spacing_three_roofs_powersharing_and_no_shading_source(self):
-        from pvsyst_auto.scene.author import _rotate_z
         ws, comps, store = self._setup_ws()
         # 3-orientation source WITHOUT pre-existing pvShading: SA1 unshared (-1), SA2+SA3 shared PowerSharingInverterId=1
-        three_roof_vc0 = """PVObject_=pvVCalcul
-  Comment=3-Roof Source
-  Version=8.1.7
-  Flags=$00100000
-  PVObject_SiteSimul=pvSite
-    NomF=Demo.SIT
-    Latitude=45.0
-    Longitude=5.0
-    Altitude=10.0
-  End of PVObject pvSite
-  PVObject_MeteoSimul=pvMeteo
-    NomF=Demo.MET
-  End of PVObject pvMeteo
-  Orientations, list of=3 TOrientGroup
-    PVObject_=pvOrient
-      Version=8.1.7
-      Flags=$00
-      NoOrient=1
-      FieldType=FixedPlane
-      FieldTilt=25.0
-      FieldAzim=0.0
-      BaseSlope=0.0
-      UsesTiltAver=False
-      UsesAzimAver=False
-      UsesSlopeAver=False
-    End of TOrientGroup
-    PVObject_=pvOrient
-      Version=8.1.7
-      Flags=$00
-      NoOrient=2
-      FieldType=FixedPlane
-      FieldTilt=20.0
-      FieldAzim=-90.0
-      BaseSlope=0.0
-      UsesTiltAver=False
-      UsesAzimAver=False
-      UsesSlopeAver=False
-    End of TOrientGroup
-    PVObject_=pvOrient
-      Version=8.1.7
-      Flags=$00
-      NoOrient=3
-      FieldType=FixedPlane
-      FieldTilt=20.0
-      FieldAzim=90.0
-      BaseSlope=0.0
-      UsesTiltAver=False
-      UsesAzimAver=False
-      UsesSlopeAver=False
-    End of TOrientGroup
-  End of Orientations
-  PVObject_PVMainArray=pvMainArray
-    Flags=$01900400
-    Flags2=$082A
-    PVObject_SystemCircuit=pvCircuit
-      Version=8.1.7
-      Flags=$00
-      InjectionPointNode Start;
-        Children=Start
-          InverterNode Start;
-            NElements=1
-            SubArrayId=1
-            SubArrayName=South
-            Children=Start
-              MPPTNode Start;
-                NElements=1
-                SubArrayId=1
-                SubArrayName=South
-                Children=Start
-                  StringNode Start;
-                    NElements=1
-                    SubArrayId=1
-                    SubArrayName=South
-                  StringNode End;
-                Children=End
-              MPPTNode End;
-            Children=End
-          InverterNode End;
-          InverterNode Start;
-            NElements=1
-            SubArrayName=East; West
-            Children=Start
-              MPPTNode Start;
-                NElements=1
-                SubArrayId=2
-                SubArrayName=East
-                Children=Start
-                  StringNode Start;
-                    NElements=1
-                    SubArrayId=2
-                    SubArrayName=East
-                  StringNode End;
-                Children=End
-              MPPTNode End;
-              MPPTNode Start;
-                NElements=1
-                SubArrayId=3
-                SubArrayName=West
-                Children=Start
-                  StringNode Start;
-                    NElements=1
-                    SubArrayId=3
-                    SubArrayName=West
-                  StringNode End;
-                Children=End
-              MPPTNode End;
-            Children=End
-          InverterNode End;
-        Children=End
-      InjectionPointNode End;
-    End of PVObject pvCircuit
-    SubArrays=Start
-      PVObject_=pvSubArray
-        Comment=South
-        Version=8.1.7
-        Flags=$019E0402
-        Flags2=$20
-        SubArrayId=1
-        PVModule=Mod600.PAN
-        GInverter=Inv50.OND
-        NoOrientation=1
-        NModSerie=10
-        NStringCh=1
-        NStrOrient1=1
-        NInverter=1
-        NInvMPPT=1
-        PowerSharingInverterId=-1
-      End of PVObject pvSubArray
-      PVObject_=pvSubArray
-        Comment=East
-        Version=8.1.7
-        Flags=$019E0502
-        Flags2=$20
-        SubArrayId=2
-        PVModule=Mod600.PAN
-        GInverter=Inv50.OND
-        NoOrientation=2
-        NModSerie=10
-        NStringCh=1
-        NStrOrient1=1
-        NInverter=1
-        NInvMPPT=1
-        PowerSharingInverterId=1
-      End of PVObject pvSubArray
-      PVObject_=pvSubArray
-        Comment=West
-        Version=8.1.7
-        Flags=$019E0502
-        Flags2=$20
-        SubArrayId=3
-        PVModule=Mod600.PAN
-        GInverter=Inv50.OND
-        NoOrientation=3
-        NModSerie=10
-        NStringCh=1
-        NStrOrient1=1
-        NInverter=1
-        NInvMPPT=1
-        PowerSharingInverterId=1
-      End of PVObject pvSubArray
-    EndTags
-  End of PVObject pvMainArray
-  PVObject_System=pvSystem
-    Flags=$00
-    SystemType=Grid
-  End of PVObject pvSystem
-End of PVObject pvVCalcul
-"""
+        three_roof_vc0 = build_grid_vc0(
+            comment="3-Roof Source",
+            version="8.1.7",
+            main_flags="$01900400",
+            include_site_met=False,
+            include_shading=False,
+            orient_version=True,
+            orientations=[
+                {"id": 1, "tilt": 25.0, "azim": 0.0},
+                {"id": 2, "tilt": 20.0, "azim": -90.0},
+                {"id": 3, "tilt": 20.0, "azim": 90.0},
+            ],
+            circuit_inverters=[
+                {
+                    "n_elements": 1, "subarray_id": 1, "name": "South",
+                    "mppts": [{"n_elements": 1, "subarray_id": 1, "name": "South", "strings": 1}],
+                },
+                {
+                    "n_elements": 1, "subarray_id": None, "name": "East; West",
+                    "mppts": [
+                        {"n_elements": 1, "subarray_id": 2, "name": "East", "strings": 1},
+                        {"n_elements": 1, "subarray_id": 3, "name": "West", "strings": 1},
+                    ],
+                },
+            ],
+            subarrays=[
+                {"id": 1, "orient": 1, "name": "South", "n_mod": 10, "n_str": 1,
+                 "flags": "$019E0402", "flags2": "$20", "power_sharing_id": -1},
+                {"id": 2, "orient": 2, "name": "East", "n_mod": 10, "n_str": 1,
+                 "flags": "$019E0502", "flags2": "$20", "power_sharing_id": 1},
+                {"id": 3, "orient": 3, "name": "West", "n_mod": 10, "n_str": 1,
+                 "flags": "$019E0502", "flags2": "$20", "power_sharing_id": 1},
+            ],
+        )
         (ws / "Projects/Demo.VC1").write_bytes(three_roof_vc0.replace("\n", "\r\n").encode("utf-8"))
-
-        def sloped(name, origin, wx, sy, tilt, azim):
-            t = math.radians(tilt)
-            pts = [(0.0, 0.0, 0.0), (wx, 0.0, 0.0), (wx, sy * math.cos(t), sy * math.sin(t)), (0.0, sy * math.cos(t), sy * math.sin(t))]
-            verts = [[round(origin[k] + _rotate_z(p, -azim)[k], 6) for k in range(3)] for p in pts]
-            return {"name": name, "vertices": verts, "triangles": [[0, 1, 2], [0, 2, 3]]}
+        sloped = sloped_roof_mesh
 
         house = {"kind": "mesh", "meshes": [
             sloped("SouthRoof", [0.0, 0.0, 4.0], 14.0, 8.0, 25.0, 0.0),
@@ -582,131 +343,23 @@ End of PVObject pvVCalcul
         )
 
         # End-to-end build_pvshading + _support_gate on SA2->Orient1, SA3->Orient2 without source_subarray_id
-        offset_vc = """PVObject_=pvVCalcul
-  Comment=Offset SubArray IDs
-  Version=8.1.6
-  Flags=$00100000
-  Orientations, list of=2 TOrientGroup
-    PVObject_=pvOrient
-      Version=8.1.6
-      Flags=$00
-      NoOrient=1
-      FieldType=FixedPlane
-      FieldTilt=25.0
-      FieldAzim=20.0
-      BaseSlope=0.0
-      UsesTiltAver=False
-      UsesAzimAver=False
-      UsesSlopeAver=False
-    End of TOrientGroup
-    PVObject_=pvOrient
-      Version=8.1.6
-      Flags=$00
-      NoOrient=2
-      FieldType=FixedPlane
-      FieldTilt=20.0
-      FieldAzim=-70.0
-      BaseSlope=0.0
-      UsesTiltAver=False
-      UsesAzimAver=False
-      UsesSlopeAver=False
-    End of TOrientGroup
-  End of Orientations
-  PVObject_PVMainArray=pvMainArray
-    Flags=$01900400
-    Flags2=$082A
-    PVObject_SystemCircuit=pvCircuit
-      Version=8.1.6
-      Flags=$00
-      InjectionPointNode Start;
-        Children=Start
-          InverterNode Start;
-            NElements=1
-            SubArrayId=2
-            SubArrayName=South
-            Children=Start
-              MPPTNode Start;
-                NElements=1
-                SubArrayId=2
-                SubArrayName=South
-                Children=Start
-                  StringNode Start;
-                    NElements=1
-                    SubArrayId=2
-                    SubArrayName=South
-                  StringNode End;
-                Children=End
-              MPPTNode End;
-            Children=End
-          InverterNode End;
-          InverterNode Start;
-            NElements=1
-            SubArrayId=3
-            SubArrayName=East
-            Children=Start
-              MPPTNode Start;
-                NElements=1
-                SubArrayId=3
-                SubArrayName=East
-                Children=Start
-                  StringNode Start;
-                    NElements=1
-                    SubArrayId=3
-                    SubArrayName=East
-                  StringNode End;
-                Children=End
-              MPPTNode End;
-            Children=End
-          InverterNode End;
-        Children=End
-      InjectionPointNode End;
-    End of PVObject pvCircuit
-    SubArrays=Start
-      PVObject_=pvSubArray
-        Comment=South
-        Version=8.1.6
-        Flags=$019E0402
-        Flags2=$20
-        SubArrayId=2
-        PVModule=Mod600.PAN
-        GInverter=Inv50.OND
-        NoOrientation=1
-        NModSerie=10
-        NStringCh=1
-        NStrOrient1=1
-        NInverter=1
-        NInvMPPT=1
-        PowerSharingInverterId=-1
-      End of PVObject pvSubArray
-      PVObject_=pvSubArray
-        Comment=East
-        Version=8.1.6
-        Flags=$019E0402
-        Flags2=$20
-        SubArrayId=3
-        PVModule=Mod600.PAN
-        GInverter=Inv50.OND
-        NoOrientation=2
-        NModSerie=10
-        NStringCh=1
-        NStrOrient1=1
-        NInverter=1
-        NInvMPPT=1
-        PowerSharingInverterId=-1
-      End of PVObject pvSubArray
-    EndTags
-  End of PVObject pvMainArray
-  PVObject_System=pvSystem
-    Flags=$00
-    SystemType=Grid
-  End of PVObject pvSystem
-End of PVObject pvVCalcul
-"""
-        def sloped(name, origin, wx, sy, tilt, azim):
-            t = math.radians(tilt)
-            pts = [(0.0, 0.0, 0.0), (wx, 0.0, 0.0), (wx, sy * math.cos(t), sy * math.sin(t)), (0.0, sy * math.cos(t), sy * math.sin(t))]
-            verts = [[round(origin[k] + _rotate_z(p, -azim)[k], 6) for k in range(3)] for p in pts]
-            return {"name": name, "vertices": verts, "triangles": [[0, 1, 2], [0, 2, 3]]}
+        offset_vc = build_grid_vc0(
+            comment="Offset SubArray IDs",
+            version="8.1.6",
+            main_flags="$01900400",
+            include_site=False,
+            include_shading=False,
+            orient_version=True,
+            orientations=[
+                {"id": 1, "tilt": 25.0, "azim": 20.0},
+                {"id": 2, "tilt": 20.0, "azim": -70.0},
+            ],
+            subarrays=[
+                {"id": 2, "orient": 1, "name": "South", "n_mod": 10, "n_str": 1, "flags": "$019E0402", "flags2": "$20"},
+                {"id": 3, "orient": 2, "name": "East", "n_mod": 10, "n_str": 1, "flags": "$019E0402", "flags2": "$20"},
+            ],
+        )
+        sloped = sloped_roof_mesh
 
         # Note: COLLADA frame uses orientation 1 as y-up roof, orientation 2 rotated by +90 deg relative to orientation 1
         house_2r = {"kind": "mesh", "meshes": [

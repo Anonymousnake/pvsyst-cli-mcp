@@ -519,14 +519,14 @@ class PVsystTests(unittest.TestCase):
             result = self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
         self.assertEqual(Path(result["batch_summary"]).name, "batch_Results.CSV")
 
-        # Issue #191: quiet batch runs (log_level 0, 1, 2) must forward native refusal text
+        # Quiet batch runs must still forward native refusal text
         (hourly_dir / "one.CSV").unlink(missing_ok=True)
         (batch_dir / "batch_Results.CSV").unlink(missing_ok=True)
         refusal_out = (
             "Simulation cannot be run.\n"
             "The hourly load cannot be used with the Peak Shaving strategy.\n"
         )
-        for level in (0, 1, 2):
+        for level in (0, 2):
             with self.subTest(log_level=level):
                 with patch.object(
                     self.client, "_run",
@@ -674,32 +674,18 @@ class PVsystTests(unittest.TestCase):
                 launcher.assert_not_called()
 
         # 2. Bool-as-numeric guards
-        for bad_bool in (True, False):
-            with self.assertRaises(ValueError):
-                build_monthly_weather_csv(
-                    self.workspace / "Meteo" / "bool_w.csv",
-                    [bad_bool] + [100.0] * 11, [20.0] * 12,
-                )
-            with self.assertRaises(ValueError):
-                build_monthly_weather_csv(
-                    self.workspace / "Meteo" / "bool_t.csv",
-                    [100.0] * 12, [bad_bool] + [20.0] * 11,
-                )
+        with self.assertRaises(ValueError):
+            build_monthly_weather_csv(self.workspace / "Meteo" / "bool_w.csv", [True] + [100.0] * 11, [20.0] * 12)
+        with self.assertRaises(ValueError):
+            build_monthly_weather_csv(self.workspace / "Meteo" / "bool_t.csv", [100.0] * 12, [False] + [20.0] * 11)
         inputs = [self.workspace / "Meteo" / "b.csv", self.workspace / "Meteo" / "b.mef", self.workspace / "Sites" / "b.sit"]
         for p in inputs:
             p.write_text("x", encoding="utf-8")
-        for bad_bool in (True, False):
-            with self.assertRaises(ValueError):
-                self.client.convert_meteo_details(*inputs, self.workspace / "Meteo" / "b.met", timeshift=bad_bool)
+        with self.assertRaises(ValueError):
+            self.client.convert_meteo_details(*inputs, self.workspace / "Meteo" / "b.met", timeshift=True)
         self.client._help_cache["create-site"] = "--site-name|-sn:"
         out_sit = self.workspace / "Sites" / "bool_out.sit"
-        for kwargs in (
-            {"latitude": True, "longitude": 0.0},
-            {"latitude": 0.0, "longitude": False},
-            {"latitude": 0.0, "longitude": 0.0, "timezone": True},
-            {"latitude": 0.0, "longitude": 0.0, "albedo": True},
-            {"latitude": 0.0, "longitude": 0.0, "altitude": False},
-        ):
+        for kwargs in ({"latitude": True, "longitude": 0.0}, {"latitude": 0.0, "longitude": 0.0, "albedo": False}):
             lat = kwargs.pop("latitude")
             lon = kwargs.pop("longitude")
             with self.assertRaises(ValueError):

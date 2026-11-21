@@ -8,6 +8,7 @@ from pvsyst_auto.components.store import ComponentStore, electrical_inventory
 from pvsyst_auto.project.circuit import circuit_nodes, inventory as grid_inventory
 from pvsyst_auto.project.template import SEED_VARIANT, prepare_standard_template, standard_seed_texts
 from pvsyst_auto.project.variants import VariantStore
+from tests._fixtures import FakeCliBase
 
 PAN_NAME = "Generic_Mono_300W.PAN"
 OND_NAME = "Generic_7.5kW.OND"
@@ -222,20 +223,9 @@ class FixtureComponents(ComponentStore):
                 "structural_errors": [], "warnings": [], "known_value_errors": []}
 
 
-class FakeCLI:
+class FakeCLI(FakeCliBase):
     def __init__(self, install, workspace, version="PVsystCLI 8.1.6 (build 1234)"):
-        self.cli = Path(install).resolve()
-        self.workspace = Path(workspace).resolve()
-        self._version = version
-
-    def version(self, *, allow_window_creation=None):
-        return self._version
-
-    def capabilities(self, *, allow_window_creation=None):
-        return {"run-simulation": ["start-date"], "create-site": []}
-
-    def _redact(self, text):
-        return text
+        super().__init__(workspace, cli=install, version=version)
 
 
 class StandardTemplateTests(unittest.TestCase):

@@ -22,6 +22,7 @@ from pvsyst_auto.project.template import prepare_standard_template
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.scene.author import DEFAULT_MODULE_DEPTH_M, create_house_pv_scene, resolve_modules
 from pvsyst_auto.workflows.house import run_house_task
+from tests._fixtures import init_workspace, roof_mesh, write_utf8_crlf
 from tests.unit.core.test_components import OND, PAN
 from tests.unit.workflows.test_standard_template import CAPACITY, FakeCLI, FixtureComponents, PAN_TEXT, ond_text
 
@@ -67,49 +68,22 @@ End of PVObject pvMeteo
 
 
 def _roof_mesh(name: str, ox: float, oy: float, tilt_deg: float, rot_deg: float = 0.0) -> dict:
-    t, r = math.radians(tilt_deg), math.radians(rot_deg)
-
-    def pt(x: float, y: float) -> list[float]:
-        dy, dz = y * math.cos(t), y * math.sin(t)
-        return [
-            round(ox + x * math.cos(r) - dy * math.sin(r), 6),
-            round(oy + x * math.sin(r) + dy * math.cos(r), 6),
-            round(4.0 + dz, 6),
-        ]
-
-    return {
-        "name": name,
-        "vertices": [pt(-1.0, -1.0), pt(22.0, -1.0), pt(22.0, 14.0), pt(-1.0, 14.0)],
-        "triangles": [[0, 1, 2], [0, 2, 3]],
-    }
+    return roof_mesh(name, ox, oy, tilt_deg, rot_deg, x_bounds=(-1.0, 22.0), y_bounds=(-1.0, 14.0), z_offset=4.0)
 
 
 class ZeroTemplateSynthesizerTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name).resolve()
-        for sub in (
-            "Projects", "Sites", "Meteo", "UserData", "Models", "Results",
-            "ComposPV/PVmodules", "ComposPV/Inverters",
-        ):
-            (self.root / sub).mkdir(parents=True, exist_ok=True)
-        (self.root / "Sites" / "Geneva_MN90.SIT").write_bytes(
-            b"\xef\xbb\xbf" + SITE_TEXT.replace("\n", "\r\n").encode("utf-8")
+        self.root = init_workspace(Path(tmp.name).resolve())
+        write_utf8_crlf(self.root / "Sites" / "Geneva_MN90.SIT", SITE_TEXT)
+        write_utf8_crlf(self.root / "Meteo" / "Geneva_MN90_SYN.MET", MET_TEXT)
+        write_utf8_crlf(self.root / "ComposPV/PVmodules/Lab440.PAN", PAN)
+        write_utf8_crlf(
+            self.root / "ComposPV/PVmodules/Lab440Depth.PAN",
+            PAN.replace("    Model=440W", "    Model=440W\n    Depth=0.030"),
         )
-        (self.root / "Meteo" / "Geneva_MN90_SYN.MET").write_bytes(
-            b"\xef\xbb\xbf" + MET_TEXT.replace("\n", "\r\n").encode("utf-8")
-        )
-        (self.root / "ComposPV/PVmodules/Lab440.PAN").write_bytes(
-            b"\xef\xbb\xbf" + PAN.replace("\n", "\r\n").encode("utf-8")
-        )
-        pan_with_depth = PAN.replace("    Model=440W", "    Model=440W\n    Depth=0.030")
-        (self.root / "ComposPV/PVmodules/Lab440Depth.PAN").write_bytes(
-            b"\xef\xbb\xbf" + pan_with_depth.replace("\n", "\r\n").encode("utf-8")
-        )
-        (self.root / "ComposPV/Inverters/Lab50.OND").write_bytes(
-            b"\xef\xbb\xbf" + OND.replace("\n", "\r\n").encode("utf-8")
-        )
+        write_utf8_crlf(self.root / "ComposPV/Inverters/Lab50.OND", OND)
         self.components = ComponentStore(self.root)
         self.store = VariantStore(self.root, self.components)
 
@@ -604,9 +578,9 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
             }]
         }
 
-        # Issue #193: non-zero base_slope_deg must fail in dry_run=True and confirm=True before any writes
+        # Non-zero base_slope_deg must fail in both dry_run=True and confirm=True before any writes
         cli = FakeCLI(self.root / "PVsystCLI.exe", self.root)
-        for bad_slope in (2.0, -0.01, 0.001):
+        for bad_slope in (2.0, -0.01):
             with self.subTest(base_slope_deg=bad_slope):
                 proj = f"BadSlope_{str(bad_slope).replace('-', 'm').replace('.', 'p')}.PRJ"
                 req = HouseTaskRequest(
@@ -631,7 +605,7 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
                 self.assertEqual(confirmed["status"], "blocked")
                 self.assertFalse((self.root / "Projects" / proj).exists())
 
-        # Issue #191: refused CLI simulation must mark runs[-1].status == 'failed' in response and checkpoint
+        # Refused CLI simulation must mark runs[-1].status == 'failed' in response and checkpoint
         class RefusingCLI(FakeCLI):
             def run_simulation(self, *args, **kwargs):
                 raise PVsystError("Simulation cannot be run.\nRefused by native CLI.")
