@@ -398,6 +398,46 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
                 financial={"fixed_capex": 1000.0},
             )
 
+        # 5. Incompatible unit on E_Grid must raise ValueError instead of valuing PV at 0 kW
+        bad_unit_csv = self.root / "Results" / "bess_bad_unit.csv"
+        bad_unit_csv.write_text(
+            "PVSYST 8.1.7\ndate;E_Grid\n;%\n01/06/24 08:00;10\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "E_Grid.*%"):
+            optimize_bess_sizing(
+                workspace=self.root,
+                baseline_csv=bad_unit_csv.name,
+                installed_dc_kw=100.0,
+                bess_kwh_values=[0.0],
+                pcs_kw_values=[50.0],
+                tariff={"mode": "feed_in", "feed_in_tariff": 0.4},
+                financial={"fixed_capex": 1000.0},
+            )
+
+        # 6. Grid-charged TOU arbitrage BESS must not inflate PV self_consumption_pct above 100%
+        small_pv_csv = self.root / "Results" / "small_pv_large_load.csv"
+        rows = ["PVSYST 8.1.7", "date;E_Grid;E_User", ";kW;kW"]
+        start = datetime(2024, 1, 1, 0, 0)
+        for step in range(48):
+            dt = start + timedelta(hours=step)
+            pv_val = 5.0 if 10 <= dt.hour <= 14 else 0.0
+            rows.append(f"{dt.strftime('%d/%m/%y %H:%M')};{pv_val:.1f};80.0")
+        small_pv_csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        res_grid_ch = optimize_bess_sizing(
+            workspace=self.root,
+            baseline_csv=small_pv_csv.name,
+            installed_dc_kw=10.0,
+            bess_kwh_values=[200.0],
+            pcs_kw_values=[50.0],
+            strategies=["tou_arbitrage"],
+            tariff={"mode": "tou", "import_tariff": 0.7, "feed_in_tariff": 0.3, "tou_schedule": _china_ci_tou()},
+            financial={"fixed_capex": 1000.0, "battery_capex_per_kwh": 900.0},
+        )
+        cand = res_grid_ch["candidates"][0]
+        self.assertGreater(cand["battery_discharge_kwh"], 0.0)
+        self.assertLessEqual(cand["self_consumption_pct"], 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -128,7 +128,7 @@ def run_feasibility_study(
             installed_dc_kw = float(design_spec["target_dc_kw"])
         sim_result = simulate_design(cli, store, spec=design_spec, dry_run=dry_run)
         sim_status = sim_result.get("status", "unknown")
-        if sim_status in ("blocked", "failed"):
+        if sim_status in ("blocked", "failed", "ready_for_weather"):
             stages.append({"stage": "simulation", "status": sim_status, "issues": sim_result.get("issues")})
             return {
                 "status": sim_status,
@@ -139,16 +139,34 @@ def run_feasibility_study(
                 "simulation": sim_result,
                 "issues": sim_result.get("issues") or [],
             }
-        proj_name = (sim_result.get("artifacts") or {}).get("project_name") or design_spec.get("new_project")
-        var_name = (sim_result.get("artifacts") or {}).get("variant") or "VC0"
+        raw_artifacts = sim_result.get("artifacts") or {}
+        sim_artifacts = raw_artifacts.get("simulate") if isinstance(raw_artifacts.get("simulate"), dict) else raw_artifacts
+        sim_preview = (sim_result.get("preview") or {}).get("simulation") or {}
+        selected_tpl = (sim_result.get("selected") or {}).get("template") or {}
+        proj_name = (
+            sim_artifacts.get("project_name")
+            or sim_artifacts.get("project")
+            or design_spec.get("new_project")
+        )
+        var_name = (
+            sim_artifacts.get("variant")
+            or selected_tpl.get("variant")
+            or design_spec.get("variant")
+            or "VC0"
+        )
         if not dry_run:
-            csv_ref = (sim_result.get("artifacts") or {}).get("csv")
+            csv_ref = sim_artifacts.get("csv") or (sim_preview.get("artifacts") or {}).get("csv")
             if csv_ref:
-                baseline_csv_path = _resolve_result_csv(ws, csv_ref)
+                baseline_csv_path = _resolve_result_csv(ws, Path(csv_ref).name)
                 baseline_csv_name = baseline_csv_path.name
-            sizing = sim_result.get("sizing") or {}
-            if sizing.get("actual_dc_kw"):
-                installed_dc_kw = float(sizing["actual_dc_kw"])
+            actual_dc = (
+                (sim_result.get("metrics") or {}).get("nominal_dc_power_kw")
+                or sim_preview.get("nominal_dc_power_kw")
+                or (sim_preview.get("capacity_plan") or {}).get("installed_dc_kw")
+                or (sim_result.get("sizing") or {}).get("actual_dc_kw")
+            )
+            if actual_dc is not None:
+                installed_dc_kw = float(actual_dc)
         stages.append({
             "stage": "simulation",
             "status": sim_status,

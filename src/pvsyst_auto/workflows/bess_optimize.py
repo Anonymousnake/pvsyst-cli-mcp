@@ -99,9 +99,11 @@ def _load_baseline_series(
             col_i = idx.get(col_name)
             if col_i is None:
                 return 0.0
+            factor, is_power = col_scale[col_name]
+            if factor == 0.0:
+                raise ValueError(f"{col_name} requires a power or energy unit, got {reader.units.get(col_name, '')!r}")
             raw = row[col_i]
             val = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0.0
-            factor, is_power = col_scale[col_name]
             return val * factor if is_power else (val * factor / dt_hours)
 
         csv_l_kw = max(0.0, kw("E_User")) if has_load_col else 0.0
@@ -277,7 +279,7 @@ def _simulate_candidate_fast(
         e_ld = l_kw * dt
 
         if has_load:
-            e_sc = (direct_pv + dis_ac_kw) * dt
+            e_sc = (direct_pv + pv_to_bat) * dt
             b_bill = e_ld * imp_r
             a_bill = e_imp * imp_r
             e_rev = e_exp * exp_r
