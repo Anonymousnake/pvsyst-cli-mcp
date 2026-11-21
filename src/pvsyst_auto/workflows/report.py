@@ -324,7 +324,7 @@ def _summarize_csv_for_report(csv_path: Path) -> dict[str, Any]:
         "monthly_kwh": monthly_kwh,
         "monthly_pr_pct": monthly_pr_pct,
         "losses_kwh": losses,
-        "annual_e_grid_kwh": round(sum(monthly_kwh), 2),
+        "annual_e_grid_kwh": round(sum(monthly_pv_kwh.values()), 2),
     }
 
 
@@ -499,7 +499,7 @@ def generate_report(
         e_grd = (
             primary["stats"]["annual_e_grid_kwh"]
             if primary["stats"].get("has_load")
-            else losses.get("E_Grid", losses.get("EToGrid", 0.0))
+            else losses.get("EToGrid", losses.get("E_Grid", 0.0))
         )
         il_pmax = abs(losses.get("IL_Pmax", 0.0))
         il_vi = abs(losses.get("IL_Vmax", 0.0)) + abs(losses.get("IL_Vmin", 0.0)) + abs(losses.get("IL_Imax", 0.0))
