@@ -65,6 +65,13 @@ class EconomicsEngineTests(unittest.TestCase):
         for sub in ("Results", "UserBatch", "UserHourly"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
 
+    def test_export_with_incompatible_units_does_not_settle_as_zero(self):
+        path = _write_sfi_csv(self.root / "Results" / "export.csv", [("E_Grid", "%")],
+                              [["01/01/24 00:00", 10]])
+        with self.assertRaisesRegex(ValueError, "E_Grid.*%"):
+            evaluate_economics(workspace=self.root, scenarios=[{"csv_name": path.name, "capex_total": 100}],
+                               financial={}, tariff={"mode": "feed_in", "feed_in_tariff": 0.4})
+
     def test_flat_feed_in_closed_form_lcoe_npv_irr_and_payback(self):
         # 100 kW PV, 150,000 kWh/yr, CAPEX=400,000 CNY, OPEX=5,000/yr, FIT=0.40/kWh, 0% deg, 0% esc, 6% disc, 25 yr
         res = evaluate_economics(
