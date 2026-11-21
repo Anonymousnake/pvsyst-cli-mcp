@@ -6,6 +6,7 @@ directly into ``pvsyst_create_grid_storage_system`` or ``pvsyst_create_grid_stor
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 from typing import Any
 
 from pvsyst_auto.engineering.economics import _validate_tariff
@@ -113,7 +114,10 @@ def plan_tou_storage_schedule(
     warnings: list[str] = []
 
     raw_cycles: list[dict[str, Any]] = []
-    if max_rate - (min_rate / rte) < min_sp:
+    def meets_spread(high, low):
+        return (Decimal(str(high)) - Decimal(str(min_sp))) * Decimal(str(rte)) >= Decimal(str(low))
+
+    if not meets_spread(max_rate, min_rate):
         warnings.append(
             f"Maximum effective spread ({max_rate - min_rate / rte:.4f}) is below min_spread ({min_sp:.4f}); "
             "returning idle 48-slot schedules to avoid unprofitable cycling."
@@ -124,7 +128,7 @@ def plan_tou_storage_schedule(
         # Partition into early half and late half for 2 cycles when at least 2 distinct peak crests exist
         peak_indices = [
             i for i, seg in enumerate(segments)
-            if seg["rate"] >= min_rate / rte + min_sp
+            if meets_spread(seg["rate"], min_rate)
             and (i == 0 or seg["rate"] >= segments[i - 1]["rate"])
             and (i == n_seg - 1 or seg["rate"] >= segments[i + 1]["rate"])
         ]
@@ -149,19 +153,13 @@ def plan_tou_storage_schedule(
                 j for j in range(prev_peak_idx + 1, peak_idx)
                 if not (used_hours & set(segments[j]["hours"]))
             ]
-            # If the first peak is at segment 0 (hour 0), only allow trailing late-night wrap-around
-            # segments strictly after the last chosen peak (never daytime segments between peaks).
-            if not cand_indices and prev_peak_idx == -1:
-                wrap_start = (chosen_peaks[-1] + 1) if chosen_peaks else (peak_idx + 1)
-                cand_indices = [
-                    j for j in range(wrap_start, n_seg)
-                    if not (used_hours & set(segments[j]["hours"]))
-                ]
+            if peak_idx == chosen_peaks[0]:
+                cand_indices.extend(range(chosen_peaks[-1] + 1, n_seg))
             best_ch_idx = None
             best_spread = -1e9
             for j in cand_indices:
                 spread = peak_seg["rate"] - (segments[j]["rate"] / rte)
-                if spread >= min_sp and spread > best_spread:
+                if meets_spread(peak_seg["rate"], segments[j]["rate"]) and spread > best_spread:
                     best_spread = spread
                     best_ch_idx = j
             if best_ch_idx is not None:
