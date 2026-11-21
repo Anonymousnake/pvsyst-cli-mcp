@@ -13,8 +13,11 @@ Quick workflow selection:
 1. Check environment first: call `pvsyst_capabilities` and `pvsyst_license_info` before running simulations.
 2. Search & select components with `pvsyst_list_components` (supports electrical filters: `min_power_w`, `max_power_w`, `bifacial`, `min_system_voltage_v`, `min_mppt`, `manufacturer`) / `pvsyst_get_component`, or synthesize custom commercial `.PAN`/`.OND` (single- or 3-voltage) / Li-ion `.BTR` from cited datasheets via `pvsyst_build_sourced_component` (omit `template_name` for zero-template synthesis). Pass `refit_single_diode=true` on `pvsyst_update_component` to refit `.PAN` single-diode parameters when editing STC values.
 3. Weather: call `pvsyst_resolve_location` -> `pvsyst_acquire_weather(provider="open_meteo_era5" | "pvgis_tmy" | "nasa_power", prepare=true)` to fetch and convert `.SIT`/`.MET` in one step, or pass `weather.mode="open_meteo" | "pvgis_tmy" | "nasa_power"` directly in `pvsyst_simulate_design`.
-4. Fixed-plane or ground utility PV (mono or bifacial sheds/trackers, finite 3D polygon + obstacles + BaseSlope):
-   - Use `pvsyst_simulate_design` with `scope="fixed_unshaded_grid" | "ground_sheds" | "ground_tracker"`, optional `ground_layout` (`model_mode="unlimited" | "3d"`, `site_polygon`, `obstacles`, `base_slope_deg`) and `bifacial`.
+4. Fixed-plane, utility ground PV, or Stand-Alone off-grid PV+BESS+Genset:
+   - Use `pvsyst_simulate_design` with `scope="fixed_unshaded_grid" | "ground_sheds" | "ground_tracker" | "stand_alone"`.
+   - For utility ground PV, pass optional `ground_layout` (`model_mode="unlimited" | "3d"`, `site_polygon`, `obstacles`, `base_slope_deg`, or 3D DEM `terrain` from XYZ JSON/CSV/GeoTIFF), `bifacial`, and MV/HV `transformers`.
+   - For off-grid Stand-Alone (`scope="stand_alone"`), pass `standalone` (`.BTR` battery bank, MPPT/direct `.RLT` controller, optional `.GEN` backup generator or inline `genset_spec`, load profile, and diesel-fuel economics).
+   - For existing variants, configure multi-stage MV/HV transformers & AC collection cables via `pvsyst_configure_transformers`, convert orientation type in-place (`fixed`/`seasonal`/`sheds`/`tracker_ns`/`tracker_2axis`/`dome`) via `pvsyst_convert_orientation`, or update spectral correction, random unavailability, and native `TEcoEvaluation` PDF financials via `pvsyst_update_variant_parameters`.
    - Pass `electrical_design`/`capacity` or call `pvsyst_suggest_sizing` / `sizing_mode="auto_from_components"`.
 5. 3D rooftop house + obstacles + electrical shading (`module_layout`):
    - Call `pvsyst_run_house_task` (omit `source_project`/`source_variant` for zero-template synthesis).
@@ -48,13 +51,18 @@ WORKFLOW_GUIDE_MD = """# PVsyst CLI MCP — Agent Workflow Playbook
 3. Preflight: `pvsyst_run_house_task(spec={site_name, met_name, pan_name, ond_name, new_project, variant_name, year, house, layout, shading_mode="module_layout"}, dry_run=True)`
 4. Execute: `pvsyst_run_house_task(..., dry_run=False, confirm=True)`
 
-## 3. Existing Project + AC Storage / Load / Cabling
+## 3. Existing Project + AC Storage / Load / Cabling / MV-HV Transformers / Orientation
 1. `pvsyst_project_handoff(project=..., variant=...)` to inspect equipment, counts, weather, load, and storage
-2. Load (skip for `peak_shaving`): `pvsyst_create_native_load_variant` (constant / monthly / daily) or `pvsyst_prepare_load_profile` (hourly CSV in `UserData`; required for `self_consumption` and `weak_grid`)
-3. Storage: `pvsyst_create_grid_storage_system` (`self_consumption` / `weak_grid` require `load_manifest_name`; `peak_shaving` requires a source variant without `pvLoad` and must omit `load_manifest_name`; `power_shift` accepts either)
-4. Simulate & read: `pvsyst_build_sfi(variables="grid_storage")` -> `pvsyst_run_simulation` -> `pvsyst_read_results`
+2. Load (skip for `peak_shaving`): `pvsyst_create_native_load_variant` (`constant` / `monthly` / `daily` / `household` / `probability`) or `pvsyst_prepare_load_profile` (hourly CSV in `UserData`; required for `self_consumption` and `weak_grid`)
+3. Storage: `pvsyst_create_grid_storage_system` (`self_consumption` / `weak_grid` require `load_manifest_name`; `peak_shaving` requires a source variant without `pvLoad` and must omit `load_manifest_name`; `power_shift` accepts either; `weak_grid` also supports deterministic `mode="generated"` outage schedules)
+4. MV/HV Transformers & Orientation: `pvsyst_configure_transformers` (MV-only, parallel MV, or cascaded MV+HV + cables + night disconnect) and `pvsyst_convert_orientation` (`fixed`/`seasonal`/`sheds`/`tracker_ns`/`tracker_2axis`/`dome`)
+5. Simulate & read: `pvsyst_build_sfi(variables="grid_storage" | "transformers" | "stand_alone")` -> `pvsyst_run_simulation` -> `pvsyst_read_results`
 
-## 4. Task Status Meanings
+## 4. Stand-Alone Off-Grid PV + BESS + Backup Genset (`pvsyst_simulate_design`)
+1. `pvsyst_simulate_design(spec={scope="stand_alone", new_project, tilt, azimuth, module, weather, standalone={battery_file, n_mod_serie, n_string_ch, n_batt_serie, n_batt_parall, controller_type="mppt"|"direct", genset_spec|genset_file, backup_operating_power_kw, load|daily_load_kwh, economics}}, dry_run=True)`
+2. Execute with `dry_run=False` -> inspect `energy_balance` (`e_user_kwh`, `e_solar_kwh`, `e_backup_kwh`, `e_missing_kwh`, `backup_fuel_liters`, `soc_mean`, `lol_pct`), `diagnostics`, and optional diesel-fuel `economics`.
+
+## 5. Task Status Meanings
 - `ready` / `ready_for_weather`: dry-run passed; nothing written.
 - `prepared`: project/weather files written; simulation not run yet.
 - `completed` (`native_consumption_verified=true`): PVsystCLI ran and passed output/unit/calendar checks.

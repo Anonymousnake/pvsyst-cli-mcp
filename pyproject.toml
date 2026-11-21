@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pvsyst-cli-mcp"
-version = "0.5.0"
-description = "Workspace-scoped MCP server and Python engineering adapter for installed PVsyst 8 software (PV/BESS sizing, TOU & two-part demand economics, zero-template components, 3D shading, and Plotly reports)"
+version = "0.6.0"
+description = "100% headless workspace-scoped MCP server and Python engineering adapter for installed PVsyst 8 software (Grid + Stand-Alone off-grid PV+BESS+Genset, MV/HV transformers, 3D DEM terrain, TOU & demand economics, and Plotly reports)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

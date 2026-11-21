@@ -6,7 +6,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Local MCP server and Python adapter for driving an installed copy of PVsyst 8 on Windows. It wraps `PVsystCLI.exe` for simulations, weather conversion, and license checks, and provides headless parsers, zero-template synthesizers, diagnostics, TOU economics, bounded auto-optimization, and interactive Plotly HTML reporting across `.PRJ`, `.VCx`, `.PAN`, `.OND`, `.BTR`, `.GEN`, `.SIT`, and 3D `.pvc2` shading scenes.
+Local **100% headless** MCP server and Python adapter for driving an installed copy of PVsyst 8 on Windows (zero Win32 GUI automation). It wraps `PVsystCLI.exe` for simulations, weather conversion, and license checks, and provides native parsers, zero-template synthesizers (Grid-Connected + Stand-Alone off-grid PV+BESS+Genset), MV/HV multi-stage transformer networks, 3D DEM terrain draping, in-place orientation conversion, spectral correction, native PDF `TEcoEvaluation` financials, diagnostics, TOU economics, bounded auto-optimization, and interactive Plotly HTML reporting across `.PRJ`, `.VCx`, `.PAN`, `.OND`, `.BTR`, `.GEN`, `.SIT`, and 3D `.pvc2` shading scenes.
 
 You need your own PVsyst installation and license on the host machine.
 
@@ -14,7 +14,8 @@ You need your own PVsyst installation and license on the host machine.
 
 | What you want to do | Main entry point | Guide |
 |---|---|---|
-| Run a zero-template fixed-plane or utility ground sheds/tracker PV design (mono/bifacial, finite 3D `site_polygon` + `obstacles` + `base_slope_deg`, optional auto-sizing) | `pvsyst_simulate_design`, `pvsyst_suggest_sizing` | [Single-design inputs](docs/single-design-inputs.md) |
+| Run a zero-template fixed-plane, utility ground sheds/tracker (mono/bifacial, finite 3D `site_polygon` / `obstacles` / `base_slope_deg` / 3D DEM `terrain`, MV/HV `transformers`), or **Stand-Alone off-grid PV+BESS+Genset** (`scope="stand_alone"`) design | `pvsyst_simulate_design`, `pvsyst_suggest_sizing` | [Single-design inputs](docs/single-design-inputs.md) |
+| Configure multi-stage MV/HV transformers & ISO 60228 AC collection cables, or convert orientation types in-place (`fixed`/`seasonal`/`sheds`/`tracker_ns`/`tracker_2axis`/`dome`), or write spectral correction / random outages / native PDF `TEcoEvaluation` | `pvsyst_configure_transformers`, `pvsyst_convert_orientation`, `pvsyst_update_variant_parameters` | [Tool reference](docs/tool-reference.md) |
 | Filter workspace/builtin components by electrical specs or synthesize custom `.PAN`/`.OND` (single- or 3-voltage) / Li-ion `.BTR` directly from datasheets (or refit `.PAN` single-diode params on STC edits) | `pvsyst_list_components`, `pvsyst_build_sourced_component`, `pvsyst_update_component` | [Sourced components](docs/sourced-components.md) |
 | Fetch hourly or TMY weather (`Open-Meteo ERA5`, `PVGIS v5.3 TMY`, `NASA POWER`) and optionally chain into `.SIT`/`.MET` preparation | `pvsyst_resolve_location`, `pvsyst_acquire_weather`, `pvsyst_prepare_weather` | [Weather preparation](docs/weather-preparation.md) |
 | Run a parametric sweep (tilt, pitch, albedo, soiling, grid limit) in one CLI call and rank results | `pvsyst_run_batch_sweep` | [Tool reference](docs/tool-reference.md) |
@@ -23,18 +24,18 @@ You need your own PVsyst installation and license on the host machine.
 | Evaluate fixed, TOU, and two-part demand-charge tariffs, battery replacement, sensitivity tornadoes, 25-year cashflows, LCOE, NPV, IRR, and payback | `pvsyst_evaluate_economics` | [Tool reference](docs/tool-reference.md) |
 | Run a one-shot end-to-end PV/PV+BESS feasibility study (synthesis → simulation/reuse → diagnostics → BESS sizing → economics → interactive Plotly HTML report) | `pvsyst_run_feasibility_study`, `pvsyst_generate_report`, `pvsyst_export_engineering_delivery` | [Engineering delivery](docs/engineering-delivery.md) |
 | Build a 3D house + obstacles scene, bind roof orientations, and run annual shading (`linear` or `module_layout`) | `pvsyst_run_house_task` | [House task](docs/native-house-task.md) |
-| Prepare hourly or sub-hourly (`5/10/15/30 min`) weather and evaluate AC-coupled storage | `pvsyst_prepare_weather`, `pvsyst_create_grid_storage_system`, `pvsyst_run_simulation` | [Storage engineering](docs/engineering-storage.md) |
+| Prepare hourly or sub-hourly (`5/10/15/30 min`) weather, configure `household`/`probability` loads or deterministic `WeakGrid` outages, and evaluate AC-coupled storage | `pvsyst_prepare_weather`, `pvsyst_create_native_load_variant`, `pvsyst_create_grid_storage_system` | [Storage engineering](docs/engineering-storage.md) |
 | Inspect an existing project, apply an isolated revision, or diff multiple scenarios | `pvsyst_project_handoff`, `pvsyst_run_engineering_task`, `pvsyst_compare_engineering_scenarios` | [Scenario comparison](docs/engineering-scenarios.md) |
 | Check feasibility briefs or block assembly (requires `expert`) | `pvsyst_review_engineering_brief`, `pvsyst_prepare_block_project` | [Brief review](docs/engineering-brief.md) |
 
-By default the server registers **46 core tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **75 tools**; to keep the defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`. For migrating from `v0.1.0`, see [Upgrading from v0.1.0](docs/tool-reference.md#upgrading-from-v010).
+By default the server registers **48 core tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **77 tools**; to keep the defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`. For migrating from `v0.1.0`, see [Upgrading from v0.1.0](docs/tool-reference.md#upgrading-from-v010).
 
 ## Installation
 
 Requirements:
 - Windows with Python 3.10+
 - Installed `PVsystCLI.exe` (tested against 8.0.6, 8.1.6 rev49278, and 8.1.7 rev49382)
-- Optional legacy GUI mode only (`scene_import_method="gui"`): PVsyst 8.1.6/8.1.7 GUI in Chinese locale at 96 DPI (100% display scaling); 3D house scenes, obstacles, `module_layout`, and DC cabling run headlessly without driving the desktop GUI by default
+- 100% headless — no desktop GUI automation required; optional `pip install "pvsyst-cli-mcp[geo]"` adds GeoTIFF (`.tif`) terrain DEM loading via `rasterio` (JSON/CSV XYZ DEMs work out of the box with pure Python)
 
 ### From PyPI (recommended)
 
@@ -108,10 +109,10 @@ Once connected, the server exposes MCP protocol `instructions`, 6 built-in workf
 
 ### Filtering exposed tool groups
 
-By default (when `PVSYST_TOOL_GROUPS` is unset), the server exposes only the **46 core workflow tools** (`setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`) so LLM context stays compact. Set `PVSYST_TOOL_GROUPS` in `env` to customize; an explicit list replaces the defaults:
+By default (when `PVSYST_TOOL_GROUPS` is unset), the server exposes only the **48 core workflow tools** (`setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`) so LLM context stays compact. Set `PVSYST_TOOL_GROUPS` in `env` to customize; an explicit list replaces the defaults:
 
-- `"PVSYST_TOOL_GROUPS": "all"` exposes all **75 tools** (the 8 default groups plus `admin` and `expert`).
-- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"` keeps the defaults and adds `expert` (71 tools).
+- `"PVSYST_TOOL_GROUPS": "all"` exposes all **77 tools** (the 8 default groups plus `admin` and `expert`).
+- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"` keeps the defaults and adds `expert` (73 tools).
 - `"PVSYST_TOOL_GROUPS": "setup,engineering,results"` exposes only those 14 tools.
 - Valid group keys (case-sensitive): `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`, `admin`, `expert` (or `all`). Unknown, empty, or duplicate group names raise an error at startup so typos fail fast.
 

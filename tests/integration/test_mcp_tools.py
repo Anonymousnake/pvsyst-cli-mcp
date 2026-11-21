@@ -266,7 +266,7 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
             (root / "Results" / "sample.csv").write_text("date;E_Grid;PR\n;kW;ratio\n01/01/24 00:00;1;0.8\n", encoding="utf-8")
             async with mcp_session(root, cli, tool_groups="all") as session:
                 tools = {item.name: item for item in (await session.list_tools()).tools}
-                self.assertIn("system unavailability periods/removal",
+                self.assertIn("system unavailability periods/random/removal",
                               tools["pvsyst_update_variant_parameters"].description)
 
                 rejected_calls = (
