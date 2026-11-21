@@ -1,8 +1,9 @@
 """Inspect, configure explicit periods, or remove native PV-system outages."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
+import random
 import re
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, root_block
@@ -153,11 +154,117 @@ def _format_unavail_block(periods: list[tuple[str, float]], ending: str) -> list
     return block
 
 
+def _materialize_random_periods(cfg: dict) -> list[tuple[str, float]]:
+    """Deterministically materialize random outage periods matching time_fraction, count, and duration bounds."""
+    rng = random.Random(cfg["random_seed"])
+    n = cfg["period_count"]
+    min_d = cfg["min_duration_hours"]
+    max_d = cfg["max_duration_hours"]
+    target_total = max(float(n * min_d), min(float(n * max_d), cfg["time_fraction"] * 8760.0))
+    # Allocate durations within [min_d, max_d] whose sum closely matches target_total
+    durs = [float(min_d)] * n
+    rem = max(0.0, target_total - sum(durs))
+    indices = list(range(n))
+    rng.shuffle(indices)
+    for idx in indices:
+        if rem <= 0.0:
+            break
+        cap = float(max_d - min_d)
+        if cap <= 0.0:
+            break
+        take = min(cap, rng.uniform(0.0, min(cap, rem))) if n > 1 else min(cap, rem)
+        durs[idx] += round(take, 1)
+        rem = max(0.0, target_total - sum(durs))
+    # Top up any remaining deficit evenly up to max_d
+    for idx in indices:
+        if rem <= 0.05:
+            break
+        room = float(max_d) - durs[idx]
+        if room > 0.0:
+            add = min(room, rem)
+            durs[idx] = round(durs[idx] + add, 1)
+            rem -= add
+
+    # Spread non-overlapping start hours across a 365-day year (1990 synthetic year convention)
+    start_year = datetime(1990, 1, 1, 0, 0)
+    slot = 8760.0 / n
+    periods: list[tuple[str, float]] = []
+    last_end_h = 0.0
+    for idx, dur in enumerate(durs):
+        win_start = max(last_end_h + 1.0, idx * slot)
+        win_end = max(win_start, (idx + 1) * slot - dur - 1.0)
+        start_h = int(round(rng.uniform(win_start, min(8759.0 - dur, win_end)))) if win_end > win_start else int(round(win_start))
+        start_h = max(int(math.ceil(last_end_h)), min(8759, start_h))
+        dur_clamped = max(0.5, min(dur, float(8760 - start_h)))
+        dt = start_year + timedelta(hours=start_h)
+        periods.append((dt.strftime("%d/%m/%y %H:%M"), round(dur_clamped, 3)))
+        last_end_h = start_h + dur_clamped
+    return periods
+
+
+def _format_random_unavail_block(cfg: dict, ending: str) -> list[str]:
+    periods = _materialize_random_periods(cfg)
+    block = [
+        f"    SystemUnavail=TUnavailability{ending}",
+        f"      PVObject_=pvUnavail{ending}",
+        f"        Version={HEADLESS_RECORD_VERSION}{ending}",
+        f"        Flags=$00{ending}",
+        f"      DefMode=Periods{ending}",
+        f"      RandomUnavSettings=TRandomUnavSettings{ending}",
+        f"        TimeFraction={cfg['time_fraction']:.4f}{ending}",
+        f"        NbPeriods={len(periods)}{ending}",
+        f"        MinDuration={cfg['min_duration_hours']}{ending}",
+        f"        MaxDuration={cfg['max_duration_hours']}{ending}",
+        f"        RandomInit ={cfg['random_seed']}{ending}",
+        f"      EndTags{ending}",
+        f"      UnavailPeriods=Start{ending}",
+    ]
+    for date_beg, dur in periods:
+        block.extend([
+            f"        DateBeg={date_beg}{ending}",
+            f"        Duration={dur:.3f}{ending}",
+            f"      EndTags{ending}",
+        ])
+    block.extend([
+        f"      EndTags{ending}",
+        f"      End of PVObject pvUnavail{ending}",
+    ])
+    return block
+
+
+def _validate_random_settings(updates: dict) -> dict:
+    allowed = {"mode", "time_fraction_pct", "period_count", "min_duration_hours", "max_duration_hours", "random_seed"}
+    if not set(updates) <= allowed:
+        raise ValueError("Unknown field in random system_unavailability_updates")
+    tf_pct = updates.get("time_fraction_pct")
+    if isinstance(tf_pct, bool) or not isinstance(tf_pct, (int, float)) or not math.isfinite(tf_pct) or not 0.0 < float(tf_pct) <= 100.0:
+        raise ValueError("time_fraction_pct must be within (0, 100]")
+    n_per = updates.get("period_count")
+    if type(n_per) is not int or not 1 <= n_per <= MAX_PERIODS:
+        raise ValueError(f"period_count must be an integer in 1..{MAX_PERIODS}")
+    min_d = updates.get("min_duration_hours", 1)
+    max_d = updates.get("max_duration_hours", 24)
+    if type(min_d) is not int or type(max_d) is not int or not 1 <= min_d <= max_d <= 8760:
+        raise ValueError("min_duration_hours and max_duration_hours must be integers with 1 <= min <= max <= 8760")
+    seed = updates.get("random_seed", 7)
+    if type(seed) is not int or not 0 <= seed <= 999999:
+        raise ValueError("random_seed must be an integer in 0..999999")
+    return {
+        "time_fraction": float(tf_pct) / 100.0,
+        "period_count": n_per,
+        "min_duration_hours": min_d,
+        "max_duration_hours": max_d,
+        "random_seed": seed,
+    }
+
+
 def replace_system_unavailability(lines, system, updates):
-    """Add/replace explicit outage periods or remove an existing SystemUnavail child object."""
+    """Add/replace explicit outage periods, random outage settings, or remove existing SystemUnavail."""
     if not isinstance(updates, dict) or "mode" not in updates:
-        raise ValueError("System unavailability updates require mode='none' or mode='periods'")
+        raise ValueError("System unavailability updates require mode='none', 'periods', or 'random'")
     mode = updates["mode"]
+    periods = None
+    random_cfg = None
     if mode == "none":
         if set(updates) - {"mode"} != set() and updates.get("periods") is not None:
             raise ValueError("System unavailability mode=none does not accept periods")
@@ -167,8 +274,10 @@ def replace_system_unavailability(lines, system, updates):
         if not set(updates) <= {"mode", "periods"}:
             raise ValueError("Unknown field in system_unavailability_updates")
         periods = _validate_periods(updates.get("periods"))
+    elif mode == "random":
+        random_cfg = _validate_random_settings(updates)
     else:
-        raise ValueError("System unavailability mode must be 'none' or 'periods'")
+        raise ValueError("System unavailability mode must be 'none', 'periods', or 'random'")
 
     if system is None:
         raise ValueError("System unavailability requires one Grid system")
@@ -214,7 +323,7 @@ def replace_system_unavailability(lines, system, updates):
                 candidate[system[0] + flag_index], f"${flags_val & ~0x00010000:08X}"
             )
     else:
-        new_block = _format_unavail_block(periods, ending)
+        new_block = _format_random_unavail_block(random_cfg, ending) if mode == "random" else _format_unavail_block(periods, ending)
         candidate[system[0] + flag_index] = replace_value(
             candidate[system[0] + flag_index], f"${flags_val | 0x00010000:08X}"
         )
@@ -229,5 +338,7 @@ def replace_system_unavailability(lines, system, updates):
         raise ValueError("Native outage removal did not clear the owning declaration")
     if mode == "periods" and (not after["configured"] or after.get("issues") or after["period_count"] != len(periods)):
         raise ValueError("Native outage creation failed structural verification")
+    if mode == "random" and (not after["configured"] or after.get("issues") or after["period_count"] != random_cfg["period_count"]):
+        raise ValueError("Native random outage creation failed structural verification")
     lines[:] = candidate
     return {"before": before, "after": after, "native_consumption_verified": False}

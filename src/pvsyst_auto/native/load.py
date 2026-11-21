@@ -17,16 +17,20 @@ ANCHOR = "SimulPlots=Start"
 LIMIT = 1e6
 STEP = Decimal("0.001")
 COMMENTS = {"constant": "MCP native constant load", "monthly": "MCP native monthly load",
-            "daily": "MCP native daily profile load"}
+            "daily": "MCP native daily profile load",
+            "household": "MCP native household appliances load",
+            "probability": "MCP native probability distribution load"}
 ALLOWED = {
     "Constant": ("Comment", "Flags", "LoadType", "Energy Units", "ConstantLoad"),
     "Monthly": ("Comment", "Flags", "LoadType", "UsesModul", "Energy Units", "ValMonth"),
     "DailyProfile": ("Comment", "Flags", "LoadType", "UsesModul", "Energy Units", "NHourlyValues", "ValHour_1"),
+    "Probability": ("Comment", "Flags", "LoadType", "UsesModul", "Energy Units", "PowerStep", "NHourlyValues", "ValHour_1"),
 }
 REQUIRED = {
     "Constant": ("Flags", "LoadType", "Energy Units", "ConstantLoad"),
     "Monthly": ("Flags", "LoadType", "UsesModul", "Energy Units", "ValMonth"),
     "DailyProfile": ("Flags", "LoadType", "UsesModul", "Energy Units", "NHourlyValues", "ValHour_1"),
+    "Probability": ("Flags", "LoadType", "UsesModul", "Energy Units", "PowerStep", "NHourlyValues", "ValHour_1"),
 }
 # Whole-line expectations, so `Energy Units` (with its space) is verified rather than guessed.
 EXPECTED = {
@@ -34,9 +38,16 @@ EXPECTED = {
     "Monthly": {"Flags": "$01", "LoadType": "Monthly", "UsesModul": "Yearly", "Energy Units": "kW"},
     "DailyProfile": {"Flags": "$02", "LoadType": "DailyProfile", "UsesModul": "Yearly",
                      "Energy Units": "kW", "NHourlyValues": "1"},
+    "Probability": {"Flags": "$02", "LoadType": "Probability", "UsesModul": "Yearly",
+                    "Energy Units": "kW", "NHourlyValues": "1"},
 }
 # mode -> (declared values, trailing slots, trailing slot equals their sum)
-SERIES = {"Monthly": ("ValMonth", 12, 3, False), "DailyProfile": ("ValHour_1", 24, 1, True)}
+SERIES = {
+    "Monthly": ("ValMonth", 12, 3, False),
+    "DailyProfile": ("ValHour_1", 24, 1, True),
+    "Probability": ("ValHour_1", 24, 1, True),
+}
+HOUSEHOLD_SEASONS = ("Summer", "Autumn", "Winter", "Spring")
 
 
 def _decimal(text, label, maximum=LIMIT):
@@ -70,8 +81,70 @@ def _plain(value):
     return "0" if text in ("", "-0") else text
 
 
+def _encode_appliance_masks(item: dict, idx: int) -> tuple[int, int]:
+    """Encode hours [0..23] or half_hours [0..47] into two 24-bit PVsyst HoursDefined bitmasks."""
+    hours = item.get("hours")
+    half_hours = item.get("half_hours")
+    if (hours is None) == (half_hours is None):
+        raise ValueError(f"appliance[{idx}] must specify exactly one of hours (0..23) or half_hours (0..47)")
+    m0 = 0
+    m1 = 0
+    if hours is not None:
+        if not isinstance(hours, list) or not hours:
+            raise ValueError(f"appliance[{idx}].hours must be a non-empty list of integers in 0..23")
+        for h in hours:
+            if type(h) is not int or not 0 <= h <= 23:
+                raise ValueError(f"appliance[{idx}].hours values must be integers in 0..23")
+            m0 |= 1 << h
+            m1 |= 1 << h
+    else:
+        if not isinstance(half_hours, list) or not half_hours:
+            raise ValueError(f"appliance[{idx}].half_hours must be a non-empty list of integers in 0..47")
+        for s in half_hours:
+            if type(s) is not int or not 0 <= s <= 47:
+                raise ValueError(f"appliance[{idx}].half_hours values must be integers in 0..47")
+            if s % 2 == 0:
+                m0 |= 1 << (s // 2)
+            else:
+                m1 |= 1 << (s // 2)
+    return m0, m1
+
+
+def _render_appliance_period(period_name: str, appliances: list[dict]) -> list[str]:
+    if not isinstance(appliances, list) or not 1 <= len(appliances) <= 10:
+        raise ValueError(f"household appliances for {period_name} must contain 1..10 items")
+    lines = [f"        Appliances for period={period_name}"]
+    used_slots: set[int] = set()
+    for idx, app in enumerate(appliances, start=1):
+        if not isinstance(app, dict):
+            raise ValueError(f"appliance[{idx}] must be an object")
+        name = str(app.get("name") or f"Appliance {idx}").replace("\r", "").replace("\n", "").strip()
+        if not name:
+            raise ValueError(f"appliance[{idx}].name must be non-empty")
+        count = app.get("count", 1)
+        if type(count) is not int or not 1 <= count <= 10000:
+            raise ValueError(f"appliance[{idx}].count must be an integer in 1..10000")
+        power_w = _number(app.get("power_w"), f"appliance[{idx}].power_w", positive=True)
+        slot = app.get("slot_index", idx)
+        if type(slot) is not int or not 1 <= slot <= 10 or slot in used_slots:
+            raise ValueError(f"appliance[{idx}].slot_index must be a unique integer in 1..10")
+        used_slots.add(slot)
+        m0, m1 = _encode_appliance_masks(app, idx)
+        lines.extend([
+            f"          HouseAppliance, NoApp={slot}",
+            f"            NApp={count}",
+            f"            AppName={name}",
+            "            NValperHour=2",
+            f"            HoursDefined={m0},{m1},",
+            f"            AppPower={power_w:.1f}",
+            f"          End HouseAppliance no {slot}",
+        ])
+    lines.extend(["          NJourW_E=7", "        End Appliances"])
+    return lines
+
+
 def native_load_block(load, newline, blank_before=False):
-    """Serialize the three verified native flat forms; trailing slots are format only."""
+    """Serialize all verified native load forms (constant, monthly, daily, household, probability)."""
     if not isinstance(load, dict):
         raise ValueError("load must be one explicit mode object")
     mode = load.get("mode")
@@ -105,8 +178,74 @@ def native_load_block(load, newline, blank_before=False):
         data = ["    Flags=$02", "    LoadType=DailyProfile", "    UsesModul=Yearly", "    Energy Units=kW",
                 "    NHourlyValues=1",
                 "    ValHour_1=" + "".join(f"{value:.3f}," for value in powers) + _plain(total) + ","]
+    elif mode == "probability":
+        if not set(load) <= {"mode", "power_step_kw", "probabilities_pct", "seed", "year"}:
+            raise ValueError("probability load accepts only mode, power_step_kw, probabilities_pct, seed, and year")
+        import calendar
+        from datetime import datetime, timedelta
+        from pathlib import Path
+        import random
+        from pvsyst_auto.energy.load import hourly_load_block
+
+        step_kw = _number(load.get("power_step_kw"), "power_step_kw", positive=True)
+        probs_raw = load.get("probabilities_pct")
+        if not isinstance(probs_raw, list) or not 2 <= len(probs_raw) <= 24:
+            raise ValueError("probabilities_pct must contain 2..24 bin percentages")
+        probs = [_number(v, f"probabilities_pct[{i}]") for i, v in enumerate(probs_raw)]
+        prob_sum = sum((Decimal(str(v)) for v in probs_raw), Decimal(0))
+        if abs(prob_sum - Decimal("100")) > Decimal("0.05"):
+            raise ValueError(f"probabilities_pct must sum to 100.0% (got {prob_sum}%)")
+        seed = load.get("seed", 42)
+        if type(seed) is not int or seed < 0:
+            raise ValueError("probability.seed must be a non-negative integer")
+        year = load.get("year", 1990)
+        if type(year) is not int or not 1969 <= year <= 2068:
+            raise ValueError("probability.year must be an integer in 1969..2068")
+        # PVsyst Grid systems ignore LoadType=Probability natively (it is DCGrid-only),
+        # so deterministically sample bin midpoints (i + 0.5) * power_step_kw into a native
+        # embedded HourlyFile snapshot so PVsystCLI 8.1.7 consumes every hour faithfully.
+        rng = random.Random(seed)
+        bin_midpoints = [(i + 0.5) * step_kw for i in range(len(probs))]
+        n_hours = 24 * (366 if calendar.isleap(year) else 365)
+        start_dt = datetime(year, 1, 1, 0, 0)
+        chosen = rng.choices(bin_midpoints, weights=probs, k=n_hours)
+        values = [(start_dt + timedelta(hours=h), val) for h, val in enumerate(chosen)]
+        block_text, _ = hourly_load_block(Path(f"probability_load_seed{seed}.csv"), values, year, newline)
+        return (newline if blank_before else "") + block_text
+    elif mode == "household":
+        if not set(load) <= {"mode", "modulation", "appliances", "seasons"}:
+            raise ValueError("household load accepts only mode, modulation, appliances, and seasons")
+        modulation = load.get("modulation", "yearly")
+        if modulation not in ("yearly", "seasonal"):
+            raise ValueError("household.modulation must be 'yearly' or 'seasonal'")
+        hh_lines = ["    Flags=$0200", "    LoadType=HouseHold"]
+        if modulation == "yearly":
+            if load.get("seasons") is not None:
+                raise ValueError("household.seasons requires modulation='seasonal'")
+            hh_lines.extend([
+                "    UsesModul=Yearly",
+                "    Energy Units=kWh",
+                "    HouseHoldUses=THouseHoldUses",
+                "      UsesModul=Yearly",
+            ])
+            hh_lines.extend(_render_appliance_period("Year", load.get("appliances")))
+            hh_lines.append("    End of HouseHoldUses")
+        else:
+            seasons_map = load.get("seasons")
+            if not isinstance(seasons_map, dict) or set(seasons_map) != set(HOUSEHOLD_SEASONS):
+                raise ValueError(f"seasonal household load requires seasons dict with keys {HOUSEHOLD_SEASONS}")
+            hh_lines.extend([
+                "    UsesModul=Seasonal",
+                "    Energy Units=kWh",
+                "    HouseHoldUses=THouseHoldUses",
+                "      UsesModul=Seasonal",
+            ])
+            for sname in HOUSEHOLD_SEASONS:
+                hh_lines.extend(_render_appliance_period(sname, seasons_map[sname]))
+            hh_lines.append("    End of HouseHoldUses")
+        data = hh_lines
     else:
-        raise ValueError("load.mode must be constant, monthly or daily")
+        raise ValueError("load.mode must be constant, monthly, daily, household, probability, or hourly")
     rendered = ([""] if blank_before else []) + ["  " + START, "    Comment=" + COMMENTS[mode]] + data + ["  " + END]
     return newline.join(rendered) + newline
 
@@ -147,6 +286,9 @@ def _verify_existing(mode, fields):
         if not _decimal(fields["ConstantLoad"], "ConstantLoad") > 0:
             raise ValueError("Declared ConstantLoad must be greater than zero")
         return
+    if mode == "Probability":
+        if not _decimal(fields["PowerStep"], "PowerStep") > 0:
+            raise ValueError("Declared PowerStep must be greater than zero")
     key, count, trailing, plus_sum = SERIES[mode]
     head, tail = _series(fields[key], key, count, trailing)
     if not any(value > 0 for value in head):
@@ -159,7 +301,7 @@ def _verify_existing(mode, fields):
 
 
 def flat_load(lines):
-    """Return the one directly owned flat load block, or None; unknown shapes stop instead of being replaced."""
+    """Return the one directly owned native load block (flat or HouseHold), or None."""
     loads = [block for block in objects("".join(lines)) if block.object_type == "pvLoad"]
     if len(loads) > 1:
         raise ValueError("Only one owning pvLoad object is supported")
@@ -171,6 +313,18 @@ def flat_load(lines):
     begin, end = block.line - 1, block.end_line - 1
     if not 0 <= begin < end < len(lines):
         raise ValueError("Unclosed pvLoad object")
+    # Recognize structured HouseHold or embedded HourlyFile (e.g. materialized Probability) block cleanly
+    top_lines = lines[begin + 1:end]
+    if any(ln.strip() == "LoadType=HouseHold" for ln in top_lines):
+        if not any(ln.strip() == "HouseHoldUses=THouseHoldUses" for ln in top_lines) or not any(
+            ln.strip() == "End of HouseHoldUses" for ln in top_lines
+        ):
+            raise ValueError("HouseHold pvLoad block is missing HouseHoldUses/End of HouseHoldUses")
+        return begin, end, "HouseHold", {"LoadType": "HouseHold"}
+    if any(ln.strip() == "LoadType=HourlyFile" for ln in top_lines):
+        if not any(ln.strip() == "HourlyLoad=THourlyParams" for ln in top_lines):
+            raise ValueError("HourlyFile pvLoad block is missing HourlyLoad=THourlyParams")
+        return begin, end, "HourlyFile", {"LoadType": "HourlyFile"}
     fields = _assignments(lines, (begin, end))
     mode = fields.get("LoadType")
     if mode not in ALLOWED:

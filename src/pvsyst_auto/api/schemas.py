@@ -45,10 +45,15 @@ class BifacialUpdates(BaseModel):
 
 
 class SystemUnavailabilityUpdates(BaseModel):
-    """Configure explicit outage periods or remove existing native PV-system outages."""
+    """Configure explicit outage periods, random outage settings, or remove existing native PV-system outages."""
     model_config = _STRICT_CONFIG
-    mode: Literal["none", "periods"]
+    mode: Literal["none", "periods", "random"]
     periods: Annotated[list[UnavailabilityPeriod], Field(min_length=1, max_length=1000)] | None = None
+    time_fraction_pct: Annotated[StrictNum, Field(gt=0.0, le=100.0)] | None = None
+    period_count: Annotated[StrictInt, Field(ge=1, le=1000)] | None = None
+    min_duration_hours: Annotated[StrictInt, Field(ge=1, le=8760)] | None = None
+    max_duration_hours: Annotated[StrictInt, Field(ge=1, le=8760)] | None = None
+    random_seed: Annotated[StrictInt, Field(ge=0, le=999999)] | None = None
 
 class GridLimitUpdates(BaseModel):
     """Native constant active-power limit at the grid injection point."""
@@ -449,8 +454,38 @@ class HourlyNativeLoad(BaseModel):
     mode: Literal["hourly"]
     load_manifest_name: StrictStr
 
+class HouseholdApplianceSpec(BaseModel):
+    """One household appliance entry for LoadType=HouseHold."""
+    model_config = _STRICT_CONFIG
+    name: StrictStr
+    count: Annotated[StrictInt, Field(ge=1, le=10000)] = 1
+    power_w: StrictNum
+    hours: list[StrictInt] | None = None
+    half_hours: list[StrictInt] | None = None
+    slot_index: Annotated[StrictInt, Field(ge=1, le=10)] | None = None
+
+
+class HouseholdNativeLoad(BaseModel):
+    """Native household appliance schedule (LoadType=HouseHold, yearly or seasonal)."""
+    model_config = _STRICT_CONFIG
+    mode: Literal["household"]
+    modulation: Literal["yearly", "seasonal"] = "yearly"
+    appliances: Annotated[list[HouseholdApplianceSpec], Field(min_length=1, max_length=10)] | None = None
+    seasons: dict[Literal["Summer", "Autumn", "Winter", "Spring"], Annotated[list[HouseholdApplianceSpec], Field(min_length=1, max_length=10)]] | None = None
+
+
+class ProbabilityNativeLoad(BaseModel):
+    """Hourly probability distribution load (deterministically sampled into native embedded hourly snapshot)."""
+    model_config = _STRICT_CONFIG
+    mode: Literal["probability"]
+    power_step_kw: StrictNum
+    probabilities_pct: Annotated[list[StrictNum], Field(min_length=2, max_length=24)]
+    seed: Annotated[StrictInt, Field(ge=0)] = 42
+    year: Annotated[StrictInt, Field(ge=1969, le=2068)] = 1990
+
+
 NativeLoadRequest = Annotated[
-    ConstantNativeLoad | MonthlyNativeLoad | DailyNativeLoad | HourlyNativeLoad,
+    ConstantNativeLoad | MonthlyNativeLoad | DailyNativeLoad | HourlyNativeLoad | HouseholdNativeLoad | ProbabilityNativeLoad,
     Field(discriminator="mode"),
 ]
 
@@ -485,11 +520,18 @@ class GridStorageUpdates(BaseModel):
     battery_inverter_euro_efficiency_pct: StrictNum | None = None
 
 class GridAvailabilityProfile(BaseModel):
+    """Explicit 8760/8784-hour CSV or deterministically generated WeakGrid outage schedule."""
     model_config = _STRICT_CONFIG
-    csv_name: StrictStr
+    mode: Literal["csv", "generated"] | None = None
+    csv_name: StrictStr | None = None
     year: StrictInt
-    utc_offset_hours: StrictInt
-    time_basis: Literal["local_standard_interval_start"]
+    utc_offset_hours: StrictInt | None = None
+    time_basis: Literal["local_standard_interval_start"] | None = None
+    outage_count: Annotated[StrictInt, Field(ge=1, le=365)] | None = None
+    min_duration_hours: Annotated[StrictInt, Field(ge=1, le=168)] | None = None
+    max_duration_hours: Annotated[StrictInt, Field(ge=1, le=168)] | None = None
+    peak_hours: list[StrictInt] | None = None
+    seed: Annotated[StrictInt, Field(ge=0)] | None = None
 
 class BatteryPackDesign(BaseModel):
     model_config = _STRICT_CONFIG
