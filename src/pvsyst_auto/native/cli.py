@@ -39,6 +39,8 @@ VAR_GROUPS = {
                      "viEUnused", "viEBatLss", "viE_Solar", "viSolFrac"),
     "bifacial": (*VERIFIED_VARIABLES, "viGlobGnd", "viDiffGnd", "viGlobBak",
                  "viBeamBak", "viDifSBak", "viBmSFBak", "viMismBak", "viPRBifi"),
+    "transformers": (*VERIFIED_VARIABLES, "viEOutInv", "viEAcOhmL", "viEMVOhmL",
+                     "viEMVTrfL", "viEHVOhmL", "viEHVTrfL"),
 }
 SFI_TIME_STEPS = {
     "hour": "Hour",

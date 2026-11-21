@@ -8,7 +8,7 @@ from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.project.domes import create_dome_allocation_variant
 from pvsyst_auto.scene.author import create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, BifacialUpdates, DCCablingUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, NamedPVTablesLayout, ObstacleSpec, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StrictNum, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
+from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, BifacialUpdates, DCCablingUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, HvTransformerSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, MvTransformerSpec, NamedPVTablesLayout, ObstacleSpec, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, StrictNum, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
 from pvsyst_auto.api.context import categorized_tool, cli, components, variant_call, variant_store
 
 
@@ -198,6 +198,35 @@ def pvsyst_create_dc_cabling_variant(project: StrictStr, source_variant: StrictS
     return create_dc_cabling_variant(variant_store(), project=project, source_variant=source_variant,
         new_variant=new_variant, dc=dc.model_dump(), dry_run=dry_run,
         variant_name=variant_name, add_utf8_bom=add_utf8_bom)
+
+@categorized_tool()
+def pvsyst_configure_transformers(
+    project: StrictStr,
+    source_variant: StrictStr,
+    new_variant: StrictStr,
+    mv: MvTransformerSpec | None = None,
+    hv: HvTransformerSpec | None = None,
+    remove_transformers: StrictBool = False,
+    dry_run: StrictBool = True,
+    variant_name: StrictStr | None = None,
+    add_utf8_bom: StrictBool = False,
+) -> dict:
+    """Create a new variant configuring single/parallel MV transformers, optional cascaded HV substation
+    transformer, custom iron/copper losses, MV/HV AC collection cables, and night disconnect (or strip all
+    transformers with remove_transformers=true). Defaults to dry_run=true."""
+    from pvsyst_auto.energy.transformers import configure_transformers
+    return configure_transformers(
+        variant_store(),
+        project=project,
+        source_variant=source_variant,
+        new_variant=new_variant,
+        mv=mv.model_dump(exclude_none=True) if mv is not None else None,
+        hv=hv.model_dump(exclude_none=True) if hv is not None else None,
+        remove_transformers=remove_transformers,
+        dry_run=dry_run,
+        variant_name=variant_name,
+        add_utf8_bom=add_utf8_bom,
+    )
 
 @categorized_tool()
 def pvsyst_create_mv_night_disconnect_variant(project: StrictStr, source_variant: StrictStr,

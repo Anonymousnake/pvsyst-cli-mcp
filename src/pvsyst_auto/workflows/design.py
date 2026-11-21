@@ -63,7 +63,7 @@ ISO_COUNTRY = re.compile(r"[A-Z]{2}")
 SPEC_KEYS = frozenset((
     "scope", "sizing_mode", "auto_sizing", "new_project", "year", "target_dc_kw", "tilt", "azimuth",
     "module", "inverter", "template_project", "variant", "capacity", "electrical_design", "losses",
-    "weather", "report_pages", "ground_layout", "bifacial",
+    "weather", "report_pages", "ground_layout", "bifacial", "transformers",
 ))
 SIZING_MODES = ("strict", "auto_from_components")
 AUTO_SIZING_KEYS = frozenset((

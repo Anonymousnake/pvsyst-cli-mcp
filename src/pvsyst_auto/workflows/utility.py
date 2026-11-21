@@ -568,7 +568,18 @@ def run_utility_design(
     save(first=True)
     try:
         stage("synthesize")
-        created = store.create_project(new_project, synth_preview["prj_text"], {variant: synth_preview["vc0_text"]})
+        vc0_text = synth_preview["vc0_text"]
+        trf_spec = spec.get("transformers")
+        if trf_spec:
+            from pvsyst_auto.energy.transformers import apply_transformers_to_variant_text
+            vc0_text, trf_summary = apply_transformers_to_variant_text(
+                vc0_text,
+                mv=trf_spec.get("mv"),
+                hv=trf_spec.get("hv"),
+                default_ref_power_kw=capacity_plan.get("actual_dc_kw") or spec.get("target_dc_kw"),
+            )
+            result["utility_summary"]["transformers"] = trf_summary
+        created = store.create_project(new_project, synth_preview["prj_text"], {variant: vc0_text})
         result["transactions"].append({"tool": "create_project", "result": created})
         result["working_files"] = store.inspect_project(new_project)["files"]
         validated = store.validate_structure(new_project, variant)
@@ -594,6 +605,8 @@ def run_utility_design(
             variables = list(VAR_GROUPS["all_common"]) + ["viGlobShd"]
             if bifacial_enabled:
                 variables.extend(BIFACIAL_EXTRA_VARS)
+            if trf_spec:
+                variables.extend(["viEOutInv", "viEMVOhmL", "viEMVTrfL", "viEHVOhmL", "viEHVTrfL"])
             if weather_report is not None:
                 variables.extend(["viGlobHor", "viDiffHor", "viT_Amb"])
             build_sfi(paths["sfi"], variables)

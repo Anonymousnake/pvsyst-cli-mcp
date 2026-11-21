@@ -725,6 +725,50 @@ class AutoSizingOptions(BaseModel):
     alpha_isc_pct_per_c: StrictNum | None = None
 
 
+class TransformerCableSpec(BaseModel):
+    """MV or HV outgoing collection/transmission cable specification."""
+    model_config = _STRICT_CONFIG
+    length_m: Annotated[StrictNum, Field(ge=0.0, le=100000.0)] = 0.0
+    metal: Literal["Copper", "Aluminium"] = "Copper"
+    section_mm2: StrictInt = 150
+
+
+class MvTransformerSpec(BaseModel):
+    """Medium-voltage transformer stage specification (single or parallel units)."""
+    model_config = _STRICT_CONFIG
+    count: Annotated[StrictInt, Field(ge=1, le=200)] = 1
+    output_voltage_kv: Annotated[StrictNum, Field(ge=1.0, le=66.0)] = 20.0
+    stc_ref_power_kw: StrictNum | None = None
+    iron_loss_frac: Annotated[StrictNum, Field(ge=0.0, le=0.05)] = 0.001
+    copper_loss_frac: Annotated[StrictNum, Field(ge=0.0, le=0.15)] = 0.010
+    nominal_power_kva: StrictNum | None = None
+    iron_loss_kw: StrictNum | None = None
+    copper_loss_kw: StrictNum | None = None
+    night_disconnect: StrictBool = False
+    cable: TransformerCableSpec | None = None
+
+
+class HvTransformerSpec(BaseModel):
+    """High-voltage substation transformer stage nested above MV transformers."""
+    model_config = _STRICT_CONFIG
+    output_voltage_kv: Annotated[StrictNum, Field(ge=30.0, le=500.0)] = 110.0
+    stc_ref_power_kw: StrictNum | None = None
+    nominal_power_kva: StrictNum | None = None
+    iron_loss_frac: Annotated[StrictNum, Field(ge=0.0, le=0.05)] | None = None
+    copper_loss_frac: Annotated[StrictNum, Field(ge=0.0, le=0.15)] | None = None
+    iron_loss_kw: StrictNum | None = None
+    copper_loss_kw: StrictNum | None = None
+    night_disconnect: StrictBool = False
+    cable: TransformerCableSpec | None = None
+
+
+class TransformersConfig(BaseModel):
+    """Optional MV or MV+HV cascaded transformer configuration for grid designs."""
+    model_config = _STRICT_CONFIG
+    mv: MvTransformerSpec
+    hv: HvTransformerSpec | None = None
+
+
 class SingleDesignRequest(BaseModel):
     """One bounded design request; every nested object rejects unknown keys.
 
@@ -755,6 +799,7 @@ class SingleDesignRequest(BaseModel):
     report_pages: list[StrictStr] | None = None
     ground_layout: GroundLayoutRequest | None = None
     bifacial: BifacialUpdates | None = None
+    transformers: TransformersConfig | None = None
 
 class SourceTextRequest(BaseModel):
     """One caller-declared source; its text is checked here and never returned."""
