@@ -35,13 +35,13 @@ IRRAD_UNIT_KIND = {
 }
 
 
-def energy_unit_scale(unit: str, *, default_factor: float = 0.0) -> tuple[float, bool]:
+def energy_unit_scale(unit: str) -> tuple[float, bool]:
     """Return (factor_to_kw_or_kwh, needs_step_hours) for a PVsyst CSV power/energy column unit."""
     if unit in POWER_TO_KW:
         return POWER_TO_KW[unit], True
     if unit in ENERGY_TO_KWH:
         return ENERGY_TO_KWH[unit], False
-    return default_factor, False
+    return 0.0, False
 
 
 class RegularResultCsv:

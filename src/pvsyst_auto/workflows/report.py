@@ -215,15 +215,17 @@ def _summarize_csv_for_report(csv_path: Path) -> dict[str, Any]:
             export_col = "EToGrid" if "EToGrid" in idx else "E_Grid"
             has_load = "E_User" in idx
             has_import = "EFrGrid" in idx
-            col_scale = {col: energy_unit_scale(reader.units.get(col, ""), default_factor=1.0) for col in idx}
+            col_scale = {col: energy_unit_scale(reader.units.get(col, "")) for col in idx}
 
         def kwh(col: str) -> float:
             col_i = idx.get(col)
             if col_i is None:
                 return 0.0
+            factor, needs_dt = col_scale[col]
+            if factor == 0.0:
+                raise ValueError(f"{col} requires a power or energy unit, got {reader.units.get(col, '')!r}")
             v = row_data[col_i]
             val = float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
-            factor, needs_dt = col_scale[col]
             return val * factor * (dt_hours if needs_dt else 1.0)
 
         for name, col_i in idx.items():
@@ -260,7 +262,9 @@ def _summarize_csv_for_report(csv_path: Path) -> dict[str, Any]:
     step_hours = (reader.step_minutes if reader.step_minutes else 60.0) / 60.0
 
     def to_kwh(col: str, raw: float) -> float:
-        factor, needs_dt = col_scale.get(col, (1.0, False))
+        factor, needs_dt = col_scale.get(col, (0.0, False))
+        if factor == 0.0:
+            raise ValueError(f"{col} requires a power or energy unit, got {reader.units.get(col, '')!r}")
         return raw * factor * (step_hours if needs_dt else 1.0)
 
     monthly_kwh = [round(monthly_pv_kwh[m], 2) for m in range(1, 13)]
@@ -571,21 +575,23 @@ def generate_report(
         s_rows = list(reversed(primary_sens["factors"]))
         lbl_map = t["sens_factor_labels"]
         y_labels = [lbl_map.get(r["factor"], r["factor"]) for r in s_rows]
-        low_deltas = [round(float(r["low"]["npv"]) - base_npv, 2) for r in s_rows]
-        high_deltas = [round(float(r["high"]["npv"]) - base_npv, 2) for r in s_rows]
+        low_npvs = [round(float(r["low"]["npv"]), 2) for r in s_rows]
+        high_npvs = [round(float(r["high"]["npv"]), 2) for r in s_rows]
+        low_deltas = [round(v - base_npv, 2) for v in low_npvs]
+        high_deltas = [round(v - base_npv, 2) for v in high_npvs]
         var_pct = primary_sens.get("variation_pct", 15)
         fig_tor = go.Figure()
         fig_tor.add_trace(go.Bar(
             name=f"{t['sens_low']} (-{var_pct:g}%)",
-            y=y_labels, x=low_deltas, base=base_npv, orientation="h",
+            y=y_labels, x=low_deltas, base=base_npv, customdata=low_npvs, orientation="h",
             marker_color="#ef4444", opacity=0.85,
-            hovertemplate="%{y} (-" + f"{var_pct:g}%): NPV=%{{x:,.0f}} ({econ_result['currency']})<extra></extra>",
+            hovertemplate="%{y} (-" + f"{var_pct:g}%): NPV=%{{customdata:,.0f}} ({econ_result['currency']})<extra></extra>",
         ))
         fig_tor.add_trace(go.Bar(
             name=f"{t['sens_high']} (+{var_pct:g}%)",
-            y=y_labels, x=high_deltas, base=base_npv, orientation="h",
+            y=y_labels, x=high_deltas, base=base_npv, customdata=high_npvs, orientation="h",
             marker_color="#2563eb", opacity=0.85,
-            hovertemplate="%{y} (+" + f"{var_pct:g}%): NPV=%{{x:,.0f}} ({econ_result['currency']})<extra></extra>",
+            hovertemplate="%{y} (+" + f"{var_pct:g}%): NPV=%{{customdata:,.0f}} ({econ_result['currency']})<extra></extra>",
         ))
         fig_tor.add_vline(x=base_npv, line_width=2, line_dash="dash", line_color="#0f172a")
         fig_tor.update_layout(

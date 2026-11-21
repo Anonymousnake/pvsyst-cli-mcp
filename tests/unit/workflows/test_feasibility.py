@@ -156,6 +156,54 @@ class FeasibilityStudyTests(unittest.TestCase):
         prev_none = run_feasibility_study(self.cli, self.store, spec=spec_none, dry_run=True)
         self.assertEqual(prev_none["status"], "ready")
 
+    def test_design_spec_reads_nested_simulate_design_artifacts_and_stops_on_weather(self) -> None:
+        base_spec = self._sample_spec()
+        base_spec.pop("existing_csv")
+        base_spec.pop("installed_dc_kw")
+        base_spec["design"] = {
+            "scope": "fixed_unshaded_grid",
+            "new_project": "Plant.PRJ",
+            "target_dc_kw": 100.0,
+            "year": 2024,
+        }
+        base_spec["report"]["output_name"] = "design_chain.html"
+
+        # 1. ready_for_weather stops early instead of continuing into empty downstream stages
+        with patch("pvsyst_auto.workflows.feasibility.simulate_design", return_value={
+            "status": "ready_for_weather", "issues": [{"field": "weather", "message": "prepare weather first"}],
+        }):
+            wait_res = run_feasibility_study(self.cli, self.store, spec=base_spec, dry_run=True)
+        self.assertEqual(wait_res["status"], "ready_for_weather")
+        self.assertEqual([s["stage"] for s in wait_res["stages"]], ["components", "simulation"])
+
+        # 2. Real simulate_design nests csv path under artifacts.simulate.csv and actual DC under metrics
+        from tests._fixtures import build_grid_vc0
+        (self.root / "Projects" / "Plant.PRJ").write_text(
+            "PVObject_=pvProject\n  MeteoFileName=Met.MET\nEnd of PVObject pvProject\n", encoding="utf-8",
+        )
+        (self.root / "Projects" / "Plant.VC1").write_text(
+            build_grid_vc0(
+                orientations=[{"id": 1, "tilt": 25.0, "azim": 0.0}],
+                subarrays=[{"id": 1, "orient": 1, "name": "PV", "n_mod": 12, "n_str": 2}],
+            ),
+            encoding="utf-8",
+        )
+        nested_sim = {
+            "status": "completed",
+            "selected": {"template": {"project": "Seed.PRJ", "variant": "VC1"}},
+            "artifacts": {"simulate": {"csv": str(self.base_csv)}},
+            "metrics": {"nominal_dc_power_kw": 118.8},
+            "preview": {"simulation": {"nominal_dc_power_kw": 118.8}},
+        }
+        with patch("pvsyst_auto.workflows.feasibility.simulate_design", return_value=nested_sim):
+            res = run_feasibility_study(self.cli, self.store, spec=base_spec, dry_run=False, confirm=True)
+        self.assertIn(res["status"], ("completed", "needs_review"))
+        self.assertEqual(res["executive_summary"]["installed_dc_kw"], 118.8)
+        self.assertIsNotNone(res["diagnostics"])
+        self.assertIsNotNone(res["bess_optimization"])
+        self.assertIsNotNone(res["economics"])
+        self.assertTrue(Path(res["report"]["report_path"]).is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
