@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import copy
-import math
 from pathlib import Path
 import tempfile
 import unittest
 
+from tests._fixtures import build_grid_vc0, roof_mesh
 from tests.integration._session import decode_reply, mcp_session
 
 REV_FIXTURE = (
@@ -16,54 +16,25 @@ REV_FIXTURE = (
 )
 
 
-def _orient(idx, tilt, az):
-    return (f"  PVObject_=pvOrient\n    NoOrient={idx}\n    Flags=$00\n    FieldType=FixedPlane\n"
-            f"    FieldTilt={tilt}\n    FieldAzim={az}\n    BaseSlope=0\n"
-            "    UsesTiltAver=False\n    UsesAzimAver=False\n    UsesSlopeAver=False\n  End of TOrientGroup\n")
-
-
-def _subarray(sid, orient, pan, nmod=18, nstr=2):
-    return (f"  PVObject_=pvSubArray\n    Comment=Array {sid}\n    SubArrayId={sid}\n"
-            f"    NoOrientation={orient}\n    Version=8.1.6\n    Flags=$00\n    PVModule={pan}\n"
-            f"    GInverter=Generic_60kW.OND\n    NModSerie={nmod}\n    NStringCh={nstr}\n"
-            f"    NStrOrient1={nstr}\n    NInverter=1\n    NInvMPPT=1\n    PowerSharingInverterId=-1\n"
-            "  End of PVObject pvSubArray\n")
-
-
-def _source_vc(orients, arrays):
-    branches = ""
-    for i, text in enumerate(arrays, 1):
-        nstr = next(line.split("=")[1].strip() for line in text.splitlines() if "NStringCh=" in line)
-        branches += (
-            f"InverterNode Start;\n  NElements=1\n  SubArrayId={i}\n  SubArrayName=Array {i}\n"
-            f"  Children=Start\n    StringNode Start;\n      NElements={nstr}\n      SubArrayId={i}\n"
-            f"      SubArrayName=Array {i}\n    StringNode End;\n  Children=End\nInverterNode End;\n"
-        )
-    return ("PVObject_=pvVCalcul\n  Version=8.1.6\n  Flags=$00100000\n  Comment=Scene Source\n"
-            "  PVObject_SiteSimul=pvSite\n    NomF=Demo.SIT\n    Site=Demo\n    Latitude=45.0\n    Longitude=5.0\n    Altitude=10.0\n  End of PVObject pvSite\n"
-            "  PVObject_MeteoSimul=pvMeteo\n    NomF=Demo.MET\n    SiteM=Demo\n"
-            "    PVObject_SiteMet=pvSite\n      NomF=Demo.SIT\n      Site=Demo\n      Latitude=45.0\n      Longitude=5.0\n      Altitude=10.0\n    End of PVObject pvSite\n"
-            "  End of PVObject pvMeteo\n"
-            + f"  Orientations, list of={len(orients)} TOrientGroup\n"
-            + "".join(orients) + "  End of Orientations\n"
-            + "  PVObject_PVMainArray=pvMainArray\n    Flags=$00\n"
-            + "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.6\n      BaseNode=Start\n"
-            + "        InjectionPointNode Start;\n          NElements=1\n          SubArrayId=0\n"
-            + "          Children=Start\n" + branches + "          Children=End\n"
-            + "        InjectionPointNode End;\n      BaseNode=End\n    End of PVObject pvCircuit\n"
-            + "".join(arrays) + "  End of PVObject pvMainArray\n"
-            + "  PVObject_Ombrage=pvShading\n    Flags=$00\n  End of PVObject pvShading\n"
-            + "  PVObject_System=pvSystem\n    SystemType=Grid\n  End of PVObject pvSystem\n"
-            + "End of PVObject pvVCalcul\n")
+def _source_vc(orientations, subarrays):
+    return build_grid_vc0(
+        comment="Scene Source",
+        version="8.1.6",
+        main_flags="$00",
+        main_flags2=None,
+        base_node_wrapper=True,
+        subarrays_wrapper=False,
+        orientations=[{"id": i, "tilt": tilt, "azim": az} for i, tilt, az in orientations],
+        subarrays=[
+            {"id": sid, "orient": orient, "name": f"Array {sid}", "pan": pan, "ond": "Generic_60kW.OND",
+             "n_mod": nmod, "n_str": nstr, "flags": "$00"}
+            for sid, orient, pan, nmod, nstr in subarrays
+        ],
+    )
 
 
 def _roof_mesh(name, ox, oy, tilt_deg, rot_deg):
-    t, r = math.radians(tilt_deg), math.radians(rot_deg)
-    def pt(x, y):
-        dy, dz = y * math.cos(t), y * math.sin(t)
-        return [round(ox + x * math.cos(r) - dy * math.sin(r), 6),
-                round(oy + x * math.sin(r) + dy * math.cos(r), 6), round(dz, 6)]
-    return {"name": name, "vertices": [pt(-2, -2), pt(25, -2), pt(25, 25), pt(-2, 25)], "triangles": [[0, 1, 2], [0, 2, 3]]}
+    return roof_mesh(name, ox, oy, tilt_deg, rot_deg, x_bounds=(-2.0, 25.0), y_bounds=(-2.0, 25.0))
 
 
 class SceneComponentTests(unittest.IsolatedAsyncioTestCase):
@@ -108,12 +79,12 @@ class SceneComponentTests(unittest.IsolatedAsyncioTestCase):
             (root / "Sites" / "Demo.SIT").write_text("PVObject_=pvSite\n  Latitude=45\nEnd of PVObject pvSite\n", encoding="utf-8")
             (root / "Meteo" / "Demo.MET").write_text("PVObject_=pvMeteo\nEnd of PVObject pvMeteo\n", encoding="utf-8")
             (root / "Projects" / "Demo.VC1").write_text(
-                _source_vc([_orient(1, 25.0, 20.0), _orient(2, 25.0, -70.0)],
-                           [_subarray(1, 1, "Mono300.PAN", 30, 1), _subarray(2, 2, "Mono440.PAN", 30, 1)]),
+                _source_vc([(1, 25.0, 20.0), (2, 25.0, -70.0)],
+                           [(1, 1, "Mono300.PAN", 30, 1), (2, 2, "Mono440.PAN", 30, 1)]),
                 encoding="utf-8")
             (root / "Projects" / "Demo.VC2").write_text(
-                _source_vc([_orient(1, 25.0, 20.0)],
-                           [_subarray(1, 1, "Mono300.PAN", 18, 2), _subarray(2, 1, "Mono300.PAN", 18, 2)]),
+                _source_vc([(1, 25.0, 20.0)],
+                           [(1, 1, "Mono300.PAN", 18, 2), (2, 1, "Mono300.PAN", 18, 2)]),
                 encoding="utf-8")
             cli = root / "PVsystCLI.exe"
             cli.write_bytes(b"fake")
@@ -167,22 +138,20 @@ class SceneComponentTests(unittest.IsolatedAsyncioTestCase):
                 encoding="utf-8")
             (root / "Sites" / "Demo.SIT").write_text("PVObject_=pvSite\n  Latitude=45\nEnd of PVObject pvSite\n", encoding="utf-8")
             (root / "Meteo" / "Demo.MET").write_text("PVObject_=pvMeteo\nEnd of PVObject pvMeteo\n", encoding="utf-8")
-            vc = _source_vc([_orient(1, 25.0, 20.0)], [_subarray(1, 1, "Mono600.PAN", 15, 2)])
-            vc = vc.replace(
-                "    Flags=$00\n    PVModule=Mono600.PAN",
-                "    Flags=$001E0402\n    Flags2=$20\n    PVModule=Mono600.PAN",
-            ).replace(
-                "    PowerSharingInverterId=-1\n  End of PVObject pvSubArray",
-                "    PowerSharingInverterId=-1\n    RSCablageCh=378.105\n    RSCablagePC=1.50\n    ACWireLength=0.0\n  End of PVObject pvSubArray",
-            ).replace(
-                "  PVObject_PVMainArray=pvMainArray\n    Flags=$00",
-                "  PVObject_PVMainArray=pvMainArray\n    Flags=$00100400\n    Flags2=$082A\n    MVNbTransfos=0",
-            ).replace(
-                "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.6\n",
-                "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.6\n      Flags=$00\n",
-            ).replace(
-                "  PVObject_System=pvSystem\n    SystemType=Grid",
-                "  PVObject_System=pvSystem\n    Flags=$00\n    SystemType=Grid",
+            vc = build_grid_vc0(
+                comment="Scene Source",
+                version="8.1.6",
+                main_flags="$00100400",
+                main_flags2="$082A",
+                mv_nb_transfos=0,
+                base_node_wrapper=True,
+                subarrays_wrapper=False,
+                orientations=[{"id": 1, "tilt": 25.0, "azim": 20.0}],
+                subarrays=[{
+                    "id": 1, "orient": 1, "name": "Array 1", "pan": "Mono600.PAN", "ond": "Generic_60kW.OND",
+                    "n_mod": 15, "n_str": 2, "flags": "$001E0402", "flags2": "$20",
+                    "extra_lines": ("RSCablageCh=378.105", "RSCablagePC=1.50", "ACWireLength=0.0"),
+                }],
             )
             (root / "Projects" / "Demo.VC0").write_text(vc, encoding="utf-8")
             pan = (
