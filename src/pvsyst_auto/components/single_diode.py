@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from pvsyst_auto.validation import pos_finite as _pos_finite
+
 # Boltzmann constant * 298.15 K / elementary charge (thermal voltage at 25 degC STC)
 _VT_25C = 1.380649e-23 * 298.15 / 1.602176634e-19  # ~0.025692579 V
 _VALID_TECHNOLS = (
@@ -20,15 +22,6 @@ _VALID_TECHNOLS = (
     "mtSiThin",
     "mtGaAs",
 )
-
-
-def _pos_finite(value: Any, label: str, *, allow_zero: bool = False) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{label} must be a finite number")
-    num = float(value)
-    if not math.isfinite(num) or (num < 0 if allow_zero else num <= 0):
-        raise ValueError(f"{label} must be {'non-negative' if allow_zero else 'positive'} and finite")
-    return num
 
 
 def _solve_rs_for_gamma(

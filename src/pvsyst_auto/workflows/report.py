@@ -15,11 +15,9 @@ from typing import Any
 
 from pvsyst_auto.engineering.diagnostics import diagnose_simulation_csv
 from pvsyst_auto.engineering.economics import evaluate_economics
-from pvsyst_auto.native.cli import iter_result_csv, result_units
 from pvsyst_auto.project.paths import safe_filename, workspace_file
+from pvsyst_auto.results import RegularResultCsv, energy_unit_scale
 
-_POWER_TO_KW = {"W": 0.001, "kW": 1.0}
-_ENERGY_TO_KWH = {"Wh": 0.001, "kWh": 1.0}
 _PR_SCALE = {"ratio": 1.0, "%": 0.01}
 
 _I18N = {
@@ -187,45 +185,46 @@ def _summarize_csv_for_report(csv_path: Path) -> dict[str, Any]:
     and includes self-consumed PV energy (max(0, E_User - EFrGrid)) when E_User is present so
     self-consumption and storage reports agree with economics tables.
     """
-    units = result_units(csv_path, strict=True)
-    idx: dict[str, int] = {}
-    rows = 0
-    prev_stamp = None
-    step_minutes: float | None = None
-    regular = True
-    first_row_data: tuple[Any, list[Any]] | None = None
+    reader = RegularResultCsv(
+        csv_path,
+        empty_message="Result CSV has no data rows",
+        irregular_message=(
+            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+            "cannot compute monthly energy or losses reliably"
+        ),
+        required_any_of=("EToGrid", "E_Grid"),
+        missing_required_message="Result CSV must include E_Grid or EToGrid for report generation",
+    )
 
+    idx: dict[str, int] = {}
     export_col: str | None = None
     has_load = False
     has_import = False
     col_scale: dict[str, tuple[float, bool]] = {}
+    pr_scale = _PR_SCALE.get(reader.units.get("PR", ""), 1.0)
 
     monthly_pv_kwh = {m: 0.0 for m in range(1, 13)}
     monthly_pr_num = {m: 0.0 for m in range(1, 13)}
     monthly_pr_den = {m: 0.0 for m in range(1, 13)}
     col_sums: dict[str, float] = {}
 
-    def _unit_kind(col: str) -> tuple[float, bool]:
-        u = units.get(col, "")
-        if u in _POWER_TO_KW:
-            return _POWER_TO_KW[u], True
-        if u in _ENERGY_TO_KWH:
-            return _ENERGY_TO_KWH[u], False
-        return 1.0, False
+    for stamp, row_data, dt_hours in reader.iter_rows():
+        if not col_scale:
+            idx = reader.idx
+            col_sums = {name: 0.0 for name in idx}
+            export_col = "EToGrid" if "EToGrid" in idx else "E_Grid"
+            has_load = "E_User" in idx
+            has_import = "EFrGrid" in idx
+            col_scale = {col: energy_unit_scale(reader.units.get(col, ""), default_factor=1.0) for col in idx}
 
-    def _val(row_data: list[Any], col: str) -> float:
-        i = idx.get(col)
-        if i is None:
-            return 0.0
-        v = row_data[i]
-        return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
-
-    def _process_row(stamp: Any, row_data: list[Any], dt_hours: float) -> None:
         def kwh(col: str) -> float:
-            if col not in col_scale:
+            col_i = idx.get(col)
+            if col_i is None:
                 return 0.0
+            v = row_data[col_i]
+            val = float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
             factor, needs_dt = col_scale[col]
-            return _val(row_data, col) * factor * (dt_hours if needs_dt else 1.0)
+            return val * factor * (dt_hours if needs_dt else 1.0)
 
         for name, col_i in idx.items():
             v = row_data[col_i]
@@ -252,56 +251,13 @@ def _summarize_csv_for_report(csv_path: Path) -> dict[str, Any]:
         if "PR" in idx and "GlobInc" in idx:
             gi = row_data[idx["GlobInc"]]
             pr = row_data[idx["PR"]]
-            pr_scale = _PR_SCALE.get(units.get("PR", ""), 1.0)
             if (isinstance(gi, (int, float)) and math.isfinite(gi) and gi > 0
                     and isinstance(pr, (int, float)) and math.isfinite(pr)):
                 monthly_pr_num[stamp.month] += float(gi) * float(pr) * pr_scale
                 monthly_pr_den[stamp.month] += float(gi)
 
-    for headers, row in iter_result_csv(csv_path, strict=True):
-        if rows == 0:
-            idx = {name: i for i, name in enumerate(headers) if i > 0}
-            col_sums = {name: 0.0 for name in idx}
-            export_col = "EToGrid" if "EToGrid" in idx else ("E_Grid" if "E_Grid" in idx else None)
-            has_load = "E_User" in idx
-            has_import = "EFrGrid" in idx
-            for col in idx:
-                col_scale[col] = _unit_kind(col)
-            first_row_data = (row[0], list(row))
-            prev_stamp = row[0]
-            rows = 1
-            continue
-
-        stamp = row[0]
-        delta = (stamp - prev_stamp).total_seconds() / 60.0
-        if delta <= 0:
-            regular = False
-            dt_hours = (step_minutes or 60.0) / 60.0
-        else:
-            if step_minutes is None:
-                step_minutes = delta
-                _process_row(first_row_data[0], first_row_data[1], step_minutes / 60.0)
-                first_row_data = None
-            elif abs(delta - step_minutes) > 1e-6:
-                regular = False
-            dt_hours = delta / 60.0
-        _process_row(stamp, row, dt_hours)
-        prev_stamp = stamp
-        rows += 1
-
-    if rows == 0:
-        raise ValueError("Result CSV has no data rows")
-    if export_col is None:
-        raise ValueError("Result CSV must include E_Grid or EToGrid for report generation")
-    if not regular:
-        raise ValueError(
-            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
-            "cannot compute monthly energy or losses reliably"
-        )
-    if first_row_data is not None:
-        step_minutes = 60.0
-        _process_row(first_row_data[0], first_row_data[1], 1.0)
-    step_hours = (step_minutes if step_minutes else 60.0) / 60.0
+    rows = reader.rows_count
+    step_hours = (reader.step_minutes if reader.step_minutes else 60.0) / 60.0
 
     def to_kwh(col: str, raw: float) -> float:
         factor, needs_dt = col_scale.get(col, (1.0, False))

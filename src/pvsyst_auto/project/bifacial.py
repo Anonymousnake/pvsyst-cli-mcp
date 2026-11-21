@@ -34,19 +34,7 @@ ALLOWED_KEYS = frozenset({
 })
 
 
-def _finite(value, label: str, *, minimum: float | None = None, maximum: float | None = None,
-            strict_min: bool = False) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{label} must be a finite number")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{label} must be finite")
-    if minimum is not None and (number <= minimum if strict_min else number < minimum):
-        op = ">" if strict_min else ">="
-        raise ValueError(f"{label} must be {op} {minimum}")
-    if maximum is not None and number > maximum:
-        raise ValueError(f"{label} must be <= {maximum}")
-    return number
+from pvsyst_auto.validation import finite_number as _finite
 
 
 def _strict_int(value, label: str, *, minimum: int | None = None) -> int:

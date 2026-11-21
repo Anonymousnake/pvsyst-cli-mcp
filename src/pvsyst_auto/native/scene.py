@@ -21,7 +21,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from pvsyst_auto.native._prep import _prepare_source, _source_snapshot, _verify_new as _prep_verify_new
+from pvsyst_auto.native._prep import _prepare_source, _verify_new as _prep_verify_new
 from pvsyst_auto.native.cli import PVsystError
 from pvsyst_auto.native.project import _project_matches
 from pvsyst_auto.project.paths import safe_filename, workspace_file
