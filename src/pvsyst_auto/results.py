@@ -21,6 +21,93 @@ def fingerprint(path):
 
 SUPPORTED_ANNUAL_STEPS = (5, 10, 15, 30, 60)
 
+POWER_TO_KW = {"W": 0.001, "kW": 1.0}
+ENERGY_TO_KWH = {"Wh": 0.001, "kWh": 1.0}
+POWER_UNIT_KIND = {
+    "W": (0.001, True), "kW": (1.0, True),
+    "Wh": (0.001, False), "kWh": (1.0, False),
+}
+IRRAD_UNIT_KIND = {
+    "W/m2": (0.001, True), "W/m\u00b2": (0.001, True),
+    "kW/m2": (1.0, True), "kW/m\u00b2": (1.0, True),
+    "Wh/m2": (0.001, False), "Wh/m\u00b2": (0.001, False),
+    "kWh/m2": (1.0, False), "kWh/m\u00b2": (1.0, False),
+}
+
+
+def energy_unit_scale(unit: str, *, default_factor: float = 0.0) -> tuple[float, bool]:
+    """Return (factor_to_kw_or_kwh, needs_step_hours) for a PVsyst CSV power/energy column unit."""
+    if unit in POWER_TO_KW:
+        return POWER_TO_KW[unit], True
+    if unit in ENERGY_TO_KWH:
+        return ENERGY_TO_KWH[unit], False
+    return default_factor, False
+
+
+class RegularResultCsv:
+    """Single-pass streaming reader for regular-cadence hourly/sub-hourly PVsyst SFI CSVs."""
+
+    def __init__(
+        self,
+        csv_path: Path,
+        *,
+        empty_message: str = "Result CSV has no data rows",
+        irregular_message: str = (
+            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows)"
+        ),
+        required_any_of: tuple[str, ...] = (),
+        missing_required_message: str = "",
+    ) -> None:
+        self.csv_path = csv_path
+        self.units: dict[str, str] = result_units(csv_path, strict=True)
+        self.headers: list[str] = []
+        self.idx: dict[str, int] = {}
+        self.rows_count: int = 0
+        self.step_minutes: float | None = None
+        self._empty_message = empty_message
+        self._irregular_message = irregular_message
+        self._required_any_of = required_any_of
+        self._missing_required_message = missing_required_message
+
+    def iter_rows(self):
+        first_row = None
+        prev_stamp = None
+        step_min: float | None = None
+        for headers, row in iter_result_csv(self.csv_path, strict=True):
+            if self.rows_count == 0:
+                self.headers = list(headers)
+                self.idx = {name: i for i, name in enumerate(headers) if i > 0}
+                if self._required_any_of and not any(c in self.idx for c in self._required_any_of):
+                    raise ValueError(
+                        self._missing_required_message
+                        or f"Result CSV must include one of: {', '.join(self._required_any_of)}"
+                    )
+                first_row = list(row)
+                prev_stamp = row[0]
+                self.rows_count = 1
+                continue
+            stamp = row[0]
+            delta = (stamp - prev_stamp).total_seconds() / 60.0
+            if delta <= 0:
+                raise ValueError(self._irregular_message)
+            if step_min is None:
+                step_min = delta
+                self.step_minutes = step_min
+                dt_hours = step_min / 60.0
+                yield first_row[0], first_row, dt_hours
+                first_row = None
+            elif abs(delta - step_min) > 1e-6:
+                raise ValueError(self._irregular_message)
+            dt_hours = step_min / 60.0
+            prev_stamp = stamp
+            self.rows_count += 1
+            yield stamp, row, dt_hours
+        if self.rows_count == 0:
+            raise ValueError(self._empty_message)
+        if first_row is not None:
+            self.step_minutes = 60.0
+            yield first_row[0], first_row, 1.0
+
 
 def annual_summary(path, year, nominal_dc_power_kw):
     """Accept one complete hourly or sub-hourly (5/10/15/30/60 min) calendar year and compute standard grid PR."""
@@ -31,19 +118,8 @@ def annual_summary(path, year, nominal_dc_power_kw):
         raise ValueError("Nominal DC power must be a positive finite kWp value")
     before = fingerprint(path)
     units = result_units(path, strict=True)
-    # Distinguish instantaneous power/irradiance (needs * step_hours) from step-integrated energy.
-    power_unit_kind = {
-        "W": (0.001, True), "kW": (1.0, True),
-        "Wh": (0.001, False), "kWh": (1.0, False),
-    }
-    irrad_unit_kind = {
-        "W/m2": (0.001, True), "W/m\u00b2": (0.001, True),
-        "kW/m2": (1.0, True), "kW/m\u00b2": (1.0, True),
-        "Wh/m2": (0.001, False), "Wh/m\u00b2": (0.001, False),
-        "kWh/m2": (1.0, False), "kWh/m\u00b2": (1.0, False),
-    }
-    power_info = {name: power_unit_kind.get(units.get(name)) for name in ("E_Grid", "EArray", "IL_Pmax")}
-    irrad_info = irrad_unit_kind.get(units.get("GlobInc"))
+    power_info = {name: POWER_UNIT_KIND.get(units.get(name)) for name in ("E_Grid", "EArray", "IL_Pmax")}
+    irrad_info = IRRAD_UNIT_KIND.get(units.get("GlobInc"))
     pr_scale = {"ratio": 1, "%": 0.01}.get(units.get("PR"))
     if any(info is None for info in power_info.values()) or irrad_info is None or pr_scale is None:
         raise ValueError("Annual output requires explicit power, irradiance and PR units")
@@ -211,8 +287,8 @@ def compare_results(baseline, target, columns, *, include_key_periods=False):
         samples = state["paired_samples"]
         complete = samples == count
         unit = units[0][name]
-        power_scale = {"W": 0.001, "kW": 1}.get(unit)
-        energy_scale = {"Wh": 0.001, "kWh": 1}.get(unit)
+        power_scale = POWER_TO_KW.get(unit)
+        energy_scale = ENERGY_TO_KWH.get(unit)
         if samples and step is not None and power_scale is not None:
             observed = state["paired_delta_sum"] * step / 60 * power_scale
         elif samples and step is not None and energy_scale is not None:
