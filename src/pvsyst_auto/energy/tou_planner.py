@@ -210,6 +210,9 @@ def plan_tou_storage_schedule(
 
         eff_ch_kw = round(eff_ch_kw, 3)
         eff_dis_kw = round(eff_dis_kw, 3)
+        if charging_strategy == "spec_charg_power":
+            available_kw = eff_ch_kw * len(ch_slots) * rte / len(dis_slots)
+            eff_dis_kw = min(eff_dis_kw, math.floor(available_kw * 1000) / 1000)
         for s in ch_slots:
             ch_48[s] = eff_ch_kw
         for s in dis_slots:
