@@ -127,6 +127,35 @@ class FeasibilityStudyTests(unittest.TestCase):
             )
         self.assertEqual(mcp_res["status"], "ready")
 
+    def test_blocked_diagnostics_and_explicit_none_config_fields(self) -> None:
+        # Irregular CSV -> diagnostics blocked -> study status must be 'blocked', not 'completed'
+        gap_csv = self.root / "Results" / "gap_study.csv"
+        gap_csv.write_text(
+            "PVSYST 8.1.7\ndate;GlobInc;EArray;E_Grid;PR\n;W/m2;kW;kW;ratio\n"
+            "01/06/24 08:00;500;10;9.5;0.84\n01/06/24 08:15;500;10;9.5;0.84\n01/06/24 08:45;500;10;9.5;0.84\n",
+            encoding="utf-8",
+        )
+        blocked_res = run_feasibility_study(
+            self.cli,
+            self.store,
+            spec={"study_name": "BlockedStudy", "existing_csv": gap_csv.name, "installed_dc_kw": 100.0},
+            dry_run=False,
+            confirm=True,
+        )
+        self.assertEqual(blocked_res["status"], "blocked")
+        diag_stage = next(s for s in blocked_res["stages"] if s["stage"] == "diagnostics")
+        self.assertEqual(diag_stage["status"], "blocked")
+
+        # Explicit None optional fields in bess_sizing / report must not raise TypeError
+        spec_none = self._sample_spec()
+        spec_none["bess_sizing"]["verify_top_k"] = None
+        spec_none["bess_sizing"]["pcs_capex_per_kw"] = None
+        spec_none["bess_sizing"]["rank_by"] = None
+        spec_none["bess_sizing"]["bess_params"] = None
+        spec_none["report"] = None
+        prev_none = run_feasibility_study(self.cli, self.store, spec=spec_none, dry_run=True)
+        self.assertEqual(prev_none["status"], "ready")
+
 
 if __name__ == "__main__":
     unittest.main()

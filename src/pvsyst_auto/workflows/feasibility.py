@@ -159,6 +159,7 @@ def run_feasibility_study(
 
     # --- Stage 3: Diagnostics (when baseline CSV is available) ---
     diag_result: dict[str, Any] | None = None
+    diag_blocked = False
     if baseline_csv_path is not None and baseline_csv_path.is_file():
         diag_result = diagnose_simulation_csv(
             baseline_csv_path,
@@ -167,9 +168,14 @@ def run_feasibility_study(
             variant=var_name,
             thresholds=spec.get("thresholds"),
         )
+        diag_blocked = diag_result.get("status") == "blocked"
+        diag_stage_status = (
+            "blocked" if diag_blocked
+            else ("needs_review" if diag_result.get("needs_review") else "ok")
+        )
         stages.append({
             "stage": "diagnostics",
-            "status": "needs_review" if diag_result.get("needs_review") else "ok",
+            "status": diag_stage_status,
             "finding_count": diag_result.get("finding_count", 0),
         })
     else:
@@ -184,17 +190,18 @@ def run_feasibility_study(
 
     if tariff_cfg and tariff_cfg.get("mode") == "tou" and tariff_cfg.get("tou_schedule"):
         if spec.get("auto_tou_schedule") or bess_cfg:
-            pcs_vals = (bess_cfg or {}).get("pcs_kw_values") or [max(1.0, (installed_dc_kw or 100.0) * 0.5)]
+            raw_pcs_vals = (bess_cfg or {}).get("pcs_kw_values")
+            pcs_vals = [float(v) for v in raw_pcs_vals] if raw_pcs_vals else [max(1.0, (installed_dc_kw or 100.0) * 0.5)]
             bp = (bess_cfg or {}).get("bess_params") or {}
             tou_result = plan_tou_storage_schedule(
                 tou_schedule=tariff_cfg["tou_schedule"],
-                charge_power_kw=max(float(v) for v in pcs_vals),
-                discharge_power_kw=max(float(v) for v in pcs_vals),
-                cycles_per_day=int(bp.get("cycles_per_day", 2)),
-                round_trip_efficiency=float(bp.get("round_trip_efficiency", 0.88)),
-                min_spread=float(bp.get("min_spread", 0.05)),
-                default_import_rate=float(tariff_cfg.get("import_tariff", 0.0)),
-                default_export_rate=float(tariff_cfg.get("feed_in_tariff", 0.0)),
+                charge_power_kw=max(pcs_vals),
+                discharge_power_kw=max(pcs_vals),
+                cycles_per_day=int(bp["cycles_per_day"]) if bp.get("cycles_per_day") is not None else 2,
+                round_trip_efficiency=float(bp["round_trip_efficiency"]) if bp.get("round_trip_efficiency") is not None else 0.88,
+                min_spread=float(bp["min_spread"]) if bp.get("min_spread") is not None else 0.05,
+                default_import_rate=float(tariff_cfg["import_tariff"]) if tariff_cfg.get("import_tariff") is not None else 0.0,
+                default_export_rate=float(tariff_cfg["feed_in_tariff"]) if tariff_cfg.get("feed_in_tariff") is not None else 0.0,
             )
             stages.append({
                 "stage": "tou_schedule",
@@ -207,7 +214,8 @@ def run_feasibility_study(
     if bess_cfg:
         if not tariff_cfg or not financial_cfg:
             raise ValueError("spec.tariff and spec.financial are required when spec.bess_sizing is configured")
-        verify_k = int(bess_cfg.get("verify_top_k", 0))
+        verify_k = int(bess_cfg["verify_top_k"]) if bess_cfg.get("verify_top_k") is not None else 0
+        pcs_capex_kw = float(bess_cfg["pcs_capex_per_kw"]) if bess_cfg.get("pcs_capex_per_kw") is not None else 0.0
         est_cli_calls += verify_k
         if baseline_csv_path is not None and baseline_csv_path.is_file():
             bess_result = optimize_bess_sizing(
@@ -223,8 +231,8 @@ def run_feasibility_study(
                 strategies=bess_cfg.get("strategies"),
                 load_profile=bess_cfg.get("load_profile"),
                 bess_params=bess_cfg.get("bess_params"),
-                pcs_capex_per_kw=float(bess_cfg.get("pcs_capex_per_kw", 0.0)),
-                rank_by=bess_cfg.get("rank_by", "npv"),
+                pcs_capex_per_kw=pcs_capex_kw,
+                rank_by=bess_cfg.get("rank_by") or "npv",
                 verify_top_k=verify_k,
                 verify_config=bess_cfg.get("verify_config"),
                 dry_run=dry_run,
@@ -234,7 +242,7 @@ def run_feasibility_study(
                 "stage": "bess_optimization",
                 "status": bess_result["status"],
                 "evaluated_count": bess_result["evaluated_count"],
-                "best": bess_result["best"]["label"],
+                "best": (bess_result.get("best") or {}).get("label"),
             })
         else:
             stages.append({
@@ -258,21 +266,24 @@ def run_feasibility_study(
         })
         # Also include Stage 2 verified BESS scenarios if any were simulated
         for vc in ((bess_result or {}).get("stage2_verification") or {}).get("verified_comparisons") or ():
-            report_scenarios.append({
+            vc_sc: dict[str, Any] = {
                 "label": vc["label"],
                 "csv_name": vc["csv_name"],
                 "project": (bess_cfg.get("verify_config") or {}).get("project") if bess_cfg else proj_name,
                 "variant": vc["variant"],
                 "installed_dc_kw": installed_dc_kw,
                 "battery_kwh": vc["actual_battery_kwh"],
-            })
+            }
+            if vc.get("capex_total") is not None:
+                vc_sc["capex_total"] = vc["capex_total"]
+            report_scenarios.append(vc_sc)
 
     if (financial_cfg is not None or tariff_cfg is not None):
         if report_scenarios:
             econ_result = evaluate_economics(
                 workspace=ws,
                 scenarios=[
-                    {k: v for k, v in sc.items() if k in ("label", "csv_name", "installed_dc_kw", "battery_kwh") and v is not None}
+                    {k: v for k, v in sc.items() if k in ("label", "csv_name", "installed_dc_kw", "battery_kwh", "capex_total") and v is not None}
                     for sc in report_scenarios
                 ],
                 financial=financial_cfg,
@@ -361,8 +372,12 @@ def run_feasibility_study(
     if report_result and not dry_run:
         exec_summary["report_path"] = report_result.get("report_path")
 
+    final_status = (
+        "blocked" if diag_blocked
+        else ("ready" if dry_run else ("needs_review" if (diag_result and diag_result.get("needs_review")) else "completed"))
+    )
     return {
-        "status": "ready" if dry_run else ("needs_review" if (diag_result and diag_result.get("needs_review")) else "completed"),
+        "status": final_status,
         "dry_run": dry_run,
         "study_name": study_name,
         "stages": stages,

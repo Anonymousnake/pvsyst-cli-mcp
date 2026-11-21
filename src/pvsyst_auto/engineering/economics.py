@@ -925,6 +925,13 @@ def evaluate_economics(
     if len(resolved_scenarios) > 100:
         raise ValueError("At most 100 scenarios can be evaluated in one call")
 
+    any_has_battery = any(
+        isinstance(item, dict)
+        and isinstance(item.get("battery_kwh"), (int, float))
+        and not isinstance(item.get("battery_kwh"), bool)
+        and float(item["battery_kwh"]) > 0.0
+        for item in resolved_scenarios
+    )
     results: list[dict] = []
     for index, sc in enumerate(resolved_scenarios):
         if not isinstance(sc, dict):
@@ -968,7 +975,10 @@ def evaluate_economics(
         # Scenario-specific or shared replacement events (plus optional mid-life battery replacement)
         sc_replacements = list(fin_cfg["replacement_events"])
         if fin_cfg["battery_replacement_year"] is not None:
-            if fin_cfg["battery_replacement_cost"] is not None:
+            is_pv_only = (bat_kwh == 0.0) and (sc.get("battery_kwh") is not None or any_has_battery)
+            if is_pv_only:
+                rep_cost = 0.0
+            elif fin_cfg["battery_replacement_cost"] is not None:
                 rep_cost = fin_cfg["battery_replacement_cost"]
             elif bat_kwh > 0:
                 if fin_cfg["battery_capex_per_kwh"] is None:

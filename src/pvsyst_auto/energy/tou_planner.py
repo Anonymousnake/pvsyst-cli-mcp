@@ -149,10 +149,12 @@ def plan_tou_storage_schedule(
                 j for j in range(prev_peak_idx + 1, peak_idx)
                 if not (used_hours & set(segments[j]["hours"]))
             ]
-            # If the first peak is at segment 0 (hour 0), allow trailing late-night segment
+            # If the first peak is at segment 0 (hour 0), only allow trailing late-night wrap-around
+            # segments strictly after the last chosen peak (never daytime segments between peaks).
             if not cand_indices and prev_peak_idx == -1:
+                wrap_start = (chosen_peaks[-1] + 1) if chosen_peaks else (peak_idx + 1)
                 cand_indices = [
-                    j for j in range(peak_idx + 1, n_seg)
+                    j for j in range(wrap_start, n_seg)
                     if not (used_hours & set(segments[j]["hours"]))
                 ]
             best_ch_idx = None
