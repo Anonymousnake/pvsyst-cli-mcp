@@ -107,6 +107,16 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
         self.assertEqual(validated.discharging_strategy, "specified_hours")
         self.assertEqual(len(validated.charging_schedule_48), 48)
 
+    def test_exact_spread_and_previous_evening_charge(self) -> None:
+        for rates, spread, window in [([0.2]*12 + [0.3]*12, 0.1, range(12)),
+                                      ([0.9]*8 + [1.0]*4 + [0.2]*12, 0.25, range(12, 24))]:
+            with self.subTest(rates=rates):
+                schedule = [{"hours": [h for h in range(24) if rates[h] == rate], "import_rate": rate}
+                            for rate in sorted(set(rates))]
+                plan = plan_tou_storage_schedule(tou_schedule=schedule, charge_power_kw=10,
+                                                 cycles_per_day=1, round_trip_efficiency=1, min_spread=spread)
+                self.assertEqual([cycle["charge_hours"] for cycle in plan["cycles"]], [list(window)])
+
     def test_plan_tou_idle_when_spread_too_small(self) -> None:
         flat_tou = [
             {"name": "low", "hours": list(range(0, 12)), "import_rate": 0.50},
