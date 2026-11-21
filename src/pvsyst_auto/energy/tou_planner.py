@@ -9,15 +9,7 @@ import math
 from typing import Any
 
 from pvsyst_auto.engineering.economics import _validate_tariff
-
-
-def _pos_finite(value: Any, name: str, *, allow_zero: bool = False) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{name} must be a finite number")
-    num = float(value)
-    if not math.isfinite(num) or (num < 0.0 if allow_zero else num <= 0.0):
-        raise ValueError(f"{name} must be {'non-negative' if allow_zero else 'positive'} and finite")
-    return num
+from pvsyst_auto.validation import pos_finite as _pos_finite
 
 
 def _resolve_hourly_rates(tariff: dict, *, month: int, day_type: str) -> list[dict[str, Any]]:
@@ -105,9 +97,6 @@ def plan_tou_storage_schedule(
     rates = [h["import_rate"] for h in hourly]
     segments = _segment_day(hourly)
 
-    # Identify candidate chronological (charge_seg, discharge_seg) pairs where discharge follows charge
-    # (or overnight valley wraps into morning peak via contiguous early-morning segment).
-    # First find local/high-tier peaks and preceding lower-tier troughs.
     min_rate = min(rates)
     max_rate = max(rates)
     warnings: list[str] = []
@@ -119,20 +108,16 @@ def plan_tou_storage_schedule(
             "returning idle 48-slot schedules to avoid unprofitable cycling."
         )
     else:
-        # Build all valid chronological non-overlapping (charge_idx, discharge_idx) pairs within segments
         n_seg = len(segments)
-        # Partition into early half and late half for 2 cycles when at least 2 distinct peak crests exist
         peak_indices = [
             i for i, seg in enumerate(segments)
             if seg["rate"] >= min_rate / rte + min_sp
             and (i == 0 or seg["rate"] >= segments[i - 1]["rate"])
             and (i == n_seg - 1 or seg["rate"] >= segments[i + 1]["rate"])
         ]
-        # Fallback if monotonic / flat plateau: pick highest-rate segments
         if not peak_indices:
             peak_indices = [i for i, seg in enumerate(segments) if abs(seg["rate"] - max_rate) < 1e-9]
 
-        # Rank peak segments by rate descending, pick up to cycles_per_day chronological peaks
         chosen_peaks = sorted(
             sorted(peak_indices, key=lambda i: (-segments[i]["rate"], segments[i]["hours"][0]))[:cycles_per_day]
         )
