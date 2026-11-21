@@ -846,6 +846,7 @@ def parse_batch_results(path: str | os.PathLike,
     """Read the SIM_* rows of a PVsyst UserBatch/*Results.CSV summary."""
     encoding = _csv_encoding(path)
     headers: list[str] = []
+    units: dict[str, str] = {}
     param_indices: list[int] = []
     param_names: list[str] = []
     subtitle_pending = False
@@ -864,9 +865,11 @@ def parse_batch_results(path: str | os.PathLike,
                     param_end = min(metric_starts) if metric_starts else 2
                 param_indices = [i for i in range(2, param_end) if headers[i]]
                 param_names = [headers[i] for i in param_indices]
-                subtitle_pending = bool(param_indices)
-            elif subtitle_pending and fields and fields[0].strip() == "":
+                subtitle_pending = True
+            elif subtitle_pending and any(field.strip() for field in fields) and fields[0].strip() == "":
                 subtitle_pending = False
+                units = {col: fields[i].strip().strip("[]") for col in columns
+                         if (i := headers.index(col)) < len(fields) and fields[i].strip()}
                 for pos, idx in enumerate(param_indices):
                     sub = fields[idx].strip() if idx < len(fields) else ""
                     if sub and not sub.startswith("[") and sub.upper() != "Y/N":
@@ -900,7 +903,10 @@ def parse_batch_results(path: str | os.PathLike,
                 scenarios.append(entry)
     if not headers or not scenarios:
         raise ValueError("No SIM_* rows found in batch summary")
-    return {"columns": list(columns), "scenarios": scenarios}
+    result = {"columns": list(columns), "scenarios": scenarios}
+    if units:
+        result["units"] = units
+    return result
 
 
 def result_units(path: str | os.PathLike, *, strict: bool = False) -> dict[str, str]:
