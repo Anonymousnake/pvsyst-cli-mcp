@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,25 +18,12 @@ from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.report import generate_report
+from tests._fixtures import write_sfi_csv
 from tests.unit.core.test_bifacial_utility import UTILITY_OND, UTILITY_PAN
 from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
 
 
-def _write_sfi_csv(path: Path, columns: list[tuple[str, str]], rows: list[list], *,
-                   project: str = "P.PRJ", site: str = "Geneva_MN90.SIT",
-                   met: str = "Geneva_MN90_SYN.MET", variant: str = "P.VC0") -> Path:
-    lines = [
-        f"Project;{project}",
-        f"Geographical Site;{site}",
-        f"Weather data;{met}",
-        f"Simulation variant;{variant}",
-        "date;" + ";".join(c for c, _ in columns),
-        ";" + ";".join(u for _, u in columns),
-    ]
-    for row in rows:
-        lines.append(";".join(str(v) for v in row))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+_write_sfi_csv = partial(write_sfi_csv, site="Geneva_MN90.SIT", met="Geneva_MN90_SYN.MET")
 
 
 class SourcedComponentHintsTests(unittest.TestCase):

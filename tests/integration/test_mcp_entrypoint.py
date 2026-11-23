@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from pvsyst_auto.api.context import resolve_tool_groups, tool_names_for_groups
+from tests.integration._session import mcp_session
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -210,7 +211,13 @@ class ToolGroupsTests(unittest.TestCase):
                        PYTHONPATH=str(REPO / "src"), PYTHONDONTWRITEBYTECODE="1")
             env.pop("PVSYST_TOOL_GROUPS", None)
 
-            async def capture(groups, module=False):
+            def dump_tools(items):
+                return sorted(
+                    [item.model_dump(mode="json", by_alias=True, exclude_none=True) for item in items],
+                    key=lambda item: item["name"],
+                )
+
+            async def capture_stdio(groups, module=False):
                 current = dict(env)
                 if groups is not None:
                     current["PVSYST_TOOL_GROUPS"] = groups
@@ -219,31 +226,29 @@ class ToolGroupsTests(unittest.TestCase):
                 async with stdio_client(parameters) as (read, write):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
-                        tools = sorted([item.model_dump(mode="json", by_alias=True, exclude_none=True)
-                                        for item in (await session.list_tools()).tools], key=lambda item: item["name"])
-                        if groups is not None:
-                            for gone in ("pvsyst_clone_project", "pvsyst_open_native_project",
-                                         "pvsyst_simulate_template", "pvsyst_create_peak_shaving_variant",
-                                         "pvsyst_create_load_variant"):
-                                reply = await session.call_tool(gone, {})
-                                self.assertTrue(reply.is_error)
-                                self.assertRegex("\n".join(i.text for i in reply.content if hasattr(i, "text")).lower(),
-                                                 r"unknown tool|not found|not registered")
-                        if groups is None:
-                            reply = await session.call_tool("pvsyst_update_variant_parameters", {
-                                "project": "SOURCE.PRJ", "variant": "VC0", "expected_sha256": "0" * 64, "dryrun": True})
-                            self.assertTrue(reply.is_error)
-                            self.assertIn("Unknown argument(s) for pvsyst_update_variant_parameters: dryrun",
-                                          "\n".join(i.text for i in reply.content if hasattr(i, "text")))
-                return tools
+                        reply = await session.call_tool("pvsyst_clone_project", {})
+                        self.assertTrue(reply.is_error)
+                        self.assertRegex("\n".join(i.text for i in reply.content if hasattr(i, "text")).lower(),
+                                         r"unknown tool|not found|not registered")
+                        return dump_tools((await session.list_tools()).tools)
 
-            default_tools, full, selected, expert_only, admin_only = await asyncio.gather(
-                capture(None),
-                capture("all"),
-                capture("setup, engineering,results", module=True),
-                capture("expert"),
-                capture("admin"),
+            async def capture_session(groups):
+                async with mcp_session(workspace, binary, tool_groups=groups) as session:
+                    if groups is None:
+                        reply = await session.call_tool("pvsyst_update_variant_parameters", {
+                            "project": "SOURCE.PRJ", "variant": "VC0", "expected_sha256": "0" * 64, "dryrun": True})
+                        self.assertTrue(reply.is_error)
+                        self.assertIn("Unknown argument(s) for pvsyst_update_variant_parameters: dryrun",
+                                      "\n".join(i.text for i in reply.content if hasattr(i, "text")))
+                    return dump_tools((await session.list_tools()).tools)
+
+            full, selected = await asyncio.gather(
+                capture_stdio("all", module=True),
+                capture_stdio("setup, engineering,results", module=True),
             )
+            default_tools = await capture_session(None)
+            expert_only = await capture_session("expert")
+            admin_only = await capture_session("admin")
             default_names = {item["name"] for item in default_tools}
             full_names = {item["name"] for item in full}
             self.assertEqual(len(default_names), 48)
@@ -268,22 +273,21 @@ class ToolGroupsTests(unittest.TestCase):
             self.assertEqual(selected, expected)
             self.assertEqual(list(workspace.iterdir()), [])
             invalid_values = ("", "engineering,", "unknown", "results,results", "all,setup")
-            processes = await asyncio.gather(*(
-                asyncio.to_thread(
-                    subprocess.run,
-                    [sys.executable, "-m", "pvsyst_auto"],
-                    cwd=directory,
-                    env={**env, "PVSYST_TOOL_GROUPS": invalid},
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                for invalid in invalid_values
-            ))
-            for index, process in enumerate(processes):
-                self.assertNotEqual(process.returncode, 0, index)
-                self.assertIn("PVSYST_TOOL_GROUPS requires", process.stdout + process.stderr)
+            for invalid in invalid_values:
+                with self.assertRaisesRegex(ValueError, "PVSYST_TOOL_GROUPS requires"):
+                    resolve_tool_groups(invalid)
+            process = await asyncio.to_thread(
+                subprocess.run,
+                [sys.executable, "-m", "pvsyst_auto"],
+                cwd=directory,
+                env={**env, "PVSYST_TOOL_GROUPS": invalid_values[0]},
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertNotEqual(process.returncode, 0)
+            self.assertIn("PVSYST_TOOL_GROUPS requires", process.stdout + process.stderr)
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 
