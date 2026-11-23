@@ -57,5 +57,5 @@
 ## 其他详细损失项入口索引
 
 - 常数热损系数 $U_c$（`UFactor`）、风速热损项 $U_v$（`UVFactor`）、光致衰减（`LIDLoss`）、组件质量（`ModuleQualityLoss`）、组件失配（`PMismMPP`）与积灰损失（`soiling_updates`）：均通过 `pvsyst_update_variant_parameters` 配置，见[功能入口地图](native-entry-map.md)。
-- 直流/交流线缆与中压变压器夜间断开：分别见[DC 线缆](native-dc-cabling.md)、[AC 线缆配置](native-ac-cabling.md)、[MV 夜间断开](native-mv-night.md)。
+- 直流/交流线缆与中压变压器夜间断开：分别见[DC 线缆](native-dc-cabling.md)、[AC 线缆配置](native-ac-cabling.md)及 `pvsyst_configure_transformers`。
 - 入射角修正（IAM）与组件年衰减（Ageing）：见[老化与 IAM 输入](native-model-inputs.md)。

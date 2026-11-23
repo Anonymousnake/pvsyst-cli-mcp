@@ -140,27 +140,12 @@ def _check_house_run(store, record, path, project, variant):
             or handoff["input_snapshot"].get("variant_sha256") != guards["native_variant"]):
         raise ValueError("House runtime handoff does not match its guarded native saved variant")
     imported = record["native_import"]
-    if "scene_import_method" in request:
-        native_method = request["scene_import_method"] == "native"
-    else:
-        native_method = not (isinstance(imported, dict) and imported.get("status") == "imported")
-    import_status = "native_variant_created" if native_method else "imported"
-    geometry_key = "stored_geometry_verified" if native_method else "native_geometry_verified"
-    if (not isinstance(imported, dict) or imported.get("status") != import_status
-            or imported.get(geometry_key) is not True
+    if (not isinstance(imported, dict) or imported.get("status") != "native_variant_created"
+            or imported.get("stored_geometry_verified") is not True
             or not isinstance(imported.get("verification"), dict)
             or variant_id(imported["variant"]) != variant
             or Path(imported["file"]).resolve() != expected["native_variant"]):
         raise ValueError("House checkpoint lacks a verified native save for this variant")
-    grouped = bool(plan["source"].get("orientations")) or len(handoff["saved"].get("orientations", [])) > 1
-    if grouped and not native_method:
-        reload = imported.get("native_reload")
-        if (imported.get("native_reload_verified") is not True or not isinstance(reload, dict)
-                or variant_id(reload["source_variant"]) != "VC0" or variant_id(reload["saved_variant"]) != variant
-                or not isinstance(reload.get("verification"), dict) or not reload["verification"]
-                or not isinstance(reload.get("native_validity"), dict)
-                or reload["native_validity"].get("valid") is not True):
-            raise ValueError("Grouped house run lacks verified native reload evidence")
     expected_rows = 8784 if calendar.isleap(year) else 8760
     if (record.get("hourly_rows") != expected_rows or record["metrics"].get("rows") != expected_rows
             or record["metrics"].get("year") != year or record["metrics"].get("complete_year") is not True

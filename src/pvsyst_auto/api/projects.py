@@ -5,7 +5,6 @@ from typing import Literal
 from pydantic import StrictBool, StrictInt, StrictStr
 from pvsyst_auto.workflows.design import prepare_design_project
 from pvsyst_auto.project.tracking import create_tracking_variant
-from pvsyst_auto.project.domes import create_dome_allocation_variant
 from pvsyst_auto.scene.author import create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.api.schemas import ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, BifacialUpdates, DCCablingUpdates, GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, HvTransformerSpec, IamUpdates, InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, MvTransformerSpec, NamedPVTablesLayout, NativeEconomicsUpdates, ObstacleSpec, OrientationConvertParams, P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates, SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates, SpectralUpdates, StrictNum, StringLayoutBinding, StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls
@@ -262,18 +261,6 @@ def pvsyst_configure_transformers(
     )
 
 @categorized_tool()
-def pvsyst_create_mv_night_disconnect_variant(project: StrictStr, source_variant: StrictStr,
-                                              new_variant: StrictStr, night_disconnect: StrictBool,
-                                              dry_run: StrictBool = True,
-                                              variant_name: StrictStr | None = None,
-                                              add_utf8_bom: StrictBool = False) -> dict:
-    """Create a new variant toggling the MV transformer NightDisconnect switch and main-array bit 29."""
-    from pvsyst_auto.energy.transformer import create_mv_night_variant
-    return create_mv_night_variant(variant_store(), project=project, source_variant=source_variant,
-        new_variant=new_variant, night_disconnect=night_disconnect, dry_run=dry_run,
-        variant_name=variant_name, add_utf8_bom=add_utf8_bom)
-
-@categorized_tool()
 def pvsyst_create_shed_geometry_variant(project: StrictStr, source_variant: StrictStr,
                                         new_variant: StrictStr, geometry: ShedGeometryUpdates,
                                         dry_run: StrictBool = True,
@@ -285,20 +272,6 @@ def pvsyst_create_shed_geometry_variant(project: StrictStr, source_variant: Stri
     return create_shed_variant(variant_store(), project=project, source_variant=source_variant,
         new_variant=new_variant, geometry=geometry.model_dump(exclude_none=True),
         dry_run=dry_run, variant_name=variant_name, add_utf8_bom=add_utf8_bom)
-
-@categorized_tool()
-def pvsyst_create_dome_allocation_variant(project: StrictStr, source_variant: StrictStr,
-                                          new_variant: StrictStr,
-                                          first_orientation_strings: StrictInt,
-                                          dry_run: StrictBool = True,
-                                          variant_name: StrictStr | None = None,
-                                          add_utf8_bom: StrictBool = False) -> dict:
-    """Create a new variant rebalancing string counts between the two faces of a paired Dome template."""
-    return create_dome_allocation_variant(variant_store(), project=project, source_variant=source_variant,
-                                          new_variant=new_variant,
-                                          first_orientation_strings=first_orientation_strings,
-                                          dry_run=dry_run, variant_name=variant_name,
-                                          add_utf8_bom=add_utf8_bom)
 
 @categorized_tool()
 def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_name: StrictStr,
@@ -330,12 +303,9 @@ def pvsyst_read_house_pv_scene(scene_name: StrictStr) -> dict:
 @categorized_tool()
 def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
                                    dry_run: StrictBool = True, confirm: StrictBool = False,
-                                   shading_mode: Literal["linear", "module_layout"] = "linear",
-                                   method: Literal["native"] = "native") -> dict:
+                                   shading_mode: Literal["linear", "module_layout"] = "linear") -> dict:
     """Import a .pvc2 house/PV scene into a new variant via the headless native builder,
     supporting linear and module_layout shading."""
-    if method != "native":
-        raise ValueError("Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; use method='native'")
     store = variant_store()
     with store.lock:
         if shading_mode != "module_layout":
@@ -345,11 +315,11 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
             recovered = read_house_pv_scene(store.components, scene_name)
             binding = (recovered.get("create_arguments") or {}).get("string_layout")
             if binding is not None:
-                return {"status": "blocked", "stage": "preflight", "method": method,
+                return {"status": "blocked", "stage": "preflight", "method": "native",
                         "scene_name": scene_name, "dry_run": dry_run,
                         "native_consumption_verified": False,
                         "issues": ["This scene declares an explicit string_layout; it can only be "
-                                   "imported with method='native' and shading_mode='module_layout'. "
+                                   "imported with shading_mode='module_layout'. "
                                    "The linear importer auto-allocates strings and will not drop "
                                    "declared per-cell wiring silently."]}
         from pvsyst_auto.native.headless import import_house_pv_scene_native

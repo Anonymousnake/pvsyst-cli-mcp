@@ -146,7 +146,7 @@ def pvsyst_optimize_bess_sizing(
 def pvsyst_run_house_task(spec: HouseTaskRequest, dry_run: StrictBool = True,
                             confirm: StrictBool = False, resume: StrictBool = False,
                             retry_simulation: StrictBool = False) -> dict:
-    """Build a 3D house scene (.pvc2), import it via GUI or headless native builder,
+    """Build a 3D house scene (.pvc2), write it headlessly via the native builder,
     bind roof orientations, save a new variant, and run a full-year CLI simulation with checkpoint resume."""
     from pvsyst_auto.workflows.house import run_house_task
     store = variant_store()

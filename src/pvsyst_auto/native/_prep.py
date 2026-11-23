@@ -1,8 +1,6 @@
 """Pure source-snapshot, scene-source binding, and variant verification helpers (no Win32 GUI)."""
 from __future__ import annotations
 
-import ctypes
-import sys
 from pathlib import Path
 
 from pvsyst_auto.components.editor import objects
@@ -22,67 +20,6 @@ from pvsyst_auto.scene.mapping import (
     verify_pv_geometry,
     verify_tree_obstacles,
 )
-
-
-def find_running_pvsyst(exe: Path) -> list[int]:
-    """Return PIDs of running PVsyst.exe matching `exe`, without importing GUI user32 wrappers."""
-    if sys.platform != "win32":
-        return []
-    import ctypes.wintypes as w
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-
-    class Entry(ctypes.Structure):
-        _fields_ = [("size", w.DWORD), ("usage", w.DWORD), ("pid", w.DWORD),
-                    ("heap", ctypes.c_size_t), ("module", w.DWORD), ("threads", w.DWORD),
-                    ("parent", w.DWORD), ("priority", w.LONG), ("flags", w.DWORD),
-                    ("name", w.WCHAR * 260)]
-
-    kernel.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
-    kernel.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
-    kernel.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(Entry)]
-    kernel.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(Entry)]
-    kernel.Process32FirstW.restype = w.BOOL
-    kernel.Process32NextW.restype = w.BOOL
-    kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
-    kernel.OpenProcess.restype = ctypes.c_void_p
-    kernel.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, w.DWORD, w.LPWSTR, ctypes.POINTER(w.DWORD)]
-    kernel.QueryFullProcessImageNameW.restype = w.BOOL
-    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-    kernel.CloseHandle.restype = w.BOOL
-
-    handle = kernel.CreateToolhelp32Snapshot(2, 0)
-    if handle in (None, ctypes.c_void_p(-1).value):
-        raise RuntimeError("Native process inventory is unavailable")
-    found = []
-    try:
-        entry = Entry()
-        entry.size = ctypes.sizeof(entry)
-        present = kernel.Process32FirstW(handle, ctypes.byref(entry))
-        if not present:
-            raise RuntimeError("Native process inventory could not enumerate its first entry")
-        while present:
-            if entry.name.casefold() == exe.name.casefold():
-                proc = kernel.OpenProcess(0x1000, False, entry.pid)
-                path_str = ""
-                if proc:
-                    try:
-                        size = w.DWORD(1024)
-                        buf = ctypes.create_unicode_buffer(size.value)
-                        if kernel.QueryFullProcessImageNameW(proc, 0, buf, ctypes.byref(size)):
-                            path_str = buf.value
-                    finally:
-                        kernel.CloseHandle(proc)
-                if not path_str:
-                    raise RuntimeError("A same-name native process has an unreadable executable path")
-                if Path(path_str).resolve() != exe:
-                    raise RuntimeError("Another PVsyst installation is running; all sessions are left untouched")
-                found.append(int(entry.pid))
-            present = kernel.Process32NextW(handle, ctypes.byref(entry))
-        if ctypes.get_last_error() != 18:
-            raise RuntimeError("Native process inventory ended unexpectedly")
-    finally:
-        kernel.CloseHandle(handle)
-    return found
 
 
 def _source_snapshot_bytes(store, components, original, module_geometry, *, allow_groups=False, layout=None,

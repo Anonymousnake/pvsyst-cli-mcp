@@ -28,7 +28,7 @@ You need your own PVsyst installation and license on the host machine.
 | Inspect an existing project, apply an isolated revision, or diff multiple scenarios | `pvsyst_project_handoff`, `pvsyst_run_engineering_task`, `pvsyst_compare_engineering_scenarios` | [Scenario comparison](docs/engineering-scenarios.md) |
 | Check feasibility briefs or block assembly (requires `expert`) | `pvsyst_review_engineering_brief`, `pvsyst_prepare_block_project` | [Brief review](docs/engineering-brief.md) |
 
-By default the server registers **48 core tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **77 tools**; to keep the defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`. For migrating from `v0.1.0`, see [Upgrading from v0.1.0](docs/tool-reference.md#upgrading-from-v010).
+By default the server registers **48 core tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **75 tools**; to keep the defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`. For migrating from `v0.1.0`, see [Upgrading from v0.1.0](docs/tool-reference.md#upgrading-from-v010).
 
 ## Installation
 
@@ -111,7 +111,7 @@ Once connected, the server exposes MCP protocol `instructions`, 6 built-in workf
 
 By default (when `PVSYST_TOOL_GROUPS` is unset), the server exposes only the **48 core workflow tools** (`setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`) so LLM context stays compact. Set `PVSYST_TOOL_GROUPS` in `env` to customize; an explicit list replaces the defaults:
 
-- `"PVSYST_TOOL_GROUPS": "all"` exposes all **77 tools** (the 8 default groups plus `admin` and `expert`).
+- `"PVSYST_TOOL_GROUPS": "all"` exposes all **75 tools** (the 8 default groups plus `admin` and `expert`).
 - `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"` keeps the defaults and adds `expert` (73 tools).
 - `"PVSYST_TOOL_GROUPS": "setup,engineering,results"` exposes only those 14 tools.
 - Valid group keys (case-sensitive): `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`, `admin`, `expert` (or `all`). Unknown, empty, or duplicate group names raise an error at startup so typos fail fast.
