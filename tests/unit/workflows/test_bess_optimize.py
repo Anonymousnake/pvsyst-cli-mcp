@@ -70,6 +70,27 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def test_tou_arbitrage_rejects_seasonal_or_day_specific_windows(self) -> None:
+        from pvsyst_auto.api.schemas import EconomicsTariffConfig, EconomicsFinancialConfig
+        from pvsyst_auto.api.simulation import pvsyst_optimize_bess_sizing
+
+        csv_path = _write_pv_load_csv(self.root / "Results" / "seasonal.csv", days=2)
+        for restriction in ({"months": [1, 2, 3]}, {"day_type": "weekend"}):
+            with self.subTest(restriction=restriction):
+                tariff = EconomicsTariffConfig(mode="tou", import_tariff=0.5, tou_schedule=[
+                    {"name": "valley", "hours": list(range(8)), "import_rate": 0.1, **restriction},
+                    {"name": "peak", "hours": list(range(16, 24)), "import_rate": 1.0},
+                ])
+                with patch("pvsyst_auto.api.simulation.cli") as mock_cli, patch("pvsyst_auto.api.simulation.variant_store"):
+                    mock_cli.return_value.workspace = self.root
+                    with self.assertRaisesRegex(ValueError, "month.*day"):
+                        pvsyst_optimize_bess_sizing(
+                            baseline_csv=csv_path.name, installed_dc_kw=120, bess_kwh_values=[100],
+                            pcs_kw_values=[50], tariff=tariff,
+                            financial=EconomicsFinancialConfig(fixed_capex=1000),
+                            strategies=["tou_arbitrage"],
+                        )
+
     def test_plan_tou_two_charge_two_discharge_and_schema_compat(self) -> None:
         plan = plan_tou_storage_schedule(
             tou_schedule=_china_ci_tou(),
