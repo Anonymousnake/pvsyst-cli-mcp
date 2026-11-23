@@ -86,6 +86,30 @@ class CliTransientRetryAndResourcesTests(unittest.TestCase):
                 cli.run_simulation("Demo.PRJ", "VC0", sfi=self.root / "Models" / "sim.SFI", out_csv=self.root / "Results" / "exh.csv", log_level=3)
         self.assertEqual(calls_exh["n"], 2)
 
+    def test_public_simulation_stops_if_partial_output_cannot_be_removed(self) -> None:
+        from pvsyst_auto.api.simulation import pvsyst_run_simulation
+
+        cli = PVsystCLI(self.fake_cli, self.root, max_transient_retries=1)
+        out_csv = self.root / "Results" / "locked.csv"
+        calls = []
+
+        def aborted(label, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                out_csv.write_text("partial", encoding="utf-8")
+                return subprocess.CompletedProcess(args, 1, stdout="Loading project", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="Simulation done in 0min 1sec", stderr="")
+
+        with patch("pvsyst_auto.api.simulation.cli", return_value=cli), \
+             patch("pvsyst_auto.api.simulation.simulation_csv_path", return_value=out_csv), \
+             patch.object(cli, "license_info", return_value={"status": "OK"}), \
+             patch.object(cli, "_checked_run", side_effect=aborted), \
+             patch("pvsyst_auto.native.cli.time.sleep"), \
+             patch.object(Path, "unlink", side_effect=PermissionError("locked")):
+            with self.assertRaisesRegex(PVsystError, "partial.*locked"):
+                pvsyst_run_simulation(project="Demo.PRJ", variant="VC0", csv_name="locked.csv", log_level=3)
+        self.assertEqual(len(calls), 1)
+
     def test_dynamic_mcp_workspace_resources_and_new_prompts(self) -> None:
         from pvsyst_auto.api.context import mcp
 
