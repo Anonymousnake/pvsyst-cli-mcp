@@ -259,6 +259,32 @@ class StandAloneTests(unittest.TestCase):
         self.assertEqual(req.scope, "stand_alone")
         self.assertEqual(req.standalone.battery_file, "Generic_Solar_12V160Ah.BTR")
 
+    def test_simulate_design_propagates_standalone_diagnostic_review(self) -> None:
+        from datetime import datetime, timedelta
+        from unittest.mock import Mock, patch
+        from pvsyst_auto.api import simulation
+
+        cli = Mock()
+        start = datetime(2023, 1, 1)
+        for lost_hours, status in ((876, "needs_review"), (0, "completed")):
+            with self.subTest(lost_hours=lost_hours):
+                def simulate(project, variant, *, out_csv, **kwargs):
+                    rows = (f"{start + timedelta(hours=i):%d/%m/%y %H:%M};"
+                            f"{int(i >= lost_hours)};{int(i < lost_hours)};{int(i < lost_hours)}\n" for i in range(8760))
+                    out_csv.write_text("date;E_User;E_Miss;T_LOL\n;kWh;kWh;h\n" + "".join(rows), encoding="utf-8")
+                    return {}
+
+                cli.run_simulation.side_effect = simulate
+                request = SingleDesignRequest(
+                    new_project=f"Cabin{lost_hours}.PRJ", scope="stand_alone", module={"file_name": "Lab440.PAN"},
+                    weather={"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+                    standalone={"battery_file": "Generic_Solar_12V160Ah.BTR", "target_lol_pct": 5.0},
+                )
+                with patch.multiple(simulation, cli=lambda: cli, variant_store=lambda: self.store):
+                    result = simulation.pvsyst_simulate_design(request, dry_run=False)
+                self.assertEqual(result["diagnostics"]["needs_review"], lost_hours > 0)
+                self.assertEqual(result["status"], status)
+
 
 if __name__ == "__main__":
     unittest.main()

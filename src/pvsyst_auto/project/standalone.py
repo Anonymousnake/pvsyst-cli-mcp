@@ -596,7 +596,7 @@ def run_standalone_design(
         )
 
     out_result: dict[str, Any] = {
-        "status": "completed",
+        "status": "needs_review" if diagnostics["needs_review"] else "completed",
         "scope": STANDALONE_SCOPE,
         "dry_run": False,
         "project": prj,
