@@ -125,7 +125,9 @@ def _render_appliance_period(period_name: str, appliances: list[dict]) -> list[s
         if type(count) is not int or not 1 <= count <= 10000:
             raise ValueError(f"appliance[{idx}].count must be an integer in 1..10000")
         power_w = _number(app.get("power_w"), f"appliance[{idx}].power_w", positive=True)
-        slot = app.get("slot_index", idx)
+        slot = app.get("slot_index")
+        if slot is None:
+            slot = idx
         if type(slot) is not int or not 1 <= slot <= 10 or slot in used_slots:
             raise ValueError(f"appliance[{idx}].slot_index must be a unique integer in 1..10")
         used_slots.add(slot)

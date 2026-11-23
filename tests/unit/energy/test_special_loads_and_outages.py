@@ -13,6 +13,11 @@ from pvsyst_auto.project.variants import VariantStore
 
 
 class SpecialLoadsAndOutagesTests(unittest.TestCase):
+    def test_household_schema_default_slot(self) -> None:
+        from pvsyst_auto.api.schemas import HouseholdNativeLoad
+        load = HouseholdNativeLoad(mode="household", appliances=[{"name": "Lamp", "power_w": 20, "hours": [18]}])
+        self.assertIn("HouseAppliance, NoApp=1", native_load_block(load.model_dump(), "\n"))
+
     def test_household_and_probability_load_serialization_and_roundtrip(self) -> None:
         # 1. Yearly HouseHold load
         hh_yearly = native_load_block({
