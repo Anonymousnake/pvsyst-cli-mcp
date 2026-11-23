@@ -35,7 +35,13 @@ GROUND_LAYOUT_KEYS = frozenset((
     "backtracking", "irrad_optimiz", "central_gap_m", "pitch_slope_deg",
     "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg",
     "site_polygon", "setback_m", "ground_clearance_m", "max_table_columns",
-    "obstacles", "base_slope_deg", "terrain",
+    "obstacles", "base_slope_deg", "terrain", "sub_orientations",
+))
+SUB_ORIENTATION_KEYS = frozenset((
+    "label", "tilt", "azimuth", "target_dc_kw", "weight",
+    "pitch_m", "collector_width_m", "shed_count",
+    "inactive_band_width_1_m", "inactive_band_width_2_m",
+    "electrical_effect", "shading_factor", "cell_width_m", "base_slope_deg",
 ))
 TRACKER_ONLY_KEYS = frozenset((
     "axis_azimuth_deg", "min_phi_deg", "max_phi_deg",
@@ -110,12 +116,79 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
                 if key in layout:
                     bad(f"ground_layout.{key}", f"{key} requires model_mode='unlimited' for ground_sheds")
 
+    sub_orientations = layout.get("sub_orientations")
+    has_sub_orients = isinstance(sub_orientations, list) and len(sub_orientations) > 0
+    if sub_orientations is not None:
+        if scope != "ground_sheds":
+            bad("ground_layout.sub_orientations", "sub_orientations is only supported for scope='ground_sheds'")
+        elif mode != "unlimited" or layout.get("site_polygon") is not None or layout.get("obstacles") or layout.get("terrain") is not None:
+            bad("ground_layout.sub_orientations",
+                "sub_orientations requires scope='ground_sheds' with model_mode='unlimited' (no 3D scene/polygon/terrain)")
+        elif not isinstance(sub_orientations, list) or not 1 <= len(sub_orientations) <= 16:
+            bad("ground_layout.sub_orientations", "Provide 1..16 sub_orientations entries")
+        else:
+            share_modes: set[str] = set()
+            for idx_o, item in enumerate(sub_orientations):
+                prefix = f"ground_layout.sub_orientations[{idx_o}]"
+                if not isinstance(item, dict):
+                    bad(prefix, "Each sub-orientation must be an object")
+                    continue
+                for key in sorted(set(item) - SUB_ORIENTATION_KEYS):
+                    bad(f"{prefix}.{key}", "Unknown sub_orientation parameter")
+                t_val = item.get("tilt")
+                if t_val is None or not _is_number(t_val) or not 0 <= t_val <= 90:
+                    bad(f"{prefix}.tilt", "Use a finite tilt in 0..90 degrees")
+                a_val = item.get("azimuth")
+                if a_val is None or not _is_number(a_val) or not -180 <= a_val <= 180:
+                    bad(f"{prefix}.azimuth", "Use finite PVsyst azimuth in -180..180 degrees, zero south and west positive")
+                has_tdc = item.get("target_dc_kw") is not None
+                has_w = item.get("weight") is not None
+                if has_tdc and has_w:
+                    bad(prefix, "Specify either target_dc_kw or weight, not both")
+                elif not has_tdc and not has_w:
+                    bad(prefix, "Specify either positive target_dc_kw or positive weight")
+                elif has_tdc:
+                    share_modes.add("target_dc_kw")
+                    if not _is_number(item["target_dc_kw"]) or item["target_dc_kw"] <= 0:
+                        bad(f"{prefix}.target_dc_kw", "target_dc_kw must be a positive finite number")
+                else:
+                    share_modes.add("weight")
+                    if not _is_number(item["weight"]) or item["weight"] <= 0:
+                        bad(f"{prefix}.weight", "weight must be a positive finite number")
+                sub_p = item.get("pitch_m")
+                if sub_p is not None and (not _is_number(sub_p) or sub_p <= 0):
+                    bad(f"{prefix}.pitch_m", "pitch_m must be a positive finite number")
+                sub_cw = item.get("collector_width_m")
+                if sub_cw is not None and (not _is_number(sub_cw) or sub_cw <= 0):
+                    bad(f"{prefix}.collector_width_m", "collector_width_m must be a positive finite number")
+                if _is_number(sub_p) and _is_number(sub_cw) and float(sub_p) <= float(sub_cw):
+                    bad(f"{prefix}.pitch_m", "pitch_m must exceed collector_width_m (GCR < 1.0)")
+                if item.get("shed_count") is not None and (not _is_int(item["shed_count"]) or not 1 <= item["shed_count"] <= 1000):
+                    bad(f"{prefix}.shed_count", "shed_count must be an integer in 1..1000")
+                for key in ("inactive_band_width_1_m", "inactive_band_width_2_m"):
+                    if item.get(key) is not None and (not _is_number(item[key]) or item[key] < 0):
+                        bad(f"{prefix}.{key}", f"{key} must be a nonnegative finite number")
+                if item.get("electrical_effect") is not None and type(item["electrical_effect"]) is not bool:
+                    bad(f"{prefix}.electrical_effect", "electrical_effect must be a strict boolean")
+                if item.get("shading_factor") is not None and (not _is_number(item["shading_factor"]) or not 0 <= item["shading_factor"] <= 1):
+                    bad(f"{prefix}.shading_factor", "shading_factor must lie in 0..1")
+                if item.get("cell_width_m") is not None and (not _is_number(item["cell_width_m"]) or item["cell_width_m"] < 0.01):
+                    bad(f"{prefix}.cell_width_m", "cell_width_m must be >= 0.01 m")
+                if item.get("base_slope_deg") is not None and (not _is_number(item["base_slope_deg"]) or not -45 <= item["base_slope_deg"] <= 45):
+                    bad(f"{prefix}.base_slope_deg", "base_slope_deg must lie in -45..45 degrees")
+            if len(share_modes) > 1:
+                bad("ground_layout.sub_orientations",
+                    "Use either target_dc_kw on all sub_orientations or weight on all sub_orientations, not a mix")
+
     if scope == "ground_sheds":
         for name, low, high in (("tilt", 0, 90), ("azimuth", -180, 180)):
             value = spec.get(name)
             note = ("Use a finite tilt in 0..90 degrees" if name == "tilt"
                     else "Use finite PVsyst azimuth in -180..180 degrees, zero south and west positive")
-            if value is None or not _is_number(value) or not low <= value <= high:
+            if value is None:
+                if not has_sub_orients:
+                    bad(name, note)
+            elif not _is_number(value) or not low <= value <= high:
                 bad(name, note)
         for key in sorted(set(layout) & TRACKER_ONLY_KEYS):
             bad(f"ground_layout.{key}", f"{key} is only supported for scope='ground_tracker'")
@@ -292,8 +365,64 @@ def plan_utility_capacity(store, pan_info: dict, ond_info: dict, flat_capacity: 
     return plan_capacity(store, lines, 1, pan_fields, ond_electrical, flat_capacity)
 
 
+def _apportion_sub_orientations(sub_orientations: list[dict], plan: dict) -> list[dict]:
+    """Apportion total inverter/MPPT/string counts across multi-orientation ground sheds."""
+    count = len(sub_orientations)
+    total_inv = int(plan["inverter_count"])
+    mppt_per_inv = int(plan["mppt_per_inverter"])
+    total_strings = int(plan["string_count"])
+    n_mod_serie = int(plan["series_modules"])
+    if total_inv < count:
+        raise ValueError(
+            f"Total inverter_count ({total_inv}) must be at least the number of sub_orientations ({count}) "
+            "so every orientation subarray owns at least 1 dedicated inverter"
+        )
+    if total_strings % (total_inv * mppt_per_inv) != 0:
+        raise ValueError(
+            f"Total string_count ({total_strings}) must be divisible by inverter_count * mppt_per_inverter "
+            f"({total_inv * mppt_per_inv}) to split cleanly across sub_orientations"
+        )
+    str_per_inv = total_strings // total_inv
+    weights = [
+        float(item["target_dc_kw"]) if item.get("target_dc_kw") is not None else float(item["weight"])
+        for item in sub_orientations
+    ]
+    total_w = sum(weights)
+    ideals = [(w / total_w) * total_inv for w in weights]
+    alloc = [max(1, int(math.floor(q))) for q in ideals]
+    while sum(alloc) < total_inv:
+        best_i = max(range(count), key=lambda i: ideals[i] - alloc[i])
+        alloc[best_i] += 1
+    while sum(alloc) > total_inv:
+        candidates = [i for i in range(count) if alloc[i] > 1]
+        best_i = max(candidates, key=lambda i: alloc[i] - ideals[i])
+        alloc[best_i] -= 1
+
+    resolved: list[dict] = []
+    for item, inv_k in zip(sub_orientations, alloc):
+        entry = {
+            "tilt_deg": float(item["tilt"]),
+            "azimuth_deg": float(item["azimuth"]),
+            "n_mod_serie": n_mod_serie,
+            "n_inverter": inv_k,
+            "n_inv_mppt": inv_k * mppt_per_inv,
+            "n_string_ch": inv_k * str_per_inv,
+        }
+        if item.get("label") is not None:
+            entry["label"] = item["label"]
+        for opt_key in (
+            "pitch_m", "collector_width_m", "shed_count",
+            "inactive_band_width_1_m", "inactive_band_width_2_m",
+            "electrical_effect", "shading_factor", "cell_width_m", "base_slope_deg",
+        ):
+            if item.get(opt_key) is not None:
+                entry[opt_key] = item[opt_key]
+        resolved.append(entry)
+    return resolved
+
+
 def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name: str, met_name: str,
-                          plan: dict, pnom_ac: float) -> dict:
+                          plan: dict, pnom_ac: float, allow_missing_met: bool = False) -> dict:
     scope = spec["scope"]
     layout = dict(spec.get("ground_layout") or {})
     field_type, include_3d = resolve_utility_field_type(scope, layout)
@@ -334,11 +463,26 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
     n_mppt_total = n_inv * mppt_per_inv
     pnom_per_mppt = pnom_ac / mppt_per_inv
 
+    raw_sub_orients = layout.get("sub_orientations")
+    resolved_sub_orients = (
+        _apportion_sub_orientations(raw_sub_orients, plan)
+        if raw_sub_orients else None
+    )
+    default_tilt = (
+        float(spec["tilt"]) if spec.get("tilt") is not None
+        else (resolved_sub_orients[0]["tilt_deg"] if resolved_sub_orients else 20.0)
+    )
+    default_azim = (
+        float(spec["azimuth"]) if spec.get("azimuth") is not None
+        else (resolved_sub_orients[0]["azimuth_deg"] if resolved_sub_orients else 0.0)
+    )
+
     kwargs = {
         "project_comment": Path(spec["new_project"]).stem,
         "variant_comment": f"{scope} ({'3D' if include_3d else 'unlimited'})",
         "site_name": site_name,
         "met_name": met_name,
+        "allow_missing_met": allow_missing_met,
         "field_type": field_type,
         "pan_name": pan_name,
         "ond_name": ond_name,
@@ -348,8 +492,9 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "n_inv_mppt": n_mppt_total,
         "independent_mppt": True,
         "pnom_ac_in_mppt": pnom_per_mppt,
-        "tilt_deg": float(spec.get("tilt", 20.0)) if scope == "ground_sheds" else 0.0,
-        "azimuth_deg": float(spec.get("azimuth", 0.0)) if scope == "ground_sheds" else 0.0,
+        "tilt_deg": default_tilt if scope == "ground_sheds" else 0.0,
+        "azimuth_deg": default_azim if scope == "ground_sheds" else 0.0,
+        "sub_orientations": resolved_sub_orients,
         "axis_azimuth_deg": axis_azim,
         "min_phi_deg": float(layout.get("min_phi_deg", -60.0)),
         "max_phi_deg": float(layout.get("max_phi_deg", 60.0)),
@@ -438,6 +583,7 @@ def run_utility_design(
     prepare_only: bool = False,
     preparation_context: dict | None = None,
     allow_window_creation: bool | None = None,
+    synthetic_weather: bool = False,
 ) -> dict:
     """Synthesize a zero-template utility ground project and optionally run a full-year CLI simulation."""
     new_project = spec["new_project"]
@@ -476,8 +622,12 @@ def run_utility_design(
             assets[kind] = {"path": str(info["path"]), "sha256": fingerprint(info["path"]),
                             "library": info.get("library", "workspace")}
 
-    for field, folder, name, ext in (("site_name", "Sites", sit_name, ".SIT"),
-                                     ("met_name", "Meteo", met_name, ".MET")):
+    weather_targets = (
+        (("site_name", "Sites", sit_name, ".SIT"),)
+        if synthetic_weather
+        else (("site_name", "Sites", sit_name, ".SIT"), ("met_name", "Meteo", met_name, ".MET"))
+    )
+    for field, folder, name, ext in weather_targets:
         try:
             path = workspace_file(cli.workspace, folder, name, ext)
             if not path.is_file():
@@ -526,10 +676,12 @@ def run_utility_design(
     if not result["issues"]:
         try:
             pnom_ac = _ond_pnom_kw(ond_info["electrical"])
+            effective_met = f"{Path(sit_name).stem}_Synthetic.MET" if synthetic_weather else met_name
             kwargs = _build_utility_kwargs(
                 spec, pan_name=pan_name, ond_name=ond_name,
-                site_name=sit_name, met_name=met_name,
+                site_name=sit_name, met_name=effective_met,
                 plan=capacity_plan, pnom_ac=pnom_ac,
+                allow_missing_met=synthetic_weather,
             )
             synth_preview = synthesize_utility_project(store, **kwargs)
             result["utility_summary"] = synth_preview["utility_summary"]
@@ -614,10 +766,12 @@ def run_utility_design(
             if weather_report is not None:
                 variables.extend(["viGlobHor", "viDiffHor", "viT_Amb"])
             build_sfi(paths["sfi"], variables)
-            native_inputs = (
-                {"site": Path(assets["site_name"]["path"]), "met": Path(assets["met_name"]["path"])}
-                if weather_report is not None else {}
-            )
+            if synthetic_weather:
+                native_inputs = {"site": Path(assets["site_name"]["path"]), "synthetic_weather": True}
+            elif weather_report is not None:
+                native_inputs = {"site": Path(assets["site_name"]["path"]), "met": Path(assets["met_name"]["path"])}
+            else:
+                native_inputs = {}
             run = cli.run_simulation(
                 new_project, variant,
                 sfi=paths["sfi"],
@@ -639,9 +793,10 @@ def run_utility_design(
             expected_context = {
                 "Project": new_project,
                 "Geographical Site": sit_name,
-                "Weather data": met_name,
                 "Simulation variant": f"{Path(new_project).stem}.{variant}",
             }
+            if not synthetic_weather:
+                expected_context["Weather data"] = met_name
             context: dict[str, str] = {}
             with paths["csv"].open(encoding="utf-8-sig", errors="replace", newline="") as stream:
                 for row in csv.reader(stream, delimiter=";"):

@@ -50,11 +50,14 @@ def pvsyst_acquire_weather(csv_name: StrictStr = "", year: StrictInt | None = No
                            altitude: StrictNum | None = None, timezone_name: StrictStr = "",
                            temperature_method: StrictStr = "endpoint_mean",
                            provider: Literal["open_meteo_era5", "pvgis_tmy", "nasa_power"] = "open_meteo_era5",
+                           strict_dhi: StrictBool = False,
                            prepare: StrictBool = False,
                            sit_name: StrictStr = "", met_name: StrictStr = "",
                            dry_run: StrictBool = True) -> dict:
     """Download a full-year hourly weather dataset from Open-Meteo ERA5, PVGIS v5.3 TMY, or
     NASA POWER aligned to local winter standard time, saving raw JSON, CSV, and manifest.
+    By default, small twilight satellite inversion excess (0 < GHI < 30 W/m2 and DHI - GHI <= 15 W/m2)
+    is clamped to DHI = GHI with a manifest warning; pass strict_dhi=true to reject instead.
     Set prepare=true to chain directly into prepare_weather and emit SIT/MEF/MET."""
     current = cli()
     with current._lock:
@@ -63,7 +66,7 @@ def pvsyst_acquire_weather(csv_name: StrictStr = "", year: StrictInt | None = No
             location_id=location_id, latitude=latitude, longitude=longitude,
             site_name=site_name, country_code=country_code, altitude=altitude,
             timezone_name=timezone_name, temperature_method=temperature_method,
-            provider=provider, dry_run=dry_run,
+            provider=provider, strict_dhi=strict_dhi, dry_run=dry_run,
         )
     if prepare:
         stem = (csv_name[:-4] if csv_name.lower().endswith(".csv") else csv_name) or "AcquiredWeather"
@@ -119,11 +122,17 @@ def pvsyst_build_monthly_weather(filename: str, global_h: list[StrictNum],
 def pvsyst_create_site(site_name: str, latitude: StrictNum, longitude: StrictNum,
                        weather_csv_name: str, sit_name: str,
                        altitude: StrictNum | None = None, timezone: StrictNum | None = None,
-                       country_code: str = "", region: str = "", source: str = "",
+                       country_code: str = "",
+                       region: Literal[
+                           "", "africa", "antarctica", "asia", "australia",
+                           "europe", "north_america", "pacific", "south_america",
+                       ] = "",
+                       source: str = "",
                        albedo: StrictNum | None = None, log_level: StrictInt | None = None) -> dict:
     """Use CLI create-site to create a NEW SIT in workspace/Sites (8.1+).
-    Stage or generate monthly weather CSV in workspace/Meteo. If altitude,
-    timezone or country are omitted, the CLI may query an external service."""
+    Stage or generate monthly weather CSV in workspace/Meteo. Allowed region values:
+    africa, antarctica, asia, australia, europe, north_america, pacific, south_america (lowercase).
+    If altitude, timezone or country are omitted, the CLI may query an external service."""
     weather = workspace_path("Meteo", weather_csv_name, ".csv")
     target = workspace_path("Sites", sit_name, ".sit")
     output = cli().create_site(site_name, latitude, longitude, weather, target,

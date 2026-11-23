@@ -6,6 +6,7 @@ Pure Python standard library implementation. Streams hourly or sub-hourly PVsyst
 """
 from __future__ import annotations
 
+import itertools
 import math
 from pathlib import Path
 from typing import Any
@@ -15,8 +16,149 @@ from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.results import RegularResultCsv, energy_unit_scale
 from pvsyst_auto.validation import finite_number as _finite
 
-_VALID_RANK_KEYS = ("npv", "irr", "lcoe", "simple_payback_years", "discounted_payback_years", "year1_net_benefit")
+_VALID_RANK_KEYS = (
+    "npv", "irr", "equity_irr", "lcoe",
+    "simple_payback_years", "discounted_payback_years", "year1_net_benefit",
+)
 _VALID_SENSITIVITY_FACTORS = ("tariff", "capex", "yield", "degradation")
+
+
+def _validate_vat(raw_vat: dict | None) -> dict | None:
+    if raw_vat is None:
+        return None
+    if not isinstance(raw_vat, dict):
+        raise ValueError("financial.vat must be an object")
+    rate_pct = _finite(raw_vat.get("rate_pct", 0.0), "financial.vat.rate_pct", minimum=0.0, maximum=50.0)
+    includes_vat = raw_vat.get("tariff_includes_vat", True)
+    if type(includes_vat) is not bool:
+        raise ValueError("financial.vat.tariff_includes_vat must be a strict boolean")
+    input_credit = (
+        _finite(raw_vat["input_vat_credit"], "financial.vat.input_vat_credit", minimum=0.0)
+        if raw_vat.get("input_vat_credit") is not None else None
+    )
+    ded_share = (
+        _finite(raw_vat["deductible_capex_share"], "financial.vat.deductible_capex_share", minimum=0.0, maximum=1.0)
+        if raw_vat.get("deductible_capex_share") is not None else None
+    )
+    if input_credit is not None and ded_share is not None:
+        raise ValueError("financial.vat: specify either input_vat_credit or deductible_capex_share, not both")
+    surtax_pct = _finite(raw_vat.get("surtax_pct", 0.0), "financial.vat.surtax_pct", minimum=0.0, maximum=50.0)
+    opex_vat_pct = _finite(raw_vat.get("opex_input_vat_pct", 0.0), "financial.vat.opex_input_vat_pct", minimum=0.0, maximum=50.0)
+    return {
+        "rate_pct": rate_pct,
+        "tariff_includes_vat": includes_vat,
+        "input_vat_credit": input_credit,
+        "deductible_capex_share": ded_share,
+        "surtax_pct": surtax_pct,
+        "opex_input_vat_pct": opex_vat_pct,
+    }
+
+
+def _validate_cit(raw_cit: dict | None, life: int) -> dict | None:
+    if raw_cit is None:
+        return None
+    if not isinstance(raw_cit, dict):
+        raise ValueError("financial.cit must be an object")
+    rate_pct = _finite(raw_cit.get("rate_pct", 0.0), "financial.cit.rate_pct", minimum=0.0, maximum=60.0)
+    exempt_years = raw_cit.get("exempt_years", 0)
+    if type(exempt_years) is not int or not 0 <= exempt_years <= 30:
+        raise ValueError("financial.cit.exempt_years must be an integer in 0..30")
+    half_rate_years = raw_cit.get("half_rate_years", 0)
+    if type(half_rate_years) is not int or not 0 <= half_rate_years <= 30:
+        raise ValueError("financial.cit.half_rate_years must be an integer in 0..30")
+    dep_years = raw_cit.get("depreciation_years")
+    if dep_years is None:
+        dep_years = life
+    elif type(dep_years) is not int or not 1 <= dep_years <= 50:
+        raise ValueError("financial.cit.depreciation_years must be an integer in 1..50")
+    residual_pct = _finite(raw_cit.get("residual_value_pct", 0.0), "financial.cit.residual_value_pct", minimum=0.0, maximum=50.0)
+    carry_years = raw_cit.get("loss_carryforward_years", 5)
+    if type(carry_years) is not int or not 0 <= carry_years <= 50:
+        raise ValueError("financial.cit.loss_carryforward_years must be an integer in 0..50")
+    return {
+        "rate_pct": rate_pct,
+        "exempt_years": exempt_years,
+        "half_rate_years": half_rate_years,
+        "depreciation_years": dep_years,
+        "residual_value_pct": residual_pct,
+        "loss_carryforward_years": carry_years,
+    }
+
+
+def _validate_financing(raw_fin: dict | None) -> dict | None:
+    if raw_fin is None:
+        return None
+    if not isinstance(raw_fin, dict):
+        raise ValueError("financial.financing must be an object")
+    equity_ratio = _finite(raw_fin.get("equity_ratio_pct", 100.0), "financial.financing.equity_ratio_pct", minimum=1.0, maximum=100.0)
+    tenor = raw_fin.get("loan_tenor_years", 15)
+    if type(tenor) is not int or not 1 <= tenor <= 50:
+        raise ValueError("financial.financing.loan_tenor_years must be an integer in 1..50")
+    grace = raw_fin.get("loan_grace_years", 0)
+    if type(grace) is not int or not 0 <= grace <= 10:
+        raise ValueError("financial.financing.loan_grace_years must be an integer in 0..10")
+    if grace >= tenor:
+        raise ValueError("financial.financing.loan_grace_years must be strictly less than loan_tenor_years")
+    interest = _finite(raw_fin.get("loan_interest_rate_pct", 0.0), "financial.financing.loan_interest_rate_pct", minimum=0.0, maximum=30.0)
+    method = raw_fin.get("repayment_method", "equal_principal")
+    if method not in ("equal_principal", "equal_payment"):
+        raise ValueError("financial.financing.repayment_method must be 'equal_principal' or 'equal_payment'")
+    eq_disc = (
+        _finite(raw_fin["equity_discount_rate_pct"], "financial.financing.equity_discount_rate_pct", minimum=0.0, maximum=50.0)
+        if raw_fin.get("equity_discount_rate_pct") is not None else None
+    )
+    return {
+        "equity_ratio_pct": equity_ratio,
+        "loan_tenor_years": tenor,
+        "loan_grace_years": grace,
+        "loan_interest_rate_pct": interest,
+        "repayment_method": method,
+        "equity_discount_rate_pct": eq_disc,
+    }
+
+
+def _validate_opex_tiers(raw_tiers: list | None, life: int) -> list[dict]:
+    if not raw_tiers:
+        return []
+    if not isinstance(raw_tiers, list):
+        raise ValueError("financial.opex_tiers must be a list of tier objects")
+    tiers: list[dict] = []
+    override_years: set[int] = set()
+    for idx, raw in enumerate(raw_tiers):
+        if not isinstance(raw, dict):
+            raise ValueError(f"financial.opex_tiers[{idx}] must be an object")
+        sy = raw.get("start_year")
+        ey = raw.get("end_year")
+        if type(sy) is not int or not 1 <= sy <= life:
+            raise ValueError(f"financial.opex_tiers[{idx}].start_year must be an integer in 1..{life}")
+        if type(ey) is not int or not sy <= ey <= life:
+            raise ValueError(f"financial.opex_tiers[{idx}].end_year must be an integer in {sy}..{life}")
+        ann = _finite(raw["annual_opex"], f"financial.opex_tiers[{idx}].annual_opex", minimum=0.0) if raw.get("annual_opex") is not None else None
+        per_kw = _finite(raw["opex_per_kw_year"], f"financial.opex_tiers[{idx}].opex_per_kw_year", minimum=0.0) if raw.get("opex_per_kw_year") is not None else None
+        pct_cap = _finite(raw["opex_pct_capex"], f"financial.opex_tiers[{idx}].opex_pct_capex", minimum=0.0, maximum=50.0) if raw.get("opex_pct_capex") is not None else None
+        extra = _finite(raw["extra_annual_opex"], f"financial.opex_tiers[{idx}].extra_annual_opex", minimum=0.0) if raw.get("extra_annual_opex") is not None else None
+        if ann is None and per_kw is None and pct_cap is None and extra is None:
+            raise ValueError(f"financial.opex_tiers[{idx}] must set annual_opex, opex_per_kw_year, opex_pct_capex, or extra_annual_opex")
+        escalate = raw.get("escalate", False)
+        if type(escalate) is not bool:
+            raise ValueError(f"financial.opex_tiers[{idx}].escalate must be a strict boolean")
+        is_override = any(v is not None for v in (ann, per_kw, pct_cap))
+        if is_override:
+            span = set(range(sy, ey + 1))
+            if span & override_years:
+                raise ValueError(f"financial.opex_tiers[{idx}] base-OPEX year span {sy}..{ey} overlaps an earlier base-OPEX tier")
+            override_years |= span
+        tiers.append({
+            "start_year": sy,
+            "end_year": ey,
+            "annual_opex": ann,
+            "opex_per_kw_year": per_kw,
+            "opex_pct_capex": pct_cap,
+            "extra_annual_opex": extra,
+            "escalate": escalate,
+            "label": str(raw.get("label") or f"tier_{idx + 1}").strip(),
+        })
+    return tiers
 
 
 def _validate_demand_charge(raw_dc: dict | None) -> dict | None:
@@ -187,6 +329,11 @@ def _validate_financial(financial: dict | None) -> dict:
     opex_per_kw_yr = _finite(raw.get("opex_per_kw_year", 0.0), "financial.opex_per_kw_year", minimum=0.0)
     opex_pct_capex = _finite(raw.get("opex_pct_capex", 0.0), "financial.opex_pct_capex", minimum=0.0, maximum=50.0)
     salvage_pct = _finite(raw.get("salvage_value_pct", 0.0), "financial.salvage_value_pct", minimum=0.0, maximum=100.0)
+    upfront_opex = _finite(raw.get("upfront_opex", 0.0), "financial.upfront_opex", minimum=0.0)
+    opex_tiers = _validate_opex_tiers(raw.get("opex_tiers"), life)
+    vat_cfg = _validate_vat(raw.get("vat"))
+    cit_cfg = _validate_cit(raw.get("cit"), life)
+    financing_cfg = _validate_financing(raw.get("financing"))
 
     bat_rep_year = raw.get("battery_replacement_year")
     if bat_rep_year is not None:
@@ -228,6 +375,11 @@ def _validate_financial(financial: dict | None) -> dict:
         "opex_per_kw_year": opex_per_kw_yr,
         "opex_pct_capex": opex_pct_capex,
         "salvage_value_pct": salvage_pct,
+        "upfront_opex": upfront_opex,
+        "opex_tiers": opex_tiers,
+        "vat": vat_cfg,
+        "cit": cit_cfg,
+        "financing": financing_cfg,
         "battery_replacement_year": bat_rep_year,
         "battery_replacement_cost_ratio": bat_rep_ratio,
         "battery_replacement_cost": bat_rep_cost,
@@ -332,16 +484,26 @@ def _battery_replacement_event(
 
 def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
     """Single-pass streaming settlement over an hourly or sub-hourly PVsyst SFI CSV."""
-    reader = RegularResultCsv(
-        csv_path,
-        empty_message="Result CSV contains no simulation rows",
-        irregular_message=(
-            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
-            "cannot settle energy or tariffs reliably"
-        ),
-        required_any_of=("EToGrid", "E_Grid"),
-        missing_required_message="Result CSV must include E_Grid or EToGrid for financial evaluation",
-    )
+    return _settle_multi_csv_year1([csv_path], [1.0], tariff)
+
+
+def _settle_multi_csv_year1(csv_paths: list[Path], weights: list[float], tariff: dict) -> dict:
+    """Single-pass streaming settlement over one or more timestamp-aligned SFI CSVs."""
+    if not csv_paths or len(csv_paths) != len(weights):
+        raise ValueError("csv_paths and weights must be non-empty lists of identical length")
+    readers = [
+        RegularResultCsv(
+            p,
+            empty_message=f"Result CSV {p.name} contains no simulation rows",
+            irregular_message=(
+                f"Result CSV {p.name} timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+                "cannot settle energy or tariffs reliably"
+            ),
+            required_any_of=("EToGrid", "E_Grid"),
+            missing_required_message=f"Result CSV {p.name} must include E_Grid or EToGrid for financial evaluation",
+        )
+        for p in csv_paths
+    ]
 
     monthly = {
         m: {"e_grid": 0.0, "e_user": 0.0, "e_from_grid": 0.0, "e_bat_ch": 0.0, "e_bat_dis": 0.0,
@@ -368,69 +530,99 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
         "avoided_import_savings": 0.0,
     }
 
-    idx: dict[str, int] = {}
-    col_scale: dict[str, tuple[float, bool]] = {}
-    export_col: str | None = None
+    per_meta: list[dict[str, Any]] = []
     has_load = False
-    has_import_col = False
     has_storage = False
+    sentinel = object()
+    iterators = [r.iter_rows() for r in readers]
 
-    for stamp, row, dt_hours in reader.iter_rows():
-        if not col_scale:
-            idx = reader.idx
-            export_col = "EToGrid" if "EToGrid" in idx else "E_Grid"
-            has_load = "E_User" in idx
-            has_import_col = "EFrGrid" in idx
-            has_storage = "EBatCh" in idx or "EBatDis" in idx
-            col_scale = {col: energy_unit_scale(reader.units.get(col, "")) for col in idx}
+    for row_idx, items in enumerate(itertools.zip_longest(*iterators, fillvalue=sentinel)):
+        if any(item is sentinel for item in items):
+            raise ValueError(
+                "Merged result CSVs have different row counts; all portfolio CSVs must span identical timestamps"
+            )
+        stamp, _, dt_hours = items[0]
+        for k, (st_k, _, dt_k) in enumerate(items[1:], start=1):
+            if st_k != stamp or abs(dt_k - dt_hours) > 1e-6:
+                raise ValueError(
+                    f"Merged result CSV {csv_paths[k].name} timestamp mismatch at row {row_idx + 1}: "
+                    f"expected {stamp.isoformat()} (dt={dt_hours:g}h), got {st_k.isoformat()} (dt={dt_k:g}h)"
+                )
 
-        def kwh(col: str) -> float:
-            col_i = idx.get(col)
-            if col_i is None:
-                return 0.0
-            raw = row[col_i]
-            val = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0.0
-            factor, needs_dt = col_scale[col]
-            if factor == 0.0:
-                raise ValueError(f"{col} requires a power or energy unit, got {reader.units.get(col, '')!r}")
-            return val * factor * (dt_hours if needs_dt else 1.0)
+        if not per_meta:
+            for r in readers:
+                idx = r.idx
+                per_meta.append({
+                    "reader": r,
+                    "idx": idx,
+                    "export_col": "EToGrid" if "EToGrid" in idx else "E_Grid",
+                    "has_load": "E_User" in idx,
+                    "has_import": "EFrGrid" in idx,
+                    "has_storage": ("EBatCh" in idx or "EBatDis" in idx),
+                    "col_scale": {col: energy_unit_scale(r.units.get(col, "")) for col in idx},
+                })
+            has_load = any(m["has_load"] for m in per_meta)
+            has_storage = any(m["has_storage"] for m in per_meta)
+
+        self_cons = inferred_self_cons = 0.0
+        e_exp_sum = 0.0
+        e_user_sum = 0.0
+        e_imp_sum = 0.0
+        e_bat_ch_sum = 0.0
+        e_bat_dis_sum = 0.0
+
+        for meta, w, (_, row, dt_k) in zip(per_meta, weights, items):
+            idx = meta["idx"]
+            col_scale = meta["col_scale"]
+            reader_k = meta["reader"]
+
+            def kwh(col: str) -> float:
+                col_i = idx.get(col)
+                if col_i is None:
+                    return 0.0
+                raw = row[col_i]
+                val = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0.0
+                factor, needs_dt = col_scale[col]
+                if factor == 0.0:
+                    raise ValueError(f"{col} requires a power or energy unit, got {reader_k.units.get(col, '')!r}")
+                return val * factor * (dt_k if needs_dt else 1.0)
+
+            raw_eg = kwh(meta["export_col"])
+            e_exp_sum += w * max(0.0, raw_eg)
+            e_user_k = max(0.0, kwh("E_User")) if meta["has_load"] else 0.0
+            e_user_sum += w * e_user_k
+            if meta["has_import"]:
+                e_imp_k = max(0.0, kwh("EFrGrid"))
+            elif meta["has_load"] and "E_Solar" in idx:
+                e_imp_k = max(0.0, e_user_k - max(0.0, kwh("E_Solar")))
+            elif raw_eg < 0:
+                e_imp_k = -raw_eg
+            else:
+                e_imp_k = 0.0
+            if meta["has_load"]:
+                self_cons += w * max(0.0, e_user_k - e_imp_k)
+            elif tariff["mode"] != "feed_in" and tariff["self_consumption_ratio"]:
+                inferred = w * max(0.0, raw_eg) * tariff["self_consumption_ratio"]
+                inferred_self_cons += inferred
+                self_cons += inferred
+                e_exp_sum -= inferred
+            e_imp_sum += w * e_imp_k
+            if "EBatCh" in idx:
+                e_bat_ch_sum += w * max(0.0, kwh("EBatCh"))
+            if "EBatDis" in idx:
+                e_bat_dis_sum += w * max(0.0, kwh("EBatDis"))
 
         p_name, imp_rate, exp_rate = _lookup_rate(stamp, tariff)
+        e_exp = e_exp_sum
+        e_user = e_user_sum
+        e_imp = e_imp_sum
+        e_bat_ch = e_bat_ch_sum
+        e_bat_dis = e_bat_dis_sum
 
-        raw_eg = kwh(export_col) if export_col else 0.0
-        e_exp = max(0.0, raw_eg)
-        e_user = max(0.0, kwh("E_User")) if has_load else 0.0
-        if has_import_col:
-            e_imp = max(0.0, kwh("EFrGrid"))
-        elif has_load and "E_Solar" in idx:
-            e_imp = max(0.0, e_user - max(0.0, kwh("E_Solar")))
-        elif raw_eg < 0:
-            e_imp = -raw_eg
-        else:
-            e_imp = 0.0
-
-        e_bat_ch = max(0.0, kwh("EBatCh")) if "EBatCh" in idx else 0.0
-        e_bat_dis = max(0.0, kwh("EBatDis")) if "EBatDis" in idx else 0.0
-
-        if has_load:
-            self_cons = max(0.0, e_user - e_imp)
-            baseline_bill = e_user * imp_rate
-            import_cost = e_imp * imp_rate
-            export_rev = e_exp * exp_rate
-            avoided = baseline_bill - import_cost
-        else:
-            sc_ratio = (
-                tariff["self_consumption_ratio"]
-                if (tariff["mode"] != "feed_in" and tariff["self_consumption_ratio"] is not None)
-                else 0.0
-            )
-            self_cons = e_exp * sc_ratio
-            net_exp = e_exp - self_cons
-            baseline_bill = self_cons * imp_rate
-            import_cost = e_imp * imp_rate
-            export_rev = net_exp * exp_rate
-            avoided = baseline_bill - import_cost
-            e_exp = net_exp
+        baseline_bill = (e_user + inferred_self_cons) * imp_rate
+        import_cost = e_imp * imp_rate
+        export_rev = e_exp * exp_rate
+        avoided = baseline_bill - import_cost
 
         totals["pv_export_kwh"] += e_exp
         totals["grid_import_kwh"] += e_imp
@@ -492,8 +684,8 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
         h_rec["import_rate_sum"] += imp_rate
         h_rec["export_rate_sum"] += exp_rate
 
-    rows = reader.rows_count
-    eff_step_min = reader.step_minutes if reader.step_minutes is not None else 60.0
+    rows = readers[0].rows_count
+    eff_step_min = readers[0].step_minutes if readers[0].step_minutes is not None else 60.0
     total_pv_utilized_kwh = totals["pv_export_kwh"] + totals["self_consumed_kwh"]
     year1_energy_benefit = totals["export_revenue"] + totals["avoided_import_savings"]
 
@@ -612,6 +804,10 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
         for name, rec in tou_breakdown.items()
     }
 
+    merged_sources = (
+        [{"csv_name": p.name, "weight": round(w, 6)} for p, w in zip(csv_paths, weights)]
+        if len(csv_paths) > 1 else None
+    )
     return {
         "rows": rows,
         "step_minutes": eff_step_min,
@@ -627,6 +823,7 @@ def _settle_csv_year1(csv_path: Path, tariff: dict) -> dict:
         "monthly_summary": monthly_summary,
         "typical_day_profile": typical_day,
         "warnings": warnings,
+        **({"merged_sources": merged_sources} if merged_sources is not None else {}),
     }
 
 
@@ -669,6 +866,63 @@ def _compute_irr(cashflows: list[float]) -> float | None:
     return 0.5 * (lo + hi)
 
 
+def _apply_loss_carryforward(ebt: float, year: int, carry_years: int, losses: list[list[float]]) -> float:
+    """Apply FIFO operating tax-loss carryforward and return taxable income (>= 0)."""
+    if carry_years <= 0:
+        losses.clear()
+        return max(0.0, ebt)
+    # Expire losses older than carry_years
+    while losses and (year - int(losses[0][0])) > carry_years:
+        losses.pop(0)
+    if ebt < 0.0:
+        losses.append([float(year), -ebt])
+        return 0.0
+    remaining = ebt
+    while remaining > 0.0 and losses:
+        avail = losses[0][1]
+        used = min(avail, remaining)
+        remaining -= used
+        losses[0][1] -= used
+        if losses[0][1] <= 1e-9:
+            losses.pop(0)
+    return max(0.0, remaining)
+
+
+def _resolve_year_opex(
+    year: int,
+    *,
+    base_annual_opex: float,
+    opex_esc: float,
+    opex_tiers: list[dict],
+    capex_total: float,
+    dc_kw: float | None,
+) -> float:
+    """Resolve annual OPEX for a given operating year (1..life) with optional staged tiers."""
+    esc_factor = (1.0 + opex_esc) ** (year - 1)
+    base_override: float | None = None
+    extra_sum = 0.0
+    for tier in opex_tiers:
+        if not (tier["start_year"] <= year <= tier["end_year"]):
+            continue
+        tier_esc = esc_factor if tier["escalate"] else 1.0
+        if (tier["annual_opex"] is not None or tier["opex_per_kw_year"] is not None
+                or tier["opex_pct_capex"] is not None):
+            amt = float(tier["annual_opex"] or 0.0)
+            if tier["opex_per_kw_year"] is not None and tier["opex_per_kw_year"] > 0:
+                if dc_kw is None:
+                    raise ValueError(
+                        f"installed_dc_kw is required when financial.opex_tiers ({tier['label']}) sets opex_per_kw_year > 0"
+                    )
+                amt += dc_kw * tier["opex_per_kw_year"]
+            if tier["opex_pct_capex"] is not None and tier["opex_pct_capex"] > 0:
+                amt += capex_total * (tier["opex_pct_capex"] / 100.0)
+            base_override = amt * tier_esc
+        if tier["extra_annual_opex"] is not None:
+            extra_sum += tier["extra_annual_opex"] * tier_esc
+    base_y = base_override if base_override is not None else (base_annual_opex * esc_factor)
+    return base_y + extra_sum
+
+
 def _compute_cashflow_metrics(
     *,
     year1_energy_kwh: float,
@@ -678,6 +932,7 @@ def _compute_cashflow_metrics(
     replacement_events: list[dict],
     financial: dict,
     year1_demand_savings: float = 0.0,
+    dc_kw: float | None = None,
 ) -> dict:
     life = financial["project_life_years"]
     r = financial["discount_rate_pct"] / 100.0
@@ -686,33 +941,195 @@ def _compute_cashflow_metrics(
     opex_esc = financial["opex_escalation_pct"] / 100.0
     tariff_esc = financial["tariff_escalation_pct"] / 100.0
     salvage_pct = financial["salvage_value_pct"] / 100.0
+    upfront_opex = float(financial.get("upfront_opex") or 0.0)
+    opex_tiers = financial.get("opex_tiers") or []
+    vat_cfg = financial.get("vat")
+    cit_cfg = financial.get("cit")
+    fin_loan = financial.get("financing")
     year1_energy_benefit = year1_gross_benefit - year1_demand_savings
 
     rep_by_year: dict[int, float] = {}
     for ev in replacement_events:
         rep_by_year[ev["year"]] = rep_by_year.get(ev["year"], 0.0) + ev["cost"]
 
-    cashflows: list[float] = [-capex_total]
-    schedule: list[dict] = []
-    cum_nom = -capex_total
-    cum_disc = -capex_total
-    simple_payback: float | None = 0.0 if capex_total == 0 else None
-    discounted_payback: float | None = 0.0 if capex_total == 0 else None
+    # VAT setup
+    has_vat = vat_cfg is not None
+    vat_r = (vat_cfg["rate_pct"] / 100.0) if has_vat else 0.0
+    vat_surtax_r = (vat_cfg["surtax_pct"] / 100.0) if has_vat else 0.0
+    opex_vat_r = (vat_cfg["opex_input_vat_pct"] / 100.0) if has_vat else 0.0
+    if has_vat:
+        if vat_cfg["input_vat_credit"] is not None:
+            initial_input_vat_credit = float(vat_cfg["input_vat_credit"])
+        elif vat_cfg["deductible_capex_share"] is not None and vat_r > 0.0:
+            initial_input_vat_credit = capex_total * vat_cfg["deductible_capex_share"] * (vat_r / (1.0 + vat_r))
+        else:
+            initial_input_vat_credit = 0.0
+    else:
+        initial_input_vat_credit = 0.0
+    vat_credit_rem = initial_input_vat_credit
+    vat_credit_exhausted_year: int | None = None
 
-    pv_costs = capex_total
+    # CIT setup
+    has_cit = cit_cfg is not None
+    cit_r = (cit_cfg["rate_pct"] / 100.0) if has_cit else 0.0
+    cit_exempt = cit_cfg["exempt_years"] if has_cit else 0
+    cit_half = cit_cfg["half_rate_years"] if has_cit else 0
+    dep_years = cit_cfg["depreciation_years"] if has_cit else life
+    residual_pct = (cit_cfg["residual_value_pct"] / 100.0) if has_cit else 0.0
+    carry_years = cit_cfg["loss_carryforward_years"] if has_cit else 0
+    depreciable_base = max(0.0, capex_total - initial_input_vat_credit)
+    annual_dep = (depreciable_base * (1.0 - residual_pct) / dep_years) if (has_cit and dep_years > 0) else 0.0
+    proj_losses: list[list[float]] = []
+    eq_losses: list[list[float]] = []
+
+    # Financing (debt / equity) setup
+    has_financing = fin_loan is not None
+    if has_financing:
+        eq_ratio = fin_loan["equity_ratio_pct"] / 100.0
+        debt_principal_init = capex_total * (1.0 - eq_ratio)
+        equity_investment = capex_total * eq_ratio + upfront_opex
+        loan_tenor = fin_loan["loan_tenor_years"]
+        loan_grace = fin_loan["loan_grace_years"]
+        loan_r = fin_loan["loan_interest_rate_pct"] / 100.0
+        repay_years = loan_tenor - loan_grace
+        repay_method = fin_loan["repayment_method"]
+        eq_disc_r = (
+            (fin_loan["equity_discount_rate_pct"] / 100.0)
+            if fin_loan["equity_discount_rate_pct"] is not None else r
+        )
+        if repay_method == "equal_payment" and debt_principal_init > 0:
+            if loan_r > 0:
+                level_annuity = debt_principal_init * loan_r / (1.0 - ((1.0 + loan_r) ** (-repay_years)))
+            else:
+                level_annuity = debt_principal_init / repay_years
+        else:
+            level_annuity = 0.0
+        debt_balance = debt_principal_init
+    else:
+        debt_principal_init = 0.0
+        equity_investment = 0.0
+        loan_tenor = 0
+        loan_grace = 0
+        loan_r = 0.0
+        repay_years = 1
+        repay_method = "equal_principal"
+        eq_disc_r = r
+        level_annuity = 0.0
+        debt_balance = 0.0
+
+    initial_outflow = capex_total + upfront_opex
+    pre_tax_cfs: list[float] = [-initial_outflow]
+    post_tax_cfs: list[float] = [-initial_outflow]
+    equity_cfs: list[float] = [-equity_investment] if has_financing else []
+
+    schedule: list[dict] = []
+    cum_nom = -initial_outflow
+    cum_disc = -initial_outflow
+    simple_payback: float | None = 0.0 if initial_outflow == 0 else None
+    discounted_payback: float | None = 0.0 if initial_outflow == 0 else None
+    eq_cum_nom = -equity_investment
+    eq_simple_payback: float | None = (0.0 if equity_investment == 0 else None) if has_financing else None
+
+    pv_costs = initial_outflow
     pv_energy = 0.0
     lifetime_energy = 0.0
     lifetime_revenue = 0.0
     lifetime_opex = 0.0
+    lifetime_vat_payable = 0.0
+    lifetime_vat_surtax = 0.0
+    lifetime_cit_project = 0.0
+    lifetime_cit_equity = 0.0
+    lifetime_interest = 0.0
+    dscr_values: list[float] = []
 
     for year in range(1, life + 1):
         deg_factor = (1.0 - deg1) * ((1.0 - deg_ann) ** (year - 1))
         energy_y = year1_energy_kwh * deg_factor
         gross_y = (year1_energy_benefit * deg_factor + year1_demand_savings) * ((1.0 + tariff_esc) ** (year - 1))
-        opex_y = base_annual_opex * ((1.0 + opex_esc) ** (year - 1))
+        opex_y = _resolve_year_opex(
+            year,
+            base_annual_opex=base_annual_opex,
+            opex_esc=opex_esc,
+            opex_tiers=opex_tiers,
+            capex_total=capex_total,
+            dc_kw=dc_kw,
+        )
         rep_y = rep_by_year.get(year, 0.0)
         salvage_y = capex_total * salvage_pct if year == life else 0.0
-        net_y = gross_y - opex_y - rep_y + salvage_y
+
+        # VAT layer
+        if has_vat:
+            if vat_cfg["tariff_includes_vat"]:
+                rev_ex_vat = gross_y / (1.0 + vat_r)
+                output_vat = gross_y - rev_ex_vat
+            else:
+                rev_ex_vat = gross_y
+                output_vat = gross_y * vat_r
+            opex_input_vat = opex_y * (opex_vat_r / (1.0 + opex_vat_r)) if opex_vat_r > 0.0 else 0.0
+            opex_ex_vat = opex_y - opex_input_vat
+            net_vat_before = output_vat - opex_input_vat
+            if net_vat_before > 0.0:
+                credit_used = min(vat_credit_rem, net_vat_before)
+                prev_credit = vat_credit_rem
+                vat_credit_rem = max(0.0, vat_credit_rem - credit_used)
+                if vat_credit_exhausted_year is None and prev_credit > 1e-6 and vat_credit_rem <= 1e-6:
+                    vat_credit_exhausted_year = year
+                vat_payable = net_vat_before - credit_used
+            else:
+                vat_credit_rem += (-net_vat_before)
+                vat_payable = 0.0
+            vat_surtax = vat_payable * vat_surtax_r
+            cash_in_y = rev_ex_vat + output_vat
+        else:
+            rev_ex_vat = gross_y
+            opex_ex_vat = opex_y
+            vat_payable = 0.0
+            vat_surtax = 0.0
+            cash_in_y = gross_y
+
+        # Debt service layer
+        if has_financing and year <= loan_tenor and debt_balance > 1e-9:
+            interest_y = debt_balance * loan_r
+            if year == life:
+                principal_y = debt_balance
+            elif year <= loan_grace:
+                principal_y = 0.0
+            elif repay_method == "equal_principal":
+                principal_y = min(debt_balance, debt_principal_init / repay_years)
+            else:
+                principal_y = min(debt_balance, max(0.0, level_annuity - interest_y))
+            debt_balance = max(0.0, debt_balance - principal_y)
+            debt_service_y = principal_y + interest_y
+        else:
+            interest_y = 0.0
+            principal_y = 0.0
+            debt_service_y = 0.0
+
+        # CIT layer
+        dep_y = annual_dep if (has_cit and year <= dep_years) else 0.0
+        if has_cit:
+            if year <= cit_exempt:
+                eff_cit_r = 0.0
+            elif year <= cit_exempt + cit_half:
+                eff_cit_r = 0.5 * cit_r
+            else:
+                eff_cit_r = cit_r
+            ebit_proj = rev_ex_vat - opex_ex_vat - vat_surtax - dep_y
+            taxable_proj = _apply_loss_carryforward(ebit_proj, year, carry_years, proj_losses)
+            cit_proj_y = taxable_proj * eff_cit_r
+            if has_financing:
+                ebt_eq = ebit_proj - interest_y
+                taxable_eq = _apply_loss_carryforward(ebt_eq, year, carry_years, eq_losses)
+                cit_eq_y = taxable_eq * eff_cit_r
+            else:
+                cit_eq_y = cit_proj_y
+        else:
+            cit_proj_y = 0.0
+            cit_eq_y = 0.0
+
+        pre_tax_y = cash_in_y - opex_y - vat_payable - vat_surtax - rep_y + salvage_y
+        post_tax_y = pre_tax_y - cit_proj_y
+        net_y = post_tax_y if has_cit else pre_tax_y
         disc_factor = 1.0 / ((1.0 + r) ** year)
         disc_net_y = net_y * disc_factor
 
@@ -730,8 +1147,16 @@ def _compute_cashflow_metrics(
         lifetime_energy += energy_y
         lifetime_revenue += gross_y
         lifetime_opex += opex_y
-        cashflows.append(net_y)
-        schedule.append({
+        lifetime_vat_payable += vat_payable
+        lifetime_vat_surtax += vat_surtax
+        lifetime_cit_project += cit_proj_y
+        lifetime_cit_equity += cit_eq_y
+        lifetime_interest += interest_y
+
+        pre_tax_cfs.append(pre_tax_y)
+        post_tax_cfs.append(post_tax_y)
+
+        row_item: dict[str, Any] = {
             "year": year,
             "degradation_factor": round(deg_factor, 5),
             "energy_kwh": round(energy_y, 2),
@@ -743,22 +1168,57 @@ def _compute_cashflow_metrics(
             "discounted_cashflow": round(disc_net_y, 2),
             "cumulative_cashflow": round(cum_nom, 2),
             "cumulative_discounted_cashflow": round(cum_disc, 2),
-        })
+        }
+        if has_vat:
+            row_item.update({
+                "revenue_ex_vat": round(rev_ex_vat, 2),
+                "vat_payable": round(vat_payable, 2),
+                "vat_surtax": round(vat_surtax, 2),
+                "vat_credit_remaining": round(vat_credit_rem, 2),
+            })
+        if has_cit:
+            row_item.update({
+                "depreciation": round(dep_y, 2),
+                "cit_project": round(cit_proj_y, 2),
+                "pre_tax_project_cashflow": round(pre_tax_y, 2),
+                "post_tax_project_cashflow": round(post_tax_y, 2),
+            })
+        if has_financing:
+            cfads_y = pre_tax_y - cit_eq_y
+            eq_cf_y = cfads_y - debt_service_y
+            equity_cfs.append(eq_cf_y)
+            prev_eq = eq_cum_nom
+            eq_cum_nom += eq_cf_y
+            if eq_simple_payback is None and prev_eq < 0 <= eq_cum_nom and eq_cf_y > 0:
+                eq_simple_payback = (year - 1) + (-prev_eq / eq_cf_y)
+            dscr_y = (cfads_y / debt_service_y) if debt_service_y > 1e-9 else None
+            if dscr_y is not None:
+                dscr_values.append(dscr_y)
+            row_item.update({
+                "debt_interest": round(interest_y, 2),
+                "debt_principal": round(principal_y, 2),
+                "debt_service": round(debt_service_y, 2),
+                "dscr": round(dscr_y, 3) if dscr_y is not None else None,
+                "equity_cashflow": round(eq_cf_y, 2),
+            })
+        schedule.append(row_item)
 
-    npv = sum(cf / ((1.0 + r) ** t) for t, cf in enumerate(cashflows))
-    irr = _compute_irr(cashflows)
+    primary_cfs = post_tax_cfs if has_cit else pre_tax_cfs
+    npv = sum(cf / ((1.0 + r) ** t) for t, cf in enumerate(primary_cfs))
+    irr = _compute_irr(primary_cfs)
     lcoe = (pv_costs / pv_energy) if pv_energy > 0 else None
 
     year1_energy_benefit_deg = year1_energy_benefit * (1.0 - deg1)
     year1_gross_deg = year1_energy_benefit_deg + year1_demand_savings
-    return {
+    year1_opex_actual = schedule[0]["opex"] if schedule else round(base_annual_opex, 2)
+    out: dict[str, Any] = {
         "currency": financial["currency"],
         "capex_total": round(capex_total, 2),
-        "year1_opex": round(base_annual_opex, 2),
+        "year1_opex": round(year1_opex_actual, 2),
         "year1_energy_benefit": round(year1_energy_benefit_deg, 2),
         "year1_demand_savings": round(year1_demand_savings, 2),
         "year1_gross_benefit": round(year1_gross_deg, 2),
-        "year1_net_benefit": round(year1_gross_deg - base_annual_opex, 2),
+        "year1_net_benefit": round(year1_gross_deg - year1_opex_actual, 2),
         "lifetime_energy_kwh": round(lifetime_energy, 2),
         "lifetime_gross_benefit": round(lifetime_revenue, 2),
         "lifetime_opex": round(lifetime_opex, 2),
@@ -769,6 +1229,48 @@ def _compute_cashflow_metrics(
         "discounted_payback_years": round(discounted_payback, 2) if discounted_payback is not None else None,
         "cashflow_schedule": schedule,
     }
+    if upfront_opex > 0:
+        out["upfront_opex"] = round(upfront_opex, 2)
+    if has_vat or has_cit:
+        pre_npv = sum(cf / ((1.0 + r) ** t) for t, cf in enumerate(pre_tax_cfs))
+        pre_irr = _compute_irr(pre_tax_cfs)
+        post_npv = sum(cf / ((1.0 + r) ** t) for t, cf in enumerate(post_tax_cfs))
+        post_irr = _compute_irr(post_tax_cfs)
+        out["pre_tax_project_npv"] = round(pre_npv, 2)
+        out["pre_tax_project_irr_pct"] = round(pre_irr * 100.0, 3) if pre_irr is not None else None
+        out["post_tax_project_npv"] = round(post_npv, 2)
+        out["post_tax_project_irr_pct"] = round(post_irr * 100.0, 3) if post_irr is not None else None
+        out["tax_summary"] = {
+            "initial_input_vat_credit": round(initial_input_vat_credit, 2),
+            "vat_credit_exhausted_year": vat_credit_exhausted_year,
+            "vat_credit_remaining_end": round(vat_credit_rem, 2),
+            "lifetime_vat_payable": round(lifetime_vat_payable, 2),
+            "lifetime_vat_surtax": round(lifetime_vat_surtax, 2),
+            "depreciable_base": round(depreciable_base, 2),
+            "lifetime_cit_project": round(lifetime_cit_project, 2),
+        }
+    if has_financing:
+        eq_npv = sum(cf / ((1.0 + eq_disc_r) ** t) for t, cf in enumerate(equity_cfs))
+        eq_irr = _compute_irr(equity_cfs)
+        out["equity_irr_pct"] = round(eq_irr * 100.0, 3) if eq_irr is not None else None
+        out["financing_summary"] = {
+            "equity_ratio_pct": fin_loan["equity_ratio_pct"],
+            "equity_investment": round(equity_investment, 2),
+            "debt_principal": round(debt_principal_init, 2),
+            "loan_tenor_years": loan_tenor,
+            "loan_grace_years": loan_grace,
+            "loan_interest_rate_pct": fin_loan["loan_interest_rate_pct"],
+            "repayment_method": repay_method,
+            "equity_discount_rate_pct": round(eq_disc_r * 100.0, 3),
+            "equity_npv": round(eq_npv, 2),
+            "equity_irr_pct": round(eq_irr * 100.0, 3) if eq_irr is not None else None,
+            "equity_simple_payback_years": round(eq_simple_payback, 2) if eq_simple_payback is not None else None,
+            "min_dscr": round(min(dscr_values), 3) if dscr_values else None,
+            "avg_dscr": round(sum(dscr_values) / len(dscr_values), 3) if dscr_values else None,
+            "lifetime_interest": round(lifetime_interest, 2),
+            "lifetime_cit_equity": round(lifetime_cit_equity, 2),
+        }
+    return out
 
 
 def _compute_sensitivity(
@@ -782,6 +1284,7 @@ def _compute_sensitivity(
     base_annual_opex: float,
     replacement_events: list[dict],
     financial: dict,
+    dc_kw: float | None = None,
 ) -> dict:
     """Deterministic +/- variation_pct one-at-a-time sensitivity sweep sorted for tornado plotting."""
     var_pct = sens_cfg["variation_pct"]
@@ -814,6 +1317,7 @@ def _compute_sensitivity(
             base_annual_opex=base_annual_opex,
             replacement_events=replacement_events,
             financial=fin,
+            dc_kw=dc_kw,
         )
         return {
             "npv": m["npv"],
@@ -980,7 +1484,37 @@ def evaluate_economics(
 
         settlement: dict | None = None
         y1_demand_savings = 0.0
-        if sc.get("csv_name") or sc.get("csv_path"):
+        has_single_csv = bool(sc.get("csv_name") or sc.get("csv_path"))
+        has_multi_csv = bool(sc.get("csv_names") or sc.get("csv_paths"))
+        if has_single_csv and has_multi_csv:
+            raise ValueError(
+                f"scenarios[{index}] ({label}): specify either csv_name/csv_path or csv_names/csv_paths, not both"
+            )
+        if has_multi_csv:
+            raw_list = sc.get("csv_paths") or sc["csv_names"]
+            if not isinstance(raw_list, list) or not 1 <= len(raw_list) <= 20:
+                raise ValueError(f"scenarios[{index}].csv_names must contain 1..20 entries")
+            resolved_paths = [_resolve_result_csv(workspace, ref) for ref in raw_list]
+            raw_weights = sc.get("csv_weights")
+            if raw_weights is None:
+                weights = [1.0] * len(resolved_paths)
+            else:
+                if not isinstance(raw_weights, list) or len(raw_weights) != len(resolved_paths):
+                    raise ValueError(
+                        f"scenarios[{index}].csv_weights length must match csv_names ({len(resolved_paths)})"
+                    )
+                weights = [
+                    _finite(w, f"scenarios[{index}].csv_weights[{wi}]", minimum=1e-9)
+                    for wi, w in enumerate(raw_weights)
+                ]
+            settlement = _settle_multi_csv_year1(resolved_paths, weights, tar_cfg)
+            y1_energy = settlement["year1_energy_kwh"]
+            y1_demand_savings = settlement["year1_demand_savings"]
+            y1_benefit = settlement["year1_gross_benefit"]
+            sc_warnings = list(settlement["warnings"])
+        elif has_single_csv:
+            if sc.get("csv_weights") is not None:
+                raise ValueError(f"scenarios[{index}] ({label}): csv_weights requires csv_names")
             csv_path = _resolve_result_csv(workspace, sc.get("csv_path") or sc["csv_name"])
             settlement = _settle_csv_year1(csv_path, tar_cfg)
             y1_energy = settlement["year1_energy_kwh"]
@@ -1007,7 +1541,7 @@ def evaluate_economics(
                     "annual_yield_kwh summary input has no hourly profile; demand_charge was skipped."
                 )
         else:
-            raise ValueError(f"scenarios[{index}] ({label}) must provide csv_name, csv_path, or annual_yield_kwh")
+            raise ValueError(f"scenarios[{index}] ({label}) must provide csv_name, csv_names, csv_path, or annual_yield_kwh")
 
         metrics = _compute_cashflow_metrics(
             year1_energy_kwh=y1_energy,
@@ -1017,6 +1551,7 @@ def evaluate_economics(
             base_annual_opex=opex,
             replacement_events=sc_replacements,
             financial=fin_cfg,
+            dc_kw=dc_kw,
         )
         sens_result = (
             _compute_sensitivity(
@@ -1029,6 +1564,7 @@ def evaluate_economics(
                 base_annual_opex=opex,
                 replacement_events=sc_replacements,
                 financial=fin_cfg,
+                dc_kw=dc_kw,
             )
             if sens_cfg is not None else None
         )
@@ -1059,12 +1595,13 @@ def evaluate_economics(
                 "tou_breakdown": settlement["tou_breakdown"],
                 "monthly_summary": settlement["monthly_summary"],
                 "typical_day_profile": settlement["typical_day_profile"],
+                **({"merged_sources": settlement["merged_sources"]} if settlement.get("merged_sources") else {}),
             }
         results.append(entry)
 
     # Ranking: lower is better for LCOE and payback; higher is better for NPV, IRR, year1_net_benefit
     lower_is_better = rank_by in ("lcoe", "simple_payback_years", "discounted_payback_years")
-    metric_key = "irr_pct" if rank_by == "irr" else rank_by
+    metric_key = {"irr": "irr_pct", "equity_irr": "equity_irr_pct"}.get(rank_by, rank_by)
 
     def _sort_key(item: dict) -> tuple[int, float]:
         val = item["financials"].get(metric_key)

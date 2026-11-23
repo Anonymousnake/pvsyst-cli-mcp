@@ -689,11 +689,13 @@ class EquipmentRequest(BaseModel):
 class WeatherRequest(BaseModel):
     """Where the simulated weather comes from; no mode is picked for the caller.
 
+    mode='synthetic_from_site' runs PVsystCLI with --synthetic-weather directly from a
+    workspace .SIT file without requiring a pre-built hourly .MET file.
     Text fields default to null so a missing SIT/MET/CSV name, country code or place
     label is reported by the backend as an unsupplied input instead of an empty value.
     """
     model_config = _STRICT_CONFIG
-    mode: Literal["existing", "csv", "open_meteo", "pvgis_tmy", "nasa_power"] = "existing"
+    mode: Literal["existing", "synthetic_from_site", "csv", "open_meteo", "pvgis_tmy", "nasa_power"] = "existing"
     sit_name: StrictStr | None = None
     met_name: StrictStr | None = None
     csv_name: StrictStr | None = None
@@ -707,6 +709,7 @@ class WeatherRequest(BaseModel):
     timezone_name: StrictStr | None = None
     temperature_method: StrictStr = "endpoint_mean"
     weather_manifest_name: StrictStr | None = None
+    strict_dhi: StrictBool = False
 
 class TemperatureRequest(BaseModel):
     """Design temperatures in degC; min_ambient_basis names its source or method."""
@@ -781,6 +784,25 @@ class TerrainSpec(BaseModel):
     max_axis_tilt_deg: Annotated[StrictNum, Field(ge=0.0, le=30.0)] = 15.0
 
 
+class GroundSubOrientationSpec(BaseModel):
+    """One slope/aspect orientation in a multi-orientation unlimited ground_sheds plant."""
+    model_config = _STRICT_CONFIG
+    label: StrictStr | None = None
+    tilt: StrictNum
+    azimuth: StrictNum
+    target_dc_kw: StrictNum | None = None
+    weight: StrictNum | None = None
+    pitch_m: StrictNum | None = None
+    collector_width_m: StrictNum | None = None
+    shed_count: Annotated[StrictInt, Field(ge=1, le=1000)] | None = None
+    inactive_band_width_1_m: StrictNum | None = None
+    inactive_band_width_2_m: StrictNum | None = None
+    electrical_effect: StrictBool | None = None
+    shading_factor: StrictNum | None = None
+    cell_width_m: StrictNum | None = None
+    base_slope_deg: StrictNum | None = None
+
+
 class GroundLayoutRequest(BaseModel):
     """Ground multi-row fixed sheds or horizontal N-S single-axis tracker geometry."""
     model_config = _STRICT_CONFIG
@@ -815,6 +837,7 @@ class GroundLayoutRequest(BaseModel):
     obstacles: Annotated[list[ObstacleSpec], Field(min_length=1, max_length=64)] | None = None
     base_slope_deg: StrictNum | None = None
     terrain: TerrainSpec | None = None
+    sub_orientations: Annotated[list[GroundSubOrientationSpec], Field(min_length=1, max_length=16)] | None = None
 
 
 class AutoSizingOptions(BaseModel):
@@ -1140,6 +1163,52 @@ class EconomicsTariffConfig(BaseModel):
     demand_charge: EconomicsDemandChargeConfig | None = None
 
 
+class EconomicsVatConfig(BaseModel):
+    """Optional region-neutral value-added tax (VAT) and fixed-asset input VAT credit rules."""
+    model_config = _STRICT_CONFIG
+    rate_pct: Annotated[StrictNum, Field(ge=0.0, le=50.0)] = 0.0
+    tariff_includes_vat: StrictBool = True
+    input_vat_credit: StrictNum | None = None
+    deductible_capex_share: Annotated[StrictNum, Field(ge=0.0, le=1.0)] | None = None
+    surtax_pct: Annotated[StrictNum, Field(ge=0.0, le=50.0)] = 0.0
+    opex_input_vat_pct: Annotated[StrictNum, Field(ge=0.0, le=50.0)] = 0.0
+
+
+class EconomicsCitConfig(BaseModel):
+    """Optional region-neutral corporate income tax (CIT), depreciation, and tax-holiday rules."""
+    model_config = _STRICT_CONFIG
+    rate_pct: Annotated[StrictNum, Field(ge=0.0, le=60.0)] = 0.0
+    exempt_years: Annotated[StrictInt, Field(ge=0, le=30)] = 0
+    half_rate_years: Annotated[StrictInt, Field(ge=0, le=30)] = 0
+    depreciation_years: Annotated[StrictInt, Field(ge=1, le=50)] | None = None
+    residual_value_pct: Annotated[StrictNum, Field(ge=0.0, le=50.0)] = 0.0
+    loss_carryforward_years: Annotated[StrictInt, Field(ge=0, le=50)] = 5
+
+
+class EconomicsFinancingConfig(BaseModel):
+    """Optional project-finance debt & equity structure for Equity IRR and DSCR."""
+    model_config = _STRICT_CONFIG
+    equity_ratio_pct: Annotated[StrictNum, Field(ge=1.0, le=100.0)] = 100.0
+    loan_tenor_years: Annotated[StrictInt, Field(ge=1, le=50)] = 15
+    loan_grace_years: Annotated[StrictInt, Field(ge=0, le=10)] = 0
+    loan_interest_rate_pct: Annotated[StrictNum, Field(ge=0.0, le=30.0)] = 0.0
+    repayment_method: Literal["equal_principal", "equal_payment"] = "equal_principal"
+    equity_discount_rate_pct: Annotated[StrictNum, Field(ge=0.0, le=50.0)] | None = None
+
+
+class EconomicsOpexTier(BaseModel):
+    """Optional year-band OPEX override or additive schedule (e.g. staged O&M or land lease)."""
+    model_config = _STRICT_CONFIG
+    start_year: Annotated[StrictInt, Field(ge=1, le=50)]
+    end_year: Annotated[StrictInt, Field(ge=1, le=50)]
+    annual_opex: StrictNum | None = None
+    opex_per_kw_year: StrictNum | None = None
+    opex_pct_capex: StrictNum | None = None
+    extra_annual_opex: StrictNum | None = None
+    escalate: StrictBool = False
+    label: StrictStr | None = None
+
+
 class EconomicsFinancialConfig(BaseModel):
     model_config = _STRICT_CONFIG
     currency: StrictStr = "CNY"
@@ -1155,6 +1224,11 @@ class EconomicsFinancialConfig(BaseModel):
     opex_per_kw_year: StrictNum = 0.0
     opex_pct_capex: StrictNum = 0.0
     salvage_value_pct: StrictNum = 0.0
+    upfront_opex: StrictNum = 0.0
+    opex_tiers: list[EconomicsOpexTier] | None = None
+    vat: EconomicsVatConfig | None = None
+    cit: EconomicsCitConfig | None = None
+    financing: EconomicsFinancingConfig | None = None
     battery_replacement_year: Annotated[StrictInt, Field(ge=1, le=50)] | None = None
     battery_replacement_cost_ratio: StrictNum | None = None
     battery_replacement_cost: StrictNum | None = None
@@ -1165,6 +1239,8 @@ class EconomicsScenarioInput(BaseModel):
     model_config = _STRICT_CONFIG
     label: StrictStr
     csv_name: StrictStr | None = None
+    csv_names: Annotated[list[StrictStr], Field(min_length=1, max_length=20)] | None = None
+    csv_weights: list[StrictNum] | None = None
     annual_yield_kwh: StrictNum | None = None
     installed_dc_kw: StrictNum | None = None
     battery_kwh: StrictNum | None = None
@@ -1176,7 +1252,9 @@ class EconomicsScenarioInput(BaseModel):
 class ReportScenarioInput(BaseModel):
     model_config = _STRICT_CONFIG
     label: StrictStr
-    csv_name: StrictStr
+    csv_name: StrictStr | None = None
+    csv_names: Annotated[list[StrictStr], Field(min_length=1, max_length=20)] | None = None
+    csv_weights: list[StrictNum] | None = None
     project: StrictStr | None = None
     variant: StrictStr | None = None
     installed_dc_kw: StrictNum | None = None

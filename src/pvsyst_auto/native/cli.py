@@ -799,7 +799,7 @@ class PVsystCLI:
         if country_code and not re.fullmatch(r"[A-Za-z]{2}", country_code):
             raise ValueError("Country code must have two letters")
         if region and region not in REGIONS:
-            raise ValueError("Unknown region")
+            raise ValueError(f"Unknown region: {region!r}; allowed regions: {', '.join(sorted(REGIONS))}")
         if not _cli_text(source):
             raise ValueError("Source must be one line without double quotes")
         input_path = self._input(weather_csv, ".csv")

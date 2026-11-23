@@ -832,7 +832,8 @@ class VariantStore:
             return {**result, **self._commit_project_files(project, originals, candidates)}
 
     def update_project_sources(self, project: str, site_name: str, met_name: str,
-                               expected_files: dict[str, str] | None = None) -> dict:
+                               expected_files: dict[str, str] | None = None,
+                               *, allow_synthetic_met: bool = False) -> dict:
         with self.lock:
             inventory = self.inspect_project(project)
             if expected_files is not None and inventory["files"] != expected_files:
@@ -841,9 +842,17 @@ class VariantStore:
             if len(files_to_read) < 2:
                 raise ValueError("Project files changed since inspection or has no variants")
             site_ref = self._workspace_asset("Sites", site_name)
-            met_ref = self._workspace_asset("Meteo", met_name)
-            if not site_ref["workspace_file"] or not met_ref["workspace_file"]:
-                raise ValueError("SIT and MET must be existing workspace files")
+            if allow_synthetic_met and not met_name:
+                if not site_ref["workspace_file"]:
+                    raise ValueError("SIT must be an existing workspace file")
+                effective_met_name = f"{Path(site_name).stem}_Synthetic.MET"
+                met_exists = False
+            else:
+                met_ref = self._workspace_asset("Meteo", met_name)
+                if not site_ref["workspace_file"] or not met_ref["workspace_file"]:
+                    raise ValueError("SIT and MET must be existing workspace files")
+                effective_met_name = met_name
+                met_exists = True
             site_path = self.workspace / "Sites" / site_name
             site_bytes = self._read(site_path)
             try:
@@ -868,11 +877,11 @@ class VariantStore:
             site_identity = identifiers[0]
             from pvsyst_auto.project.synthesize import _is_pvmeteo_file, load_meteo_header
 
-            met_path = self.workspace / "Meteo" / met_name
+            met_path = self.workspace / "Meteo" / effective_met_name
             site_body = [line.strip() for line in site_lines[1:-1] if line.strip()]
             meteo_block_lines = (
                 load_meteo_header(met_path, site_identity, site_body)[1]
-                if _is_pvmeteo_file(met_path) else None
+                if met_exists and _is_pvmeteo_file(met_path) else None
             )
             originals = {}
             candidates = {}
@@ -884,7 +893,7 @@ class VariantStore:
                 lines = text.splitlines(keepends=True)
                 if name == project:
                     self._replace_site_block(lines, "SitePrj", site_lines)
-                    self._replace_unique_field(lines, "MeteoFileName", met_name, (0, len(lines)))
+                    self._replace_unique_field(lines, "MeteoFileName", effective_met_name, (0, len(lines)))
                 else:
                     self._text(data)
                     self._replace_site_block(lines, "SiteSimul", site_lines)
@@ -892,7 +901,7 @@ class VariantStore:
                                                       "End of PVObject pvMeteo")
                     child = next((i for i in range(start + 1, end)
                                   if lines[i].strip().startswith("PVObject_")), end)
-                    self._replace_unique_field(lines, "NomF", met_name, (start + 1, child))
+                    self._replace_unique_field(lines, "NomF", effective_met_name, (start + 1, child))
                     self._replace_unique_field(lines, "SiteM", site_identity, (start + 1, child))
                     if meteo_block_lines is not None:
                         self._section_bounds(lines, "PVObject_SiteMet=pvSite", "End of PVObject pvSite")
