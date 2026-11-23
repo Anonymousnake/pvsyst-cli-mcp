@@ -192,6 +192,42 @@ class StandAloneTests(unittest.TestCase):
         self.assertAlmostEqual(eco["total_year1_opex"], 400.0 + 1152.0 + 400.0, places=2)
         self.assertGreater(eco["lcoe"], 0.0)
 
+    def test_simulate_design_economics_books_battery_replacement(self) -> None:
+        from datetime import datetime, timedelta
+        from unittest.mock import Mock, patch
+        from pvsyst_auto.api import simulation
+
+        cli = Mock()
+        start = datetime(2023, 1, 1)
+
+        def simulate(project, variant, *, out_csv, **kwargs):
+            rows = (f"{start + timedelta(hours=i):%d/%m/%y %H:%M};1\n" for i in range(8760))
+            out_csv.write_text("date;E_User\n;kWh\n" + "".join(rows), encoding="utf-8")
+            return {}
+
+        cli.run_simulation.side_effect = simulate
+        for name, cost in (("Quoted", 600), ("Unquoted", None)):
+            financial = {"project_life_years": 2, "discount_rate_pct": 0.0,
+                         "first_year_degradation_pct": 0.0, "annual_degradation_pct": 0.0,
+                         "battery_replacement_year": 2}
+            if cost is not None:
+                financial["battery_replacement_cost"] = cost
+            request = SingleDesignRequest(
+                new_project=f"{name}.PRJ", scope="stand_alone", module={"file_name": "Lab440.PAN"},
+                weather={"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+                standalone={"battery_file": "Generic_Solar_12V160Ah.BTR", "economics": {
+                    "capex_total": 1000, "financial": financial,
+                }},
+            )
+            with self.subTest(name=name), patch.multiple(simulation, cli=lambda: cli, variant_store=lambda: self.store):
+                result = simulation.pvsyst_simulate_design(request, dry_run=False)
+                if cost is not None:
+                    self.assertEqual(result["economics"]["npv"], -1600.0)
+                    self.assertEqual(result["economics"]["lcoe"], round(1600 / 17520, 5))
+                else:
+                    self.assertEqual(result["status"], "blocked")
+                    self.assertIn("battery_replacement_cost is required", result["issues"][0]["message"])
+
     def test_single_design_request_schema_accepts_standalone(self) -> None:
         req = SingleDesignRequest(
             new_project="OffGridCabin.PRJ",

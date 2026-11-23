@@ -1116,6 +1116,12 @@ def evaluate_standalone_economics(
 ) -> dict[str, Any]:
     """Evaluate lifetime LCOE, diesel fuel OPEX, and cashflows for Stand-Alone PV+BESS(+Genset) systems."""
     fin_cfg = _validate_financial(financial)
+    replacement_events = list(fin_cfg["replacement_events"])
+    if fin_cfg["battery_replacement_year"] is not None and fin_cfg["battery_replacement_cost"] is None:
+        raise ValueError("financial.battery_replacement_cost is required for a stand-alone battery replacement year")
+    replacement = _battery_replacement_event(fin_cfg, battery_kwh=0.0)
+    if replacement is not None:
+        replacement_events.append(replacement)
     capex = _finite(capex_total, "capex_total", minimum=0.0)
     om_opex = _finite(annual_om_opex, "annual_om_opex", minimum=0.0)
     fuel_price = _finite(fuel_price_per_liter, "fuel_price_per_liter", minimum=0.0)
@@ -1140,7 +1146,7 @@ def evaluate_standalone_economics(
         year1_gross_benefit=year1_gross_benefit,
         capex_total=capex,
         base_annual_opex=base_annual_opex,
-        replacement_events=fin_cfg["replacement_events"],
+        replacement_events=replacement_events,
         financial=fin_cfg,
     )
     return {
