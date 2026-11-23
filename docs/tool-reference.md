@@ -2,11 +2,11 @@
 
 For setup instructions and package layout, see [README.md](../README.md) or [README.zh-CN.md](../README.zh-CN.md).
 
-By default the MCP server exposes **48 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **77 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
+By default the MCP server exposes **48 core workflow tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **75 tools** across 10 groups, or use a complete list such as `setup,projects,components,weather,storage,simulation,results,engineering,expert` to keep the defaults and add `expert`. Every tool description starts with its `[Category]` prefix so clients that flatten the catalog can still tell which workflow a tool belongs to. Restart the server after pulling code or schema updates.
 
 ## PVsystCLI version differences
 
-`PVsystCLI.exe` runs simulations on existing projects and variants, converts weather files, and manages licenses. Because editing project parameters, component databases, DC/AC cabling, MV/HV transformers, 3D shading scenes/terrain DEMs, or Stand-Alone systems is not part of the official CLI, this package parses and writes PVsyst's text files directly and **100% headlessly** (PVsyst 8.1.6 rev49278 / 8.1.7 rev49382). As of `v0.6.0`, the legacy Win32 GUI click-bridge (`native/scene.py`) has been completely removed (`scene_import_method="native"` only).
+`PVsystCLI.exe` runs simulations on existing projects and variants, converts weather files, and manages licenses. Because editing project parameters, component databases, DC/AC cabling, MV/HV transformers, 3D shading scenes/terrain DEMs, or Stand-Alone systems is not part of the official CLI, this package parses and writes PVsyst's text files directly and **100% headlessly** (PVsyst 8.1.6 rev49278 / 8.1.7 rev49382). Legacy Win32 GUI scene import has been completely removed.
 
 Before running a CLI command, the adapter inspects `PVsystCLI.exe help` on the host machine so unsupported flags fail immediately without burning a simulation run:
 
@@ -109,7 +109,7 @@ Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parame
 | `pvsyst_build_sfi` | Generate a `.SFI` export variable selection file under `Models` (presets include `all_common`, `shading`, `soiling`, `grid_limit`, `grid_storage`, `bifacial`, `transformers`, `stand_alone`, etc.; supports `time_step="hour" | "subhour" | "day" | "month"`) |
 | `pvsyst_run_simulation` | Run a single or batch simulation via `PVsystCLI.exe` with optional date range, `.SFI`, `.RVT`, `time_step="hour" | "subhour"`, report page selection (`-rp`), shading recomputation (`-rst`), and automatic transient-abort retry |
 | `pvsyst_run_batch_sweep` | Generate `UserBatch/<name>_BatchParams.CSV` + `_BatchVariables.RVT` from a Cartesian grid or explicit scenario rows (<=100 scenarios), run one `PVsystCLI` batch call, and return ranked scenario results with baseline deltas |
-| `pvsyst_run_house_task` | End-to-end 3D house + obstacles workflow: generate `.pvc2`, build native `.VCx` (`scene_import_method="native"`, `linear` or `module_layout`), and run a full-year CLI simulation with checkpoint resume |
+| `pvsyst_run_house_task` | End-to-end 3D house + obstacles workflow: generate `.pvc2`, build headless native `.VCx` (`linear` or `module_layout`), and run a full-year CLI simulation with checkpoint resume |
 | `pvsyst_simulate_design` | Unified single-design workflow (`fixed_unshaded_grid`, `ground_sheds`, `ground_tracker`, or `stand_alone` off-grid PV+BESS+Genset) combining component lookup, zero-template synthesis, sizing (`capacity`/`electrical_design`/`auto_from_components`), optional `ground_layout` (3D `site_polygon`/`obstacles`/`base_slope_deg`/3D DEM `terrain`), `bifacial`, MV/HV `transformers`, weather acquisition/preparation (`open_meteo`, `pvgis_tmy`, `nasa_power`, `csv`, `existing`), annual simulation, automatic diagnostics, and off-grid diesel economics |
 | `pvsyst_prepare_sourced_design` | Extract an `electrical_design` envelope from cited datasheet snippets and check whether all required voltage/current/temperature inputs are present |
 | `pvsyst_optimize_variant` | Bounded Diagnose -> Clone -> Patch -> Re-simulate loop (`dry_run=true` default previews deterministic fixes and diffs; `confirm=true` iterates up to `max_iterations` 1..5 on cloned variants without mutating baseline) |
@@ -125,10 +125,10 @@ Detailed guides: [single-design inputs](single-design-inputs.md), [capacity sizi
 | `pvsyst_read_batch_results` | Parse `SIM_*` summary rows from a batch simulation output CSV |
 | `pvsyst_diagnose_results` | Run deterministic physics loss-chain and time-series anomaly diagnostics on an SFI result CSV with optional `.VC0` root-cause attribution |
 
-### Expert & Low-Level (`expert`, opt-in: 25)
+### Expert & Low-Level (`expert`, opt-in: 23)
 
 Enable with `PVSYST_TOOL_GROUPS=expert` or `PVSYST_TOOL_GROUPS=all`:
-- **Projects & scene primitives (15)**: `pvsyst_list_variants`, `pvsyst_create_project`, `pvsyst_update_project_parameters`, `pvsyst_update_project_sources`, `pvsyst_get_variant_components`, `pvsyst_update_variant_components`, `pvsyst_validate_variant_structure`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray`, `pvsyst_review_project_inputs`, `pvsyst_create_mv_night_disconnect_variant`, `pvsyst_create_dome_allocation_variant`, `pvsyst_create_house_pv_scene`, `pvsyst_read_house_pv_scene`, `pvsyst_import_house_pv_scene`
+- **Projects & scene primitives (13)**: `pvsyst_list_variants`, `pvsyst_create_project`, `pvsyst_update_project_parameters`, `pvsyst_update_project_sources`, `pvsyst_get_variant_components`, `pvsyst_update_variant_components`, `pvsyst_validate_variant_structure`, `pvsyst_clone_subarray`, `pvsyst_remove_subarray`, `pvsyst_review_project_inputs`, `pvsyst_create_house_pv_scene`, `pvsyst_read_house_pv_scene`, `pvsyst_import_house_pv_scene`
 - **Components (3)**: `pvsyst_validate_component`, `pvsyst_compare_components`, `pvsyst_project_components`
 - **Weather primitives (4)**: `pvsyst_inspect_weather_csv`, `pvsyst_build_monthly_weather`, `pvsyst_create_site`, `pvsyst_convert_meteo`
 - **Simulation & engineering (3)**: `pvsyst_run_sourced_house_task`, `pvsyst_prepare_block_project`, `pvsyst_review_engineering_brief`
@@ -143,8 +143,8 @@ Enable with `PVSYST_TOOL_GROUPS=expert` or `PVSYST_TOOL_GROUPS=all`:
 - Energy management: [inverter temperature](inverter-temperature.md), [power factor & PNom](power-factor.md), [grid injection limit](grid-power-limit.md), [combined PF + power controls](native-power-controls.md), [P50/P90 parameters](p50-native-parameters.md)
 
 Dedicated variant-creation tools handle structural or multi-object changes:
-- Cabling & transformers: [AC cabling](native-ac-cabling.md), [headless DC cabling](native-dc-cabling.md), [MV night disconnect](native-mv-night.md)
-- Complex orientations & 3D scenes: [tracking controls](native-tracking-controls.md), [sheds & sun-shields](native-shed-controls.md), [paired dome allocation](native-dome-allocation.md), [engineering delivery](engineering-delivery.md)
+- Cabling & transformers: [AC cabling](native-ac-cabling.md), [headless DC cabling](native-dc-cabling.md), `pvsyst_configure_transformers`
+- Complex orientations & 3D scenes: [tracking controls](native-tracking-controls.md), [sheds & sun-shields](native-shed-controls.md), `pvsyst_convert_orientation`, [engineering delivery](engineering-delivery.md)
 
 ## Workspace directories and conventions
 
@@ -169,9 +169,9 @@ General conventions across all tools:
 
 ## Upgrading from v0.1.0
 
-The `v0.1.0` release exposed 82 MCP tools. As of `v0.7.0`, the server registers **48 tools by default** across 8 core groups and **77 tools** with `PVSYST_TOOL_GROUPS=all` (including v0.3.0–v0.6.0 tools `pvsyst_suggest_sizing`, `pvsyst_diagnose_results`, `pvsyst_run_batch_sweep`, `pvsyst_evaluate_economics`, `pvsyst_optimize_variant`, `pvsyst_generate_report`, `pvsyst_plan_tou_storage_schedule`, `pvsyst_optimize_bess_sizing`, `pvsyst_run_feasibility_study`, `pvsyst_configure_transformers`, and `pvsyst_convert_orientation`; `pvsyst_license_info`, `pvsyst_project_handoff`, and `pvsyst_export_engineering_delivery` were promoted back into the default groups in `v0.3.0`). `PVSYST_TOOL_GROUPS` is an explicit allow-list: an explicit value replaces the default groups. To retain all defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`.
+The `v0.1.0` release exposed 82 MCP tools. Today the server registers **48 tools by default** across 8 core groups and **75 tools** with `PVSYST_TOOL_GROUPS=all` (including v0.3.0–v0.6.0 tools `pvsyst_suggest_sizing`, `pvsyst_diagnose_results`, `pvsyst_run_batch_sweep`, `pvsyst_evaluate_economics`, `pvsyst_optimize_variant`, `pvsyst_generate_report`, `pvsyst_plan_tou_storage_schedule`, `pvsyst_optimize_bess_sizing`, `pvsyst_run_feasibility_study`, `pvsyst_configure_transformers`, and `pvsyst_convert_orientation`; `pvsyst_license_info`, `pvsyst_project_handoff`, and `pvsyst_export_engineering_delivery` were promoted back into the default groups in `v0.3.0`). `PVSYST_TOOL_GROUPS` is an explicit allow-list: an explicit value replaces the default groups. To retain all defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`.
 
-The following table lists the 29 tools that remain available in opt-in groups (`admin` and `expert`):
+The following table lists the 27 tools that remain available in opt-in groups (`admin` and `expert`):
 
 | Tool | Group |
 |---|---|
@@ -183,9 +183,7 @@ The following table lists the 29 tools that remain available in opt-in groups (`
 | `pvsyst_clone_subarray` | `expert` |
 | `pvsyst_compare_components` | `expert` |
 | `pvsyst_convert_meteo` | `expert` |
-| `pvsyst_create_dome_allocation_variant` | `expert` |
 | `pvsyst_create_house_pv_scene` | `expert` |
-| `pvsyst_create_mv_night_disconnect_variant` | `expert` |
 | `pvsyst_create_project` | `expert` |
 | `pvsyst_create_site` | `expert` |
 | `pvsyst_get_variant_components` | `expert` |
@@ -205,9 +203,9 @@ The following table lists the 29 tools that remain available in opt-in groups (`
 | `pvsyst_validate_component` | `expert` |
 | `pvsyst_validate_variant_structure` | `expert` |
 
-The following 16 entry points were removed. The paths below follow the consolidated APIs documented above; where no current MCP tool provides the old operation, the entry is marked explicitly.
+The following 18 legacy entry points were removed. The paths below follow the consolidated APIs documented above; where no current MCP tool provides the old operation, the entry is marked explicitly.
 
-| `v0.1.0` tool | Migration path |
+| Legacy tool | Migration path |
 |---|---|
 | `pvsyst_archive_component` | No direct replacement (removed) |
 | `pvsyst_archive_project` | No direct replacement (removed) |
@@ -216,7 +214,9 @@ The following 16 entry points were removed. The paths below follow the consolida
 | `pvsyst_clone_component` | `pvsyst_build_sourced_component` for PAN/OND template derivation; generic component cloning was removed |
 | `pvsyst_clone_project` | `pvsyst_clone_variant` can clone an individual VC; whole-project cloning has no direct replacement (removed) |
 | `pvsyst_copy_component` | `pvsyst_build_sourced_component` for PAN/OND template derivation; generic component copying was removed |
+| `pvsyst_create_dome_allocation_variant` | `pvsyst_convert_orientation` (`dome` mode) |
 | `pvsyst_create_load_variant` | `pvsyst_create_native_load_variant` with `mode="hourly"` and a prepared load manifest |
+| `pvsyst_create_mv_night_disconnect_variant` | `pvsyst_configure_transformers` (`mv.night_disconnect`) |
 | `pvsyst_create_peak_shaving_variant` | `pvsyst_create_grid_storage_variant` with the `PeakShaving` limits or discharge-timing updates |
 | `pvsyst_open_native_project` | No direct replacement (removed) |
 | `pvsyst_restore_archived_component` | No direct replacement (removed) |

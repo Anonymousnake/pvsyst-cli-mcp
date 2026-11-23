@@ -49,7 +49,7 @@ If a run fails partway through, the working project, manifest, and any partial o
 
 ### Two-roof house workflow
 
-For residential rooftops with two (or more) roof planes, `pvsyst_run_house_task` chains `.pvc2` scene generation, headless native `.VCx` scene authoring (`scene_import_method="native"`, the default since legacy GUI scene import was removed in `v0.6.0`), annual `PVsystCLI.exe` simulation with `recompute_shading=True`, and checkpointed output verification.
+For residential rooftops with two (or more) roof planes, `pvsyst_run_house_task` chains `.pvc2` scene generation, headless native `.VCx` scene authoring, annual `PVsystCLI.exe` simulation with `recompute_shading=True`, and checkpointed output verification.
 
 Supported structure requirements:
 - **Electrical & orientation structure**: One house mesh and paired fixed orientations (`ID 1`, `ID 2`, etc.), with matching subarrays and roof-aligned PV tables. In native multi-orientation layouts, orientation 1 uses `FieldAzim=0` (the `anchor0` reference frame) unless using a supported symmetric/zero-template setup.

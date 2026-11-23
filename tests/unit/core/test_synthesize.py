@@ -233,7 +233,6 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
             layout=layout,
             report_pdf=False,
             shading_mode="linear",
-            scene_import_method="native",
         )
         req = req_model.model_dump(exclude_none=True)
 
@@ -294,7 +293,6 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
             layout=layout_dual,
             report_pdf=False,
             shading_mode="linear",
-            scene_import_method="native",
         ).model_dump(exclude_none=True)
         dry_dual = run_house_task(self.store, self.components, cli, request=req_dual, dry_run=True)
         self.assertEqual(dry_dual["status"], "ready", dry_dual)
@@ -490,7 +488,6 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
                         layout=layout,
                         report_pdf=False,
                         shading_mode="linear",
-                        scene_import_method="native",
                     )
                     if explicit_orient:
                         kwargs["orientations"] = [{"id": 1, "tilt_deg": tilt, "azimuth_deg": 0.0}]
@@ -537,7 +534,6 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
                     subarrays=[sub_spec],
                     report_pdf=False,
                     shading_mode="linear",
-                    scene_import_method="native",
                 ).model_dump(exclude_none=True)
                 synth = synthesize_house_source(self.store, self.components, req)
                 self.store.create_project(f"LossFlags_{name}.PRJ", synth["prj_text"], {"VC0": synth["vc0_text"]})
@@ -594,7 +590,6 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
                     orientations=[{"id": 1, "tilt_deg": 25.0, "azimuth_deg": 0.0, "base_slope_deg": bad_slope}],
                     report_pdf=False,
                     shading_mode="linear",
-                    scene_import_method="native",
                 ).model_dump(exclude_none=True)
                 dry = run_house_task(self.store, self.components, cli, request=req, dry_run=True)
                 self.assertEqual(dry["status"], "blocked")
@@ -621,7 +616,6 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
             layout=layout,
             report_pdf=False,
             shading_mode="linear",
-            scene_import_method="native",
         ).model_dump(exclude_none=True)
         res1 = run_house_task(self.store, self.components, refusing_cli, request=req, dry_run=False, confirm=True)
         self.assertEqual(res1["status"], "needs_attention")

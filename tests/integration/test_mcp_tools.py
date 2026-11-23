@@ -180,7 +180,6 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
         for model in (HouseTaskRequest, SourcedHouseTaskRequest):
             self.assertIsNone(model.model_fields["allow_window_creation"].default)
             self.assertIsNone(model.model_fields["report_pdf"].default)
-            self.assertIsNone(model.model_fields["scene_import_method"].default)
             self.assertEqual(model.model_construct(allow_window_creation=False).model_dump(exclude_none=True)["allow_window_creation"], False)
             self.assertNotIn("allow_window_creation", model.model_construct(allow_window_creation=None).model_dump(exclude_none=True))
             self.assertNotIn("report_pdf", model.model_construct(report_pdf=None).model_dump(exclude_none=True))
@@ -305,7 +304,7 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                            side_effect=lambda *_a, **_k: (lock_states.append(current_cli._lock._is_owned()),
                                                           {"create_arguments": {"string_layout": {"tables": []}}})[1]):
                     err, blocked = decode_reply(await session.call_tool("pvsyst_import_house_pv_scene", {
-                        "scene_name": "s.pvc2", "variant_name": "V", "shading_mode": "linear", "method": "native",
+                        "scene_name": "s.pvc2", "variant_name": "V", "shading_mode": "linear",
                     }))
                 self.assertFalse(err, blocked)
                 self.assertEqual(blocked["status"], "blocked")

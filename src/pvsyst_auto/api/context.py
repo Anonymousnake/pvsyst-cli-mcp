@@ -72,7 +72,6 @@ TOOL_GROUPS = {
         "pvsyst_update_project_sources", "pvsyst_get_variant_components",
         "pvsyst_update_variant_components", "pvsyst_validate_variant_structure",
         "pvsyst_clone_subarray", "pvsyst_remove_subarray", "pvsyst_review_project_inputs",
-        "pvsyst_create_mv_night_disconnect_variant", "pvsyst_create_dome_allocation_variant",
         "pvsyst_create_house_pv_scene", "pvsyst_read_house_pv_scene", "pvsyst_import_house_pv_scene",
         "pvsyst_validate_component", "pvsyst_compare_components", "pvsyst_project_components",
         "pvsyst_inspect_weather_csv", "pvsyst_build_monthly_weather",

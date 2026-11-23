@@ -9,7 +9,6 @@ from pathlib import Path
 import subprocess
 
 from pvsyst_auto.native.cli import PVsystError
-from pvsyst_auto.native._prep import find_running_pvsyst
 from pvsyst_auto.workflows.design import _native_preflight, _prune_empty, prepare_design_project
 from pvsyst_auto.workflows.house import run_house_task
 from pvsyst_auto.project.paths import project_name, variant_id, workspace_file
@@ -38,7 +37,7 @@ def _preserve_child_request(request):
     if design.get("report_pages") is not None:
         child["report_pages"] = design["report_pages"]
     for key in ("module_geometry", "obstacles", "string_layout", "report_pdf", "shading_mode",
-                "scene_import_method", "allow_window_creation"):
+                "allow_window_creation"):
         if request.get(key) is not None:
             child[key] = request[key]
     return child
@@ -222,18 +221,12 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
         try:
             if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation, accept_source_review)):
                 raise ValueError("Use strict booleans")
-            method = request.get("scene_import_method") or "native"
-            if method != "native":
-                result.update(status="blocked", stage="house_inputs",
-                              issues=["Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; "
-                                      "use scene_import_method='native' or omit it."])
-                return result
             # Reject an unusable explicit binding before any source-project write, rather than
             # preparing the source and only failing at the child house stage.
             if request.get("string_layout") is not None and (request.get("shading_mode") or "linear") != "module_layout":
                 result.update(status="blocked", stage="house_inputs",
-                              issues=["An explicit string_layout requires scene_import_method='native' "
-                                      "and shading_mode='module_layout'; nothing was prepared."])
+                              issues=["An explicit string_layout requires shading_mode='module_layout'; "
+                                      "nothing was prepared."])
                 return result
             if not resume and request.get("allow_window_creation") is False:
                 raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
@@ -295,8 +288,6 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
                 if not confirm:
                     result["status"] = "confirmation_required"
                     return result
-                if find_running_pvsyst((Path(cli.cli).parent / "PVsyst.exe").resolve()):
-                    raise ValueError("Existing PVsyst GUI remains untouched; no source preparation was started")
                 made = prepare_design_project(cli, store, spec=design, dry_run=False,
                     source_context=binding, allow_window_creation=request.get("allow_window_creation"))
                 result["source_preparation"] = made
@@ -322,7 +313,7 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
             # Carry the native routing/selector, explicit per-cell binding and the per-request
             # window policy into the child house request; these stay absent for the historical
             # GUI/linear shape (is-not-None, so an explicit False is forwarded, never dropped).
-            for key in ("obstacles", "shading_mode", "scene_import_method", "string_layout", "allow_window_creation"):
+            for key in ("obstacles", "shading_mode", "string_layout", "allow_window_creation"):
                 if request.get(key) is not None:
                     child[key] = request[key]
             child_resume = house_manifest.exists()

@@ -457,7 +457,6 @@ class HouseTaskRequest(BaseModel):
     report_pages: list[StrictStr] | None = None
     report_pdf: StrictBool | None = None
     shading_mode: Literal["linear", "module_layout"] | None = None
-    scene_import_method: Literal["native"] | None = None
     allow_window_creation: StrictBool | None = None
 
     @model_validator(mode="after")
@@ -1047,7 +1046,6 @@ class SourcedHouseTaskRequest(BaseModel):
     module_geometry: ModuleGeometry | None = None
     report_pdf: StrictBool | None = None
     shading_mode: Literal["linear", "module_layout"] | None = None
-    scene_import_method: Literal["native"] | None = None
     allow_window_creation: StrictBool | None = None
     prepare_mode: Literal["preserve_source_hardware"] | None = None
     source_project: StrictStr | None = None

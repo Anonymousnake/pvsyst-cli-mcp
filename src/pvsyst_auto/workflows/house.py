@@ -15,10 +15,10 @@ from pvsyst_auto.project.paths import safe_filename, variant_id, workspace_file,
 from pvsyst_auto.results import annual_summary, fingerprint
 from pvsyst_auto.scene.author import create_house_pv_scene, house_profile, obstacle_profiles, table_profiles, check_tables
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.native._prep import _source_snapshot, _source_snapshot_bytes, _verify_new, find_running_pvsyst
+from pvsyst_auto.native._prep import _source_snapshot, _source_snapshot_bytes, _verify_new
 from pvsyst_auto.project.synthesize import synthesize_house_source
 
-PHASES = ("initialized", "project_created", "scene_created", "prepared", "native_saved", "gui_closed", "simulated", "completed")
+PHASES = ("initialized", "project_created", "scene_created", "prepared", "native_saved", "simulated", "completed")
 
 
 def _public(record):
@@ -98,8 +98,6 @@ def _prepare(store, components, request, *, resume=False):
 
     synth_payload = None
     if zero_template:
-        if (request.get("scene_import_method") or "native") != "native":
-            raise ValueError("Zero-template house task requires scene_import_method='native'")
         for index, orient in enumerate(request.get("orientations") or ()):
             if isinstance(orient, dict) and orient.get("base_slope_deg") is not None:
                 slope = orient["base_slope_deg"]
@@ -131,16 +129,10 @@ def _prepare(store, components, request, *, resume=False):
                                 **({"allow_groups": True} if grouped else {}), layout=request.get("layout"))
         inherited_parameters = store.inspect_parameters(project, variant)
     # A heterogeneous per-source PAN set is carried by the typed per-table geometry forwarded
-    # through ``layout`` into resolve_source_geometry; the high-level NATIVE path consumes it
-    # per owner instead of collapsing to the first PAN. ``pan_snapshots`` is per-GROUP, so a
-    # readable SAME-PAN multi-group source yields one deduped snapshot and is NOT rejected here;
-    # a duplicate length would only track distinct readable files, never PAN identity. The GUI
-    # import method keeps its old single-module-library bridge limit and states it explicitly.
+    # through ``layout`` into resolve_source_geometry; the headless builder consumes it per owner
+    # instead of collapsing to the first PAN.
     source_groups = snap["source"].get("orientations") or []
     distinct_pans = {group["pan_name"].casefold() for group in source_groups}
-    if len(distinct_pans) > 1 and (request.get("scene_import_method") or "native") != "native":
-        raise ValueError("The GUI import method bridges one source PAN; request "
-                         "scene_import_method='native' for a heterogeneous per-source PAN set")
     source_site = store._embedded_reference(lines, "PVObject_SiteSimul=pvSite", "End of PVObject pvSite")
     source_met = store._embedded_reference(lines, "PVObject_MeteoSimul=pvMeteo", "End of PVObject pvMeteo")
     project_root = objects(project_text)[0]
@@ -194,12 +186,6 @@ def _prepare(store, components, request, *, resume=False):
     mode = request.get("shading_mode", "linear")
     if mode not in ("linear", "module_layout"):
         raise ValueError("shading_mode must be linear or module_layout")
-    method = request.get("scene_import_method") or "native"
-    if method != "native":
-        raise ValueError(
-            "Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; "
-            "use scene_import_method='native' or omit it"
-        )
     binding = request.get("string_layout")
     if binding is not None and mode != "module_layout":
         raise ValueError("An explicit string_layout requires shading_mode='module_layout'")
@@ -273,19 +259,12 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
               "artifacts": {}, "native_consumption_verified": False}
     paths = None
     record = None
-    proc = None
     attempt = None
     write_enabled = False
     with store.lock:
         try:
             if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation)):
                 raise ValueError("Use strict booleans")
-            method = request.get("scene_import_method") or "native"
-            if method != "native":
-                raise ValueError(
-                    "Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; "
-                    "use scene_import_method='native' or omit it"
-                )
             if not resume and request.get("allow_window_creation") is False:
                 raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
             # Any value except an explicit False keeps the original CSV+PDF contract
@@ -373,7 +352,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 if record.get("operation") == "engineering_house":
                     return
                 # A legacy completed/attempted run cannot acquire a retrospective input handoff.
-                if record["phase"] not in ("native_saved", "gui_closed") or record["runs"]:
+                if record["phase"] != "native_saved" or record["runs"]:
                     return
                 if "input_handoff" in record or record.get("operation") is not None:
                     raise ValueError("Incomplete native-house binding cannot be replaced")
@@ -425,13 +404,6 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                         or obstacle_profiles(arguments.get("obstacles")) != plan["obstacles"]):
                     raise ValueError("Stored scene does not recover the declared house/layout/source")
             if position() >= PHASES.index("native_saved"):
-                if method == "gui":
-                    if (plan["source"].get("orientations")
-                            and record.get("native_import", {}).get("native_reload_verified") is not True):
-                        raise ValueError("Grouped house checkpoint lacks verified native reload evidence")
-                    if (plan["shading_mode"] == "module_layout"
-                            and record.get("native_import", {}).get("native_shading_mode_reload_verified") is not True):
-                        raise ValueError("Detailed house checkpoint lacks verified native calculation-mode reload evidence")
                 _verify_new(paths["native_variant"], store._read(paths["working_variant"]),
                     plan["house_parts"], plan["pv_tables"], plan["source"]["module_total"],
                     **({"scene_context": {"house": house_profile(request["house"]),
@@ -507,16 +479,8 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 paths["native_variant"] = store._path(request["new_project"], record["variant"])
                 record["artifacts"]["native_variant"] = str(paths["native_variant"])
                 stage("native_saved", ("native_variant",))
-            if record["phase"] == "native_saved":
-                unchanged()
-                bind_engineering_inputs()
-                if find_running_pvsyst((Path(cli.cli).parent / "PVsyst.exe").resolve()):
-                    raise ValueError("A native GUI remains; close PVsyst before starting headless simulation")
-                record["native_cleanup_recovery"] = {"native_processes_absent": True,
-                    "checkpoint_pid_not_used_for_close": True, "close_performed_by_resume": False}
-                stage("gui_closed")
             ran_simulation = False
-            if record["phase"] == "gui_closed":
+            if record["phase"] == "native_saved":
                 bind_engineering_inputs()
                 if record["runs"] and not retry_simulation:
                     raise ValueError("Previous simulation attempt is retained; explicit retry_simulation=true creates new outputs")
@@ -573,13 +537,6 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                     record["artifacts"]["pdf"] = str(pdf_path)
                 if record.get("operation") == "engineering_house":
                     record["result_files"] = dict(record["output_guards"])
-                    # Retire a capability notice emitted by the earlier scene-author
-                    # stage, only after genuine native save/reload/year verification.
-                    obsolete = "Two-orientation authoring is candidate-only; native automatic import remains needs_context."
-                    record["warnings"] = [
-                        "Two-orientation authoring and native consumption are separate stages; this task's saved/reloaded geometry and annual evidence are recorded below."
-                        if warning == obsolete and record.get("native_import", {}).get("native_reload_verified") is True
-                        else warning for warning in record.get("warnings", [])]
                 if write_enabled:
                     _save(paths["manifest"], record)
             return _public(record)

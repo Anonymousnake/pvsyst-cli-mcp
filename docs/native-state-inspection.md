@@ -24,4 +24,4 @@
 - [P50/P90 参数编辑](p50-native-parameters.md)
 - [老化与 IAM 输入](native-model-inputs.md)
 - [削峰放电控制](native-peak-shaving.md)
-- [MV 夜间断开](native-mv-night.md)与[AC 线缆配置](native-ac-cabling.md)
+- [AC 线缆配置](native-ac-cabling.md)与多级 MV/HV 变压器（`pvsyst_configure_transformers`）

@@ -625,11 +625,6 @@ class PVsystTests(unittest.TestCase):
         self.assertIn(versions.HEADLESS_RECORD_VERSION, versions.NATIVE_TEXT)
         for token in ("8.1.5", "8.1.8", "8.2.0", "9.0.0"):
             self.assertNotIn(token, versions.NATIVE_TEXT_OR_SEED)
-        # Legacy Win32 GUI bridge (native.scene) was removed in v0.6.0
-        with self.assertRaises(ImportError):
-            from pvsyst_auto.native import scene as _removed_scene  # noqa: F401
-        with self.assertRaisesRegex(ValueError, "removed in v0.6.0"):
-            api_projects.pvsyst_import_house_pv_scene("s.pvc2", "V", method="gui")
 
     def test_cli_control_chars_bool_guards_csv_encoding_headers_and_leap_day(self):
         import warnings

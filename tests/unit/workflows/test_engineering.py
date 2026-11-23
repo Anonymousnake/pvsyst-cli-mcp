@@ -504,9 +504,9 @@ class EngineeringTests(unittest.TestCase):
         scene = {"status": "ready", "create_arguments": {"project": "Out.PRJ", "variant": "VC0",
                  "house": house_profile(request["house"]), "layout": request["layout"]}}
         for phase, corrupt in (("simulated", False), ("completed", False),
-                               ("completed", True), ("gui_closed", False)):
+                               ("completed", True), ("native_saved", False)):
             with self.subTest(phase=phase, corrupt=corrupt):
-                current = {**request, "allow_window_creation": phase == "gui_closed"}
+                current = {**request, "allow_window_creation": phase == "native_saved"}
                 child = {key: value for key, value in current.items() if key not in ("prepare_mode", "design")}
                 child["year"] = 2024
                 root = self.workspace()
@@ -526,10 +526,10 @@ class EngineeringTests(unittest.TestCase):
                 manifest = paths["manifest"] = root / "Results" / "Out_house_task.json"
                 output = root / "Results" / "Out_house_run01.csv"
                 record = {"schema": 1, "request": child, "phase": phase,
-                           "status": "completed" if phase == "completed" else "needs_attention",
+                          "status": "completed" if phase == "completed" else "needs_attention",
                           "issues": [], "guards": guards, "artifacts": {}, "warnings": [], "variant": "VC1",
                           "runs": [{"number": 1, "status": "running", "csv": output.name}]}
-                if phase != "gui_closed":
+                if phase != "native_saved":
                     output.write_text("recorded output", encoding="utf-8")
                     record["runs"][0].update(status="returned", native={"warnings": []})
                     record["output_guards"] = {"csv": fingerprint(output)}
@@ -542,11 +542,11 @@ class EngineeringTests(unittest.TestCase):
                         patch.object(house_flow, "_verify_new"), \
                         patch.object(house_flow, "_annual", return_value={"metrics": {"diagnostic_flags": []}}) as annual:
                     result = run_sourced_house_task(store, store.components, cli, request=current, dry_run=False,
-                                                    confirm=True, resume=True, retry_simulation=phase == "gui_closed")
+                                                    confirm=True, resume=True, retry_simulation=phase == "native_saved")
                 cli.run_simulation.assert_not_called()
                 self.assertIsNotNone(result["house"], result)
                 self.assertEqual(result["house"]["runs"], record["runs"], result)
-                if phase == "gui_closed":
+                if phase == "native_saved":
                     self.assertEqual(result["status"], "needs_attention", result)
                     self.assertIn("no remaining trial executions", result["house"]["issues"][0])
                     cli.version.assert_called_once_with(allow_window_creation=True)

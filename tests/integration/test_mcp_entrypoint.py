@@ -247,7 +247,7 @@ class ToolGroupsTests(unittest.TestCase):
             default_names = {item["name"] for item in default_tools}
             full_names = {item["name"] for item in full}
             self.assertEqual(len(default_names), 48)
-            self.assertEqual(len(full_names), 77)
+            self.assertEqual(len(full_names), 75)
             self.assertTrue({"pvsyst_license_info", "pvsyst_suggest_sizing", "pvsyst_diagnose_results",
                              "pvsyst_run_batch_sweep", "pvsyst_evaluate_economics",
                              "pvsyst_optimize_variant", "pvsyst_generate_report",
@@ -261,7 +261,7 @@ class ToolGroupsTests(unittest.TestCase):
             self.assertEqual({item["name"] for item in admin_only},
                              {"pvsyst_license_activate", "pvsyst_license_deactivate",
                               "pvsyst_license_sync", "pvsyst_export_logs"})
-            self.assertEqual(len(expert_only), 25)
+            self.assertEqual(len(expert_only), 23)
             self.assertEqual(default_names | {i["name"] for i in expert_only} | {i["name"] for i in admin_only}, full_names)
             expected = [item for item in full if item["description"].split("]", 1)[0][1:]
                         in {"Setup & License", "Engineering", "Results"}]

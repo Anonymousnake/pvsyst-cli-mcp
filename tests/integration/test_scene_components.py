@@ -111,7 +111,7 @@ class SceneComponentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(err, read_scene)
                 self.assertEqual([t["module_geometry"]["model_name"] for t in read_scene["create_arguments"]["layout"]["tables"]], ["Mono 300", "Mono 440"])
                 err, imp = decode_reply(await session.call_tool("pvsyst_import_house_pv_scene", {
-                    "scene_name": "Mixed.pvc2", "variant_name": "MixedOut", "method": "native", "dry_run": True}))
+                    "scene_name": "Mixed.pvc2", "variant_name": "MixedOut", "dry_run": True}))
                 self.assertFalse(err, imp)
                 self.assertEqual(imp["status"], "ready_to_import", imp)
 
@@ -193,7 +193,7 @@ class SceneComponentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(err, sc)
                 self.assertEqual(sc["status"], "created", sc)
 
-                # Omit `method` to prove default is headless "native"
+                # Default headless native import
                 err, imp = decode_reply(await session.call_tool("pvsyst_import_house_pv_scene", {
                     "scene_name": "ObsScene.pvc2", "variant_name": "WithObs",
                     "dry_run": False, "confirm": True}))

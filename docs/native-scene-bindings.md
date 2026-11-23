@@ -27,7 +27,7 @@
 
 以下情形仍**显式拒绝**（返回 `needs_review` 或 `unsupported`）：`ModOrient!=moLandScape`、非零 `ModSpacingX/Y`/`RowPadding`、`PowerSharingInverterId!=-1`、非 `FixedPlane`/非零 `BaseSlope`、`NoShed3D!=1`、`NIdentical!=1`，以及重复 cell、未知全局编号、容量不符或未知子阵引用。目前双固定朝向（每朝向一表或多表，例如 72 块拆分为 3 表且保持 0.5 m 正净距）均可通过存储层检查，并有代表性示例在 PVsyst 8.1.7 CLI 中跑通仿真（注意同屋面零间距场景即使文件结构正确，PVsyst 仍会因 PV 场穿透报错）；对于三朝向及以上、共享/异构逆变器、竖装或非零间距的场景，精细电气损失精度尚未完成全面实测验证。`string_layout_state="draft_incomplete"`（含 `global_string=0` 或未铺满整表）表示草稿可保存与回读，但不可直接用于仿真。
 
-原生全局状态 `mlDefStrings` 或 `mlDefInverters` 只是保存状态，不表示当前选中了精细计算。布局的 `stored_consistent` 与 `native_consumption_verified=false` 也不构成电气损失计算证明。通过[原生住宅任务](native-house-task.md#module-layout-电气阴影)选用 `shading_mode="module_layout"` 后，导入结果另行记录 GUI 重载后的模式选择，仿真再检查 `ShdElec` 输出。
+原生全局状态 `mlDefStrings` 或 `mlDefInverters` 只是保存状态，不表示当前选中了精细计算。布局的 `stored_consistent` 与 `native_consumption_verified=false` 也不构成电气损失计算证明。通过[原生住宅任务](native-house-task.md#module-layout-电气阴影)选用 `shading_mode="module_layout"` 后，导入结果另行记录已保存布局的存储校验（`stored_module_layout_verified`），仿真再检查 `ShdElec` 输出。
 
 ## 三种绑定状态（`status`）
 
