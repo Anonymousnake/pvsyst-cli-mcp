@@ -885,7 +885,7 @@ def _next_variant_id(store, project, *, reserved=(), candidates=_VARIANT_IDS):
         for path in root.iterdir()
         if path.stem.casefold() == stem.casefold() and len(path.suffix) >= 2
     }
-    used.update(reserved)
+    used.update(r.upper() for r in reserved)
     for candidate in candidates:
         if candidate not in used:
             return candidate

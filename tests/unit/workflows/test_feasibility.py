@@ -172,6 +172,7 @@ class FeasibilityStudyTests(unittest.TestCase):
              patch("pvsyst_auto.workflows.feasibility.diagnose_simulation_csv", return_value={"status": "ok", "needs_review": False}):
             result = pvsyst_run_feasibility_study(spec=request, dry_run=False, confirm=True)
         self.assertEqual(result["status"], "needs_review")
+        self.assertTrue(result["executive_summary"]["needs_review"])
 
     def test_design_spec_reads_nested_simulate_design_artifacts_and_stops_on_weather(self) -> None:
         base_spec = self._sample_spec()

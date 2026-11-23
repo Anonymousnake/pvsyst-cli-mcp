@@ -51,6 +51,12 @@ def generate_outage_availability(declaration: dict, newline: str) -> tuple[str, 
     if peak_hours is not None:
         if not isinstance(peak_hours, list) or not peak_hours or any(type(h) is not int or not 0 <= h <= 23 for h in peak_hours):
             raise ValueError("peak_hours must be a non-empty list of integers in 0..23")
+    utc_offset = declaration.get("utc_offset_hours")
+    if utc_offset is not None and (type(utc_offset) is not int or not -12 <= utc_offset <= 14):
+        raise ValueError("utc_offset_hours must be an integer in -12..14")
+    declared_basis = declaration.get("time_basis")
+    if declared_basis is not None and declared_basis != TIME_BASIS:
+        raise ValueError(f"time_basis must be {TIME_BASIS!r}")
 
     total_hours = 24 * (366 if calendar.isleap(year) else 365)
     avail = [True] * total_hours
@@ -105,18 +111,22 @@ def generate_outage_availability(declaration: dict, newline: str) -> tuple[str, 
 
 
 def native_availability(workspace, declaration, newline):
-    if isinstance(declaration, dict) and (declaration.get("mode") == "generated" or (
-        "csv_name" not in declaration and "outage_count" in declaration
-    )):
+    if not isinstance(declaration, dict):
+        raise ValueError("Grid availability declaration must be an object")
+    mode = declaration.get("mode")
+    if mode == "generated" or (mode is None and "csv_name" not in declaration and "outage_count" in declaration):
         return generate_outage_availability(declaration, newline)
 
-    year = declaration["year"]
+    year = declaration.get("year")
     if type(year) is not int or not 1969 <= year <= 2068:
         raise ValueError("Declare an integer availability year in 1969..2068")
-    if (declaration["time_basis"] != TIME_BASIS or type(declaration["utc_offset_hours"]) is not int
+    if (declaration.get("time_basis") != TIME_BASIS or type(declaration.get("utc_offset_hours")) is not int
             or not -12 <= declaration["utc_offset_hours"] <= 14):
         raise ValueError("Declare a fixed whole-hour standard offset and local_standard_interval_start")
-    source = workspace_file(workspace, "UserData", declaration["csv_name"], ".csv")
+    csv_name = declaration.get("csv_name")
+    if not isinstance(csv_name, str) or not csv_name.strip():
+        raise ValueError("CSV grid availability requires a non-empty csv_name")
+    source = workspace_file(workspace, "UserData", csv_name, ".csv")
     original = _read(source)
     reader = csv.reader(io.StringIO(original.decode("utf-8-sig")), delimiter=";", strict=True)
     if next(reader, None) != ["Date", "Grid Available"] or next(reader, None) != ["", "ratio"]:

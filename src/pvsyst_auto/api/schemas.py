@@ -574,7 +574,7 @@ class GridAvailabilityProfile(BaseModel):
     mode: Literal["csv", "generated"] | None = None
     csv_name: StrictStr | None = None
     year: StrictInt
-    utc_offset_hours: StrictInt | None = None
+    utc_offset_hours: Annotated[StrictInt, Field(ge=-12, le=14)] | None = None
     time_basis: Literal["local_standard_interval_start"] | None = None
     outage_count: Annotated[StrictInt, Field(ge=1, le=365)] | None = None
     min_duration_hours: Annotated[StrictInt, Field(ge=1, le=168)] | None = None

@@ -405,9 +405,15 @@ def run_standalone_design(
     if spec.get("losses"):
         raise ValueError("losses overrides are not supported for scope='stand_alone'")
 
-    prj = normalize_project_name(spec["new_project"])
+    raw_prj = spec.get("new_project")
+    if not isinstance(raw_prj, str) or not raw_prj.strip():
+        raise ValueError("Stand-Alone design requires a non-empty new_project filename")
+    prj = normalize_project_name(raw_prj)
     stem = prj[:-4]
-    weather = spec.get("weather") or {}
+    raw_weather = spec.get("weather")
+    if raw_weather is not None and not isinstance(raw_weather, dict):
+        raise ValueError("Stand-Alone design requires weather as an object")
+    weather = raw_weather or {}
     if weather.get("mode", "existing") != "existing":
         raise ValueError("Stand-Alone design requires weather.mode='existing'")
     site_name = weather.get("sit_name")
@@ -416,6 +422,8 @@ def run_standalone_design(
         raise ValueError("Stand-Alone design requires weather.sit_name and weather.met_name (existing workspace weather)")
 
     module_spec = spec.get("module") or {}
+    if not isinstance(module_spec, dict):
+        raise ValueError("Stand-Alone design requires module as an object")
     pan_name = module_spec.get("file_name")
     if not pan_name:
         raise ValueError("Stand-Alone design requires module.file_name (.PAN)")
@@ -430,19 +438,49 @@ def run_standalone_design(
     generated_gen_path: Path | None = None
     gen_text: str | None = None
     if genset_spec is not None:
+        if not isinstance(genset_spec, dict):
+            raise ValueError("standalone.genset_spec must be an object")
         gen_fname = genset_spec.get("file_name") or f"{stem}_BackupGen.GEN"
         safe_filename(gen_fname, ".GEN")
         genset_file = gen_fname
-        if backup_kw is None:
-            backup_kw = float(genset_spec["nominal_power_kw"]) * 0.8
-
+        nom_kw = genset_spec.get("nominal_power_kw")
+        fuel_l_h = genset_spec.get("fuel_consumption_l_per_h")
+        if nom_kw is None or fuel_l_h is None:
+            raise ValueError("standalone.genset_spec requires nominal_power_kw and fuel_consumption_l_per_h")
         gen_text = generate_genset_text(
             model=genset_spec.get("model") or Path(genset_file).stem,
-            nominal_power_kw=genset_spec["nominal_power_kw"],
-            fuel_consumption_l_per_h=genset_spec["fuel_consumption_l_per_h"],
+            nominal_power_kw=nom_kw,
+            fuel_consumption_l_per_h=fuel_l_h,
             manufacturer=genset_spec.get("manufacturer", "Generic"),
             fuel_type=genset_spec.get("fuel_type", "Diesel"),
         )
+        if backup_kw is None:
+            backup_kw = float(nom_kw) * 0.8
+        gen_dir = store.workspace / "ComposPV" / "Gensets"
+        if gen_dir.is_dir() and any(p.name.casefold() == genset_file.casefold() for p in gen_dir.iterdir()):
+            raise FileExistsError(f"Generated GEN already exists: {genset_file}")
+
+    # Preflight project collision and economics config BEFORE dry_run returns or any file is written
+    proj_root = store._root()
+    if proj_root.is_dir() and any(store._belongs_to_project(p, prj) for p in proj_root.iterdir()):
+        raise FileExistsError(f"Working project already exists: {prj}; choose a new project filename")
+
+    eco_spec = sa.get("economics")
+    if eco_spec is not None:
+        if not isinstance(eco_spec, dict):
+            raise ValueError("standalone.economics must be an object")
+        if eco_spec.get("capex_total") is not None:
+            from pvsyst_auto.engineering.economics import evaluate_standalone_economics
+            evaluate_standalone_economics(
+                {"e_user_kwh": 0.0, "e_backup_kwh": 0.0, "backup_runtime_hours": 0.0, "backup_fuel_liters": 0.0},
+                capex_total=eco_spec["capex_total"],
+                annual_om_opex=eco_spec.get("annual_om_opex", 0.0),
+                fuel_price_per_liter=eco_spec.get("fuel_price_per_liter", 1.50),
+                genset_opex_per_hour=eco_spec.get("genset_opex_per_hour", 0.0),
+                genset_fuel_rate_l_per_kwh=eco_spec.get("genset_fuel_rate_l_per_kwh"),
+                avoided_tariff_per_kwh=eco_spec.get("avoided_tariff_per_kwh", 0.0),
+                financial=eco_spec.get("financial"),
+            )
 
     synth = synthesize_standalone_project(
         store,
@@ -522,9 +560,16 @@ def run_standalone_design(
     )
 
     # Parse available columns from CSV header (PVsyst omits viE_BkUp/viFuelBU when no genset is enabled)
-    raw_lines = out_csv.read_text(encoding="latin-1", errors="replace").splitlines()
-    header_line = next((ln for ln in raw_lines if ln.lower().startswith("date;")), "")
-    available_cols = [c.strip() for c in header_line.split(";")[1:] if c.strip()]
+    try:
+        raw_lines = out_csv.read_text(encoding="utf-8-sig").splitlines()
+    except UnicodeDecodeError:
+        raw_lines = out_csv.read_text(encoding="latin-1", errors="replace").splitlines()
+    header_line = next(
+        (ln for ln in raw_lines if ln.lstrip().lower().startswith(("date;", "date,"))),
+        "",
+    )
+    delim = "," if header_line.lstrip().lower().startswith("date,") else ";"
+    available_cols = [c.strip() for c in header_line.split(delim)[1:] if c.strip()]
     results = summarize_results(out_csv, available_cols)
     parsed = results["summary"]
     first = datetime.fromisoformat(results["first"])
@@ -534,27 +579,51 @@ def run_standalone_design(
         raise ValueError("Stand-Alone results require a complete hourly calendar year")
     if not parsed.get("E_User", {}).get("complete"):
         raise ValueError("Stand-Alone results require a complete E_User column")
+    for req_complete_col in ("E_Solar", "E_Miss", "T_LOL", "E_BkUp", "FuelBU", "BkUp_ON", "EArray"):
+        if req_complete_col in parsed and not parsed[req_complete_col].get("complete"):
+            raise ValueError(f"Stand-Alone results require a complete {req_complete_col} column")
 
-    def _sum(col: str) -> float:
+    from pvsyst_auto.results import energy_unit_scale
+
+    dt_hours = float(results["step_minutes"]) / 60.0
+
+    def _sum_energy_kwh(col: str) -> float:
         entry = parsed.get(col)
         if not entry:
             return 0.0
+        unit = entry.get("unit", "")
+        if unit:
+            factor, needs_dt = energy_unit_scale(unit)
+            if factor == 0.0:
+                raise ValueError(f"Stand-Alone {col} requires a power or energy unit, got {unit!r}")
+            return float(entry["sum"]) * factor * (dt_hours if needs_dt else 1.0)
         return float(entry["energy_kwh"] if entry.get("energy_kwh") is not None else entry["sum"])
+
+    def _sum_raw(col: str, *, allowed_units: tuple[str, ...] = ()) -> float:
+        entry = parsed.get(col)
+        if not entry:
+            return 0.0
+        unit = (entry.get("unit") or "").strip()
+        if allowed_units and unit and unit.casefold() not in allowed_units:
+            raise ValueError(f"Stand-Alone {col} has unsupported unit {unit!r}")
+        return float(entry["sum"])
 
     def _mean(col: str) -> float:
         entry = parsed.get(col)
-        return float(entry["mean"]) if entry else 0.0
+        if not entry or entry.get("mean") is None:
+            return 0.0
+        return float(entry["mean"])
 
-    e_user = _sum("E_User")
-    e_solar = _sum("E_Solar")
-    e_bkup = _sum("E_BkUp")
-    e_miss = _sum("E_Miss")
-    e_avail = _sum("E_Avail")
-    e_unused = _sum("EUnused")
-    e_array = _sum("EArray")
-    t_lol = _sum("T_LOL")
-    bkup_h = _sum("BkUp_ON")
-    fuel_l = _sum("FuelBU")
+    e_user = _sum_energy_kwh("E_User")
+    e_solar = _sum_energy_kwh("E_Solar")
+    e_bkup = _sum_energy_kwh("E_BkUp")
+    e_miss = _sum_energy_kwh("E_Miss")
+    e_avail = _sum_energy_kwh("E_Avail")
+    e_unused = _sum_energy_kwh("EUnused")
+    e_array = _sum_energy_kwh("EArray")
+    t_lol = _sum_raw("T_LOL", allowed_units=("h", "hr", "hour", "hours"))
+    bkup_h = _sum_raw("BkUp_ON", allowed_units=("h", "hr", "hour", "hours"))
+    fuel_l = _sum_raw("FuelBU")
     soc_mean = _mean("SOCmean")
     e_load_total = e_user + e_miss
     solar_frac = (e_solar / e_load_total) if e_load_total > 0 else 0.0

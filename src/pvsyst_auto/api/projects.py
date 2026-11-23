@@ -170,14 +170,14 @@ def pvsyst_convert_orientation(
     project: StrictStr,
     source_variant: StrictStr,
     new_variant: StrictStr,
-    target_type: Literal["fixed", "seasonal", "sheds", "tracker_ns", "tracker_2axis", "dome"],
+    target_type: Literal["fixed", "seasonal", "sheds", "tracker_ns", "tracker_2axis"],
     params: OrientationConvertParams | None = None,
     dry_run: StrictBool = True,
     variant_name: StrictStr | None = None,
     add_utf8_bom: StrictBool = False,
 ) -> dict:
     """Create a new variant converting an existing variant's orientation type in-place
-    (fixed <-> seasonal <-> sheds <-> tracker_ns <-> tracker_2axis <-> dome), automatically stripping
+    (fixed <-> seasonal <-> sheds <-> tracker_ns <-> tracker_2axis), automatically stripping
     incompatible 3D shading and stale simulation caches. Defaults to dry_run=true."""
     from pvsyst_auto.project.orientation_convert import convert_orientation
     return convert_orientation(

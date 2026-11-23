@@ -333,6 +333,104 @@ class StandAloneTests(unittest.TestCase):
                 self.assertEqual(result["diagnostics"]["needs_review"], lost_hours > 0)
                 self.assertEqual(result["status"], status)
 
+    def test_dry_run_preflight_blocks_collisions_and_bad_economics_without_writing(self) -> None:
+        from unittest.mock import Mock, patch
+        from pvsyst_auto.api import simulation
+
+        cli = Mock()
+        cli.run_simulation.side_effect = AssertionError("CLI should not run on blocked dry_run")
+
+        # 1. Case-insensitive existing .GEN collision blocked on dry_run without overwriting
+        gen_path = self.ws / "ComposPV" / "Gensets" / "ExistingGen.GEN"
+        gen_path.write_text("KEEP_EXISTING\n", encoding="utf-8")
+        req_gen = SingleDesignRequest(
+            new_project="GenClash.PRJ", scope="stand_alone", module={"file_name": "Lab440.PAN"},
+            weather={"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            standalone={"battery_file": "Generic_Solar_12V160Ah.BTR", "genset_spec": {
+                "file_name": "existinggen.gen", "model": "Existing", "nominal_power_kw": 5.0,
+                "fuel_consumption_l_per_h": 1.5,
+            }},
+        )
+        with patch.multiple(simulation, cli=lambda: cli, variant_store=lambda: self.store):
+            res_gen = simulation.pvsyst_simulate_design(req_gen, dry_run=True)
+        self.assertEqual(res_gen["status"], "blocked")
+        self.assertIn("already exists", res_gen["issues"][0]["message"])
+        self.assertEqual(gen_path.read_text(encoding="utf-8"), "KEEP_EXISTING\n")
+
+        # 2. Existing project collision blocked on dry_run
+        (self.ws / "Projects" / "ExistingProj.PRJ").write_text("PVObject_=pvProject\n", encoding="utf-8")
+        req_proj = SingleDesignRequest(
+            new_project="ExistingProj.PRJ", scope="stand_alone", module={"file_name": "Lab440.PAN"},
+            weather={"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            standalone={"battery_file": "Generic_Solar_12V160Ah.BTR"},
+        )
+        with patch.multiple(simulation, cli=lambda: cli, variant_store=lambda: self.store):
+            res_proj = simulation.pvsyst_simulate_design(req_proj, dry_run=True)
+        self.assertEqual(res_proj["status"], "blocked")
+        self.assertIn("already exists", res_proj["issues"][0]["message"])
+
+        # 3. Unquoted battery_replacement_year blocked at dry_run before simulation or .GEN write
+        req_eco = SingleDesignRequest(
+            new_project="BadEco.PRJ", scope="stand_alone", module={"file_name": "Lab440.PAN"},
+            weather={"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            standalone={
+                "battery_file": "Generic_Solar_12V160Ah.BTR",
+                "genset_spec": {
+                    "file_name": "ShouldNotWrite.GEN", "model": "G",
+                    "nominal_power_kw": 5.0, "fuel_consumption_l_per_h": 1.5,
+                },
+                "economics": {"capex_total": 1000.0, "financial": {"battery_replacement_year": 5}},
+            },
+        )
+        with patch.multiple(simulation, cli=lambda: cli, variant_store=lambda: self.store):
+            res_eco = simulation.pvsyst_simulate_design(req_eco, dry_run=True)
+        self.assertEqual(res_eco["status"], "blocked")
+        self.assertIn("battery_replacement_cost", res_eco["issues"][0]["message"])
+        self.assertFalse((self.ws / "ComposPV" / "Gensets" / "ShouldNotWrite.GEN").exists())
+
+    def test_standalone_energy_balance_scales_wh_and_checks_all_columns_and_blank_soc(self) -> None:
+        from datetime import datetime, timedelta
+        from unittest.mock import Mock, patch
+        from pvsyst_auto.api import simulation
+
+        cli = Mock()
+        start = datetime(2023, 1, 1)
+
+        def sim_wh(project, variant, *, out_csv, **kwargs):
+            rows = (f"{start + timedelta(hours=i):%d/%m/%y %H:%M};1000;600;400;0;\n" for i in range(8760))
+            out_csv.write_text("date;E_User;E_Solar;E_BkUp;T_LOL;SOCmean\n;Wh;Wh;Wh;h;\n" + "".join(rows), encoding="utf-8")
+            return {}
+
+        cli.run_simulation.side_effect = sim_wh
+        req_wh = SingleDesignRequest(
+            new_project="WhUnit.PRJ", scope="stand_alone", module={"file_name": "Lab440.PAN"},
+            weather={"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            standalone={"battery_file": "Generic_Solar_12V160Ah.BTR"},
+        )
+        with patch.multiple(simulation, cli=lambda: cli, variant_store=lambda: self.store):
+            res_wh = simulation.pvsyst_simulate_design(req_wh, dry_run=False)
+        self.assertEqual(res_wh["status"], "completed")
+        self.assertAlmostEqual(res_wh["energy_balance"]["e_user_kwh"], 8760.0, places=2)
+        self.assertAlmostEqual(res_wh["energy_balance"]["e_solar_kwh"], 5256.0, places=2)
+        self.assertAlmostEqual(res_wh["energy_balance"]["e_backup_kwh"], 3504.0, places=2)
+        self.assertEqual(res_wh["energy_balance"]["soc_mean"], 0.0)
+
+        def sim_blank_tlol(project, variant, *, out_csv, **kwargs):
+            rows = (f"{start + timedelta(hours=i):%d/%m/%y %H:%M};1;{'' if i == 10 else 0}\n" for i in range(8760))
+            out_csv.write_text("date;E_User;T_LOL\n;kWh;h\n" + "".join(rows), encoding="utf-8")
+            return {}
+
+        cli.run_simulation.side_effect = sim_blank_tlol
+        req_blank = SingleDesignRequest(
+            new_project="BlankTLol.PRJ", scope="stand_alone", module={"file_name": "Lab440.PAN"},
+            weather={"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            standalone={"battery_file": "Generic_Solar_12V160Ah.BTR"},
+        )
+        with patch.multiple(simulation, cli=lambda: cli, variant_store=lambda: self.store):
+            res_blank = simulation.pvsyst_simulate_design(req_blank, dry_run=False)
+        self.assertEqual(res_blank["status"], "blocked")
+        self.assertIn("complete T_LOL column", res_blank["issues"][0]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()
