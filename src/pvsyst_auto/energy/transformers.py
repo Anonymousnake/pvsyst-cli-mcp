@@ -84,7 +84,7 @@ def _normalize_cable(raw: dict[str, Any] | None, label: str, *, default_section:
     }
 
 
-def _normalize_mv(raw: dict[str, Any], default_ref_kw: float) -> dict[str, Any]:
+def _normalize_mv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("mv must be an object")
     count = raw.get("count", 1)
@@ -93,7 +93,10 @@ def _normalize_mv(raw: dict[str, Any], default_ref_kw: float) -> dict[str, Any]:
     v_kv = _finite_pos(raw.get("output_voltage_kv", 20.0), "mv.output_voltage_kv")
     if not 1.0 <= v_kv <= 66.0:
         raise ValueError("mv.output_voltage_kv must be in [1.0, 66.0] kV")
-    ref_kw = _finite_pos(raw["stc_ref_power_kw"], "mv.stc_ref_power_kw") if raw.get("stc_ref_power_kw") is not None else default_ref_kw
+    ref = raw.get("stc_ref_power_kw") if raw.get("stc_ref_power_kw") is not None else default_ref_kw
+    if ref is None:
+        raise ValueError("mv.stc_ref_power_kw is required when the source has no reference power")
+    ref_kw = _finite_pos(ref, "mv.stc_ref_power_kw")
 
     ds_nom = raw.get("nominal_power_kva")
     ds_iron = raw.get("iron_loss_kw")
@@ -135,13 +138,16 @@ def _normalize_mv(raw: dict[str, Any], default_ref_kw: float) -> dict[str, Any]:
     }
 
 
-def _normalize_hv(raw: dict[str, Any], default_ref_kw: float) -> dict[str, Any]:
+def _normalize_hv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("hv must be an object")
     v_kv = _finite_pos(raw.get("output_voltage_kv", 110.0), "hv.output_voltage_kv")
     if not 30.0 <= v_kv <= 500.0:
         raise ValueError("hv.output_voltage_kv must be in [30.0, 500.0] kV")
-    ref_kw = _finite_pos(raw["stc_ref_power_kw"], "hv.stc_ref_power_kw") if raw.get("stc_ref_power_kw") is not None else default_ref_kw
+    ref = raw.get("stc_ref_power_kw") if raw.get("stc_ref_power_kw") is not None else default_ref_kw
+    if ref is None:
+        raise ValueError("hv.stc_ref_power_kw is required when the source has no reference power")
+    ref_kw = _finite_pos(ref, "hv.stc_ref_power_kw")
     # PVsyst 8.1.7 ALWAYS requires HV datasheet specifications (HVTrfDSNomPower / IronLoss / CopperLoss)
     ds_nom = _finite_pos(raw["nominal_power_kva"], "hv.nominal_power_kva") if raw.get("nominal_power_kva") is not None else round(ref_kw * 1.15, 2)
     iron_frac_in = raw.get("iron_loss_frac")
@@ -151,13 +157,13 @@ def _normalize_hv(raw: dict[str, Any], default_ref_kw: float) -> dict[str, Any]:
         iron_frac = ds_iron / ref_kw if ref_kw > 0 else 0.0007
     else:
         iron_frac = _finite_pos(iron_frac_in if iron_frac_in is not None else 0.0007, "hv.iron_loss_frac", allow_zero=True)
-        ds_iron = round(ds_nom * iron_frac, 5)
+        ds_iron = round(ref_kw * iron_frac, 5)
     if raw.get("copper_loss_kw") is not None:
         ds_copper = _finite_pos(raw["copper_loss_kw"], "hv.copper_loss_kw", allow_zero=True)
         copper_frac = ds_copper * (ref_kw / (ds_nom * ds_nom)) if ds_nom > 0 else 0.0065
     else:
         copper_frac = _finite_pos(copper_frac_in if copper_frac_in is not None else 0.0065, "hv.copper_loss_frac", allow_zero=True)
-        ds_copper = round(ds_nom * copper_frac, 5)
+        ds_copper = round(copper_frac * ds_nom * ds_nom / ref_kw, 5)
     if iron_frac > 0.05 or copper_frac > 0.15:
         raise ValueError("HV transformer loss fractions out of realistic bounds (iron <= 5%, copper <= 15%)")
     night = raw.get("night_disconnect", False)
@@ -179,7 +185,7 @@ def _normalize_hv(raw: dict[str, Any], default_ref_kw: float) -> dict[str, Any]:
     }
 
 
-def _infer_ref_power_kw(lines: list[str], default_ref_kw: float | None = None) -> float:
+def _infer_ref_power_kw(lines: list[str], default_ref_kw: float | None = None) -> float | None:
     if default_ref_kw is not None and default_ref_kw > 0:
         return float(default_ref_kw)
     blocks = objects("".join(lines))
@@ -202,7 +208,7 @@ def _infer_ref_power_kw(lines: list[str], default_ref_kw: float | None = None) -
             val = float(m.group(1))
             if val > 0:
                 return val
-    return 1000.0
+    return None
 
 
 def _cable_block(cable: dict[str, Any] | None, indent: str, eol: str) -> list[str]:
