@@ -383,7 +383,10 @@ def _build_batch_sweep_figure(parsed_batch: dict[str, Any], *, palette: list[str
         return None
     has_pr = any(_try_float(r["values"].get("PR")) is not None for r in rows)
     pr_unit = units.get("PR", "")
-    pr_mult = 100.0 if pr_unit in ("ratio", "") else 1.0
+
+    def pr_pct(value):
+        v = _try_float(value)
+        return v * 100 if v is not None and (pr_unit == "ratio" or (not pr_unit and v <= 1.5)) else v
 
     # Identify varied parameter columns
     param_keys: list[str] = []
@@ -410,10 +413,7 @@ def _build_batch_sweep_figure(parsed_batch: dict[str, Any], *, palette: list[str
             secondary_y=False,
         )
         if has_pr:
-            prs = [
-                (v * pr_mult if (v is not None and (pr_unit == "ratio" or v <= 1.5)) else v)
-                for v in (_try_float(r["values"].get("PR")) for r in rows)
-            ]
+            prs = [pr_pct(r["values"].get("PR")) for r in rows]
             fig.add_trace(
                 go.Scatter(name="PR (%)", x=xs, y=prs, mode="lines+markers",
                            line=dict(color="#059669", width=2, dash="dash")),
@@ -427,8 +427,7 @@ def _build_batch_sweep_figure(parsed_batch: dict[str, Any], *, palette: list[str
             raw_x = (r.get("parameters") or {}).get(x_key)
             num_x = _try_float(raw_x)
             y_val = _try_float(r["values"].get(out_metric))
-            pr_raw = _try_float(r["values"].get("PR")) if has_pr else None
-            pr_val = (pr_raw * 100.0 if (pr_raw is not None and (pr_unit == "ratio" or pr_raw <= 1.5)) else pr_raw)
+            pr_val = pr_pct(r["values"].get("PR"))
             if y_val is not None:
                 points.append((num_x if num_x is not None else idx_r, raw_x if num_x is None else num_x, y_val, pr_val))
         points.sort(key=lambda item: item[0])
@@ -457,26 +456,26 @@ def _build_batch_sweep_figure(parsed_batch: dict[str, Any], *, palette: list[str
             )
         x_title = x_key
     else:
-        x_key, group_key = varied[0], varied[1]
-        groups: dict[str, list[tuple[float, Any, float, float | None]]] = {}
+        x_key = varied[0]
+        groups: dict[tuple[str, ...], list[tuple[float, Any, float, float | None]]] = {}
         for idx_r, r in enumerate(rows):
             params = r.get("parameters") or {}
-            g_lbl = str(params.get(group_key, ""))
+            group = tuple(str(params.get(k, "")) for k in varied[1:])
             raw_x = params.get(x_key)
             num_x = _try_float(raw_x)
             y_val = _try_float(r["values"].get(out_metric))
-            pr_raw = _try_float(r["values"].get("PR")) if has_pr else None
-            pr_val = (pr_raw * 100.0 if (pr_raw is not None and (pr_unit == "ratio" or pr_raw <= 1.5)) else pr_raw)
+            pr_val = pr_pct(r["values"].get("PR"))
             if y_val is not None:
-                groups.setdefault(g_lbl, []).append(
+                groups.setdefault(group, []).append(
                     (num_x if num_x is not None else idx_r, raw_x if num_x is None else num_x, y_val, pr_val)
                 )
-        for g_idx, (g_lbl, pts) in enumerate(sorted(groups.items(), key=lambda kv: (_try_float(kv[0]) is None, _try_float(kv[0]) or 0.0, kv[0]))):
+        for g_idx, (group, pts) in enumerate(sorted(groups.items())):
+            g_lbl = ", ".join(f"{k}={v}" for k, v in zip(varied[1:], group))
             pts.sort(key=lambda item: item[0])
             color = palette[g_idx % len(palette)]
             fig.add_trace(
                 go.Scatter(
-                    name=f"{group_key}={g_lbl} ({out_metric})",
+                    name=f"{g_lbl} ({out_metric})",
                     x=[p[1] for p in pts], y=[p[2] for p in pts],
                     mode="lines+markers", line=dict(color=color, width=2.5),
                 ),
@@ -485,7 +484,7 @@ def _build_batch_sweep_figure(parsed_batch: dict[str, Any], *, palette: list[str
             if has_pr and any(p[3] is not None for p in pts):
                 fig.add_trace(
                     go.Scatter(
-                        name=f"{group_key}={g_lbl} PR (%)",
+                        name=f"{g_lbl} PR (%)",
                         x=[p[1] for p in pts], y=[p[3] for p in pts],
                         mode="lines", line=dict(color=color, width=1.8, dash="dot"),
                     ),
@@ -650,10 +649,11 @@ def generate_report(
         s["label"]: s for s in (econ_result["scenarios"] if econ_result else ())
     }
 
-    parsed_batch = None
+    palette = ["#2563eb", "#059669", "#d97706", "#7c3aed", "#dc2626", "#0891b2"]
+    fig_batch = None
     if batch_summary_csv:
         batch_path = _resolve_batch_csv(workspace, batch_summary_csv)
-        parsed_batch = parse_batch_results(batch_path)
+        fig_batch = _build_batch_sweep_figure(parse_batch_results(batch_path), palette=palette, opt_label=t["batch_opt_label"])
 
     if dry_run:
         return {
@@ -664,7 +664,7 @@ def generate_report(
             "language": language,
             "plotlyjs": plotlyjs,
             "has_economics": econ_result is not None,
-            "has_batch_sweep": parsed_batch is not None,
+            "has_batch_sweep": fig_batch is not None,
         }
 
     # --- Build Interactive Plotly Figures ---
@@ -678,7 +678,6 @@ def generate_report(
             return js_first
         return False
 
-    palette = ["#2563eb", "#059669", "#d97706", "#7c3aed", "#dc2626", "#0891b2"]
     chart_sections: list[tuple[str, str]] = []
 
     # 1. Monthly Generation & PR Combo Chart
@@ -909,10 +908,8 @@ def generate_report(
             chart_sections.append((t["sec_bess_opt"], _plotly_div(fig_bess, include_js=next_js())))
 
     # 8. Optional Parametric Batch Sweep Curve Chart (from UserBatch *Results.CSV)
-    if parsed_batch is not None:
-        fig_batch = _build_batch_sweep_figure(parsed_batch, palette=palette, opt_label=t["batch_opt_label"])
-        if fig_batch is not None:
-            chart_sections.append((t["sec_batch_sweep"], _plotly_div(fig_batch, include_js=next_js())))
+    if fig_batch is not None:
+        chart_sections.append((t["sec_batch_sweep"], _plotly_div(fig_batch, include_js=next_js())))
 
     # --- Assemble Clean Responsive HTML Document ---
     primary_diag = primary["diagnostics"]
@@ -1078,6 +1075,6 @@ def generate_report(
         "scenario_count": len(parsed_scenarios),
         "chart_count": len(chart_sections),
         "has_economics": econ_result is not None,
-        "has_batch_sweep": parsed_batch is not None,
+        "has_batch_sweep": fig_batch is not None,
         "best_scenario": best_label,
     }

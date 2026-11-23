@@ -270,6 +270,15 @@ class ReportBatchSweepCurvesTests(unittest.TestCase):
             rows,
         )
 
+    def test_three_dimensional_sweep_preserves_groups_and_pr_units(self):
+        from pvsyst_auto.workflows.report import _build_batch_sweep_figure
+        rows = [{"parameters": {"tilt": t, "pitch": p, "count": c}, "values": {"E_Grid": 10, "PR": 1.2}}
+                for t in (10, 20) for p in (3, 4) for c in (1, 2)]
+        fig = _build_batch_sweep_figure({"units": {"PR": "%"}, "scenarios": rows}, palette=["blue"], opt_label="Best")
+        curves = [trace for trace in fig.data if trace.name.endswith("PR (%)")]
+        self.assertEqual(len(curves), 4)
+        self.assertTrue(all(list(trace.y) == [1.2, 1.2] for trace in curves))
+
     def test_report_renders_1d_and_2d_batch_sweep_curves(self):
         # 1D tilt sweep CSV (PVsyst UserBatch Results format)
         batch_1d = "\n".join([

@@ -556,6 +556,7 @@ def run_standalone_design(
         out_csv=out_csv,
         report_pdf=report_pdf_path,
         report_pages=spec.get("report_pages"),
+        report_language=spec.get("report_language"),
         allow_window_creation=allow_window_creation,
     )
 
