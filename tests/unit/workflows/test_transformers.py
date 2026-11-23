@@ -125,6 +125,28 @@ class TransformersTests(unittest.TestCase):
         self.assertEqual(transformer_state(vc3_lines)["count"], 0)
         self.assertEqual(self.store.validate_structure("TrfTest.PRJ", "VC3")["valid"], True)
 
+    def test_public_tool_clears_saved_results(self) -> None:
+        from unittest.mock import patch
+        from pvsyst_auto.api.projects import pvsyst_configure_transformers
+        from pvsyst_auto.api.schemas import MvTransformerSpec
+
+        source = self.root / "Projects" / "TrfTest.VC0"
+        text = source.read_text(encoding="utf-8-sig")
+        root_flags = text.splitlines()[3]
+        text = text.replace(root_flags, root_flags[:-1] + "1", 1)
+        cache = ("  VarList, list of=1 TVarSimul\n    VarSimul_1=E_Grid\n"
+                 "    End of VarSimul=E_Grid\n  End of the List VarList\n")
+        text = text.replace("End of PVObject pvVCalcul", cache + "End of PVObject pvVCalcul")
+        source.write_text(text, encoding="utf-8")
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
+            result = pvsyst_configure_transformers(
+                "TrfTest.PRJ", "VC0", "VC1", mv=MvTransformerSpec(), dry_run=False,
+            )
+        self.assertEqual(result["status"], "created")
+        output = (self.root / "Projects" / "TrfTest.VC1").read_text(encoding="utf-8-sig")
+        self.assertNotIn("VarList, list of=", output)
+        self.assertEqual(int(output.splitlines()[3].split("$")[1], 16) & 1, 0)
+
     def test_validation_rejects_invalid_combinations(self) -> None:
         r1 = configure_transformers(
             self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC9",
