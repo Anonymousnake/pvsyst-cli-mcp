@@ -4,11 +4,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import product
+import json
 import math
 from pathlib import Path
 import re
+import threading
+import time
 from typing import Any
 
+from pvsyst_auto.components.editor import objects as parse_objects
 from pvsyst_auto.native.cli import (
     PVsystCLI,
     PVsystError,
@@ -18,7 +22,11 @@ from pvsyst_auto.native.cli import (
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
 
 MAX_BATCH_SCENARIOS = 100
+ASYNC_RECOMMENDED_THRESHOLD = 8
 DEFAULT_BATCH_RESULT_VARS = ("GlobInc", "GlobEff", "EArray", "E_Grid", "PR", "IL_Pmax")
+
+_BATCH_JOBS_LOCK = threading.Lock()
+_BATCH_JOBS: dict[tuple[Path, str], dict[str, Any]] = {}
 
 
 @dataclass(frozen=True)
@@ -69,7 +77,8 @@ BATCH_PARAMETERS: dict[str, BatchParamSpec] = {
     # System, grid limit, storage
     "modules_in_series": BatchParamSpec("modules_in_series", "Nb module", "in series", "", "int", 1, 200),
     "strings_in_parallel": BatchParamSpec("strings_in_parallel", "Nb strings", "in parall", "", "int", 1, 100000),
-    "inverter_count": BatchParamSpec("inverter_count", "Nb inverter", "or MPPT", "", "int", 1, 10000),
+    "inverter_count": BatchParamSpec("inverter_count", "Nb inverter", "or MPPT", "", "int", 1, 100000),
+    "mppt_count": BatchParamSpec("mppt_count", "Nb inverter", "or MPPT", "", "int", 1, 100000),
     "grid_limitation_kw": BatchParamSpec("grid_limitation_kw", "Grid Limitation", "", "[kW]", "float", 0.0, 1e7),
     "battery_parallel": BatchParamSpec("battery_parallel", "Nb. batt", "in parallel", "", "int", 1, 100000),
     # Losses & simulation year
@@ -100,7 +109,13 @@ def _clean_comment(text: str) -> str:
     return cleaned
 
 
-def _format_param_value(spec: BatchParamSpec, value: Any) -> tuple[Any, str]:
+def _format_param_value(
+    spec: BatchParamSpec,
+    value: Any,
+    *,
+    mppt_per_inverter: int = 1,
+    notes: list[str] | None = None,
+) -> tuple[Any, str]:
     """Validate one parameter value and format it for PVsyst UserBatch CSV."""
     if spec.kind == "bool":
         if type(value) is not bool:
@@ -113,11 +128,23 @@ def _format_param_value(spec: BatchParamSpec, value: Any) -> tuple[Any, str]:
             raise ValueError(f"{spec.key} must be >= {int(spec.minimum)}")
         if spec.maximum is not None and value > spec.maximum:
             raise ValueError(f"{spec.key} must be <= {int(spec.maximum)}")
+        if spec.key == "inverter_count" and mppt_per_inverter > 1:
+            scaled = value * mppt_per_inverter
+            if spec.maximum is not None and scaled > spec.maximum:
+                raise ValueError(
+                    f"{spec.key}={value} x {mppt_per_inverter} MPPT/inverter = {scaled} exceeds max {int(spec.maximum)}"
+                )
+            return value, str(scaled)
         return value, str(value)
     if spec.kind == "float":
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise ValueError(f"{spec.key} requires a finite number")
         fval = float(value)
+        if spec.key == "albedo" and 0.0 < fval <= 1.0:
+            pct = round(fval * 100.0, 6)
+            if notes is not None:
+                notes.append(f"albedo={fval:g} -> {pct:g}%")
+            fval = pct
         if spec.minimum is not None and fval < spec.minimum:
             raise ValueError(f"{spec.key} must be >= {spec.minimum}")
         if spec.maximum is not None and fval > spec.maximum:
@@ -126,6 +153,27 @@ def _format_param_value(spec: BatchParamSpec, value: Any) -> tuple[Any, str]:
     if not isinstance(value, str) or not value.strip() or any(ch in value for ch in (";", "\r", "\n")):
         raise ValueError(f"{spec.key} requires a nonempty string without semicolons or newlines")
     return value.strip(), value.strip()
+
+
+def _inspect_variant_mppt_ratio(cli: PVsystCLI, project: str, variant: str) -> int:
+    """Detect independent-MPPT ratio (NInvMPPT / NInverter) on the target variant's subarray."""
+    try:
+        vc_path = Path(cli.workspace) / "Projects" / f"{Path(project).stem}.{variant}"
+        if not vc_path.is_file():
+            return 1
+        text = vc_path.read_text(encoding="utf-8-sig", errors="replace").lstrip("\ufeff")
+        subarrays = [b for b in parse_objects(text) if b.object_type == "pvSubArray"]
+        if len(subarrays) != 1:
+            return 1
+        sa = subarrays[0]
+        if "NInverter" in sa.fields and "NInvMPPT" in sa.fields:
+            n_inv = int(sa.one("NInverter")[1].strip())
+            n_mppt = int(sa.one("NInvMPPT")[1].strip())
+            if n_inv > 0 and n_mppt > n_inv and n_mppt % n_inv == 0:
+                return n_mppt // n_inv
+    except (ValueError, OSError, KeyError, AttributeError):
+        return 1
+    return 1
 
 
 def _normalize_result_variables(raw: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -157,12 +205,14 @@ def _expand_scenarios(
     scenarios: list[dict[str, Any]] | None,
     export_hourly: bool,
     sweep_stem: str,
-) -> tuple[list[str], list[dict[str, Any]]]:
+    mppt_per_inverter: int = 1,
+) -> tuple[list[str], list[dict[str, Any]], list[str]]:
     """Expand Cartesian grid or explicit scenario rows into validated SIM_1..SIM_N entries."""
     if (grid is None) == (scenarios is None):
         raise ValueError("Specify exactly one of 'grid' (Cartesian sweep) or 'scenarios' (explicit list)")
     param_keys: list[str] = []
     rows: list[dict[str, Any]] = []
+    albedo_notes: list[str] = []
 
     if grid is not None:
         if not isinstance(grid, dict) or not grid:
@@ -175,6 +225,11 @@ def _expand_scenarios(
             if isinstance(values, (str, bytes)) or not isinstance(values, (list, tuple)) or not values:
                 raise ValueError(f"grid[{key!r}] must be a nonempty list of values")
             param_keys.append(key)
+        if "inverter_count" in param_keys and "mppt_count" in param_keys:
+            raise ValueError(
+                "Specify either 'inverter_count' or 'mppt_count', not both "
+                "(both map to PVsyst's 'Nb inverter or MPPT' column)"
+            )
         total = 1
         for key in param_keys:
             total *= len(grid[key])
@@ -187,7 +242,12 @@ def _expand_scenarios(
             params_text: dict[str, str] = {}
             parts: list[str] = []
             for key, raw_val in zip(param_keys, combo):
-                norm, formatted = _format_param_value(BATCH_PARAMETERS[key], raw_val)
+                norm, formatted = _format_param_value(
+                    BATCH_PARAMETERS[key],
+                    raw_val,
+                    mppt_per_inverter=mppt_per_inverter,
+                    notes=albedo_notes,
+                )
                 params_norm[key] = norm
                 params_text[key] = formatted
                 parts.append(f"{key}={formatted}")
@@ -222,6 +282,11 @@ def _expand_scenarios(
                     key_set.append(k)
         if not key_set:
             raise ValueError("Each scenario must declare at least one supported batch parameter")
+        if "inverter_count" in key_set and "mppt_count" in key_set:
+            raise ValueError(
+                "Specify either 'inverter_count' or 'mppt_count', not both "
+                "(both map to PVsyst's 'Nb inverter or MPPT' column)"
+            )
         param_keys = key_set
         seen_hourly: set[str] = set()
         for idx, entry in enumerate(scenarios, start=1):
@@ -231,7 +296,12 @@ def _expand_scenarios(
             params_norm = {}
             params_text = {}
             for key in param_keys:
-                norm, formatted = _format_param_value(BATCH_PARAMETERS[key], entry[key])
+                norm, formatted = _format_param_value(
+                    BATCH_PARAMETERS[key],
+                    entry[key],
+                    mppt_per_inverter=mppt_per_inverter,
+                    notes=albedo_notes,
+                )
                 params_norm[key] = norm
                 params_text[key] = formatted
             hourly_name = entry.get("hourly_file", "")
@@ -254,7 +324,7 @@ def _expand_scenarios(
                 "comment": comment,
             })
 
-    return param_keys, rows
+    return param_keys, rows, albedo_notes
 
 
 def render_batch_params_csv(
@@ -384,6 +454,122 @@ def rank_batch_scenarios(
     }
 
 
+def _finalize_batch_result(
+    base_result: dict[str, Any],
+    *,
+    sim: dict[str, Any],
+    res_vars: list[str],
+    expanded: list[dict[str, Any]],
+    sort_metric: str,
+    sort_descending: bool,
+    extra_warnings: list[str],
+) -> dict[str, Any]:
+    out = dict(base_result)
+    out["artifacts"] = dict(base_result.get("artifacts") or {})
+    out["stage"] = "parse_results"
+    actual_summary = Path(sim["batch_summary"])
+    parsed = parse_batch_results(actual_summary, columns=tuple(res_vars))
+    ranked = rank_batch_scenarios(
+        parsed,
+        expanded,
+        sort_by=sort_metric,
+        sort_descending=sort_descending,
+    )
+    out["artifacts"]["batch_summary"] = str(actual_summary)
+    if sim.get("batch_hourly"):
+        out["artifacts"]["batch_hourly"] = list(sim["batch_hourly"])
+
+    warnings = list(extra_warnings) + list(sim.get("warnings") or [])
+    if ranked["failed_scenarios"]:
+        warnings.append(
+            f"{len(ranked['failed_scenarios'])} of {len(expanded)} batch scenarios reported errors or missing {sort_metric}."
+        )
+
+    status = "completed" if ranked["ranked_scenarios"] and not ranked["failed_scenarios"] else (
+        "needs_review" if ranked["ranked_scenarios"] else "failed"
+    )
+    out.update(
+        status=status,
+        stage="completed",
+        seconds=sim.get("seconds"),
+        batch_runs=sim.get("batch_runs"),
+        completed_count=len(ranked["ranked_scenarios"]),
+        failed_count=len(ranked["failed_scenarios"]),
+        best_scenario=ranked["best_scenario"],
+        ranked_scenarios=ranked["ranked_scenarios"],
+        failed_scenarios=ranked["failed_scenarios"],
+        warnings=warnings,
+        native_consumption_verified=bool(ranked["ranked_scenarios"]),
+    )
+    return out
+
+
+def poll_batch_sweep_job(cli: PVsystCLI, job_id: str) -> dict[str, Any]:
+    """Poll status or retrieve ranked results of a background batch sweep job."""
+    if not isinstance(job_id, str) or not _SWEEP_STEM_RE.fullmatch(job_id):
+        raise ValueError("job_id must be a valid sweep_name identifier")
+
+    with _BATCH_JOBS_LOCK:
+        mem = _BATCH_JOBS.get((Path(cli.workspace).resolve(), job_id))
+    if mem is not None:
+        thread: threading.Thread = mem["thread"]
+        if thread.is_alive():
+            return {
+                "status": "running",
+                "stage": "simulation",
+                "job_id": job_id,
+                "sweep_name": mem["sweep_name"],
+                "project": mem["project"],
+                "variant": mem["variant"],
+                "scenario_count": mem["scenario_count"],
+                "elapsed_seconds": round(time.monotonic() - mem["started_mono"], 1),
+                "artifacts": dict(mem["artifacts"]),
+                "warnings": list(mem["warnings"]),
+            }
+        return dict(mem["result"])
+
+    # Fallback: inspect persisted job manifest on disk (e.g. after server restart)
+    job_path = workspace_file(cli.workspace, "UserBatch", f"{job_id}_job.json", ".json")
+    if not job_path.is_file():
+        return {
+            "status": "not_found",
+            "job_id": job_id,
+            "issues": [f"No background batch sweep job found for job_id={job_id!r}"],
+        }
+    meta = json.loads(job_path.read_text(encoding="utf-8"))
+    if meta.get("result") is not None:
+        return meta["result"]
+    summary_path = Path(meta["artifacts"]["expected_batch_summary"])
+    if summary_path.is_file():
+        try:
+            finalized = _finalize_batch_result(
+                meta["base_result"],
+                sim={"batch_summary": str(summary_path), "batch_hourly": [], "warnings": []},
+                res_vars=meta["res_vars"],
+                expanded=meta["expanded"],
+                sort_metric=meta["sort_metric"],
+                sort_descending=meta["sort_descending"],
+                extra_warnings=meta.get("warnings") or [],
+            )
+            meta["result"] = finalized
+            job_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            return finalized
+        except (ValueError, OSError):
+            pass
+    return {
+        "status": "unknown",
+        "issues": ["No local worker or completed batch result was found."],
+        "stage": "simulation",
+        "job_id": job_id,
+        "sweep_name": meta.get("sweep_name", job_id),
+        "project": meta.get("project"),
+        "variant": meta.get("variant"),
+        "scenario_count": meta.get("scenario_count"),
+        "artifacts": dict(meta.get("artifacts") or {}),
+        "warnings": list(meta.get("warnings") or []),
+    }
+
+
 def run_batch_sweep(
     cli: PVsystCLI,
     *,
@@ -397,12 +583,14 @@ def run_batch_sweep(
     sort_descending: bool = True,
     export_hourly: bool = False,
     dry_run: bool = True,
+    background: bool = False,
     log_level: int | None = 3,
     allow_window_creation: bool | None = None,
 ) -> dict[str, Any]:
-    """Preview or execute a parametric PVsyst batch sweep in ONE PVsystCLI call."""
-    if type(dry_run) is not bool or type(sort_descending) is not bool or type(export_hourly) is not bool:
-        raise ValueError("dry_run, sort_descending, and export_hourly must be strict booleans")
+    """Preview or execute a parametric PVsyst batch sweep in ONE PVsystCLI call (sync or background)."""
+    if (type(dry_run) is not bool or type(sort_descending) is not bool
+            or type(export_hourly) is not bool or type(background) is not bool):
+        raise ValueError("dry_run, sort_descending, export_hourly, and background must be strict booleans")
     if not isinstance(sweep_name, str) or not _SWEEP_STEM_RE.fullmatch(sweep_name):
         raise ValueError("sweep_name must be 1..64 ASCII letters/digits/_/- starting with an alphanumeric character")
 
@@ -430,12 +618,32 @@ def run_batch_sweep(
             if sort_metric not in res_vars:
                 raise ValueError(f"sort_by {sort_by!r} must be included in result_variables ({', '.join(res_vars)})")
 
-            param_keys, expanded = _expand_scenarios(
+            mppt_ratio = _inspect_variant_mppt_ratio(cli, proj, var)
+            param_keys, expanded, albedo_notes = _expand_scenarios(
                 grid=grid,
                 scenarios=scenarios,
                 export_hourly=export_hourly,
                 sweep_stem=sweep_name,
+                mppt_per_inverter=mppt_ratio,
             )
+
+            preflight_warnings: list[str] = []
+            if "inverter_count" in param_keys and mppt_ratio > 1:
+                preflight_warnings.append(
+                    f"Source variant uses {mppt_ratio} independent MPPTs per inverter; "
+                    f"inverter_count values were multiplied by {mppt_ratio} for PVsyst's 'Nb inverter or MPPT' column "
+                    "(use 'mppt_count' to pass raw MPPT totals directly)."
+                )
+            if albedo_notes:
+                preflight_warnings.append(
+                    "Decimal albedo values in (0, 1] were converted to [%] for PVsyst UserBatch CSV: "
+                    + ", ".join(dict.fromkeys(albedo_notes))
+                )
+            if dry_run and len(expanded) > ASYNC_RECOMMENDED_THRESHOLD:
+                preflight_warnings.append(
+                    f"Batch sweep has {len(expanded)} scenarios (>{ASYNC_RECOMMENDED_THRESHOLD}), which may exceed "
+                    "synchronous MCP client timeouts; consider background=True and polling with job_id."
+                )
 
             params_filename = f"{sweep_name}_BatchParams.CSV"
             rvt_filename = f"{sweep_name}_BatchVariables.RVT"
@@ -472,10 +680,12 @@ def run_batch_sweep(
                 sort_by=sort_metric,
                 sort_descending=sort_descending,
                 scenario_count=len(expanded),
+                warnings=preflight_warnings,
                 planned_scenarios=[
                     {
                         "id": row["id"],
                         "parameters": row["parameters"],
+                        "formatted": row["formatted"],
                         "comment": row["comment"],
                         "hourly_file": row["hourly_file"],
                     }
@@ -487,6 +697,8 @@ def run_batch_sweep(
                     "expected_batch_summary": str(summary_path),
                 },
             )
+            if "inverter_count" in param_keys and mppt_ratio > 1:
+                result["mppt_scaling"] = {"mppt_per_inverter": mppt_ratio, "applied_to": "inverter_count"}
             if dry_run:
                 return result
 
@@ -502,6 +714,95 @@ def run_batch_sweep(
             with rvt_path.open("xb") as fh:
                 fh.write(rvt_bytes)
 
+            if background:
+                job_id = sweep_name
+                job_path = workspace_file(cli.workspace, "UserBatch", f"{job_id}_job.json", ".json")
+                base_snapshot = dict(result)
+                meta_disk = {
+                    "job_id": job_id,
+                    "sweep_name": sweep_name,
+                    "project": proj,
+                    "variant": var,
+                    "scenario_count": len(expanded),
+                    "res_vars": res_vars,
+                    "expanded": expanded,
+                    "sort_metric": sort_metric,
+                    "sort_descending": sort_descending,
+                    "artifacts": dict(result["artifacts"]),
+                    "warnings": list(preflight_warnings),
+                    "base_result": base_snapshot,
+                    "result": None,
+                }
+                job_path.write_text(json.dumps(meta_disk, indent=2), encoding="utf-8")
+
+                job_entry: dict[str, Any] = {
+                    "job_id": job_id,
+                    "sweep_name": sweep_name,
+                    "project": proj,
+                    "variant": var,
+                    "scenario_count": len(expanded),
+                    "artifacts": dict(result["artifacts"]),
+                    "warnings": list(preflight_warnings),
+                    "started_mono": time.monotonic(),
+                    "result": None,
+                }
+
+                def _worker() -> None:
+                    try:
+                        with cli._lock:
+                            sim_bg = cli.run_simulation(
+                                proj,
+                                var,
+                                batch_params=params_path,
+                                batch_rvt=rvt_path,
+                                log_level=log_level,
+                                allow_window_creation=allow_window_creation,
+                            )
+                        final_res = _finalize_batch_result(
+                            base_snapshot,
+                            sim=sim_bg,
+                            res_vars=res_vars,
+                            expanded=expanded,
+                            sort_metric=sort_metric,
+                            sort_descending=sort_descending,
+                            extra_warnings=preflight_warnings,
+                        )
+                    except (ValueError, OSError, PVsystError) as exc:
+                        final_res = dict(base_snapshot)
+                        final_res["status"] = "failed"
+                        final_res["stage"] = "simulation"
+                        final_res["issues"] = list(base_snapshot.get("issues") or []) + [str(exc)]
+                    with _BATCH_JOBS_LOCK:
+                        job_entry["result"] = final_res
+                    try:
+                        meta_disk["result"] = final_res
+                        job_path.write_text(json.dumps(meta_disk, indent=2), encoding="utf-8")
+                    except OSError:
+                        pass
+
+                worker_thread = threading.Thread(target=_worker, name=f"pvsyst-batch-{job_id}", daemon=True)
+                job_entry["thread"] = worker_thread
+                with _BATCH_JOBS_LOCK:
+                    _BATCH_JOBS[Path(cli.workspace).resolve(), job_id] = job_entry
+                worker_thread.start()
+                return {
+                    "status": "running",
+                    "stage": "simulation",
+                    "dry_run": False,
+                    "background": True,
+                    "job_id": job_id,
+                    "project": proj,
+                    "variant": var,
+                    "sweep_name": sweep_name,
+                    "scenario_count": len(expanded),
+                    "artifacts": dict(result["artifacts"]),
+                    "warnings": list(preflight_warnings),
+                    "message": (
+                        f"Batch sweep '{sweep_name}' started in background ({len(expanded)} scenarios); "
+                        f"poll with pvsyst_run_batch_sweep(job_id='{job_id}')."
+                    ),
+                }
+
             result["stage"] = "simulation"
             sim = cli.run_simulation(
                 proj,
@@ -511,44 +812,15 @@ def run_batch_sweep(
                 log_level=log_level,
                 allow_window_creation=allow_window_creation,
             )
-
-            result["stage"] = "parse_results"
-            actual_summary = Path(sim["batch_summary"])
-            parsed = parse_batch_results(actual_summary, columns=tuple(res_vars))
-            ranked = rank_batch_scenarios(
-                parsed,
-                expanded,
-                sort_by=sort_metric,
+            return _finalize_batch_result(
+                result,
+                sim=sim,
+                res_vars=res_vars,
+                expanded=expanded,
+                sort_metric=sort_metric,
                 sort_descending=sort_descending,
+                extra_warnings=preflight_warnings,
             )
-
-            result["artifacts"]["batch_summary"] = str(actual_summary)
-            if sim.get("batch_hourly"):
-                result["artifacts"]["batch_hourly"] = list(sim["batch_hourly"])
-
-            warnings = list(sim.get("warnings") or [])
-            if ranked["failed_scenarios"]:
-                warnings.append(
-                    f"{len(ranked['failed_scenarios'])} of {len(expanded)} batch scenarios reported errors or missing {sort_metric}."
-                )
-
-            status = "completed" if ranked["ranked_scenarios"] and not ranked["failed_scenarios"] else (
-                "needs_review" if ranked["ranked_scenarios"] else "failed"
-            )
-            result.update(
-                status=status,
-                stage="completed",
-                seconds=sim.get("seconds"),
-                batch_runs=sim.get("batch_runs"),
-                completed_count=len(ranked["ranked_scenarios"]),
-                failed_count=len(ranked["failed_scenarios"]),
-                best_scenario=ranked["best_scenario"],
-                ranked_scenarios=ranked["ranked_scenarios"],
-                failed_scenarios=ranked["failed_scenarios"],
-                warnings=warnings,
-                native_consumption_verified=bool(ranked["ranked_scenarios"]),
-            )
-            return result
         except (ValueError, OSError, PVsystError) as exc:
             result["issues"].append(str(exc))
             result["status"] = "failed" if result["stage"] != "preflight" else "blocked"

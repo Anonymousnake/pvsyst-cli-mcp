@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 from pvsyst_auto.workflows.batch import (
     BATCH_PARAMETERS,
     MAX_BATCH_SCENARIOS,
+    poll_batch_sweep_job,
     render_batch_params_csv,
     render_batch_rvt,
     run_batch_sweep,
@@ -181,6 +182,96 @@ class BatchSweepUnitTests(unittest.TestCase):
             self.assertAlmostEqual(res["best_scenario"]["delta_vs_baseline"]["delta"], 750.0)
             self.assertEqual(res["failed_scenarios"][0]["id"], "SIM_3")
             self.assertIn("plane_tilt", BATCH_PARAMETERS)
+
+    def test_mppt_scaling_albedo_fraction_and_background_job_polling(self):
+        import time
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "PVsyst8.1_Data"
+            cli = _make_fake_cli(ws)
+            # Independent-MPPT subarray: 350 inverters x 6 MPPT/inv = 2100 MPPTs
+            (ws / "Projects" / "Demo.VC0").write_text(
+                "PVObject_=pvVCalcul\n"
+                "  PVObject_PVMainArray=pvMainArray\n"
+                "    PVObject_=pvSubArray\n"
+                "      SubArrayId=1\n"
+                "      NInverter=350\n"
+                "      NInvMPPT=2100\n"
+                "    End of PVObject pvSubArray\n"
+                "  End of PVObject pvMainArray\n"
+                "End of PVObject pvVCalcul\n",
+                encoding="utf-8",
+            )
+            # 1. inverter_count scales by 6x -> 2100, fractional albedo 0.20 -> 20%, >8 scenarios warns about background
+            prev = run_batch_sweep(
+                cli,
+                project="Demo.PRJ",
+                variant="VC0",
+                sweep_name="MpptAlb",
+                grid={"inverter_count": [300, 350, 400], "albedo": [0.20, 0.25, 0.30]},
+                dry_run=True,
+            )
+            self.assertEqual(prev["status"], "ready", prev)
+            self.assertEqual(prev["mppt_scaling"]["mppt_per_inverter"], 6)
+            self.assertEqual(prev["planned_scenarios"][0]["formatted"]["inverter_count"], "1800")
+            self.assertEqual(prev["planned_scenarios"][0]["formatted"]["albedo"], "20")
+            self.assertTrue(any("MPPT" in w for w in prev["warnings"]), prev["warnings"])
+            self.assertTrue(any("albedo" in w.lower() for w in prev["warnings"]), prev["warnings"])
+            self.assertTrue(any("background=True" in w for w in prev["warnings"]), prev["warnings"])
+
+            # 2. mppt_count passes raw MPPT total without scaling; combining both is blocked
+            raw_mppt = run_batch_sweep(
+                cli, project="Demo.PRJ", variant="VC0", sweep_name="RawMppt",
+                grid={"mppt_count": [1800, 2100]}, dry_run=True,
+            )
+            self.assertEqual(raw_mppt["status"], "ready")
+            self.assertEqual(raw_mppt["planned_scenarios"][0]["formatted"]["mppt_count"], "1800")
+            self.assertNotIn("mppt_scaling", raw_mppt)
+
+            both_keys = run_batch_sweep(
+                cli, project="Demo.PRJ", variant="VC0", sweep_name="BothKeys",
+                grid={"inverter_count": [350], "mppt_count": [2100]}, dry_run=True,
+            )
+            self.assertEqual(both_keys["status"], "blocked")
+
+            # 3. background=True runs asynchronously and poll_batch_sweep_job retrieves ranked results
+            def fake_bg_run(project, variant, *, batch_params, batch_rvt, **_):
+                time.sleep(0.05)
+                summary = ws / "UserBatch" / "BgSweep_BatchResults.CSV"
+                lines = [
+                    "PVsyst simulations Batch mode;;;;;;;;;",
+                    "Ident;Create hourly;Plane;Simul;Error;GlobInc;E_Grid;PR",
+                    ";file;tilt;Comment;;kWh/m2;kWh;ratio",
+                    "SIM_1;;20;T20;;1500;13500;0.850",
+                    "SIM_2;;30;T30;;1560;14250;0.870",
+                ]
+                summary.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8-sig"))
+                return {"batch_summary": str(summary), "batch_hourly": [], "batch_runs": 2, "seconds": 1, "warnings": []}
+
+            cli.run_simulation.side_effect = fake_bg_run
+            started = run_batch_sweep(
+                cli, project="Demo.PRJ", variant="VC0", sweep_name="BgSweep",
+                grid={"plane_tilt": [20, 30]}, result_variables=["GlobInc", "E_Grid", "PR"],
+                dry_run=False, background=True,
+            )
+            self.assertEqual(started["status"], "running")
+            self.assertEqual(started["job_id"], "BgSweep")
+
+            other = _make_fake_cli(ws / "other")
+            self.assertEqual(poll_batch_sweep_job(other, "BgSweep")["status"], "not_found")
+            (other.workspace / "UserBatch" / "BgSweep_job.json").write_text(
+                '{"artifacts": {"expected_batch_summary": "missing-summary.csv"}}', encoding="utf-8"
+            )
+            self.assertEqual(poll_batch_sweep_job(other, "BgSweep")["status"], "unknown")
+            polled = None
+            for _ in range(40):
+                polled = poll_batch_sweep_job(cli, "BgSweep")
+                if polled["status"] != "running":
+                    break
+                time.sleep(0.05)
+            assert polled is not None
+            self.assertEqual(polled["status"], "completed", polled)
+            self.assertEqual(polled["best_scenario"]["id"], "SIM_2")
 
 
 if __name__ == "__main__":

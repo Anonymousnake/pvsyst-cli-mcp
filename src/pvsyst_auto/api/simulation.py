@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from pydantic import Field, StrictBool, StrictInt, StrictStr
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
-from pvsyst_auto.workflows.batch import run_batch_sweep
+from pvsyst_auto.workflows.batch import poll_batch_sweep_job, run_batch_sweep
 from pvsyst_auto.workflows.bess_optimize import optimize_bess_sizing
 from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.optimize import optimize_variant
@@ -34,10 +34,25 @@ def pvsyst_build_sfi(filename: str, variables: str = "all_common", time_step: st
 
 
 @categorized_tool()
-def pvsyst_run_batch_sweep(spec: BatchSweepRequest, dry_run: StrictBool = True) -> dict:
+def pvsyst_run_batch_sweep(
+    spec: BatchSweepRequest | None = None,
+    dry_run: StrictBool = True,
+    background: StrictBool = False,
+    job_id: StrictStr | None = None,
+) -> dict:
     """Generate UserBatch <sweep_name>_BatchParams.CSV and <sweep_name>_BatchVariables.RVT from a
     Cartesian parameter grid or explicit scenario rows (<=100 scenarios), run one PVsystCLI batch
-    simulation, and return ranked scenario results with baseline deltas."""
+    simulation, and return ranked scenario results with baseline deltas.
+
+    Supports both ``inverter_count`` (auto-scaled by MPPT/inverter on independent-MPPT subarrays)
+    and ``mppt_count`` (raw MPPT count), auto-converts fractional ``albedo`` (0..1 -> %), and
+    supports ``background=True`` + ``job_id`` polling for long sweeps (>8 scenarios)."""
+    if job_id is not None:
+        if spec is not None:
+            raise ValueError("Provide either job_id (to poll an existing background sweep) or spec, not both")
+        return poll_batch_sweep_job(cli(), job_id)
+    if spec is None:
+        raise ValueError("Provide spec to start/preview a batch sweep, or job_id to poll a running background sweep")
     return run_batch_sweep(
         cli(),
         project=spec.project,
@@ -50,6 +65,7 @@ def pvsyst_run_batch_sweep(spec: BatchSweepRequest, dry_run: StrictBool = True) 
         sort_descending=spec.sort_descending,
         export_hourly=spec.export_hourly,
         dry_run=dry_run,
+        background=background,
         log_level=spec.log_level,
         allow_window_creation=spec.allow_window_creation,
     )

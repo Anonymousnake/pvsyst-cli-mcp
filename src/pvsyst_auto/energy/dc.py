@@ -293,10 +293,10 @@ def _profile(store, lines):
     if system is None or len(arrays) != 1:
         raise ValueError("Requires one pvSystem and one subarray")
     system_root = root_block(lines, system)
-    if not set(system_root.fields) <= {"Flags", "SystemType"} or system_root.one("SystemType")[1] != "Grid":
-        raise ValueError("Requires Grid pvSystem declaring only Flags and SystemType")
-    if "Flags" in system_root.fields and system_root.one("Flags")[1] != "$00":
-        raise ValueError("Requires native Grid pvSystem Flags=$00")
+    if system_root.one("SystemType")[1] != "Grid":
+        raise ValueError("Requires Grid pvSystem for DC cabling")
+    if "Flags" in system_root.fields and not _HEX_FLAG.fullmatch(system_root.one("Flags")[1]):
+        raise ValueError("Requires hexadecimal Grid pvSystem Flags")
     main = store._main_array(lines)
     if main is None:
         raise ValueError("A pvMainArray section is required")
@@ -325,7 +325,7 @@ def _profile(store, lines):
            for key in sub_root.fields):
         raise ValueError("Every other NStrOrient* must be zero")
     store._orientation_list(lines)
-    store._ordinary_fixed_plane(lines, store._orientation(lines, 1))
+    store._ordinary_fixed_plane(lines, store._orientation(lines, 1), allow_missing_flags=True, allow_sheds=True)
     if any(block.object_type in ("pvLoad", "pvGridStorage") for block in objects("".join(lines))):
         raise ValueError("Load and storage objects are outside DC cabling scope")
     if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
@@ -335,8 +335,6 @@ def _profile(store, lines):
     state, layout, parsed_nodes = _state(lines)
     if state.get("issues"):
         raise ValueError("; ".join(state["issues"]))
-    if layout[5] or (int(main_flags[1:], 16) & 0x02000000):
-        raise ValueError("Native DC cabling edits exclude MV/HV transformers")
     if layout[6].one("Version")[1] not in NATIVE_TEXT_OR_SEED or layout[6].one("Flags")[1] != "$00":
         raise ValueError(f"Requires native {SEED_LABEL} circuit Flags=$00")
     return state, layout, parsed_nodes
