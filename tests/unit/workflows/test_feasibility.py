@@ -156,6 +156,23 @@ class FeasibilityStudyTests(unittest.TestCase):
         prev_none = run_feasibility_study(self.cli, self.store, spec=spec_none, dry_run=True)
         self.assertEqual(prev_none["status"], "ready")
 
+    def test_design_review_status_propagates_to_public_study(self) -> None:
+        from pvsyst_auto.api.engineering import pvsyst_run_feasibility_study
+        from pvsyst_auto.api.schemas import FeasibilityStudyRequest
+
+        request = FeasibilityStudyRequest.model_validate({
+            "study_name": "Review", "design": {"scope": "fixed_unshaded_grid",
+                "new_project": "Plant.PRJ", "target_dc_kw": 100, "year": 2024},
+        })
+        simulation = {"status": "needs_review", "artifacts": {"simulate": {"csv": str(self.base_csv)}},
+                      "metrics": {"nominal_dc_power_kw": 100}}
+        with patch("pvsyst_auto.api.engineering.cli", return_value=self.cli), \
+             patch("pvsyst_auto.api.engineering.variant_store", return_value=self.store), \
+             patch("pvsyst_auto.workflows.feasibility.simulate_design", return_value=simulation), \
+             patch("pvsyst_auto.workflows.feasibility.diagnose_simulation_csv", return_value={"status": "ok", "needs_review": False}):
+            result = pvsyst_run_feasibility_study(spec=request, dry_run=False, confirm=True)
+        self.assertEqual(result["status"], "needs_review")
+
     def test_design_spec_reads_nested_simulate_design_artifacts_and_stops_on_weather(self) -> None:
         base_spec = self._sample_spec()
         base_spec.pop("existing_csv")

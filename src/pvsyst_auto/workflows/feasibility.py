@@ -392,7 +392,10 @@ def run_feasibility_study(
 
     final_status = (
         "blocked" if diag_blocked
-        else ("ready" if dry_run else ("needs_review" if (diag_result and diag_result.get("needs_review")) else "completed"))
+        else ("ready" if dry_run else (
+            "needs_review" if ((sim_result and sim_result.get("status") == "needs_review")
+                               or (diag_result and diag_result.get("needs_review"))) else "completed"
+        ))
     )
     return {
         "status": final_status,
