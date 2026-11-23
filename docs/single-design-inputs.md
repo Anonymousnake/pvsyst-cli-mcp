@@ -17,7 +17,10 @@
 | `weather` | 气象数据模式：`existing`（已有 `.SIT`/`.MET`）、`csv`（本地标准逐时 CSV）、`open_meteo`（Open-Meteo ERA5）、`pvgis_tmy`（PVGIS v5.3 典型气象年，v0.4.0）或 `nasa_power`（NASA POWER，v0.4.0） |
 | `capacity` / `electrical_design` | **二选一必填**：`capacity` 直接给算好的电压/电流边界；`electrical_design` 给带出处的温度系数与极值，由工具推导边界 |
 | `losses` | 可选损失参数覆盖，支持 `LIDLoss`、`PMismMPP`、`ModuleQualityLoss` 与主阵列 `UFactor` |
-| `report_pages` | 可选 PDF 报告页名列表（见[工具参考](tool-reference.md)） |
+| `scope` | 可选场景范围：`fixed_unshaded_grid`（默认）、`ground_sheds`、`ground_tracker` 或 `stand_alone`（离网光储柴，需用 `pvsyst_simulate_design`） |
+| `ground_layout` | 地面电站布局配置（`ground_sheds`/`ground_tracker`）：支持 `model_mode="unlimited"\|"3d"`、多朝向无限棚架 `sub_orientations`、有限地块 `site_polygon`、`obstacles`、`base_slope_deg` 与 3D DEM `terrain` |
+| `bifacial` / `transformers` / `standalone` | 可选双面组件参数、MV/HV 多级变压器配置（含 PVsyst 8.1.7 原生容量与损耗预检）及离网光储柴 `standalone` 规格 |
+| `report_pages` / `report_language` | 可选 PDF 报告页名列表与输出语言代码（如 `en`/`zh`/`fr`/`de` 等，见[工具参考](tool-reference.md)） |
 
 调用示例：
 

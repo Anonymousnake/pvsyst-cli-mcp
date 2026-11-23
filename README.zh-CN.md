@@ -6,7 +6,7 @@
 
 [English](README.md) | **简体中文**
 
-Windows 下配合本地 PVsyst 8 使用的 **100% 纯无头化（Headless）** MCP 服务端与 Python 封装库（彻底移除 Win32 GUI 点击自动化）。它一方面封装了官方 `PVsystCLI.exe` 的仿真、气象转换和许可查询命令；另一方面提供全套原生文本解析与零模板合成引擎（`.PRJ`、`.VCx`、`.PAN`、`.OND`、`.BTR`、`.GEN`、`.SIT`），全面覆盖并网与 **Stand-Alone 离网光储柴微网**、中高压 MV/HV 多级变压器网络、3D DEM 连续地形贴合、跨朝向原地转换、光谱修正、原生 PDF 财务页、3D 住宅与遮挡物、规格书单二极管组件合成、多源气象获取、物理异常诊断与有界自动优化、TOU 经济性/光储套利评估以及 Plotly 交互式 HTML 工程报告。
+Windows 下配合本地 PVsyst 8 使用的 **100% 纯无头化（Headless）** MCP 服务端与 Python 封装库（彻底移除 Win32 GUI 点击自动化）。它一方面封装了官方 `PVsystCLI.exe` 的仿真、气象转换和许可查询命令；另一方面提供全套原生文本解析与零模板合成引擎（`.PRJ`、`.VCx`、`.PAN`、`.OND`、`.BTR`、`.GEN`、`.SIT`），全面覆盖并网（含多朝向无限棚架）与 **Stand-Alone 离网光储柴微网**、符合 PVsyst 8.1.7 原生校验规则的中高压 MV/HV 多级变压器网络、3D DEM 连续地形贴合、跨朝向原地转换、光谱修正、原生 PDF 财务页、3D 住宅与遮挡物、规格书单二极管组件合成、多源气象一键制备、物理异常诊断与有界自动优化、TOU 经济性与可组合项目融资（债务/税务/折旧/DSCR/股权 IRR）评估以及 Plotly 交互式 HTML 工程报告。
 
 运行本项目需要本机已安装 PVsyst 并配置好有效许可证。
 
@@ -14,14 +14,14 @@ Windows 下配合本地 PVsyst 8 使用的 **100% 纯无头化（Headless）** M
 
 | 要做的事 | 入口工具 | 详细文档 |
 |---|---|---|
-| 零模板执行固定倾角、地面光伏棚架/跟踪器（单/双面、有限 3D 地块/障碍物/坡度/**3D DEM 地形 `terrain`**、MV/HV 变压器）或 **Stand-Alone 离网光储柴微网（`scope="stand_alone"`）** | `pvsyst_simulate_design`、`pvsyst_suggest_sizing` | [单方案设计输入](docs/single-design-inputs.md) |
-| 配置多级 MV/HV 变压器与 ISO 60228 集电线缆、原地跨朝向转换（固定/季节/棚架/单轴/双轴/东西坡），或写入光谱修正、随机故障与原生 `TEcoEvaluation` PDF 财务页 | `pvsyst_configure_transformers`、`pvsyst_convert_orientation`、`pvsyst_update_variant_parameters` | [工具参考](docs/tool-reference.md) |
-| 按电气参数筛选工作区/内置组件，或按规格书无模板合成自定义 `.PAN`/`.OND`（单/三电压）/ 锂电 `.BTR`（支持已有 `.PAN` 改参可选单二极管重拟合） | `pvsyst_list_components`、`pvsyst_build_sourced_component`、`pvsyst_update_component` | [规格书组件构建](docs/sourced-components.md) |
-| 拉取权威气象数据（`Open-Meteo ERA5`、`PVGIS v5.3 TMY`、`NASA POWER`）并可选一键制备 `.SIT`/`.MET` | `pvsyst_resolve_location`、`pvsyst_acquire_weather`、`pvsyst_prepare_weather` | [气象文件制备](docs/weather-preparation.md) |
-| 单次 CLI 批量参数扫描（倾角、间距、反照率、积灰、限发）并自动排序 | `pvsyst_run_batch_sweep` | [工具参考](docs/tool-reference.md) |
+| 零模板执行固定倾角、地面光伏棚架/跟踪器（单/双面、多朝向 `sub_orientations`、有限 3D 地块/障碍物/坡度/**3D DEM 地形 `terrain`**、MV/HV 变压器、多语种 PDF `report_language`、精简预检）或 **Stand-Alone 离网光储柴微网（`scope="stand_alone"`）** | `pvsyst_simulate_design`、`pvsyst_suggest_sizing` | [单方案设计输入](docs/single-design-inputs.md) |
+| 配置多级 MV/HV 变压器与 ISO 60228 集电线缆（内置 PVsyst 8.1.7 `PNomInvAC` 损耗基准、80%–200% 容量区间、≤1% 铁损 / ≤5% 铜损与 HV ≥ MV 电压校验）、原地跨朝向转换（固定/季节/棚架/单轴/双轴/东西坡），或写入光谱修正、随机故障与原生 `TEcoEvaluation` PDF 财务页 | `pvsyst_configure_transformers`、`pvsyst_convert_orientation`、`pvsyst_update_variant_parameters` | [工具参考](docs/tool-reference.md) |
+| 按电气参数筛选工作区/内置组件，或按规格书无模板合成自定义 `.PAN`/`.OND`（单/三电压）/ 锂电 `.BTR`（附带选型来源提示，支持已有 `.PAN` 改参可选单二极管重拟合） | `pvsyst_list_components`、`pvsyst_build_sourced_component`、`pvsyst_update_component` | [规格书组件构建](docs/sourced-components.md) |
+| 拉取权威气象数据（`Open-Meteo ERA5`、`PVGIS v5.3 TMY`、`NASA POWER`）并支持单次调用一键制备 `.SIT`/`.MET`（`prepare=true`） | `pvsyst_resolve_location`、`pvsyst_acquire_weather`、`pvsyst_prepare_weather` | [气象文件制备](docs/weather-preparation.md) |
+| 单次 CLI 批量参数扫描（倾角、间距、反照率、积灰、限发、MPPT）并输出曲线数据与自动排序 | `pvsyst_run_batch_sweep` | [工具参考](docs/tool-reference.md) |
 | 对仿真结果 CSV（及 `.VC0` 归因）做物理损失链诊断，并基于克隆变体执行有界“诊断 → 修正 → 重仿”闭环 | `pvsyst_diagnose_results`、`pvsyst_optimize_variant` | [工具参考](docs/tool-reference.md) |
 | 按 TOU 电价自动派生 `PowerShift` 48 槽两充两放策略，并运行两阶段混合 PV+BESS 容量寻优（快筛热力图/Pareto + 可选实机校验） | `pvsyst_plan_tou_storage_schedule`、`pvsyst_optimize_bess_sizing` | [工具参考](docs/tool-reference.md) |
-| 评估固定/分时（TOU）/两部制需量电价、电池中途更换、敏感性龙卷风分析、25 年现金流、LCOE、NPV、IRR 与回收期 | `pvsyst_evaluate_economics` | [工具参考](docs/tool-reference.md) |
+| 评估固定/分时（TOU）/两部制需量电价、电池中途更换、可组合项目融资（债务、税务、折旧、通胀、残值、营运资金、DSCR/LLCR 与股权 IRR）、敏感性龙卷风分析、25 年现金流、LCOE、NPV、IRR 与回收期 | `pvsyst_evaluate_economics` | [工具参考](docs/tool-reference.md) |
 | 一站式运行端到端光伏/光储可研（组件合成 → 仿真/断点复用 → 诊断 → 光储寻优 → 经济性 → 中英双语 Plotly 交互报告）或交付打包 | `pvsyst_run_feasibility_study`、`pvsyst_generate_report`、`pvsyst_export_engineering_delivery` | [工程修订与交付](docs/engineering-delivery.md) |
 | 生成屋顶光伏与周边遮挡 3D 场景、原生导入并跑全年阴影仿真（`linear` 或 `module_layout`） | `pvsyst_run_house_task` | [住宅建模任务](docs/native-house-task.md) |
 | 准备逐时或亚小时（`5/10/15/30 min`）气象、配置家用电器/概率分布负荷或弱电网停电序列，并评估 AC 耦合光储方案 | `pvsyst_prepare_weather`、`pvsyst_create_native_load_variant`、`pvsyst_create_grid_storage_system` | [AC 光储评估](docs/engineering-storage.md) |
@@ -138,8 +138,8 @@ src/pvsyst_auto/
 ├── engineering/  # 自动选型、物理诊断、财务/TOU 经济性评估、工程输入交接、可研简报与多方案对比
 ├── project/      # .PRJ/.VCx 解析、零模板合成器、pvBiFacial 双面模型、子阵电路树与朝向控制
 ├── components/   # .PAN/.OND/.BTR/.GEN 管理 + mtime 索引缓存、曲线编辑、规格书单二极管/Mode-1 无模板合成
-├── scene/        # PVCollada (.pvc2) 3D 房屋与有限 3D 地面多边形裁剪排布及阴影构建
-├── energy/       # 逐时负荷、AC 耦合储能、详细损失标量、功率因数与并网限发
+├── scene/        # PVCollada (.pvc2) 3D 房屋、3D DEM 地形三角网贴合与有限 3D 地面排布及阴影构建
+├── energy/       # MV/HV 变压器、逐时负荷、AC 耦合储能、光谱修正/停电故障、详细损失与并网限发
 ├── weather/      # Open-Meteo ERA5 / PVGIS v5.3 TMY / NASA POWER 下载、亚小时 CSV 与 .SIT/.MET 转换
 ├── native/       # PVsystCLI.exe 进程封装、私有桌面启动隔离与免 GUI 原生写入器
 └── results.py    # 仿真结果 CSV 解析与逐时/亚小时指标汇总
