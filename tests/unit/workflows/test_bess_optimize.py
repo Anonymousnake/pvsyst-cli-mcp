@@ -129,6 +129,40 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
                                                  cycles_per_day=1, round_trip_efficiency=1, min_spread=spread)
                 self.assertEqual([cycle["charge_hours"] for cycle in plan["cycles"]], [list(window)])
 
+    def test_public_stage2_allocates_available_variants(self) -> None:
+        from pvsyst_auto.api.schemas import BessVerifyConfig, EconomicsFinancialConfig, EconomicsTariffConfig
+        from pvsyst_auto.api.simulation import pvsyst_optimize_bess_sizing
+
+        csv_path = _write_pv_load_csv(self.root / "Results" / "variant.csv", days=2)
+        projects = self.root / "Projects"
+        for suffix in ("VC0", "VC1", "VC3", "vc4"):
+            (projects / f"Demo.{suffix}").write_text("stub", encoding="utf-8")
+        store = MagicMock()
+        store._path.return_value = projects / "Demo.PRJ"
+        fake_cli = MagicMock(workspace=self.root)
+        def fake_sim(project, variant, *, sfi, out_csv, log_level):
+            _write_pv_load_csv(out_csv, days=2)
+            return {"warnings": []}
+        fake_cli.run_simulation.side_effect = fake_sim
+        kwargs = dict(baseline_csv=csv_path.name, installed_dc_kw=100, bess_kwh_values=[100, 200],
+                      pcs_kw_values=[50], tariff=EconomicsTariffConfig(mode="self_consumption_flat", import_tariff=1),
+                      financial=EconomicsFinancialConfig(fixed_capex=1000), verify_top_k=2,
+                      verify_config=BessVerifyConfig(project="Demo.PRJ", source_variant="VC0",
+                          battery_file_name="Cell.BTR", battery_unit_kwh=100))
+        with patch("pvsyst_auto.api.simulation.cli", return_value=fake_cli), \
+             patch("pvsyst_auto.api.simulation.variant_store", return_value=store), \
+             patch("pvsyst_auto.energy.system.create_grid_storage_system", return_value={"status": "created"}) as create:
+            preview = pvsyst_optimize_bess_sizing(**kwargs)
+            result = pvsyst_optimize_bess_sizing(**kwargs, dry_run=False, confirm=True)
+            names = [p["new_variant"] for p in preview["stage2_verification"]["planned_variants"]]
+            self.assertEqual(names, ["VC2", "VC5"])
+            self.assertEqual([p["new_variant"] for p in result["stage2_verification"]["planned_variants"]], names)
+            self.assertEqual([c.kwargs["new_variant"] for c in create.call_args_list], names)
+            self.assertEqual([c.args[1] for c in fake_cli.run_simulation.call_args_list], names)
+            kwargs["verify_config"].variant_prefix = "VC1"
+            with self.assertRaisesRegex(ValueError, "three characters"):
+                pvsyst_optimize_bess_sizing(**kwargs)
+
     def test_plan_tou_idle_when_spread_too_small(self) -> None:
         flat_tou = [
             {"name": "low", "hours": list(range(0, 12)), "import_rate": 0.50},
@@ -229,7 +263,7 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
             "source_variant": "VC0",
             "battery_file_name": "LFP_100kWh.BTR",
             "battery_unit_kwh": 100.0,
-            "variant_prefix": "VB",
+            "variant_prefix": "VC",
         }
 
         # dry_run=True plans Stage 2 without launching CLI
