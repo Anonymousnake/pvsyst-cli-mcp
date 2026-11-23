@@ -64,7 +64,7 @@ ISO_COUNTRY = re.compile(r"[A-Z]{2}")
 SPEC_KEYS = frozenset((
     "scope", "sizing_mode", "auto_sizing", "new_project", "year", "target_dc_kw", "tilt", "azimuth",
     "module", "inverter", "template_project", "variant", "capacity", "electrical_design", "losses",
-    "weather", "report_pages", "ground_layout", "bifacial", "transformers", "standalone",
+    "weather", "report_pages", "report_language", "ground_layout", "bifacial", "transformers", "standalone",
 ))
 SIZING_MODES = ("strict", "auto_from_components")
 AUTO_SIZING_KEYS = frozenset((
@@ -343,6 +343,9 @@ def _validate_spec(spec) -> list[dict]:
         validate_report_pages(spec.get("report_pages"))
     except ValueError as exc:
         bad("report_pages", exc)
+    report_lang = spec.get("report_language", "en")
+    if report_lang not in ("en", "zh"):
+        bad("report_language", "Choose 'en' or 'zh' for report_language")
     scope = spec.get("scope", SCOPE)
     if scope not in SUPPORTED_SCOPES:
         bad("scope", "Only fixed_unshaded_grid, ground_sheds, and ground_tracker are supported; "
@@ -686,8 +689,38 @@ def _identity(selected):
     return f"{pan['manufacturer']} {pan['model']} / {ond['manufacturer']} {ond['model']}", None
 
 
+def _compact_discovery(discovery: dict | None) -> dict | None:
+    """Fold verbose per-template scan rejection lists into concise counts unless verbose=True."""
+    if not isinstance(discovery, dict):
+        return discovery
+    out = dict(discovery)
+    out.pop("selection_rule", None)
+    candidates = out.get("candidates")
+    if isinstance(candidates, dict) and isinstance(candidates.get("templates"), list):
+        templates = candidates["templates"]
+        eligible = [item for item in templates if isinstance(item, dict) and item.get("valid")]
+        rejected_count = len(templates) - len(eligible)
+        sel_tpl = (out.get("selected") or {}).get("template")
+        new_candidates = dict(candidates)
+        summary: dict = {
+            "scanned_count": len(templates),
+            "eligible_count": len(eligible),
+            "rejected_count": rejected_count,
+            "selected_template": (
+                {"project": sel_tpl.get("project"), "variant": sel_tpl.get("variant")}
+                if isinstance(sel_tpl, dict) else None
+            ),
+            "truncated": rejected_count > 0,
+        }
+        if rejected_count > 0:
+            summary["hint"] = "Pass verbose=true to expand per-template scan rejection details."
+        new_candidates["templates"] = {"summary": summary, "eligible": eligible}
+        out["candidates"] = new_candidates
+    return out
+
+
 def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_context=None,
-                 allow_window_creation=None):
+                 allow_window_creation=None, verbose=False):
     result = {"status": "blocked", "stage": "spec", "dry_run": dry_run,
               "execution_preflight_complete": False, "issues": [], "warnings": [],
               "selected": None,
@@ -702,6 +735,9 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
                       native_consumption_verified=False)
     if type(dry_run) is not bool:
         _issue(result, "dry_run", "Use a strict boolean")
+        return result
+    if type(verbose) is not bool:
+        _issue(result, "verbose", "Use a strict boolean")
         return result
     if isinstance(spec, dict):
         spec = _prune_empty(spec)
@@ -783,7 +819,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     basic, stopped = _phase(result, "discovery", lambda: discover(None))
     if stopped is not None:
         return stopped
-    result["preview"]["discovery"] = basic
+    result["preview"]["discovery"] = basic if verbose else _compact_discovery(basic)
     resolved = basic.get("resolved_components") or {}
     seed_project = f"{stem}_template.PRJ"
     if is_utility:
@@ -884,7 +920,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         confirm, stopped = _phase(result, "template_capacity", lambda: discover(flat_capacity))
         if stopped is not None:
             return stopped
-        result["preview"]["discovery_confirmed"] = confirm
+        result["preview"]["discovery_confirmed"] = confirm if verbose else _compact_discovery(confirm)
         if confirm.get("status") == "ready" and confirm.get("selected"):
             drift = _identity_drift(components, confirm["selected"])
             if drift is not None:
@@ -1065,7 +1101,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         if stopped is not None:
             result["warnings"].append(RETAINED_NOTE)
             return stopped
-        result["preview"]["seed_confirmed"] = confirmed
+        result["preview"]["seed_confirmed"] = confirmed if verbose else _compact_discovery(confirmed)
         if confirmed.get("status") != "ready" or not confirmed.get("selected"):
             _inherit(result, confirmed, "template_seed")
             result["warnings"].append(RETAINED_NOTE)
@@ -1088,6 +1124,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     if prepare_only and source_context is not None:
         context["preparation_context"]["source_binding"] = source_context
         context["preparation_context"]["review_required"] |= bool(source_context.get("needs_review"))
+    report_language = spec.get("report_language", "en")
     if is_utility:
         simulation, stopped = _phase(result, phase_name, lambda: run_utility_design(
             cli, store, spec=spec, pan_info=components["PAN"], ond_info=components["OND"],
@@ -1095,7 +1132,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             weather_manifest_name=manifest_name, dry_run=dry_run, prepare_only=prepare_only,
             preparation_context=context.get("preparation_context"),
             allow_window_creation=allow_window_creation,
-            synthetic_weather=synthetic_weather))
+            synthetic_weather=synthetic_weather,
+            report_language=report_language))
     else:
         runner = prepare_template if prepare_only else simulate_template
         runner_kwargs = {"allow_window_creation": allow_window_creation} if prepare_only else {}
@@ -1105,6 +1143,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             year=year, dry_run=dry_run, capacity=flat_capacity, weather_manifest_name=manifest_name,
             azimuth=azimuth, losses=losses or None,
             report_pages=spec.get("report_pages"), synthetic_weather=synthetic_weather,
+            report_language=report_language,
             **context, **runner_kwargs))
     if stopped is not None:
         result["warnings"].append(RETAINED_NOTE)
@@ -1142,7 +1181,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     return result
 
 
-def simulate_design(cli, store, *, spec: dict, dry_run=True):
+def simulate_design(cli, store, *, spec: dict, dry_run=True, verbose=False):
     """Run the unified single-project design flow for one workspace.
 
     ``spec`` is validated strictly before anything is created: unknown keys, non-numeric or
@@ -1151,16 +1190,17 @@ def simulate_design(cli, store, *, spec: dict, dry_run=True):
     completed / needs_review / failed), ``stage``, ``dry_run``, ``execution_preflight_complete``,
     ``issues``, ``warnings``, ``selected``, ``preview``, ``metrics``, ``artifacts`` and
     ``recovery``. A dry run writes nothing; a real run never overwrites and never cleans up.
+    Set ``verbose=True`` to expand per-template discovery rejection details.
     """
     # Hold one workspace lock for the whole flow; weather helpers reuse the CLI lock,
     # keeping lock ordering fixed as store.lock -> cli._lock.
     with store.lock:
-        return _design_flow(cli, store, spec, dry_run)
+        return _design_flow(cli, store, spec, dry_run, verbose=verbose)
 
 
 def prepare_design_project(cli, store, *, spec: dict, dry_run=True, source_context=None,
-                           allow_window_creation=None):
+                           allow_window_creation=None, verbose=False):
     """Prepare without an annual run; optional already-bound source provenance stays metadata."""
     with store.lock:
         return _design_flow(cli, store, spec, dry_run, prepare_only=True, source_context=source_context,
-                            allow_window_creation=allow_window_creation)
+                            allow_window_creation=allow_window_creation, verbose=verbose)

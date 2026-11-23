@@ -356,7 +356,10 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
                                             dry_run=dry_run, confirm=confirm, shading_mode=shading_mode)
 
 @categorized_tool()
-def pvsyst_prepare_design_project(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
+def pvsyst_prepare_design_project(spec: SingleDesignRequest, dry_run: StrictBool = True,
+                                  verbose: StrictBool = False) -> dict:
     """Run component lookup, weather preparation, and project configuration (fixed_unshaded_grid,
-    ground_sheds, or ground_tracker with optional ground_layout/bifacial) without launching an annual simulation."""
-    return prepare_design_project(cli(), variant_store(), spec=spec.model_dump(exclude_none=True), dry_run=dry_run)
+    ground_sheds, or ground_tracker with optional ground_layout/bifacial) without launching an annual simulation.
+    Set verbose=true to expand per-template discovery rejection details."""
+    return prepare_design_project(cli(), variant_store(), spec=spec.model_dump(exclude_none=True),
+                                  dry_run=dry_run, verbose=verbose)

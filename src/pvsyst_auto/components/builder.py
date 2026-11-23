@@ -253,6 +253,7 @@ def build_sourced_component(store, *, component_type, new_name,
     result.update(issues=binding["issues"], warnings=binding["warnings"],
                   provenance=binding["provenance"])
     if result["issues"]:
+        result["allowed_fields"] = {key: list(spec[0]) for key, spec in sorted(fields.items())}
         return result
     with store.lock:
         try:

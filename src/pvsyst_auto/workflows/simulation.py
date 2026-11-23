@@ -21,14 +21,15 @@ from pvsyst_auto.versions import CLI_TRACKING_BUILDS
 def simulate_template(cli, store, *, template_project="", variant="", new_project="",
                       pan_name="", ond_name="", site_name="", met_name="",
                       tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
-                      report_pages=None, tracking=None, tracking_variant="",
+                      report_pages=None, report_language="en", tracking=None, tracking_variant="",
                       nominal_dc_power_kw=None, tracking_power_source="",
                       synthetic_weather=False):
     # Hold one workspace lock; use separate workspaces for parallel native runs.
     with store.lock:
         return _simulate_template(cli, store, template_project, variant, new_project,
                                   pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses,
-                                  report_pages=report_pages, tracking=tracking, tracking_variant=tracking_variant,
+                                  report_pages=report_pages, report_language=report_language,
+                                  tracking=tracking, tracking_variant=tracking_variant,
                                   nominal_dc_power_kw=nominal_dc_power_kw, tracking_power_source=tracking_power_source,
                                   synthetic_weather=synthetic_weather)
 
@@ -42,7 +43,7 @@ def prepare_template(cli, store, **kwargs):
 def _simulate_template(cli, store, template_project="", variant="", new_project="",
                        pan_name="", ond_name="", site_name="", met_name="", tilt=None, year=None,
                        dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
-                       *, report_pages=None, prepare_only=False, preparation_context=None,
+                       *, report_pages=None, report_language="en", prepare_only=False, preparation_context=None,
                        tracking=None, tracking_variant="", nominal_dc_power_kw=None, tracking_power_source="",
                        allow_window_creation=None, synthetic_weather=False):
     tracking_mode = tracking is not None
@@ -421,7 +422,7 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                 native_inputs = {}
             run = cli.run_simulation(new_project, variant, sfi=paths["sfi"], out_csv=paths["csv"],
                                      report_pdf=paths["pdf"], time_step="hour", start_date=f"{year}.01.01",
-                                     end_date=f"{year}.12.31", report_language="en", log_level=3,
+                                     end_date=f"{year}.12.31", report_language=report_language, log_level=3,
                                      report_pages=report_pages, **native_inputs)
             result["run"] = run
             result["warnings"].extend(run.get("warnings", []))
