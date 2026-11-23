@@ -214,11 +214,14 @@ def pvsyst_run_simulation(project: str, variant: str,
         return sim_result
 
 @categorized_tool()
-def pvsyst_simulate_design(spec: SingleDesignRequest, dry_run: StrictBool = True) -> dict:
+def pvsyst_simulate_design(spec: SingleDesignRequest, dry_run: StrictBool = True,
+                           verbose: StrictBool = False) -> dict:
     """Run a unified grid design workflow (fixed_unshaded_grid, ground_sheds, or ground_tracker,
     with optional ground_layout and pvBiFacial): component lookup, zero-template synthesis,
-    capacity sizing, weather preparation/acquisition, and full-year simulation."""
-    return simulate_design(cli(), variant_store(), spec=spec.model_dump(exclude_none=True), dry_run=dry_run)
+    capacity sizing, weather preparation/acquisition, and full-year simulation.
+    Set verbose=true to expand per-template discovery rejection details."""
+    return simulate_design(cli(), variant_store(), spec=spec.model_dump(exclude_none=True),
+                           dry_run=dry_run, verbose=verbose)
 
 @categorized_tool()
 def pvsyst_prepare_sourced_design(pan_name: StrictStr, ond_name: StrictStr,

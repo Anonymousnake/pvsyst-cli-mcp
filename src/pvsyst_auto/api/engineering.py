@@ -129,6 +129,7 @@ def pvsyst_generate_report(
         tariff: EconomicsTariffConfig | None = None,
         sensitivity: EconomicsSensitivityConfig | None = None,
         bess_optimization: dict[StrictStr, Any] | None = None,
+        batch_summary_csv: StrictStr | None = None,
         language: Literal["zh", "en"] = "zh",
         plotlyjs: Literal["cdn", "embed"] = "cdn",
         thresholds: dict[StrictStr, StrictNum] | None = None,
@@ -137,7 +138,8 @@ def pvsyst_generate_report(
     """Generate a single-scenario or multi-scenario interactive Plotly HTML engineering report
     under workspace/Results (monthly yield/PR combo, loss waterfall, typical 24h PV/load/BESS/TOU
     profile, monthly peak demand shaving, 25-year cumulative cashflow, sensitivity tornado chart,
-    optional BESS sizing heatmap/Pareto frontier, diagnostics table, and print-ready CSS)."""
+    optional BESS sizing heatmap/Pareto frontier, optional UserBatch parametric sweep curve chart
+    via batch_summary_csv, diagnostics table, and print-ready CSS)."""
     from pvsyst_auto.workflows.report import generate_report
     return generate_report(
         workspace=cli().workspace,
@@ -149,6 +151,7 @@ def pvsyst_generate_report(
         tariff=tariff.model_dump(exclude_none=True) if tariff is not None else None,
         sensitivity=sensitivity.model_dump(exclude_none=True) if sensitivity is not None else None,
         bess_optimization=bess_optimization,
+        batch_summary_csv=batch_summary_csv,
         language=language,
         plotlyjs=plotlyjs,
         thresholds=thresholds,

@@ -16,6 +16,7 @@ from typing import Any
 
 from pvsyst_auto.engineering.diagnostics import _IRRAD_SCALE, diagnose_simulation_csv
 from pvsyst_auto.engineering.economics import evaluate_economics
+from pvsyst_auto.native.cli import parse_batch_results
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.results import RegularResultCsv, energy_unit_scale
 from pvsyst_auto.validation import finite_number as _finite
@@ -48,6 +49,8 @@ _I18N = {
         "sec_cashflow": "全生命周期累计现金流与财务对比",
         "sec_sensitivity": "财务敏感性分析龙卷风图 (NPV)",
         "sec_bess_opt": "光储容量寻优收益热力图与 Pareto 前沿",
+        "sec_batch_sweep": "参数扫描寻优曲线 (批处理结果)",
+        "batch_opt_label": "最优点",
         "sec_ranking": "多方案综合排名对比表",
         "sec_diag": "物理与时序诊断明细",
         "demand_base": "基准最大需量 (kW)",
@@ -119,6 +122,8 @@ _I18N = {
         "sec_cashflow": "Lifetime Cumulative Cashflow & Financial Comparison",
         "sec_sensitivity": "Financial Sensitivity Tornado Chart (NPV)",
         "sec_bess_opt": "PV+BESS Sizing Heatmap & Pareto Frontier",
+        "sec_batch_sweep": "Parametric Batch Sweep Curves",
+        "batch_opt_label": "Optimum",
         "sec_ranking": "Multi-Scenario Ranking Summary",
         "sec_diag": "Physics & Time-Series Diagnostics",
         "demand_base": "Baseline Peak Demand (kW)",
@@ -325,6 +330,180 @@ def _fmt_num(val: float | None, decimals: int = 2, suffix: str = "") -> str:
     return f"{val:,.{decimals}f}{suffix}"
 
 
+def _resolve_batch_csv(workspace: Path | None, batch_summary_csv: str) -> Path:
+    if workspace is not None:
+        safe = safe_filename(batch_summary_csv, ".csv")
+        cand = workspace_file(workspace, "UserBatch", safe, ".csv")
+        if cand.is_file():
+            return cand
+        raise FileNotFoundError(f"Batch summary CSV not found in UserBatch/: {safe}")
+    p = Path(batch_summary_csv)
+    if p.suffix.lower() != ".csv":
+        raise ValueError("Expected a .csv file for batch_summary_csv")
+    if not p.is_file():
+        raise FileNotFoundError(f"Batch summary CSV not found: {p}")
+    return p
+
+
+def _try_float(val: Any) -> float | None:
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)) and math.isfinite(val):
+        return float(val)
+    if isinstance(val, str):
+        try:
+            num = float(val.strip().replace(",", "."))
+            return num if math.isfinite(num) else None
+        except ValueError:
+            return None
+    return None
+
+
+def _build_batch_sweep_figure(parsed_batch: dict[str, Any], *, palette: list[str], opt_label: str):
+    """Build a Plotly dual-axis parametric curve figure from parse_batch_results()."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    rows = [
+        r for r in (parsed_batch.get("scenarios") or ())
+        if not r.get("error") and isinstance(r.get("values"), dict)
+    ]
+    if not rows:
+        return None
+
+    units = parsed_batch.get("units") or {}
+    # Find output metric (prefer E_Grid, else first numeric output)
+    out_metric = "E_Grid" if any(_try_float(r["values"].get("E_Grid")) is not None for r in rows) else None
+    if out_metric is None:
+        for k in rows[0]["values"]:
+            if any(_try_float(r["values"].get(k)) is not None for r in rows):
+                out_metric = k
+                break
+    if out_metric is None:
+        return None
+    has_pr = any(_try_float(r["values"].get("PR")) is not None for r in rows)
+    pr_unit = units.get("PR", "")
+
+    def pr_pct(value):
+        v = _try_float(value)
+        return v * 100 if v is not None and (pr_unit == "ratio" or (not pr_unit and v <= 1.5)) else v
+
+    # Identify varied parameter columns
+    param_keys: list[str] = []
+    for r in rows:
+        for k in (r.get("parameters") or ()):
+            if k not in param_keys:
+                param_keys.append(k)
+    varied: list[str] = []
+    for k in param_keys:
+        distinct = {str((r.get("parameters") or {}).get(k, "")).strip() for r in rows}
+        if len(distinct) > 1:
+            varied.append(k)
+
+    fig = make_subplots(specs=[[{"secondary_y": has_pr}]])
+    y_unit = units.get(out_metric, "")
+    y_title = f"{out_metric} ({y_unit})" if y_unit else out_metric
+
+    if not varied:
+        # Fallback: plot by scenario ID
+        xs = [str(r.get("id") or f"SIM_{i + 1}") for i, r in enumerate(rows)]
+        ys = [_try_float(r["values"].get(out_metric)) for r in rows]
+        fig.add_trace(
+            go.Scatter(name=y_title, x=xs, y=ys, mode="lines+markers", line=dict(color=palette[0], width=2.5)),
+            secondary_y=False,
+        )
+        if has_pr:
+            prs = [pr_pct(r["values"].get("PR")) for r in rows]
+            fig.add_trace(
+                go.Scatter(name="PR (%)", x=xs, y=prs, mode="lines+markers",
+                           line=dict(color="#059669", width=2, dash="dash")),
+                secondary_y=True,
+            )
+        x_title = "Scenario"
+    elif len(varied) == 1:
+        x_key = varied[0]
+        points = []
+        for idx_r, r in enumerate(rows):
+            raw_x = (r.get("parameters") or {}).get(x_key)
+            num_x = _try_float(raw_x)
+            y_val = _try_float(r["values"].get(out_metric))
+            pr_val = pr_pct(r["values"].get("PR"))
+            if y_val is not None:
+                points.append((num_x if num_x is not None else idx_r, raw_x if num_x is None else num_x, y_val, pr_val))
+        points.sort(key=lambda item: item[0])
+        xs = [p[1] for p in points]
+        ys = [p[2] for p in points]
+        fig.add_trace(
+            go.Scatter(name=y_title, x=xs, y=ys, mode="lines+markers",
+                       line=dict(color=palette[0], width=2.5), marker=dict(size=8)),
+            secondary_y=False,
+        )
+        if points:
+            best = max(points, key=lambda p: p[2])
+            fig.add_trace(
+                go.Scatter(
+                    name=f"{opt_label} ({best[1]})",
+                    x=[best[1]], y=[best[2]], mode="markers",
+                    marker=dict(symbol="star", size=14, color="#dc2626"),
+                ),
+                secondary_y=False,
+            )
+        if has_pr and any(p[3] is not None for p in points):
+            fig.add_trace(
+                go.Scatter(name="PR (%)", x=xs, y=[p[3] for p in points], mode="lines+markers",
+                           line=dict(color="#059669", width=2, dash="dash")),
+                secondary_y=True,
+            )
+        x_title = x_key
+    else:
+        x_key = varied[0]
+        groups: dict[tuple[str, ...], list[tuple[float, Any, float, float | None]]] = {}
+        for idx_r, r in enumerate(rows):
+            params = r.get("parameters") or {}
+            group = tuple(str(params.get(k, "")) for k in varied[1:])
+            raw_x = params.get(x_key)
+            num_x = _try_float(raw_x)
+            y_val = _try_float(r["values"].get(out_metric))
+            pr_val = pr_pct(r["values"].get("PR"))
+            if y_val is not None:
+                groups.setdefault(group, []).append(
+                    (num_x if num_x is not None else idx_r, raw_x if num_x is None else num_x, y_val, pr_val)
+                )
+        for g_idx, (group, pts) in enumerate(sorted(groups.items())):
+            g_lbl = ", ".join(f"{k}={v}" for k, v in zip(varied[1:], group))
+            pts.sort(key=lambda item: item[0])
+            color = palette[g_idx % len(palette)]
+            fig.add_trace(
+                go.Scatter(
+                    name=f"{g_lbl} ({out_metric})",
+                    x=[p[1] for p in pts], y=[p[2] for p in pts],
+                    mode="lines+markers", line=dict(color=color, width=2.5),
+                ),
+                secondary_y=False,
+            )
+            if has_pr and any(p[3] is not None for p in pts):
+                fig.add_trace(
+                    go.Scatter(
+                        name=f"{g_lbl} PR (%)",
+                        x=[p[1] for p in pts], y=[p[3] for p in pts],
+                        mode="lines", line=dict(color=color, width=1.8, dash="dot"),
+                    ),
+                    secondary_y=True,
+                )
+        x_title = x_key
+
+    fig.update_layout(
+        template="plotly_white", height=420,
+        margin=dict(l=60, r=55, t=35, b=50),
+        xaxis_title=x_title,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+    )
+    fig.update_yaxes(title_text=y_title, secondary_y=False)
+    if has_pr:
+        fig.update_yaxes(title_text="PR (%)", secondary_y=True)
+    return fig
+
+
 def generate_report(
     *,
     workspace: Path | None = None,
@@ -336,6 +515,7 @@ def generate_report(
     tariff: dict[str, Any] | None = None,
     sensitivity: dict[str, Any] | None = None,
     bess_optimization: dict[str, Any] | None = None,
+    batch_summary_csv: str | None = None,
     language: str = "zh",
     plotlyjs: str = "cdn",
     thresholds: dict[str, float] | None = None,
@@ -469,6 +649,12 @@ def generate_report(
         s["label"]: s for s in (econ_result["scenarios"] if econ_result else ())
     }
 
+    palette = ["#2563eb", "#059669", "#d97706", "#7c3aed", "#dc2626", "#0891b2"]
+    fig_batch = None
+    if batch_summary_csv:
+        batch_path = _resolve_batch_csv(workspace, batch_summary_csv)
+        fig_batch = _build_batch_sweep_figure(parse_batch_results(batch_path), palette=palette, opt_label=t["batch_opt_label"])
+
     if dry_run:
         return {
             "status": "ready",
@@ -478,6 +664,7 @@ def generate_report(
             "language": language,
             "plotlyjs": plotlyjs,
             "has_economics": econ_result is not None,
+            "has_batch_sweep": fig_batch is not None,
         }
 
     # --- Build Interactive Plotly Figures ---
@@ -491,7 +678,6 @@ def generate_report(
             return js_first
         return False
 
-    palette = ["#2563eb", "#059669", "#d97706", "#7c3aed", "#dc2626", "#0891b2"]
     chart_sections: list[tuple[str, str]] = []
 
     # 1. Monthly Generation & PR Combo Chart
@@ -721,6 +907,10 @@ def generate_report(
             fig_bess.update_layout(template="plotly_white", height=420, margin=dict(l=60, r=40, t=45, b=50), showlegend=False)
             chart_sections.append((t["sec_bess_opt"], _plotly_div(fig_bess, include_js=next_js())))
 
+    # 8. Optional Parametric Batch Sweep Curve Chart (from UserBatch *Results.CSV)
+    if fig_batch is not None:
+        chart_sections.append((t["sec_batch_sweep"], _plotly_div(fig_batch, include_js=next_js())))
+
     # --- Assemble Clean Responsive HTML Document ---
     primary_diag = primary["diagnostics"]
     primary_yield = primary["stats"]["annual_e_grid_kwh"]
@@ -885,5 +1075,6 @@ def generate_report(
         "scenario_count": len(parsed_scenarios),
         "chart_count": len(chart_sections),
         "has_economics": econ_result is not None,
+        "has_batch_sweep": fig_batch is not None,
         "best_scenario": best_label,
     }

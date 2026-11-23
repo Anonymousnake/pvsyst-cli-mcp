@@ -1,6 +1,7 @@
 """Bind AI-extracted numeric design values to caller-declared source text."""
 from __future__ import annotations
 
+import difflib
 import math
 import re
 from decimal import Decimal, InvalidOperation
@@ -52,6 +53,12 @@ UNIT_FORMS = {
     "pct_per_degc": "pct_per_degC", "%/°c": "pct_per_degC", "%/degc": "pct_per_degC", "%/c": "pct_per_degC",
     "v_per_degc": "V_per_degC", "v/°c": "V_per_degC", "v/degc": "V_per_degC",
     "a_per_degc": "A_per_degC", "a/°c": "A_per_degC", "a/degc": "A_per_degC",
+    "ma/degc": "mA/degC", "ma/°c": "mA/degC", "ma/c": "mA/degC",
+    "mv/degc": "mV/degC", "mv/°c": "mV/degC", "mv/c": "mV/degC",
+    "mohm": "mOhm", "mω": "mOhm", "ohm": "Ohm", "ω": "Ohm",
+    "ah": "Ah", "kwh": "kWh", "kg": "kg", "m": "m", "mm": "mm",
+    "count": "count", "cells": "cells", "strings": "strings", "cycles": "cycles",
+    "years": "years", "yr": "yr",
 }
 
 FIELD_SPECS = {
@@ -76,6 +83,25 @@ FIELD_SPECS = {
     "max_dc_ac_ratio": (("ratio",), ("", "max_dc_ac_ratio")),
     "capacity_tolerance_pct": (("%",), ("", "capacity_tolerance_pct")),
 }
+
+
+def _suggest_fields(bad_field: str, allowed_fields: list[str]) -> list[str]:
+    """Return case-insensitive exact or close-match suggestions for a mistyped canonical field key."""
+    if not isinstance(bad_field, str) or not bad_field.strip():
+        return []
+    needle = bad_field.strip().casefold()
+    lower_map = {name.casefold(): name for name in allowed_fields}
+    suggestions: list[str] = []
+    if needle in lower_map:
+        suggestions.append(lower_map[needle])
+    for name in allowed_fields:
+        if name not in suggestions and (name.casefold().startswith(needle) or needle in name.casefold()):
+            suggestions.append(name)
+    for match in difflib.get_close_matches(needle, list(lower_map.keys()), n=4, cutoff=0.55):
+        canonical = lower_map[match]
+        if canonical not in suggestions:
+            suggestions.append(canonical)
+    return suggestions[:4]
 
 
 def _issue(result, field, message):
@@ -330,7 +356,21 @@ def bind_source_values(*, manufacturer_model, sources, declarations, field_specs
                              label="Unknown declaration key")
         field = declaration.get("field")
         if not isinstance(field, str) or field not in field_specs:
-            _issue(result, prefix + ".field", "Use one of the supported numeric fields for this entry point")
+            allowed_fields = sorted(field_specs.keys())
+            suggestions = _suggest_fields(field, allowed_fields) if isinstance(field, str) else []
+            msg = (
+                f"Unknown field {field!r}; use one of the supported numeric fields for this entry point"
+                + (f". Did you mean: {', '.join(suggestions)}?" if suggestions else "")
+                + f" Allowed fields: {', '.join(allowed_fields)}"
+            )
+            entry_issue: dict = {
+                "field": prefix + ".field",
+                "message": msg,
+                "allowed_fields": allowed_fields,
+            }
+            if suggestions:
+                entry_issue["did_you_mean"] = suggestions
+            result["issues"].append(entry_issue)
             continue
         value = declaration.get("value")
         if not _is_number(value):
@@ -339,7 +379,11 @@ def bind_source_values(*, manufacturer_model, sources, declarations, field_specs
         allowed_units, target = field_specs[field]
         unit = _normalize_unit(declaration.get("unit"))
         if unit not in allowed_units:
-            _issue(result, field, "Declare the unit explicitly as " + " or ".join(allowed_units))
+            result["issues"].append({
+                "field": field,
+                "message": "Declare the unit explicitly as " + " or ".join(allowed_units),
+                "allowed_units": list(allowed_units),
+            })
             continue
         source_id = declaration.get("source_id")
         if not isinstance(source_id, str) or not source_id.strip() or source_id not in clean_sources:

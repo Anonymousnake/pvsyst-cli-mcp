@@ -982,6 +982,7 @@ class SingleDesignRequest(BaseModel):
     electrical_design: DesignEnvelopeRequest | None = None
     losses: LossRequest | None = None
     report_pages: list[StrictStr] | None = None
+    report_language: Literal["en", "zh"] = "en"
     ground_layout: GroundLayoutRequest | None = None
     bifacial: BifacialUpdates | None = None
     transformers: TransformersConfig | None = None

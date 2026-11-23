@@ -584,6 +584,7 @@ def run_utility_design(
     preparation_context: dict | None = None,
     allow_window_creation: bool | None = None,
     synthetic_weather: bool = False,
+    report_language: str = "en",
 ) -> dict:
     """Synthesize a zero-template utility ground project and optionally run a full-year CLI simulation."""
     new_project = spec["new_project"]
@@ -780,7 +781,7 @@ def run_utility_design(
                 time_step="hour",
                 start_date=f"{year}.01.01",
                 end_date=f"{year}.12.31",
-                report_language="en",
+                report_language=report_language,
                 log_level=3,
                 report_pages=spec.get("report_pages"),
                 allow_window_creation=allow_window_creation,

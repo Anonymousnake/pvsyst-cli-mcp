@@ -88,7 +88,20 @@ def pvsyst_build_sourced_component(
     """Build a new user-defined PAN, OND, or Li-ion BTR from cited datasheet values: either derived
     from a template (template_name set) or synthesized zero-template with single-diode / single- or
     3-voltage Mode-1 OND / Li-ion LFP-NMC BTR derivation (template_name omitted). Requires
-    acknowledge_inherited_model=true when dry_run=false."""
+    acknowledge_inherited_model=true when dry_run=false.
+
+    Canonical declaration fields and allowed units (case-sensitive PVsyst keys):
+    - Common dimensions: Width (m|mm), Height (m|mm), Depth (m|mm), Weight (kg)
+    - PAN: PNom (W), ISC (A), Voc (V), Imp (A), Vmp (V), NCelS (count|cells), NCelP (count|strings),
+      NDiode (count), BifacialityFactor (ratio|%), VMaxIEC (V), VMaxUL (V),
+      MuISC (mA/degC|mA/C|A_per_degC|pct_per_degC), muVocSpec (mV/degC|mV/C|V_per_degC|pct_per_degC),
+      muPmpReq (pct_per_degC)
+    - OND: PNomConv (kW), PMaxOUT (kW), VMppMin (V), VMPPMax (V), VAbsMax (V), EfficMax (%),
+      EfficEuro (%), VOutConv (V), NbMPPT (count), NbInputs (count), IDCMax (A),
+      VNomEff1..3 (V), EfficMaxV1..3 (%), EfficEuroV1..3 (%)
+    - BTR: CapNomC10 (Ah), EnergyKWh (kWh), VNom (V), NCellSerie (count|cells),
+      NCellParall (count|strings), ResInterne (mOhm|Ohm), EfficI (ratio|%),
+      IMaxCharge (A), IMaxDischarge (A), CycleLife80DOD (count|cycles), SOHEOL (ratio|%), DureeVie20 (years|yr)."""
     return build_sourced_component(
         components(), component_type=component_type, template_name=template_name, new_name=new_name,
         manufacturer=manufacturer, model=model,
