@@ -250,6 +250,9 @@ def convert_orientation_lines(
     """Replace the Orientations list of a variant with a new orientation type, stripping incompatible 3D caches."""
     if target_type not in TARGET_TYPES:
         raise ValueError(f"target_type must be one of {sorted(TARGET_TYPES)}")
+    subarrays = [block for block in objects("".join(lines)) if block.object_type == "pvSubArray"]
+    if target_type == "dome" or any("NoOrientation2" in block.fields for block in subarrays):
+        raise ValueError("Conversions to or from paired dome orientations are not supported; dome faces need native pvDomeOrient pairing and string allocation")
     eol = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
 
     start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("Orientations, list of=")), None)

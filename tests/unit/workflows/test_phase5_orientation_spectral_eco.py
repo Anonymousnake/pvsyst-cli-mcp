@@ -89,7 +89,6 @@ class Phase5OrientationSpectralEcoTests(unittest.TestCase):
             ("sheds", {"tilt_deg": 20.0, "pitch_m": 8.0, "collector_width_m": 4.0, "shed_count": 12}, "FieldType=Sheds"),
             ("tracker_ns", {"min_phi_deg": -55.0, "max_phi_deg": 55.0, "pitch_m": 6.0, "collector_width_m": 2.2, "backtracking": True}, "FieldType=UnlimTracking"),
             ("tracker_2axis", {"min_tilt_deg": 15.0, "max_tilt_deg": 75.0, "min_phi_deg": -120.0, "max_phi_deg": 120.0}, "FieldType=TrackTwoAxis"),
-            ("dome", {"tilt_deg": 10.0, "azimuth_deg": -90.0}, "Orientations, list of=2 TOrientGroup"),
         ]
         for idx, (target, params, expected_marker) in enumerate(targets, start=1):
             new_vc = f"VC{idx}"
@@ -107,6 +106,32 @@ class Phase5OrientationSpectralEcoTests(unittest.TestCase):
             txt = (self.ws / "Projects" / f"Phase5Test.{new_vc}").read_text(encoding="latin-1")
             self.assertIn(expected_marker, txt)
             self.assertNotIn("PVObject_Ombrage=pvShading", txt)
+
+    def test_public_dome_conversion_blocks_unallocated_faces(self) -> None:
+        from unittest.mock import patch
+        from pvsyst_auto.api.projects import pvsyst_convert_orientation
+
+        source = self.ws / "Projects" / "Phase5Test.VC0"
+        text = source.read_text(encoding="utf-8-sig")
+        text = text.replace("NoOrient=1", "NoOrient=10").replace("NoOrientation=1", "NoOrientation=10")
+        source.write_text(text, encoding="utf-8")
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
+            result = pvsyst_convert_orientation(self.project, "VC0", "VC1", target_type="dome", dry_run=False)
+        self.assertEqual(result["status"], "blocked")
+        self.assertFalse((self.ws / "Projects" / "Phase5Test.VC1").exists())
+
+    def test_public_conversion_rejects_paired_subarray(self) -> None:
+        from unittest.mock import patch
+        from pvsyst_auto.api.projects import pvsyst_convert_orientation
+
+        source = self.ws / "Projects" / "Phase5Test.VC0"
+        text = source.read_text(encoding="utf-8-sig")
+        text = text.replace("NoOrientation=1", "NoOrientation=2\n      NoOrientation2=3")
+        source.write_text(text, encoding="utf-8")
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
+            result = pvsyst_convert_orientation(self.project, "VC0", "VC1", target_type="fixed", dry_run=False)
+        self.assertEqual(result["status"], "blocked")
+        self.assertFalse((self.ws / "Projects" / "Phase5Test.VC1").exists())
 
     def test_native_economics_write_and_remove(self) -> None:
         res = self.store.update_parameters(
