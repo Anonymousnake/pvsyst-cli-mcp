@@ -18,6 +18,16 @@ IRON_DEFAULT_FLAG = 0x00800000  # bit 23: IsTrfIronLossDefault
 RES_DEFAULT_FLAG = 0x01000000   # bit 24: IsTrfResLossDefault
 NIGHT_FLAG = 0x20000000         # bit 29: UsesTrfNightDisconnect
 
+# PVsyst 8.1.7 native validator bounds (DataRO/param.dat & TMainArray Verif)
+NATIVE_MIN_POWER_RATIO = 0.80      # 1 - pi_TrfLimUnderSizing (20%) -> TransfoPowerLTInverterXX/GridLimXX
+NATIVE_MAX_POWER_RATIO = 2.00      # 1 + pi_TrfLimOverSizing (100%) -> TransfoPowerGTInverterXX
+NATIVE_MAX_IRON_LOSS_FRAC = 0.01   # pi_TrfIronLossFracMax (1.0%) -> IronLossIrrealistic
+NATIVE_MAX_COPPER_LOSS_FRAC = 0.05 # pi_TrfCopperLossFracMax (5.0%) -> ResLossIrrealistic
+NATIVE_MIN_DATASHEET_VALUE = 1e-9  # TransfoDataSheetsNotWellDef strict positivity threshold
+_GRID_LIMIT_ENABLED_BIT = 0x01000000
+_INDEPENDENT_MPPT_BIT = 0x400
+_BOUND_EPS = 1e-9
+
 METALS = ("Copper", "Aluminium")
 
 # Standard ISO 60228 cable cross sections (mm2) -> PVsyst WireNoSect index
@@ -84,7 +94,49 @@ def _normalize_cable(raw: dict[str, Any] | None, label: str, *, default_section:
     }
 
 
-def _normalize_mv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str, Any]:
+def _check_native_power_bounds(
+    *,
+    stage: str,
+    ds_nom_kva: float,
+    inverter_ac_kw: float | None,
+    grid_limit_kw: float | None,
+    count: int = 1,
+) -> None:
+    if inverter_ac_kw is None or inverter_ac_kw <= 0:
+        return
+    ac_per_trf = inverter_ac_kw / count
+    min_base_total = min(inverter_ac_kw, grid_limit_kw) if (grid_limit_kw is not None and grid_limit_kw > 0) else inverter_ac_kw
+    min_base_per_trf = min_base_total / count
+    min_kva = NATIVE_MIN_POWER_RATIO * min_base_per_trf
+    max_kva = NATIVE_MAX_POWER_RATIO * ac_per_trf
+    unit_suffix = f" per transformer (count={count})" if count > 1 else ""
+    div_suffix = f" / {count}" if count > 1 else ""
+    if ds_nom_kva < min_kva - _BOUND_EPS:
+        basis_label = (
+            f"min(PNomInvAC={inverter_ac_kw:g} kW, PLimGrid={grid_limit_kw:g} kW)"
+            if (grid_limit_kw is not None and grid_limit_kw < inverter_ac_kw)
+            else f"PNomInvAC={inverter_ac_kw:g} kW"
+        )
+        raise ValueError(
+            f"{stage} transformer nominal_power_kva ({ds_nom_kva:g} kVA{unit_suffix}) is below "
+            f"PVsyst 8.1.7 native undersizing limit ({min_kva:g} kVA = 80% of {basis_label}"
+            f"{div_suffix}; TransfoPowerLTInverterXX/GridLimXX)."
+        )
+    if ds_nom_kva > max_kva + _BOUND_EPS:
+        raise ValueError(
+            f"{stage} transformer nominal_power_kva ({ds_nom_kva:g} kVA{unit_suffix}) exceeds "
+            f"PVsyst 8.1.7 native oversizing limit ({max_kva:g} kVA = 200% of PNomInvAC={inverter_ac_kw:g} kW"
+            f"{div_suffix}; TransfoPowerGTInverterXX)."
+        )
+
+
+def _normalize_mv(
+    raw: dict[str, Any],
+    default_ref_kw: float | None,
+    *,
+    inverter_ac_kw: float | None = None,
+    grid_limit_kw: float | None = None,
+) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("mv must be an object")
     count = raw.get("count", 1)
@@ -105,6 +157,8 @@ def _normalize_mv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str
             "(cannot infer from variant or .PAN files)"
         )
     ref_kw = _finite_pos(ref, "mv.stc_ref_power_kw")
+    ref_per_trf = ref_kw / count
+    ac_per_trf = (inverter_ac_kw / count) if (inverter_ac_kw is not None and inverter_ac_kw > 0) else None
 
     ds_nom = raw.get("nominal_power_kva")
     ds_iron = raw.get("iron_loss_kw")
@@ -114,18 +168,49 @@ def _normalize_mv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str
         if any(v is None for v in (ds_nom, ds_iron, ds_copper)):
             raise ValueError("mv datasheet mode requires nominal_power_kva, iron_loss_kw, and copper_loss_kw together")
         ds_nom_f = _finite_pos(ds_nom, "mv.nominal_power_kva")
-        ds_iron_f = _finite_pos(ds_iron, "mv.iron_loss_kw", allow_zero=True)
-        ds_copper_f = _finite_pos(ds_copper, "mv.copper_loss_kw", allow_zero=True)
-        iron_frac = ds_iron_f / ref_kw if ref_kw > 0 else 0.001
-        copper_frac = ds_copper_f * (ref_kw / (ds_nom_f * ds_nom_f)) if ds_nom_f > 0 else 0.01
+        ds_iron_f = _finite_pos(ds_iron, "mv.iron_loss_kw", allow_zero=False)
+        ds_copper_f = _finite_pos(ds_copper, "mv.copper_loss_kw", allow_zero=False)
+        if ds_nom_f < NATIVE_MIN_DATASHEET_VALUE or ds_iron_f < NATIVE_MIN_DATASHEET_VALUE or ds_copper_f < NATIVE_MIN_DATASHEET_VALUE:
+            raise ValueError(
+                "mv datasheet nominal_power_kva, iron_loss_kw, and copper_loss_kw must be strictly positive "
+                "(>= 1e-9; PVsyst TransfoDataSheetsNotWellDef)"
+            )
+        _check_native_power_bounds(
+            stage="MV",
+            ds_nom_kva=ds_nom_f,
+            inverter_ac_kw=inverter_ac_kw,
+            grid_limit_kw=grid_limit_kw,
+            count=count,
+        )
+        # PVsyst 8.1.7: MVTrfDS* are per-transformer values; TransformerNode STC fractions use ref_per_trf = STCRefPower / count.
+        stc_iron_frac = ds_iron_f / ref_per_trf
+        stc_copper_frac = ds_copper_f * (ref_per_trf / (ds_nom_f * ds_nom_f))
+        basis_per_trf = ac_per_trf if ac_per_trf is not None else ref_per_trf
+        main_iron_frac = ds_iron_f / basis_per_trf
+        main_copper_frac = ds_copper_f * (basis_per_trf / (ds_nom_f * ds_nom_f))
+        total_iron_kw = count * ds_iron_f
+        loss_basis = "datasheet_per_transformer"
+        loss_basis_kw = count * ds_nom_f
     else:
         ds_nom_f = ds_iron_f = ds_copper_f = None
-        iron_frac = _finite_pos(raw.get("iron_loss_frac", 0.001), "mv.iron_loss_frac", allow_zero=True)
-        copper_frac = _finite_pos(raw.get("copper_loss_frac", 0.010), "mv.copper_loss_frac", allow_zero=True)
-    if iron_frac > 0.05 or copper_frac > 0.15:
+        main_iron_frac = _finite_pos(raw.get("iron_loss_frac", 0.001), "mv.iron_loss_frac", allow_zero=True)
+        main_copper_frac = _finite_pos(raw.get("copper_loss_frac", 0.010), "mv.copper_loss_frac", allow_zero=True)
+        # PVsyst 8.1.7 simulation engine (MVTrfIronLoss / MVTrfResLoss) scales TrfIronLossFrac & TrfResLossFrac
+        # by PNomInvAC (total inverter AC nominal power), NOT STCRefPower.
+        eff_basis_kw = inverter_ac_kw if (inverter_ac_kw is not None and inverter_ac_kw > 0) else ref_kw
+        total_iron_kw = eff_basis_kw * main_iron_frac
+        stc_iron_frac = total_iron_kw / ref_kw
+        stc_copper_frac = main_copper_frac * (ref_kw / eff_basis_kw)
+        loss_basis = "inverter_ac_nominal" if (inverter_ac_kw is not None and inverter_ac_kw > 0) else "stc_ref_power_fallback"
+        loss_basis_kw = eff_basis_kw
+
+    if stc_iron_frac > NATIVE_MAX_IRON_LOSS_FRAC + _BOUND_EPS or stc_copper_frac > NATIVE_MAX_COPPER_LOSS_FRAC + _BOUND_EPS:
+        ac_suffix = f", inverter_ac_power_kw={inverter_ac_kw:g} kW" if inverter_ac_kw is not None else ""
         raise ValueError(
-            f"MV transformer loss fractions out of realistic bounds (iron <= 5%, copper <= 15%; "
-            f"got iron={iron_frac * 100:.2f}%, copper={copper_frac * 100:.2f}% using stc_ref_power_kw={ref_kw:g} kW)"
+            f"MV transformer loss fractions exceed PVsyst 8.1.7 native limits "
+            f"(iron <= {NATIVE_MAX_IRON_LOSS_FRAC * 100:g}%, copper <= {NATIVE_MAX_COPPER_LOSS_FRAC * 100:g}%; "
+            f"got iron={stc_iron_frac * 100:.2f}%, copper={stc_copper_frac * 100:.2f}% "
+            f"using stc_ref_power_kw={ref_kw:g} kW{ac_suffix})"
         )
 
     return {
@@ -133,9 +218,15 @@ def _normalize_mv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str
         "output_voltage_kv": v_kv,
         "output_voltage_v": int(round(v_kv * 1000.0)),
         "stc_ref_power_kw": round(ref_kw, 5),
-        "iron_loss_frac": round(iron_frac, 5),
-        "iron_loss_kw": round(ref_kw * iron_frac, 5),
-        "copper_loss_frac": round(copper_frac, 5),
+        "iron_loss_frac": round(stc_iron_frac if has_ds else main_iron_frac, 5),
+        "copper_loss_frac": round(stc_copper_frac if has_ds else main_copper_frac, 5),
+        "main_iron_loss_frac": round(main_iron_frac, 5),
+        "main_copper_loss_frac": round(main_copper_frac, 5),
+        "stc_iron_loss_frac": round(stc_iron_frac, 5),
+        "stc_copper_loss_frac": round(stc_copper_frac, 5),
+        "iron_loss_kw": round(total_iron_kw, 5),
+        "loss_basis": loss_basis,
+        "loss_basis_power_kw": round(loss_basis_kw, 5),
         "from_datasheet": has_ds,
         "ds_nom_power": round(ds_nom_f, 5) if ds_nom_f is not None else None,
         "ds_iron_loss": round(ds_iron_f, 5) if ds_iron_f is not None else None,
@@ -145,7 +236,13 @@ def _normalize_mv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str
     }
 
 
-def _normalize_hv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str, Any]:
+def _normalize_hv(
+    raw: dict[str, Any],
+    default_ref_kw: float | None,
+    *,
+    inverter_ac_kw: float | None = None,
+    grid_limit_kw: float | None = None,
+) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("hv must be an object")
     v_kv = _finite_pos(raw.get("output_voltage_kv", 110.0), "hv.output_voltage_kv")
@@ -163,34 +260,61 @@ def _normalize_hv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str
             "(cannot infer from variant or .PAN files)"
         )
     ref_kw = _finite_pos(ref, "hv.stc_ref_power_kw")
-    # PVsyst 8.1.7 ALWAYS requires HV datasheet specifications (HVTrfDSNomPower / IronLoss / CopperLoss)
-    ds_nom = _finite_pos(raw["nominal_power_kva"], "hv.nominal_power_kva") if raw.get("nominal_power_kva") is not None else round(ref_kw * 1.15, 2)
+    # PVsyst 8.1.7 ALWAYS runs HV simulation exclusively from HVTrfDSNomPower / IronLoss / CopperLoss.
+    # Default omitted nominal_power_kva from inverter AC power (1.15x PNomInvAC) so high DC/AC arrays
+    # do not exceed PVsyst's 2.0x PNomInvAC cap.
+    default_nom_base = inverter_ac_kw if (inverter_ac_kw is not None and inverter_ac_kw > 0) else ref_kw
+    ds_nom = (
+        _finite_pos(raw["nominal_power_kva"], "hv.nominal_power_kva")
+        if raw.get("nominal_power_kva") is not None
+        else round(default_nom_base * 1.15, 2)
+    )
+    _check_native_power_bounds(
+        stage="HV",
+        ds_nom_kva=ds_nom,
+        inverter_ac_kw=inverter_ac_kw,
+        grid_limit_kw=grid_limit_kw,
+        count=1,
+    )
     iron_frac_in = raw.get("iron_loss_frac")
     copper_frac_in = raw.get("copper_loss_frac")
     if raw.get("iron_loss_kw") is not None:
-        ds_iron = _finite_pos(raw["iron_loss_kw"], "hv.iron_loss_kw", allow_zero=True)
-        iron_frac = ds_iron / ref_kw if ref_kw > 0 else 0.0007
+        ds_iron = _finite_pos(raw["iron_loss_kw"], "hv.iron_loss_kw", allow_zero=False)
+        iron_frac = ds_iron / ref_kw
     else:
-        iron_frac = _finite_pos(iron_frac_in if iron_frac_in is not None else 0.0007, "hv.iron_loss_frac", allow_zero=True)
+        iron_frac = _finite_pos(iron_frac_in if iron_frac_in is not None else 0.0007, "hv.iron_loss_frac", allow_zero=False)
         ds_iron = round(ref_kw * iron_frac, 5)
     if raw.get("copper_loss_kw") is not None:
-        ds_copper = _finite_pos(raw["copper_loss_kw"], "hv.copper_loss_kw", allow_zero=True)
-        copper_frac = ds_copper * (ref_kw / (ds_nom * ds_nom)) if ds_nom > 0 else 0.0065
+        ds_copper = _finite_pos(raw["copper_loss_kw"], "hv.copper_loss_kw", allow_zero=False)
+        copper_frac = ds_copper * (ref_kw / (ds_nom * ds_nom))
     else:
-        copper_frac = _finite_pos(copper_frac_in if copper_frac_in is not None else 0.0065, "hv.copper_loss_frac", allow_zero=True)
+        copper_frac = _finite_pos(copper_frac_in if copper_frac_in is not None else 0.0065, "hv.copper_loss_frac", allow_zero=False)
         ds_copper = round(copper_frac * ds_nom * ds_nom / ref_kw, 5)
-    if iron_frac > 0.05 or copper_frac > 0.15:
+    if ds_nom < NATIVE_MIN_DATASHEET_VALUE or ds_iron < NATIVE_MIN_DATASHEET_VALUE or ds_copper < NATIVE_MIN_DATASHEET_VALUE:
         raise ValueError(
-            f"HV transformer loss fractions out of realistic bounds (iron <= 5%, copper <= 15%; "
-            f"got iron={iron_frac * 100:.2f}%, copper={copper_frac * 100:.2f}% using stc_ref_power_kw={ref_kw:g} kW)"
+            "hv datasheet nominal_power_kva, iron_loss_kw, and copper_loss_kw must be strictly positive "
+            "(>= 1e-9; PVsyst TransfoDataSheetsNotWellDef)"
+        )
+    # PVsyst 8.1.7 validates HV loss fractions against HVTrfDSNomPower (DSIronLoss/DSNomPower <= 1%, DSCopperLoss/DSNomPower <= 5%).
+    nom_iron_frac = ds_iron / ds_nom
+    nom_copper_frac = ds_copper / ds_nom
+    if nom_iron_frac > NATIVE_MAX_IRON_LOSS_FRAC + _BOUND_EPS or nom_copper_frac > NATIVE_MAX_COPPER_LOSS_FRAC + _BOUND_EPS:
+        raise ValueError(
+            f"HV transformer datasheet losses exceed PVsyst 8.1.7 native limits "
+            f"(iron/nom <= {NATIVE_MAX_IRON_LOSS_FRAC * 100:g}%, copper/nom <= {NATIVE_MAX_COPPER_LOSS_FRAC * 100:g}%; "
+            f"got iron={nom_iron_frac * 100:.2f}%, copper={nom_copper_frac * 100:.2f}% "
+            f"for nominal_power_kva={ds_nom:g} kVA)"
         )
     return {
         "output_voltage_kv": v_kv,
         "output_voltage_v": int(round(v_kv * 1000.0)),
         "stc_ref_power_kw": round(ref_kw, 5),
         "iron_loss_frac": round(iron_frac, 5),
-        "iron_loss_kw": round(ref_kw * iron_frac, 5),
+        "iron_loss_kw": round(ds_iron, 5),
         "copper_loss_frac": round(copper_frac, 5),
+        "nom_iron_loss_frac": round(nom_iron_frac, 5),
+        "nom_copper_loss_frac": round(nom_copper_frac, 5),
+        "loss_basis": "datasheet_hv",
         "ds_nom_power": round(ds_nom, 5),
         "ds_iron_loss": round(ds_iron, 5),
         "ds_copper_loss": round(ds_copper, 5),
@@ -216,6 +340,119 @@ def _read_pan_pnom_wp(components, pan_name: str) -> float | None:
                         return val
         except (ValueError, OSError, KeyError, AttributeError):
             continue
+    return None
+
+
+def _read_ond_pnom_kw(components, ond_name: str) -> float | None:
+    if components is None or not ond_name:
+        return None
+    for library in ("workspace", "builtin"):
+        try:
+            ond_path = components._path("OND", ond_name, library)
+            if not ond_path.is_file():
+                continue
+            raw = components._read(ond_path)
+            text = raw.decode("utf-8-sig", errors="replace")
+            for blk in objects(text):
+                if blk.object_type in ("TConverter", "pvGInverter") and "PNomConv" in blk.fields:
+                    val = float(blk.one("PNomConv")[1])
+                    if math.isfinite(val) and val > 0:
+                        return val
+        except (ValueError, OSError, KeyError, AttributeError):
+            continue
+    return None
+
+
+def _infer_inverter_ac_power_kw(
+    lines: list[str],
+    *,
+    components=None,
+) -> tuple[float | None, str]:
+    """Infer total inverter nominal AC power (TMainArray.PNomInvAC in PVsyst 8.1.7)."""
+    blocks = objects("".join(lines))
+    subarrays = [b for b in blocks if b.object_type == "pvSubArray"]
+    if not subarrays:
+        return None, "unknown"
+    total_ac = 0.0
+    sources: set[str] = set()
+    for sa in subarrays:
+        raw_flags = sa.one("Flags")[1].strip() if "Flags" in sa.fields else ""
+        is_independent = bool(
+            re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags)
+            and (int(raw_flags[1:], 16) & _INDEPENDENT_MPPT_BIT)
+        )
+        pnom_mppt: float | None = None
+        if "PNomAC_InMPPT" in sa.fields:
+            try:
+                val = float(sa.one("PNomAC_InMPPT")[1].strip())
+                if math.isfinite(val) and val > 0:
+                    pnom_mppt = val
+            except (ValueError, TypeError):
+                pass
+        ond_name = sa.one("GInverter")[1].strip() if "GInverter" in sa.fields else ""
+        ond_pnom = _read_ond_pnom_kw(components, ond_name)
+
+        sub_ac: float | None = None
+        if is_independent:
+            try:
+                n_mppt = int(sa.one("NInvMPPT")[1].strip()) if "NInvMPPT" in sa.fields else 0
+            except ValueError:
+                n_mppt = 0
+            if n_mppt > 0 and pnom_mppt is not None:
+                sub_ac = n_mppt * pnom_mppt
+                sources.add("subarray_independent_mppt")
+            else:
+                try:
+                    n_inv = int(sa.one("NInverter")[1].strip()) if "NInverter" in sa.fields else 0
+                except ValueError:
+                    n_inv = 0
+                if n_inv > 0 and ond_pnom is not None:
+                    sub_ac = n_inv * ond_pnom
+                    sources.add("ond_subarray_ac")
+        else:
+            try:
+                n_inv = int(sa.one("NInverter")[1].strip()) if "NInverter" in sa.fields else 0
+            except ValueError:
+                n_inv = 0
+            if n_inv > 0 and ond_pnom is not None:
+                sub_ac = n_inv * ond_pnom
+                sources.add("ond_subarray_ac")
+            elif n_inv > 0 and pnom_mppt is not None:
+                # Native PVsyst saves write PNomAC_InMPPT = PNomConv in ordinary mode
+                # (essential when the OND lives in PVsyst's encrypted InverterDB.csv).
+                sub_ac = n_inv * pnom_mppt
+                sources.add("subarray_pnom_ac_in_mppt")
+
+        if sub_ac is None or sub_ac <= 0:
+            return None, "unknown"
+        total_ac += sub_ac
+
+    if total_ac <= 0:
+        return None, "unknown"
+    source = next(iter(sources)) if len(sources) == 1 else "subarray_mixed_ac"
+    return round(total_ac, 5), source
+
+
+def _infer_grid_limit_kw(lines: list[str]) -> float | None:
+    """Return active pvSystem PLimGrid (kW) when pvSystem.Flags bit 24 is set."""
+    blocks = objects("".join(lines))
+    systems = [b for b in blocks if b.object_type == "pvSystem"]
+    if len(systems) != 1:
+        return None
+    sys_blk = systems[0]
+    raw_flags = sys_blk.one("Flags")[1].strip() if "Flags" in sys_blk.fields else ""
+    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags):
+        return None
+    if not (int(raw_flags[1:], 16) & _GRID_LIMIT_ENABLED_BIT):
+        return None
+    if "PLimGrid" not in sys_blk.fields:
+        return None
+    try:
+        val = float(sys_blk.one("PLimGrid")[1].strip())
+        if math.isfinite(val) and val > 0:
+            return val
+    except (ValueError, TypeError):
+        pass
     return None
 
 
@@ -336,9 +573,11 @@ def _render_transformer_node(
         out.append(f"{indent}NTransformers={spec['count']}{eol}")
     out.append(f"{indent}OutputVoltage={_format_kv(spec['output_voltage_kv'])}{eol}")
     out.append(f"{indent}STCRefPower={spec['stc_ref_power_kw']:.5f}{eol}")
-    out.append(f"{indent}STCIronLossFrac={spec['iron_loss_frac']:.5f}{eol}")
+    node_iron_frac = spec["iron_loss_frac"] if is_hv else spec["stc_iron_loss_frac"]
+    node_copper_frac = spec["copper_loss_frac"] if is_hv else spec["stc_copper_loss_frac"]
+    out.append(f"{indent}STCIronLossFrac={node_iron_frac:.5f}{eol}")
     out.append(f"{indent}STCIronLoss={spec['iron_loss_kw']:.5f}{eol}")
-    out.append(f"{indent}STCCopperLossFrac={spec['copper_loss_frac']:.5f}{eol}")
+    out.append(f"{indent}STCCopperLossFrac={node_copper_frac:.5f}{eol}")
     if is_hv or spec.get("from_datasheet"):
         out.append(f"{indent}DSNomPower={spec['ds_nom_power']:.5f}{eol}")
         out.append(f"{indent}DSIronLoss={spec['ds_iron_loss']:.5f}{eol}")
@@ -385,12 +624,43 @@ def apply_transformers_to_variant_lines(
     base_indent = clean_lines[inj_start][:len(clean_lines[inj_start]) - len(clean_lines[inj_start].lstrip(" "))]
 
     ref_kw, ref_source = _infer_ref_power_kw(clean_lines, default_ref_power_kw, components=components)
-    mv_norm = None if remove_transformers else _normalize_mv(mv, ref_kw)  # type: ignore[arg-type]
+    inverter_ac_kw, ac_source = _infer_inverter_ac_power_kw(clean_lines, components=components)
+    grid_limit_kw = _infer_grid_limit_kw(clean_lines)
+
+    mv_norm = (
+        None
+        if remove_transformers
+        else _normalize_mv(mv, ref_kw, inverter_ac_kw=inverter_ac_kw, grid_limit_kw=grid_limit_kw)  # type: ignore[arg-type]
+    )
     hv_default_ref = ref_kw if ref_kw is not None else (mv_norm["stc_ref_power_kw"] if mv_norm is not None else None)
-    hv_norm = None if (remove_transformers or hv is None) else _normalize_hv(hv, hv_default_ref)
+    hv_norm = (
+        None
+        if (remove_transformers or hv is None)
+        else _normalize_hv(hv, hv_default_ref, inverter_ac_kw=inverter_ac_kw, grid_limit_kw=grid_limit_kw)
+    )
+    if mv_norm is not None and hv_norm is not None and hv_norm["output_voltage_kv"] < mv_norm["output_voltage_kv"]:
+        raise ValueError(
+            f"hv.output_voltage_kv ({hv_norm['output_voltage_kv']:g} kV) must be >= "
+            f"mv.output_voltage_kv ({mv_norm['output_voltage_kv']:g} kV); PVsyst requires VOutHVTransfo >= VOutTransfo "
+            f"(TransfoHT_DefGridVoltage)"
+        )
 
     warnings: list[str] = []
-    if mv_norm is not None and mv_norm.get("ds_nom_power") is not None:
+    if (
+        mv_norm is not None
+        and not mv_norm["from_datasheet"]
+        and inverter_ac_kw is not None
+        and mv is not None
+        and mv.get("stc_ref_power_kw") is not None
+        and abs(inverter_ac_kw - mv_norm["stc_ref_power_kw"]) / mv_norm["stc_ref_power_kw"] > 0.01
+    ):
+        warnings.append(
+            f"PVsyst 8.1.7 evaluates MV fractional losses (TrfIronLossFrac/TrfResLossFrac) on inverter nominal AC "
+            f"power (PNomInvAC={inverter_ac_kw:g} kW), not stc_ref_power_kw ({mv_norm['stc_ref_power_kw']:g} kW); "
+            f"simulated constant iron loss is {mv_norm['iron_loss_kw']:g} kW. Provide nominal_power_kva, "
+            f"iron_loss_kw, and copper_loss_kw for explicit nameplate losses."
+        )
+    if mv_norm is not None and mv_norm.get("ds_nom_power") is not None and inverter_ac_kw is None:
         mv_total_kva = mv_norm["count"] * mv_norm["ds_nom_power"]
         ratio = mv_total_kva / mv_norm["stc_ref_power_kw"]
         if ratio < 0.2 or ratio > 5.0:
@@ -398,7 +668,7 @@ def apply_transformers_to_variant_lines(
                 f"MV total transformer rating ({mv_norm['count']} x {mv_norm['ds_nom_power']:g} = {mv_total_kva:g} kVA) "
                 f"is {ratio:.2f}x of stc_ref_power_kw ({mv_norm['stc_ref_power_kw']:g} kW); verify rating/count/units."
             )
-    if hv_norm is not None and hv_norm.get("ds_nom_power") is not None:
+    if hv_norm is not None and hv_norm.get("ds_nom_power") is not None and inverter_ac_kw is None:
         hv_kva = hv_norm["ds_nom_power"]
         ratio = hv_kva / hv_norm["stc_ref_power_kw"]
         if ratio < 0.2 or ratio > 5.0:
@@ -514,8 +784,8 @@ def apply_transformers_to_variant_lines(
             ])
         trf_header.extend([
             f"{header_indent}MVNbTransfos={mv_norm['count']}{eol}",
-            f"{header_indent}TrfIronLossFrac={mv_norm['iron_loss_frac']:.5f}{eol}",
-            f"{header_indent}TrfResLossFrac={mv_norm['copper_loss_frac']:.5f}{eol}",
+            f"{header_indent}TrfIronLossFrac={mv_norm['main_iron_loss_frac']:.5f}{eol}",
+            f"{header_indent}TrfResLossFrac={mv_norm['main_copper_loss_frac']:.5f}{eol}",
         ])
         if mv_norm["from_datasheet"]:
             trf_header.extend([
@@ -553,6 +823,9 @@ def apply_transformers_to_variant_lines(
         "stc_ref_power_source": (
             "explicit_mv" if (mv is not None and mv.get("stc_ref_power_kw") is not None) else ref_source
         ),
+        "inverter_ac_power_kw": inverter_ac_kw,
+        "inverter_ac_power_source": ac_source,
+        "grid_limit_kw": grid_limit_kw,
         "mv": mv_norm,
         "hv": hv_norm,
         "transformer_state": state,
@@ -628,6 +901,9 @@ def configure_transformers(
                 "main_array_flags": summary["main_array_flags"],
                 "stc_ref_power_kw": summary["stc_ref_power_kw"],
                 "stc_ref_power_source": summary["stc_ref_power_source"],
+                "inverter_ac_power_kw": summary["inverter_ac_power_kw"],
+                "inverter_ac_power_source": summary["inverter_ac_power_source"],
+                "grid_limit_kw": summary["grid_limit_kw"],
                 "mv": summary["mv"],
                 "hv": summary["hv"],
                 "layers": verified["count"],

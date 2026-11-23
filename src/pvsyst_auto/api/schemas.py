@@ -864,7 +864,14 @@ class TransformerCableSpec(BaseModel):
 
 
 class MvTransformerSpec(BaseModel):
-    """Medium-voltage transformer stage specification (single or parallel units)."""
+    """Medium-voltage transformer stage specification (single or parallel units).
+
+    In fractional mode (default), PVsystCLI 8.1.7 scales iron_loss_frac and copper_loss_frac
+    against inverter nominal AC power (PNomInvAC), not stc_ref_power_kw. Provide
+    nominal_power_kva, iron_loss_kw, and copper_loss_kw together (per transformer) for
+    explicit datasheet losses (validated against PVsyst's 80%-200% PNomInvAC rating bounds,
+    strictly positive datasheet values, and <=1% iron / <=5% copper limits).
+    """
     model_config = _STRICT_CONFIG
     count: Annotated[StrictInt, Field(ge=1, le=200)] = 1
     output_voltage_kv: Annotated[StrictNum, Field(ge=1.0, le=66.0)] = 20.0
@@ -879,7 +886,13 @@ class MvTransformerSpec(BaseModel):
 
 
 class HvTransformerSpec(BaseModel):
-    """High-voltage substation transformer stage nested above MV transformers."""
+    """High-voltage substation transformer stage nested above MV transformers.
+
+    PVsystCLI 8.1.7 always simulates HV transformers from datasheet fields (HVTrfDS*);
+    iron_loss_frac / copper_loss_frac are converted to equivalent nameplate kW values.
+    Validated against PVsyst's 80%-200% PNomInvAC rating bounds, strictly positive losses,
+    <=1% iron / <=5% copper of nominal kVA, and hv.output_voltage_kv >= mv.output_voltage_kv.
+    """
     model_config = _STRICT_CONFIG
     output_voltage_kv: Annotated[StrictNum, Field(ge=30.0, le=500.0)] = 110.0
     stc_ref_power_kw: StrictNum | None = None
