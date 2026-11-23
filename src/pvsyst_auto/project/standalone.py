@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pvsyst_auto.native.cli import PVsystError, VAR_GROUPS, build_sfi, summarize_results
+from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi, summarize_results
 from pvsyst_auto.native.load import native_load_block
 from pvsyst_auto.project.paths import project_name as normalize_project_name, safe_filename, workspace_file
 from pvsyst_auto.project.synthesize import (

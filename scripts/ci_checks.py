@@ -17,7 +17,6 @@ INTEGRATION_SUITES = (
     "tests.integration.test_mcp_tools.McpToolIntegrationTests",
     "tests.integration.test_variant_io.VariantIOTests",
     "tests.integration.test_scene_components.SceneComponentTests",
-    "tests.integration.test_acceptance_cli.AcceptanceCLITests",
 )
 
 

@@ -66,7 +66,7 @@ Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comp
 | `pvsyst_create_ac_cabling_variant` | Configure uniform per-inverter AC cable length (`0.1 m` precision) and section in a new variant |
 | `pvsyst_create_shed_geometry_variant` | Create a new variant with updated pitch, tilt, count, width, or electrical shading flag on an existing `Sheds` or `SunShields` template |
 
-Detailed guides: [project sources & transactions](project-source-verification.md), [project titles](project-title.md), [grid topology & capacity editing](grid-capacity-verification.md), [stored state inspection](native-state-inspection.md), and [PV scene bindings](native-scene-bindings.md).
+Detailed guides: [project titles](project-title.md), [stored state inspection](native-state-inspection.md), and [PV scene bindings](native-scene-bindings.md).
 
 ### Components (`components`, default: 5)
 
@@ -77,7 +77,7 @@ Detailed guides: [project sources & transactions](project-source-verification.md
 | `pvsyst_build_sourced_component` | Build a new `.PAN`, `.OND` (single- or 3-voltage), or Li-ion `.BTR` (`LFP`/`NMC`) from cited datasheet values: either derived from a template (`template_name` set) or synthesized zero-template (`template_name` omitted) |
 | `pvsyst_update_component` | Edit allowlisted commercial/electrical fields, remarks, or Mode 1 single-/3-voltage OND and BTR curve tables with SHA-256 checks, automatic backup, and optional `refit_single_diode=true` for `.PAN` STC updates |
 
-Detailed guides: [sourced components](sourced-components.md), [commercial fields](commercial-verification.md), [Mode 1 curve tables](curve-table-verification.md), [OND efficiency curves](ond-curve-verification.md), [BTR capacity curves](btr-capacity-verification.md), [GUI PAN format](gui-pan-verification.md), and [backup generator settings](generator-verification.md).
+Detailed guide: [sourced components](sourced-components.md).
 
 ### Sites & Weather (`weather`, default: 4)
 
@@ -88,7 +88,7 @@ Detailed guides: [sourced components](sourced-components.md), [commercial fields
 | `pvsyst_prepare_weather` | Convert a validated hourly or sub-hourly (`5/10/15/30/60 min`) CSV into new `.SIT`/`.MET` files and record a provenance manifest |
 | `pvsyst_review_weather` | Compare an acquired/prepared weather CSV against simulation output and `.MET`/`.SIT` headers |
 
-Detailed guides: [weather input checks](weather-input-verification.md), [weather preparation](weather-preparation.md), and [weather engineering review](weather-engineering-review.md).
+Detailed guides: [weather preparation](weather-preparation.md) and [weather engineering review](weather-engineering-review.md).
 
 ### Loads & Storage (`storage`, default: 5)
 
@@ -100,7 +100,7 @@ Detailed guides: [weather input checks](weather-input-verification.md), [weather
 | `pvsyst_create_grid_storage_system` | Add workspace or built-in battery hardware and centralized AC-coupled `SelfConsumption`, `WeakGrid` (with explicit or deterministic `mode="generated"` outage schedules), `PeakShaving`, or `PowerShift` storage (plus optional hourly load and grid-availability bindings) to a PV-only grid variant |
 | `pvsyst_plan_tou_storage_schedule` | Deterministically convert a TOU tariff schedule into PVsyst `PowerShift` 48-slot half-hourly charge/discharge schedules (1 or 2 cycles/day) and a drop-in `storage_updates` payload |
 
-Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parameters](grid-storage-parameters.md), [load & storage internals](native-load-storage-controls.md), and [peak shaving](native-peak-shaving.md).
+Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parameters](grid-storage-parameters.md), and [peak shaving](native-peak-shaving.md).
 
 ### Simulation (`simulation`, default: 8)
 
@@ -115,7 +115,7 @@ Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parame
 | `pvsyst_optimize_variant` | Bounded Diagnose -> Clone -> Patch -> Re-simulate loop (`dry_run=true` default previews deterministic fixes and diffs; `confirm=true` iterates up to `max_iterations` 1..5 on cloned variants without mutating baseline) |
 | `pvsyst_optimize_bess_sizing` | Two-stage hybrid PV+BESS capacity optimizer: Stage 1 fast pure-Python grid sweep (`bess_kwh × pcs_kw × strategy`) with Pareto frontier & 2D heatmap; optional Stage 2 (`verify_top_k` 1..5, `dry_run=false`, `confirm=true`) runs `PVsystCLI` to reconcile exact KPIs |
 
-Detailed guides: [automatic simulation](automatic-simulation.md), [single-design inputs](single-design-inputs.md), [capacity sizing](capacity-sizing.md), [tracking template flow](tracking-template-flow.md), [tutorial grid workflow](tutorial-grid-cycle.md), [house PV modeling](house-pv-modeling.md), [native house task](native-house-task.md), and [sourced house task](sourced-house-task.md).
+Detailed guides: [single-design inputs](single-design-inputs.md), [capacity sizing](capacity-sizing.md), [tutorial grid workflow](tutorial-grid-cycle.md), [house PV modeling](house-pv-modeling.md), [native house task](native-house-task.md), and [sourced house task](sourced-house-task.md).
 
 ### Results (`results`, default: 4)
 
@@ -133,20 +133,18 @@ Enable with `PVSYST_TOOL_GROUPS=expert` or `PVSYST_TOOL_GROUPS=all`:
 - **Weather primitives (4)**: `pvsyst_inspect_weather_csv`, `pvsyst_build_monthly_weather`, `pvsyst_create_site`, `pvsyst_convert_meteo`
 - **Simulation & engineering (3)**: `pvsyst_run_sourced_house_task`, `pvsyst_prepare_block_project`, `pvsyst_review_engineering_brief`
 
-See [result comparison](result-comparison-verification.md) for side-by-side diffs of two result CSVs.
-
 **Batch summary naming.** `pvsyst_read_batch_results` accepts both the indexed and the legacy (unindexed) summary names derived from a batch-parameters file: `<name>BatchParams[_<n>].CSV` yields `<name>BatchResults[_<n>].CSV`, where the optional index `n` is a non-negative integer (including `0`). Malformed names, subdirectory paths and path escapes are rejected, and only `UserBatch` is read. The same shared predicate drives the production `pvsyst_run_simulation` batch completion scan: its pre-run snapshot and post-run "exactly one new summary" check both enumerate `UserBatch` with `is_batch_summary_name`, so an indexed `<prefix>Results_<n>.CSV` produced by the run is detected instead of being missed by a legacy `*Results.CSV` glob. Existing summaries still block the run (no overwrite) and pre-existing summaries are excluded from the "new" set. In the original control the summary is written next to its batch-parameters file (the `.CSV` named by `ParamsFileName`), while ordinary product runs place it under `UserBatch`; the two locations differ.
 
 ## Parameter & variant guides
 
 `pvsyst_update_variant_parameters` applies one domain update per transaction (optionally paired with `variant_name`) so flag mutations stay isolated:
-- Detailed losses: [loss scalars (Uc, LID, quality, mismatch)](grid-capacity-verification.md), [loss GUI roundtrip notes](loss-gui-roundtrip.md), [soiling](soiling-verification.md), [string mismatch, auxiliary profiles & PV-system outage periods & removal](native-detailed-losses.md), [constant auxiliary power](native-auxiliary-power.md), [IAM & ageing](native-model-inputs.md)
-- Orientation & horizon: [seasonal tilt](seasonal-orientation.md), [far horizon profile](horizon-profile.md), [plane & horizon notes](plane-horizon-native.md), [orientation types](native-orientation-controls.md)
-- Energy management: [inverter temperature](inverter-temperature.md), [power factor & PNom](power-factor.md), [grid injection limit](grid-power-limit.md), [combined PF + power controls](native-power-controls.md), [system flags & units](native-energy-management.md), [P50/P90 parameters](p50-native-parameters.md)
+- Detailed losses: [string mismatch, auxiliary profiles & PV-system outage periods & removal](native-detailed-losses.md), [constant auxiliary power](native-auxiliary-power.md), [IAM & ageing](native-model-inputs.md)
+- Orientation & horizon: [seasonal tilt](seasonal-orientation.md), [far horizon profile](horizon-profile.md)
+- Energy management: [inverter temperature](inverter-temperature.md), [power factor & PNom](power-factor.md), [grid injection limit](grid-power-limit.md), [combined PF + power controls](native-power-controls.md), [P50/P90 parameters](p50-native-parameters.md)
 
 Dedicated variant-creation tools handle structural or multi-object changes:
 - Cabling & transformers: [AC cabling](native-ac-cabling.md), [headless DC cabling](native-dc-cabling.md), [MV night disconnect](native-mv-night.md)
-- Complex orientations & 3D scenes: [tracking controls](native-tracking-controls.md), [sheds & sun-shields](native-shed-controls.md), [paired dome allocation](native-dome-allocation.md), [two-roof house delivery](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance), [grouped house scenes](grouped-house-scenes.md), [multi-roof mapping](multiroof-native-map.md), [scene identity notes](native-scene-identity-map.md), [project GUI session](native-project-session.md)
+- Complex orientations & 3D scenes: [tracking controls](native-tracking-controls.md), [sheds & sun-shields](native-shed-controls.md), [paired dome allocation](native-dome-allocation.md), [engineering delivery](engineering-delivery.md)
 
 ## Workspace directories and conventions
 

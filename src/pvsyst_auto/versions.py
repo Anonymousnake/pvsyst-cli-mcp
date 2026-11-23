@@ -25,11 +25,5 @@ CLI_TRACKING_BUILDS: tuple[str, ...] = (
     "PVsystCLI 8.1.7 (rev. 49382)",
 )
 
-# Release and build tokens the Win32 GUI bridge was checked against (captions, metrics).
-GUI_BUILDS: tuple[tuple[str, str], ...] = (
-    ("8.1.6", "49278"),
-    ("8.1.7", "49382"),
-)
-
 TEXT_LABEL = "/".join(NATIVE_TEXT)
 SEED_LABEL = "/".join(NATIVE_TEXT_OR_SEED)

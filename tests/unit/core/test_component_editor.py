@@ -113,8 +113,7 @@ class ComponentEditorTests(unittest.TestCase):
             b"200,180", b"200,170").replace(b"Model=50kW", b"Model=Custom")
         self.assertEqual(self.path.read_bytes(), expected)
         self.assertIn(b"    Flags=$0570", expected)
-        self.store.restore("OND", "test.OND", edited["backup_name"], confirm=True)
-        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / "OND" / edited["backup_name"]).read_bytes(), original)
 
     def test_file_mode_noop_and_edit_without_mode_switch(self):
         original = CURVED_OND.replace("Flags=$0570", "Flags=$0560").replace("100,80", "1e2,80.0")

@@ -5,7 +5,7 @@
 2. `pvsyst_read_house_pv_scene`：从已有的 `.pvc2` XML 中无损解析并还原出当初的 `house`、`layout`、`string_layout` 与 `obstacles` 参数，方便在此基础上微调尺寸后另存新场景。
 3. `pvsyst_import_house_pv_scene`：默认以 `method="native"`（免 GUI 原生构建，见第 5 节）在不启动 PVsyst 桌面窗口、不运行仿真的情况下构造新的原生输入 `.VCx` 变体（含 `pvShdArrayTable`、`pvShdGenObject` 与原生 `oeTree` 树木对象 `pvShdElemObject`）；仅当用户显式指定旧版未维护的 `method="gui"` 时才走桌面 GUI 导入路径（第 4 节）。
 
-如果要从头到尾一键跑完“生成场景 → 无 GUI 原生写入 `.VCx` → 调 CLI 跑全年阴影仿真”，请直接使用高层任务入口 [`pvsyst_run_house_task`](native-house-task.md)（双坡屋顶场景另见[双朝向住宅场景](grouped-house-scenes.md)）。
+如果要从头到尾一键跑完“生成场景 → 无 GUI 原生写入 `.VCx` → 调 CLI 跑全年阴影仿真”，请直接使用高层任务入口 [`pvsyst_run_house_task`](native-house-task.md)。
 
 ## 1. 构建房屋网格（`house`）
 

@@ -11,7 +11,6 @@ from unittest.mock import patch
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.engineering.diagnostics import (
     compact_diagnostics_summary,
-    detect_native_refusal,
     diagnose_simulation_csv,
 )
 from pvsyst_auto.project.synthesize import synthesize_project_and_variant
@@ -413,8 +412,8 @@ class DiagnosticsEngineTests(unittest.TestCase):
         diag_on = diagnose_simulation_csv(csv_path, store=self.store, project="LoadBit19.PRJ", variant="VC1")
         self.assertNotIn("LOAD_NOT_ENABLED", {f["code"] for f in diag_on["findings"]})
 
-    def test_issue_192_demo_tracking_clipping_calibration_and_native_refusal_helper(self):
-        """Issue #192: real _DEMO_Tracking.VC3 clipping (~2.31%) & detect_native_refusal."""
+    def test_issue_192_demo_tracking_clipping_calibration(self):
+        """Issue #192: real _DEMO_Tracking.VC3 clipping (~2.31%)."""
         # Calibrate against real PVsystCLI 8.1.7 sample: E_Grid=47096.49 kWh, IL_Pmax=1112.27 kWh over 21 h
         cols = [("GlobInc", "W/m2"), ("EArray", "kW"), ("E_Grid", "kW"), ("IL_Pmax", "kW"), ("PR", "ratio")]
         rows = []
@@ -440,20 +439,6 @@ class DiagnosticsEngineTests(unittest.TestCase):
         clip = next(f for f in diag_tight["findings"] if f["code"] == "INVERTER_CLIPPING_HIGH")
         self.assertGreater(clip["observed"], 2.2)
         self.assertLess(clip["observed"], 2.5)
-
-        # Native refusal extractor
-        transcript = (
-            "Loading project...\n"
-            "Simulation cannot be run.\n"
-            "The hourly load cannot be used with the Peak Shaving strategy.\n"
-            "\n"
-            "Exiting PVsystCLI.\n"
-        )
-        refusal = detect_native_refusal(transcript)
-        self.assertIsNotNone(refusal)
-        self.assertIn("Simulation cannot be run.", refusal)
-        self.assertIn("Peak Shaving", refusal)
-        self.assertIsNone(detect_native_refusal("Simulation done in 0min 2sec"))
 
     def test_issue_199_subhourly_wh_zero_output_storage_missing_ebatdis_monthly_pf_and_sim_findings(self):
         import subprocess

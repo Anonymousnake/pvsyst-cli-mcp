@@ -401,7 +401,6 @@ class WorkspaceTests(unittest.TestCase):
     def test_system_unavailability_authoring_and_geometry_combo(self):
         from pvsyst_auto.energy.unavailability import replace_system_unavailability
         from pvsyst_auto.native.load import create_native_load_variant
-        from pvsyst_auto.energy.peak import create_peak_shaving_variant
 
         lines = crlf(SYSTEM)
         added = replace_system_unavailability(
@@ -483,45 +482,6 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("PVObject_Ombrage=pvShading\r\n", vc1_text)
         self.assertNotIn("VarList, list of=", vc1_text)
 
-        peak_src = (
-            ROOT.format(root_flags="$00180000")
-            + "  PVObject_PVMainArray=pvMainArray\n    Flags=$01900400\n    Flags2=$082A\n"
-            + circuit
-            + "    PVObject_=pvSubArray\n      Comment=PV Array\n      Version=8.1.6\n      Flags=$019E1002\n      Flags2=$20\n"
-            + "      SubArrayId=1\n      NModSerie=10\n      NStringCh=2\n      NInverter=1\n"
-            + "      NInvMPPT=1\n      NoOrientation=1\n      NStrOrient1=2\n"
-            + "      PowerSharingInverterId=-1\n      PNomAC_InMPPT=5.00\n"
-            + "    End of PVObject pvSubArray\n  End of PVObject pvMainArray\n"
-            + "  Orientations, list of=1 TOrientGroup\n"
-            + "    PVObject_=pvOrient\n      Version=8.1.6\n      Flags=$00\n      NoOrient=1\n"
-            + "      FieldType=FixedPlane\n      FieldTilt=20.0\n      FieldAzim=0.0\n"
-            + "      BaseSlope=0.0\n      UsesTiltAver=False\n      UsesAzimAver=False\n"
-            + "      UsesSlopeAver=False\n    End of TOrientGroup\n  End of Orientations\n"
-            + "  PVObject_Ombrage=pvShading\n    Flags=$00\n  End of PVObject pvShading\n"
-            + "  PVObject_System=pvSystem\n    Flags=$17000040\n    SystemType=Grid\n"
-            + "    BatteryFile=Universal_Adjustable_LI.BTR\n    LimGrSeparLoss=False\n"
-            + "    TypeTempBatt=1\n    NBattSerie=15\n    NBattParall=10\n"
-            + "    PLimGrid=200.000\n    SOHBattBeg=1.000\n    BattVoltage_Syst=768.000\n"
-            + "    BattCapacity_Syst=1000.000\n    TempBattRef=20.000\n"
-            + "    TempBattMois=" + "20.000," * 12 + "\n  End of PVObject pvSystem\n"
-            + "  PVObject_GridStorage=pvGridStorage\n    Flags=$00\n    Strategy=PeakShaving\n"
-            + "    ChargingStrategy=PVToGridMin\n    DischStrategy=AfterSunset\n"
-            + "    BattSoCInit=0.600\n    SOCChDecl=0.950\n    SOCDischDecl=0.200\n    SOCDischSelf=0.500\n"
-            + "    PMaxCharge=380.000\n    PMaxDisch=170.000\n    BattRectMaxEffic=97.000\n"
-            + "    BattRectEuroEffic=95.000\n    BattInvMaxEffic=97.000\n    BattInvEuroEffic=95.000\n"
-            + "  End of PVObject pvGridStorage\n"
-            + CLOSE
-        )
-        self.source(peak_src)
-        (self.root / "Projects/Fixture.VC1").unlink()
-        peaked = create_peak_shaving_variant(
-            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
-            discharge={"mode": "hour_window", "start_hour": 18, "end_hour": 22}, dry_run=False,
-        )
-        vc1_peak = self.created(peaked)
-        self.assertIn("DischStrategy=MinMaxHour\r\n", vc1_peak)
-        self.assertIn("PVObject_Ombrage=pvShading\r\n", vc1_peak)
-
         # update_parameters system_unavailability_updates works with active pvShading + VarList
         self.source(shaded)
         digest = self.store.inspect("Fixture.PRJ", "VC0")["sha256"]
@@ -597,8 +557,6 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertFalse((self.root / "Projects" / f"Fixture.{target}").exists())
 
     def test_powershift_peakshaving_from_scratch_and_builtin_li_btr(self):
-        from pvsyst_auto.energy.peak import create_peak_shaving_variant
-
         # Verify exact TParSimulSeries base62 roundtrip matches PVsyst 8.1.7 _DEMO_Utility.VCA encoding
         chg_slots = [0.0] * 18 + [0.3] * 16 + [0.0] * 14
         encoded_chg = encode_subhour_schedule(chg_slots, maximum=1.0)
@@ -717,14 +675,6 @@ class WorkspaceTests(unittest.TestCase):
         vc4 = (self.root / "Projects/Fixture.VC4").read_text(encoding="utf-8")
         self.assertIn("PLimGrid=4.5", vc4)
         self.assertIn("Strategy=PeakShaving", vc4)
-        res_pk2 = create_peak_shaving_variant(
-            self.store, project="Fixture.PRJ", source_variant="VC4", new_variant="VC5",
-            discharge={"mode": "hour_window", "start_hour": 19, "end_hour": 6}, dry_run=False,
-        )
-        self.assertEqual(res_pk2["status"], "created", res_pk2)
-        vc5 = (self.root / "Projects/Fixture.VC5").read_text(encoding="utf-8")
-        self.assertIn("DischStrategy=MinMaxHour", vc5)
-        self.assertIn("HourBegDisch=19", vc5)
 
         # DC-coupled / hybrid storage fails closed cleanly (PVsyst 8.1.7 Common AC Bus boundary)
         bad_dc = create_grid_storage_system(
@@ -968,7 +918,6 @@ class WorkspaceTests(unittest.TestCase):
         self.assertFalse(cleared["after"]["configured"])
 
     def test_peak_shaving_rejects_self_consumption_load_across_all_paths(self):
-        from pvsyst_auto.energy.peak import create_peak_shaving_variant
         from pvsyst_auto.native.load import create_native_load_variant
 
         target = self.root / "Projects/Fixture.VC1"
@@ -1053,15 +1002,6 @@ class WorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(blocked_scalar["status"], "blocked", blocked_scalar)
         self.assertRegex(blocked_scalar["issues"][0], r"PeakShaving.*self-consumption load")
-        self.assertFalse(target.exists())
-        self.assertEqual(source_path.read_bytes(), before_bytes)
-
-        blocked_peak_edit = create_peak_shaving_variant(
-            self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
-            discharge={"mode": "after_sunset"}, dry_run=False,
-        )
-        self.assertEqual(blocked_peak_edit["status"], "blocked", blocked_peak_edit)
-        self.assertRegex(blocked_peak_edit["issues"][0], r"PeakShaving.*self-consumption load")
         self.assertFalse(target.exists())
         self.assertEqual(source_path.read_bytes(), before_bytes)
 

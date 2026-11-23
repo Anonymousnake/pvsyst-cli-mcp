@@ -7,7 +7,6 @@ import math
 from pathlib import Path
 import re
 import subprocess
-import time
 
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi, iter_result_csv, result_units, validate_report_pages
 from pvsyst_auto.components.editor import objects

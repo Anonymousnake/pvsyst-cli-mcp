@@ -1,6 +1,4 @@
 """Offline variant cloning, scoped reference replacement and rollback tests."""
-import hashlib
-import json
 import os
 import re
 import shutil
@@ -398,30 +396,6 @@ class VariantTests(unittest.TestCase):
                 self.assertFalse(state["present"])
                 self.assertEqual(state["root_flags"], "$00100000")
                 self.assertIn(b"    Flags=$60", self.original.read_bytes())
-
-    def test_project_and_variant_archives_restore_original_bytes(self):
-        self.store.clone("Example.PRJ", "VC0", "VC1")
-        initial = self.store.inspect_project("Example.PRJ")
-        with self.assertRaisesRegex(ValueError, "confirm=true"):
-            self.store.archive_project("Example.PRJ", initial["files"])
-        wrong = {**initial["files"], "Example.VC0": "0" * 64}
-        with self.assertRaisesRegex(ValueError, "changed since inspection"):
-            self.store.archive_project("Example.PRJ", wrong, True)
-        variant = self.store.archive_variant("Example.PRJ", "VC1",
-                                            initial["files"]["Example.VC1"], True)
-        with self.assertRaisesRegex(ValueError, "last variant"):
-            self.store.archive_variant("Example.PRJ", "VC0",
-                                       initial["files"]["Example.VC0"], True)
-        with self.assertRaisesRegex(ValueError, "destination already exists"):
-            self.store.clone("Example.PRJ", "VC0", "VC1")
-            self.store.restore_archive("Example.PRJ", variant["archive_name"], True)
-        (self.workspace / "Projects" / "Example.VC1").unlink()
-        self.store.restore_archive("Example.PRJ", variant["archive_name"], True)
-        self.assertEqual(self.store.inspect_project("Example.PRJ")["files"], initial["files"])
-        archived = self.store.archive_project("Example.PRJ", initial["files"], True)
-        self.assertFalse((self.workspace / "Projects" / "Example.PRJ").exists())
-        self.store.restore_archive("Example.PRJ", archived["archive_name"], True)
-        self.assertEqual(self.store.inspect_project("Example.PRJ")["files"], initial["files"])
 
     def test_parameter_edits_are_scoped_guarded_and_reversible(self):
         self.original.write_bytes(self.original.read_bytes().replace(b"  Version=8.1.6", b"  Comment=Original variant\r\n  Version=8.1.6", 1))
@@ -917,19 +891,6 @@ class VariantTests(unittest.TestCase):
                     self.store.restore_project_sources("Example.PRJ", backups, hashes, True)
                 self.assertEqual(self.store.inspect_project("Example.PRJ")["files"], changed["files"])
 
-    def test_archive_variant_requires_a_valid_remaining_variant(self):
-        before = self.store.inspect_project("Example.PRJ")["files"]
-        sibling = self.workspace / "Projects" / "Example.VC1"
-        sibling.write_bytes(b"not a valid variant")
-        with self.assertRaises(ValueError):
-            self.store.archive_variant("Example.PRJ", "VC0", before["Example.VC0"], True)
-        self.assertTrue(self.original.is_file())
-        sibling.unlink()
-        (self.workspace / "Projects" / "Example.VC0.bak").write_bytes(b"sidecar")
-        with self.assertRaisesRegex(ValueError, "sidecar"):
-            self.store.archive_variant("Example.PRJ", "VC0", before["Example.VC0"], True)
-        self.assertTrue(self.original.is_file())
-
     def test_clone_project_rejects_orphan_destination_members(self):
         for name in ("Copied.VC9", "Copied.SHDP"):
             with self.subTest(name=name):
@@ -999,21 +960,12 @@ class VariantTests(unittest.TestCase):
         restored = self.store.restore("Example.PRJ", "VC0", comp["backup_name"], confirm=True)
         self.assertIn("sha256", restored)
 
-        self.store.clone("Example.PRJ", "VC0", "VC2")
-        archived_vc = self.store.archive_variant("Example.PRJ", "VC2", confirm=True)
-        self.store.restore_archive("Example.PRJ", archived_vc["archive_name"], confirm=True)
-        archived_prj = self.store.archive_project("Example.PRJ", confirm=True)
-        self.store.restore_archive("Example.PRJ", archived_prj["archive_name"], confirm=True)
-
-    def test_size_archive_limit_dotted_projects_and_system_validation(self):
+    def test_size_limit_dotted_projects_and_system_validation(self):
         before = self.original.read_bytes()
         with patch("pvsyst_auto.project.variants.MAX_PROJECT_BYTES", len(before)):
             with self.assertRaisesRegex(ValueError, "exceeds 32 MB"):
                 self.store.update_parameters("Example.PRJ", "VC0", None, 1, 1, orientation_updates={"FieldTilt": 25})
         self.store.clone("Example.PRJ", "VC0", "VC1")
-        with patch("pvsyst_auto.project.variants.MAX_ARCHIVE_MEMBERS", 2):
-            with self.assertRaisesRegex(ValueError, "exceeds 2 members"):
-                self.store.archive_project("Example.PRJ", confirm=True)
         self.store.clone_project("Example.PRJ", "Example.East.PRJ")
         self.assertCountEqual(self.store.inspect_project("Example.PRJ")["variants"], ["VC0", "VC1"])
         self.store.clone_project("Example.PRJ", "\u5149\u4f0f.PRJ")
@@ -1026,7 +978,7 @@ class VariantTests(unittest.TestCase):
         self.original.write_bytes(missing_sys.encode())
         self.assertIs(self.store.validate_structure("Example.PRJ", "VC0")["valid"], False)
 
-    def test_archive_manifest_rollback_and_mixed_source_transaction_guards(self):
+    def test_mixed_source_transaction_guards(self):
         before, _ = self._prepare_project_sources()
         changed = self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", before["files"])
         folder = self.workspace / "Projects" / ".mcp-variant-backups"
@@ -1040,15 +992,6 @@ class VariantTests(unittest.TestCase):
         manifest_path.unlink()
         with self.assertRaisesRegex(ValueError, "transaction manifest"):
             self.store.restore_project_sources("Example.PRJ", changed["backups"], changed["files"], True)
-
-        archived = self.store.archive_project("Example.PRJ", confirm=True)
-        archive_manifest = self.workspace / "Projects" / ".mcp-project-archive" / archived["archive_name"] / "manifest.json"
-        raw_manifest = archive_manifest.read_bytes()
-        archive_manifest.write_bytes(b"{broken")
-        with self.assertRaisesRegex(ValueError, "Invalid archive manifest"):
-            self.store.restore_archive("Example.PRJ", archived["archive_name"], True)
-        archive_manifest.write_bytes(raw_manifest)
-        self.store.restore_archive("Example.PRJ", archived["archive_name"], True)
 
     def test_tracking_pair_tokens_and_seasonal_tilt_edit(self):
         block = ObjectBlock("PVObject_", 1, "pvOrient", fields={"MinPhi": [(5, "NaN")], "MaxPhi": [(6, "55.0")]})

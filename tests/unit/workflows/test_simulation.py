@@ -211,10 +211,6 @@ class SimulationTests(unittest.TestCase):
             return subprocess.CompletedProcess([], 0, "Warning: fixture sizing warning\nSimulation done in 0min 1sec", "")
         return run
 
-    def assert_template_untouched(self):
-        for name, data in self.originals.items():
-            self.assertEqual((self.root / "Projects" / name).read_bytes(), data)
-
     def test_weather_manifest_field_errors_block_before_any_write(self):
         cases = {
             "list_weather.json": [1, 2],

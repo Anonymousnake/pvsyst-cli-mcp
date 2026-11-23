@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
@@ -15,7 +14,7 @@ from time import sleep
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from pvsyst_auto.native.cli import PVsystCLI, PVsystError, build_monthly_weather_csv, build_sfi, parse_batch_results, parse_result_csv, result_units, summarize
+from pvsyst_auto.native.cli import PVsystCLI, PVsystError, build_monthly_weather_csv, build_sfi, iter_result_csv, parse_batch_results, result_units, summarize_results
 from pvsyst_auto.native import load as native_load
 from pvsyst_auto.api import app as _registered_app, context as server
 import pvsyst_auto.api.projects as api_projects
@@ -124,24 +123,6 @@ class PVsystTests(unittest.TestCase):
             self.assertEqual(self.client.convert_meteo(*inputs, target), target)
         with self.assertRaises(ValueError):
             self.client.convert_meteo(*inputs, target, timeshift=31)
-
-    def test_result_parser(self):
-        target = self.workspace / "Results" / "result.csv"
-        target.write_text(CSV_TEXT, encoding="utf-8")
-        headers, rows = parse_result_csv(target)
-        self.assertEqual(headers, ["date", "E_Grid", "PR"])
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(summarize(target)["sum"], 4.5)
-        with self.assertRaises(ValueError):
-            summarize(target, "not_a_column")
-        target.write_text(CSV_TEXT + "01/01/90 02:00;;NaN\n", encoding="utf-8")
-        _, rows_with_missing = parse_result_csv(target)
-        self.assertEqual(len(rows_with_missing), 3)
-        self.assertTrue(math.isnan(rows_with_missing[-1][1]))
-        self.assertEqual(summarize(target)["samples"], 2)
-        target.write_text("date\n01/01/90 00:00\n", encoding="utf-8")
-        with self.assertRaises(ValueError):
-            parse_result_csv(target)
 
     def test_mcp_project_listing_and_path_confinement(self):
         server._cli = self.client
@@ -375,25 +356,32 @@ class PVsystTests(unittest.TestCase):
         batch_file = self.workspace / "Results" / "batch_hourly.csv"
         batch_file.write_text(CSV_TEXT.replace(";", ",").replace("    ,kW,ratio", "    ,W,ratio"),
                               encoding="utf-8")
-        headers, rows = parse_result_csv(batch_file)
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(headers[1], "E_Grid")
+        parsed = list(iter_result_csv(batch_file))
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0][0][1], "E_Grid")
         self.assertEqual(result_units(batch_file)["E_Grid"], "W")
-        self.assertAlmostEqual(summarize(batch_file)["energy_kwh"], 0.0045)
+        self.assertAlmostEqual(summarize_results(batch_file, ("E_Grid",))["summary"]["E_Grid"]["energy_kwh"], 0.0045)
 
         minute_file = self.workspace / "Results" / "minute.csv"
         minute_file.write_text(CSV_TEXT + "01/01/90 01:01;60;0.8\n", encoding="utf-8")
-        self.assertIsNone(summarize(minute_file)["energy_kwh"])
+        self.assertIsNone(summarize_results(minute_file, ("E_Grid",))["summary"]["E_Grid"]["energy_kwh"])
         minute_file.write_text(CSV_TEXT.split("01/01/90 00:00")[0] +
                                "01/01/90 00:00;60;0.8\n"
                                "01/01/90 00:01;60;0.8\n"
                                "01/01/90 00:02;60;0.8\n", encoding="utf-8")
-        self.assertEqual(summarize(minute_file)["step_minutes"], 1)
-        self.assertAlmostEqual(summarize(minute_file)["energy_kwh"], 3)
+        minute_summary = summarize_results(minute_file, ("E_Grid",))
+        self.assertEqual(minute_summary["step_minutes"], 1)
+        self.assertAlmostEqual(minute_summary["summary"]["E_Grid"]["energy_kwh"], 3)
         server._cli = self.client
         report = api_results.pvsyst_read_results("minute.csv")
         self.assertEqual(report["step_minutes"], 1)
         self.assertAlmostEqual(report["summary"]["E_Grid"]["energy_kwh"], 3)
+        with self.assertRaisesRegex(ValueError, "Choose columns from"):
+            summarize_results(minute_file, ("not_a_column",))
+        bad_header = self.workspace / "Results" / "missing_sep.csv"
+        bad_header.write_text("date\n01/01/90 00:00\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Missing SFI result header"):
+            list(iter_result_csv(bad_header))
         with self.assertRaises(ValueError):
             api_results.pvsyst_read_results("batch_hourly.csv", folder="../outside")
 
@@ -635,7 +623,6 @@ class PVsystTests(unittest.TestCase):
         self.assertEqual(versions.TEXT_LABEL, "/".join(versions.NATIVE_TEXT))
         self.assertEqual(versions.SEED_LABEL, "/".join(versions.NATIVE_TEXT_OR_SEED))
         self.assertIn(versions.HEADLESS_RECORD_VERSION, versions.NATIVE_TEXT)
-        self.assertEqual(versions.GUI_BUILDS, (("8.1.6", "49278"), ("8.1.7", "49382")))
         for token in ("8.1.5", "8.1.8", "8.2.0", "9.0.0"):
             self.assertNotIn(token, versions.NATIVE_TEXT_OR_SEED)
         # Legacy Win32 GUI bridge (native.scene) was removed in v0.6.0
@@ -866,42 +853,6 @@ class PVsystTests(unittest.TestCase):
             self.assertLess(term_idx, rundown_idx)
             self.assertLess(rundown_idx, read_idx)
 
-    def test_scene_ini_datapath_encodings_and_e2e_helpers(self):
-        import importlib.util
-
-        repo_root = Path(__file__).resolve().parents[3]
-        def load_mod(name, rel):
-            sp = importlib.util.spec_from_file_location(name, repo_root / rel)
-            mod = importlib.util.module_from_spec(sp)
-            sp.loader.exec_module(mod)
-            return mod
-
-        e2e_launch = load_mod("_e2e_launch", "tests/e2e/test_native_cli_launch_e2e.py")
-        e2e_full = load_mod("_e2e_full", "tests/e2e/test_mcp_full_workflows_e2e.py")
-
-        self.assertIn("synthetic_weather", e2e_launch._ALLOWED_INPUTS)
-        with patch.dict(os.environ, {"LOCALAPPDATA": ""}, clear=False):
-            expected_local = Path.home() / "AppData" / "Local"
-            self.assertEqual(
-                e2e_full._ini_paths()[0],
-                expected_local / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini",
-            )
-
-        # Slim viewer-only open_native_project preflight (no Win32 click automation)
-        from pvsyst_auto.native.project import open_native_project
-        from pvsyst_auto.project.variants import VariantStore
-        from pvsyst_auto.components.store import ComponentStore
-        pvsyst_gui = self.client.cli.parent / "PVsyst.exe"
-        pvsyst_gui.write_bytes(b"stub")
-        (self.workspace / "Projects" / "Example.PRJ").write_text(
-            "PVObject_=pvProject\n  Version=8.1.7\nEnd of PVObject pvProject\n", encoding="utf-8"
-        )
-        vstore = VariantStore(self.workspace, ComponentStore(self.workspace))
-        with patch("pvsyst_auto.native.project.find_running_pvsyst", return_value=[]):
-            prev = open_native_project(vstore, self.client, project="Example.PRJ", dry_run=True)
-            self.assertEqual(prev["status"], "ready_to_open")
-            self.assertEqual(prev["planned_action"], "launch_pvsyst_viewer")
-
     def test_simulation_error_includes_nonzero_exit_code(self):
         out_csv = self.workspace / "Results" / "nonzero_exit.csv"
         out_pdf = self.workspace / "Results" / "nonzero_exit.pdf"
@@ -922,6 +873,39 @@ class PVsystTests(unittest.TestCase):
                     "Example.PRJ", "VC0", sfi=self.sfi,
                     out_csv=out_csv, report_pdf=out_pdf,
                 )
+
+    def test_e2e_ini_paths_and_plain_csv_helper(self):
+        import importlib.util
+
+        repo_root = Path(__file__).resolve().parents[3]
+        spec = importlib.util.spec_from_file_location(
+            "_e2e_full", repo_root / "tests" / "e2e" / "test_mcp_full_workflows_e2e.py"
+        )
+        e2e_full = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(e2e_full)
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": ""}, clear=False):
+            expected_local = Path.home() / "AppData" / "Local"
+            self.assertEqual(
+                e2e_full._ini_paths()[0],
+                expected_local / "PVsyst" / "8.1" / "Admin" / "PVsyst.ini",
+            )
+
+        case = e2e_full.RealMcpServerWorkflowsE2E("test_mcp_dc_cabling_unavail_and_storage_combo_e2e")
+        case.ws = self.workspace
+        ok_csv = self.workspace / "Results" / "e2e_ok.csv"
+        ok_csv.write_text(CSV_TEXT, encoding="utf-8")
+        case._assert_plain_csv_result({
+            "csv": str(ok_csv), "pdf": None, "batch_summary": None,
+            "batch_runs": None, "batch_hourly": [], "seconds": 1,
+        }, "e2e_ok.csv")
+        for bad in (
+            {"csv": str(ok_csv), "pdf": "extra.pdf", "batch_hourly": []},
+            {"csv": str(ok_csv), "batch_hourly": ["x.csv"]},
+            {"csv": str(self.workspace / "Results" / "other.csv"), "batch_hourly": []},
+        ):
+            with self.assertRaises(AssertionError):
+                case._assert_plain_csv_result(bad, "e2e_ok.csv")
 
 
 if __name__ == "__main__":

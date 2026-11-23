@@ -1,15 +1,11 @@
 """Unit tests for HouseHold & Probability native loads, random SystemUnavail, and generated WeakGrid outages."""
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
 import unittest
 
-from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.energy.availability import native_availability
-from pvsyst_auto.energy.unavailability import replace_system_unavailability, system_unavail_state
+from pvsyst_auto.energy.unavailability import replace_system_unavailability
 from pvsyst_auto.native.load import flat_load, native_load_block
-from pvsyst_auto.project.variants import VariantStore
 
 
 class SpecialLoadsAndOutagesTests(unittest.TestCase):

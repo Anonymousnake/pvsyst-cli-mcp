@@ -17,7 +17,7 @@
 
 | 功能模块 | 对应工具 | 实现说明与相关文档 |
 |---|---|---|
-| 工程与变体生命周期 | `inspect`、`create`、`clone_variant`、标题更新、气象源切换（部分位于 `expert` 组） | 见[工程文件与事务](project-source-verification.md)、[项目显示标题](project-title.md) |
+| 工程与变体生命周期 | `inspect`、`create`、`clone_variant`、标题更新、气象源切换（部分位于 `expert` 组） | 见[项目显示标题](project-title.md) |
 | 站点与气象准备 | `create_site`、`convert_meteo`、`prepare_weather`、`acquire_weather`、`review_weather` | 见[天气准备](weather-preparation.md)；支持 Open-Meteo ERA5 下载、当地标准时（`LegalTime`）对齐与逐时/亚小时（`5/10/15/30/60 min`）`.SIT`/`.MET` 转换 |
 | 单方案设计与源工程准备 | `simulate_design`、`prepare_design_project`、`suggest_sizing`、`prepare_sourced_design` | 见[单方案设计输入](single-design-inputs.md)、[源工程准备](design-project-preparation.md)；支持零模板 `fixed_unshaded_grid` / `ground_sheds` / `ground_tracker` + `pvBiFacial` 与 `auto_from_components` 自动选型 |
 | 参数化批量扫描（Batch Sweep） | `pvsyst_run_batch_sweep`、`pvsyst_read_batch_results` | 自动生成 UTF-8 BOM + CRLF `UserBatch/<name>_BatchParams.CSV` 与 `_BatchVariables.RVT`，单次 CLI 跑完最多 100 组参数并返回按目标指标排序与基线差值 |
@@ -30,22 +30,22 @@
 | 可研简报与工程输入核对 | `review_engineering_brief`、`review_project_inputs` | 见[工程简报预审](engineering-brief.md)、[工程输入复核](project-input-review.md) |
 | 遗留 8.0 DCGrid 声明读取（只读） | `pvsyst_get_variant_parameters` | 仅当根 `Version=8.0.x` 且唯一 `SystemType=DCGrid` 时返回 `legacy_read_scope`（源版本与 `TypeRegul`/`VNomAlim`/`VPVMax`/`RGridPV`/`RGridAlim` 原值）；仅作只读展示，不支持 8.1 编辑、升级或推导缺省组件参数 |
 | 组件库读写与引用创建 | 组件增删改查、曲线表编辑、`build_sourced_component` | 见[按来源创建组件](sourced-components.md)；新生成的 `.PAN`/`.OND` 落在工作区 `ComposPV` 下 |
-| 电路拓扑与串并联数量 | `validate_variant_structure`、`update_variant_parameters`、`clone/remove_subarray` | 见[并网拓扑与参数编辑](grid-capacity-verification.md)；同步维护子阵列、逆变器组、MPPT 与组串节点计数 |
-| 仿真运行、结果读取与报告页选择 | `build_sfi`、`run_simulation`、`read_results`、`read_rows`、`report_pages` | 见[模板自动仿真](automatic-simulation.md)；PDF 页裁剪直接调用 CLI 原生 `-rp` 参数 |
+| 电路拓扑与串并联数量 | `validate_variant_structure`、`update_variant_parameters`、`clone/remove_subarray` | 同步维护子阵列、逆变器组、MPPT 与组串节点计数 |
+| 仿真运行、结果读取与报告页选择 | `build_sfi`、`run_simulation`、`read_results`、`read_rows`、`report_pages` | PDF 页裁剪直接调用 CLI 原生 `-rp` 参数 |
 
 ## 详细损失（Detailed Losses）
 
 | 功能项 | 当前支持状态 | 底层字段与注意事项 |
 |---|---|---|
-| 常数热损系数 $U_c$ | MCP 可读写 | `main_array_updates.UFactor`（范围 `15..100` W/m²·K），要求主阵列标准 `Flags`/`Flags2`；见[损失 GUI 往返](loss-gui-roundtrip.md) |
-| 风速热损项 $U_v$ | MCP 可读写（present-only） | `main_array_updates.UVFactor`（原生 `Uv` 字面值，仅已有字段可编辑、不建默认/别名）；适配域为任意有限数值（无原生量程/权威单位：字面 `Uw fact; [W/m2K]` 与量纲 `W/m2K per (m/s)` 存 SourceGap，原生数值校验延后）；接受真实跟踪夹具 `$01900400`/`$082A` 的 8.1.0/8.1.6 Grid 主阵（不要求无几何，保留 80 物体场景与跟踪/遮挡字节），编辑后失效自身派生结果缓存并只清 root 仿真位、保留其余控制位；见[损失 GUI 往返](loss-gui-roundtrip.md) |
+| 常数热损系数 $U_c$ | MCP 可读写 | `main_array_updates.UFactor`（范围 `15..100` W/m²·K），要求主阵列标准 `Flags`/`Flags2` |
+| 风速热损项 $U_v$ | MCP 可读写（present-only） | `main_array_updates.UVFactor`（原生 `Uv` 字面值，仅已有字段可编辑、不建默认/别名）；适配域为任意有限数值（无原生量程/权威单位：字面 `Uw fact; [W/m2K]` 与量纲 `W/m2K per (m/s)` 存 SourceGap，原生数值校验延后）；接受真实跟踪夹具 `$01900400`/`$082A` 的 8.1.0/8.1.6 Grid 主阵（不要求无几何，保留 80 物体场景与跟踪/遮挡字节），编辑后失效自身派生结果缓存并只清 root 仿真位、保留其余控制位 |
 | DC 线缆阻值 / 损失率 | MCP 已封装（免 GUI 原生写入） | `pvsyst_create_dc_cabling_variant`；读取本地 `.PAN` 单二极管模型求解 STC `(Vmp, Imp)` 完成 `mOhm <-> %` 互算，写入 `RSCablageCh`/`RSCablagePC`、`pvMainArray`/`pvSubArray.Flags` 与 `StringNode` `CableDefinition`；内置加密/不可读组件允许 `resistance` 模式，拒绝 `percent` 模式；见[DC 线缆](native-dc-cabling.md) |
 | AC 线缆 | MCP 已封装 | `pvsyst_create_ac_cabling_variant`；同步更新主阵列使能位、子阵列长度（`0.1 m` 精度）与直接 `InverterNode` 的 `CableDefinition`，见[AC 线缆配置](native-ac-cabling.md) |
 | MV 变压器夜间断开 | MCP 已封装 | `pvsyst_create_mv_night_disconnect_variant`；切换单台默认 MV 变压器的 `NightDisconnect` 与主阵列 bit 29，见[MV 夜间断开](native-mv-night.md) |
 | 组件质量损失 | MCP 可读写 | `subarray_updates.ModuleQualityLoss`（`[-5, 20]%`），同步写入子阵列 `PQualityModU` 与 `PQualityModI`，并清除默认标志位 `0x00100000` |
-| LID 与组件 MPP 失配 | MCP 可读写 | `LIDLoss` 与 `PMismMPP`（`0..100%`）；写 `PMismMPP` 时自动清除子阵列默认位 `0x00040000`，见[并网拓扑与参数编辑](grid-capacity-verification.md) |
+| LID 与组件 MPP 失配 | MCP 可读写 | `LIDLoss` 与 `PMismMPP`（`0..100%`）；写 `PMismMPP` 时自动清除子阵列默认位 `0x00040000` |
 | 组串电压失配 | MCP 可读写 | `string_mismatch_updates`（`default` / `constant`），操作 `PMismString` 与子阵列默认位 bit 17，见[详细损失参数](native-detailed-losses.md) |
-| 积灰损失（Soiling） | MCP 可读写 | `soiling_updates`（`none` / `constant` / `monthly`，`0.1%` 精度），配合 `soiling` SFI 预设可导出 `GlobSlg`/`SlgLoss`，见[积灰配置](soiling-verification.md) |
+| 积灰损失（Soiling） | MCP 可读写 | `soiling_updates`（`none` / `constant` / `monthly`，`0.1%` 精度），配合 `soiling` SFI 预设可导出 `GlobSlg`/`SlgLoss` |
 | 入射角修正（IAM） | MCP 可读写 | `iam_updates` 支持切换 `component` 与 `ashrae`（`b0` 参数），见[老化与 IAM 输入](native-model-inputs.md) |
 | 辅助耗电（Auxiliaries） | MCP 可读写 | `auxiliary_updates` 支持 `none`、`constant`（运行/夜间 kW）及两类带阈值的 `profile` 模式，见[辅助功率](native-auxiliary-power.md)与[详细损失参数](native-detailed-losses.md) |
 | 组件老化（Ageing） | MCP 可读写 | `ageing_updates`（年数、年均衰减率、成对 RMS 参数）与 `ageing_enabled`（bit 20 开关），要求模板已包含完整老化块，见[老化与 IAM 输入](native-model-inputs.md) |
@@ -66,15 +66,15 @@
 
 | 功能项 | 当前支持状态 | 底层字段与注意事项 |
 |---|---|---|
-| 固定倾角与多平面管理 | MCP 可读写 | 支持改倾角/方位角、追加固定平面（`clone_orientation`）、子阵重绑定（`NoOrientation`）及删除独占平面（`remove_orientation`），见[并网拓扑与参数编辑](grid-capacity-verification.md) |
+| 固定倾角与多平面管理 | MCP 可读写 | 支持改倾角/方位角、追加固定平面（`clone_orientation`）、子阵重绑定（`NoOrientation`）及删除独占平面（`remove_orientation`） |
 | 季节性倾角调整 | MCP 可读写 | `seasonal_updates` 设置夏/冬倾角与冬季月份掩码 `WinterMonths`，见[季节倾角](seasonal-orientation.md) |
 | 双朝向 Dome 分配 | MCP 已封装 | `pvsyst_create_dome_allocation_variant` 在已有配对 `Dome` 模板上重新分配正反两面组串数，见[Dome 双朝向分配](native-dome-allocation.md) |
 | 棚架与遮阳板（Sheds / SunShields） | MCP 已封装 | `pvsyst_create_shed_geometry_variant` 修改现有棚架/遮阳板模板的间距、倾角、排数、宽度与电气阴影开关，见[棚架与遮阳板](native-shed-controls.md) |
 | 单轴 / 双轴跟踪器参数 | MCP 已封装 | `pvsyst_create_tracking_variant` 支持 9 种原生跟踪类型的所属几何、角度限值、回溯（Backtracking）与间距修改，见[跟踪控制](native-tracking-controls.md) |
-| 无限水平轴跟踪仿真 | MCP 已封装 | `pvsyst_create_tracking_variant` + `pvsyst_run_engineering_task` 支持修改并运行 `UnlimTracking` 全年仿真，见[跟踪模板流程](tracking-template-flow.md) |
+| 无限水平轴跟踪仿真 | MCP 已封装 | `pvsyst_create_tracking_variant` + `pvsyst_run_engineering_task` 支持修改并运行 `UnlimTracking` 全年仿真 |
 | 远方地平线（Far Horizon） | MCP 可读写 | `horizon_updates` 写入 4..100 个方位角/仰角点对或清空地平线，见[地平线轮廓](horizon-profile.md) |
 | 房屋、周边遮挡与光伏 `.pvc2` 建模与回读 | MCP 已封装 | `pvsyst_create_house_pv_scene` 与 `pvsyst_read_house_pv_scene`，支持单朝向多分区、多朝向屋顶及 4 类 `obstacles`（`building`、`tree`、`wall`、`mesh`）生成与 XML 无损还原，见[住宅与光伏建模](house-pv-modeling.md) |
-| 3D 场景免 GUI 原生导入与全年任务 | MCP 已封装（默认 `native`） | `pvsyst_import_house_pv_scene`、`pvsyst_run_house_task`、`pvsyst_run_sourced_house_task`（默认 `"native"`，支持 `landscape`/`portrait` 竖装、正模块间距、3+ 独立固定朝向屋面、`PowerSharingInverterId >= 0` 共享逆变器、`pvShdGenObject` 与原生 `oeTree`；`"gui"` 保留为旧版未维护路径），见[住宅单任务](native-house-task.md)与[双屋面交付说明](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance) |
+| 3D 场景免 GUI 原生导入与全年任务 | MCP 已封装（默认 `native`） | `pvsyst_import_house_pv_scene`、`pvsyst_run_house_task`、`pvsyst_run_sourced_house_task`（默认 `"native"`，支持 `landscape`/`portrait` 竖装、正模块间距、3+ 独立固定朝向屋面、`PowerSharingInverterId >= 0` 共享逆变器、`pvShdGenObject` 与原生 `oeTree`），见[住宅单任务](native-house-task.md)与[双屋面说明](engineering-delivery.md#two-roof-house-workflow) |
 | 已保存场景的 PV 表格关联检查 | 只读状态 | `pvsyst_get_variant_parameters` 返回 `shading_scene.pv_bindings`，以及 `module_layout` 保存完整性，见[PV 区域关联读取](native-scene-bindings.md) |
 | Module Layout 精细电气阴影 | MCP 已封装（原生写入 + 显式 `string_layout`） | 导入工具及住宅任务的 `shading_mode="module_layout"` 写入原生组件布局、支持双朝向自动填串与显式逐格 `string_layout` 接线（兼容含 `obstacles`/`oeTree` 场景）；已通过 PVsyst 8.1.7 CLI `ShdElec` 仿真验证，见[原生住宅任务](native-house-task.md#module-layout-电气阴影) |
 | 既有 3D 场景阴影重算 | MCP 已封装 | `pvsyst_run_simulation(recompute_shading=True)` 调 CLI `-rs` 参数重新计算阴影表 |
@@ -104,4 +104,4 @@
 | 既有光储系统参数修改 | MCP 已封装 | `pvsyst_create_grid_storage_variant` 修改 SOC、充放电功率、效率、`PowerShift` 48 槽充放电曲线、`PeakShaving` `grid_limit_kw` 与 `discharging_strategy`（`after_sunset`/`hour_window`）及 `allow_grid_export`（系统 bit 27 防逆流位），保留 `pvShading`/`pvModuleLayout` 并自动清理 `VarList` |
 | 削峰（Peak Shaving）放电窗口 | MCP 已封装 | 由 `pvsyst_create_grid_storage_variant` 统一设置 `strategy="peak_shaving"` 与 `discharging_strategy`（`after_sunset` / `hour_window`），见[削峰放电控制](native-peak-shaving.md) |
 | 完整 AC 光储能量流导出 | MCP 已封装 | `pvsyst_build_sfi(variables="grid_storage")` 自动包含 `CL_Over`（变流器限幅损失）等完整能量平衡列 |
-| 概率/家用电器负荷、随机停电、DC 耦合混储 | 实测边界锁定 | 概率/家用电器负荷与随机停电见[负荷与储能模式笔记](native-load-storage-controls.md)；PVsyst 8.1.7 并网储能仅实现 Common AC Bus（无 DC 直充电池端口），`coupling` 锁定 `"ac_coupled"` 并在传入 `"dc_coupled"`/`"hybrid"` 时显式拒接 |
+| DC 耦合混储 | 实测边界锁定 | PVsyst 8.1.7 并网储能仅实现 Common AC Bus（无 DC 直充电池端口），`coupling` 锁定 `"ac_coupled"` 并在传入 `"dc_coupled"`/`"hybrid"` 时显式拒接 |

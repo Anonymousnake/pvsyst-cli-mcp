@@ -109,6 +109,20 @@ class RealMcpServerWorkflowsE2E(unittest.TestCase):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(raw)
 
+    def _assert_plain_csv_result(self, sim: dict, csv_name: str) -> None:
+        expected = self.ws / "Results" / csv_name
+        self.assertIsNone(sim.get("pdf"))
+        self.assertIsNone(sim.get("batch_summary"))
+        self.assertIsNone(sim.get("batch_runs"))
+        self.assertEqual(sim.get("batch_hourly"), [])
+        produced = sim.get("csv")
+        self.assertIsInstance(produced, str)
+        self.assertTrue(produced.lower().endswith(".csv"))
+        self.assertEqual(Path(produced).resolve(), expected.resolve())
+        self.assertTrue(expected.is_file() and expected.stat().st_size > 0)
+        seconds = sim.get("seconds")
+        self.assertTrue(seconds is None or (isinstance(seconds, int) and seconds >= 0))
+
     def _mcp_params(self):
         env = dict(
             os.environ,
@@ -359,11 +373,13 @@ class RealMcpServerWorkflowsE2E(unittest.TestCase):
                     }))
                     self.assertFalse(err, sfi)
 
-                    for prj, vtag, csv_name in (
-                        ("DemoHouse.PRJ", "VC2", "e2e_ps.csv"),
-                        ("_DEMO_Residential.PRJ", "VC7", "e2e_pk.csv"),
+                    # Cover both omitted allow_window_creation (default auto-windowless plain CSV)
+                    # and explicit allow_window_creation=False without adding extra native runs.
+                    for prj, vtag, csv_name, allow_win in (
+                        ("DemoHouse.PRJ", "VC2", "e2e_ps.csv", None),
+                        ("_DEMO_Residential.PRJ", "VC7", "e2e_pk.csv", False),
                     ):
-                        err, sim = _decode(await session.call_tool("pvsyst_run_simulation", {
+                        args = {
                             "project": prj,
                             "variant": vtag,
                             "sfi_name": "e2e_storage.SFI",
@@ -373,9 +389,12 @@ class RealMcpServerWorkflowsE2E(unittest.TestCase):
                             "time_step": "hour",
                             "start_date": "90.06.01",
                             "end_date": "90.06.07",
-                            "allow_window_creation": False,
-                        }))
+                        }
+                        if allow_win is not None:
+                            args["allow_window_creation"] = allow_win
+                        err, sim = _decode(await session.call_tool("pvsyst_run_simulation", args))
                         self.assertFalse(err, sim)
+                        self._assert_plain_csv_result(sim, csv_name)
                         err, res = _decode(await session.call_tool("pvsyst_read_results", {
                             "csv_name": csv_name,
                             "columns": "EArray,EBatCh,EBatDis,E_Grid",
@@ -729,6 +748,7 @@ End of PVObject pvModule
                         "allow_window_creation": False,
                     }))
                     self.assertFalse(err, sim_sub)
+                    self._assert_plain_csv_result(sim_sub, "e2e_pk_15m.csv")
 
                     err, sim_hr = _decode(await session.call_tool("pvsyst_run_simulation", {
                         "project": "DemoHouse.PRJ",
@@ -743,6 +763,7 @@ End of PVObject pvModule
                         "allow_window_creation": False,
                     }))
                     self.assertFalse(err, sim_hr)
+                    self._assert_plain_csv_result(sim_hr, "e2e_pk_60m.csv")
 
                     # 5. Verify step accuracy (15 min vs 60 min), storage energy flows, and diagnostics
                     err, r15 = _decode(await session.call_tool("pvsyst_read_results", {

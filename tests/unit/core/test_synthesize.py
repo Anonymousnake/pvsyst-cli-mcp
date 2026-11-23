@@ -5,13 +5,11 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from pydantic import ValidationError
 
 from pvsyst_auto.api.schemas import HouseTaskRequest
 from pvsyst_auto.components.store import ComponentStore, electrical_inventory
-from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.synthesize import (
     DEFAULT_OND_NAME,
     DEFAULT_PAN_NAME,
@@ -20,7 +18,7 @@ from pvsyst_auto.project.synthesize import (
 )
 from pvsyst_auto.project.template import prepare_standard_template
 from pvsyst_auto.project.variants import VariantStore
-from pvsyst_auto.scene.author import DEFAULT_MODULE_DEPTH_M, create_house_pv_scene, resolve_modules
+from pvsyst_auto.scene.author import DEFAULT_MODULE_DEPTH_M, resolve_modules
 from pvsyst_auto.workflows.house import run_house_task
 from tests._fixtures import init_workspace, roof_mesh, write_utf8_crlf
 from tests.unit.core.test_components import OND, PAN

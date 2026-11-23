@@ -9,7 +9,7 @@ from pvsyst_auto.api.schemas import SingleDesignRequest
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.project.synthesize import synthesize_utility_project
 from pvsyst_auto.project.variants import VariantStore
-from pvsyst_auto.scene.ground import build_ground_3d_shading, plan_ground_polygon_layout
+from pvsyst_auto.scene.ground import plan_ground_polygon_layout
 from pvsyst_auto.workflows.utility import validate_utility_spec
 
 

@@ -1,14 +1,14 @@
 # 站点与标准逐时气象转换（`pvsyst_prepare_weather`）
 
-`pvsyst_prepare_weather` 将工作区 `Meteo` 下的一份 PVsyst 标准逐时气象 CSV 一步转换为新的 `.SIT`（站点）和 `.MET`（二进制/编码气象）文件，并在 `Results` 下生成一份来源清单 JSON，供后续 [`pvsyst_simulate_template`](automatic-simulation.md) 绑定和逐时核对使用。
+`pvsyst_prepare_weather` 将工作区 `Meteo` 下的一份 PVsyst 标准逐时或亚小时气象 CSV 一步转换为新的 `.SIT`（站点）和 `.MET`（二进制/编码气象）文件，并在 `Results` 下生成一份来源清单 JSON，供后续 [`pvsyst_simulate_design`](single-design-inputs.md) 绑定和逐时核对使用。
 
-如果需要先在线下载标准逐时 CSV，请调用 `pvsyst_acquire_weather`（支持 `source="open_meteo"` ERA5 历史年、以及 v0.4.0 新增的 `source="pvgis_tmy"` PVGIS v5.3 典型气象年和 `source="nasa_power"` NASA POWER，并支持 `prepare=true` 一步下载并直接生成 `.SIT`/`.MET`），或直接用一站式入口 [`pvsyst_simulate_design`](single-design-inputs.md)。
+如果需要先在线下载标准逐时 CSV，请调用 `pvsyst_acquire_weather`（支持 `provider="open_meteo_era5"` ERA5 历史年、`provider="pvgis_tmy"` PVGIS v5.3 典型气象年和 `provider="nasa_power"` NASA POWER，并支持 `prepare=true` 一步下载并直接生成 `.SIT`/`.MET`），或直接用一站式入口 [`pvsyst_simulate_design`](single-design-inputs.md)。
 
-> **v0.4.0 补充**：`pvsyst_prepare_weather` 同时支持对 15 分钟 / 30 分钟子小时观测 CSV 自动聚合为标准整点气象后转换。
+> **亚小时支持**：`pvsyst_prepare_weather` 支持原生保留 `5/10/15/30/60 min` 步长转换。
 
 ## 输入要求与调用示例
 
-源 CSV 需先满足 [`pvsyst_inspect_weather_csv`](weather-input-verification.md) 的标准整点校验，且：
+源 CSV 需先满足 `pvsyst_inspect_weather_csv` 的标准校验，且：
 - 仅包含水平总辐射 `GHI`、散射辐射 `DHI`（单位 `W/m²` 或 `MJ/m²`）和环境温度 `Tamb`（单位 `deg.C` / `degC`）。
 - 完整覆盖目标年份（`1969..2068`）的 8760 或 8784 个整点（含闰年 2 月 29 日）。
 - 显式传入 `time_basis="local_standard_interval_start"`（即固定当地冬季标准时、无夏令时跳变、每个时间戳代表该小时区间的起点）以及两位大写 ISO 国家代码 `country_code`（如 `"CN"`、`"US"`）。
@@ -37,7 +37,7 @@
 
 ## 与全年仿真任务联动
 
-将返回的 `artifacts.manifest` 文件名传给 `pvsyst_simulate_template` 的 `weather_manifest_name` 参数：
+将返回的 `artifacts.manifest` 文件名传给 `pvsyst_simulate_design` 的 `weather.weather_manifest_name` 参数：
 - 仿真启动前会自动重验源 CSV、导入 CSV、月值 CSV、`.MEF`、`.SIT`、`.MET` 的哈希指纹及 `LegalTime` 时基。
 - 仿真结束后会自动把导出 CSV 里的 `GlobHor`、`DiffHor`、`T_Amb` 与准备阶段的 CSV 逐时比对（辐射差超过 `0.1 W/m²` 或温度差超过 `0.01 °C` 时会保留 `needs_review` 提示）。
 

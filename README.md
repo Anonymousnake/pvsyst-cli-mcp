@@ -140,7 +140,7 @@ src/pvsyst_auto/
 ├── scene/        # PVCollada (.pvc2) 3D house mesh & finite 3D ground polygon clipper/shading builder
 ├── energy/       # Load profiles, AC-coupled battery storage, loss scalars, and power factor / grid limits
 ├── weather/      # Open-Meteo ERA5, PVGIS v5.3 TMY & NASA POWER downloaders, sub-hourly CSV & .SIT/.MET conversion
-├── native/       # Subprocess wrapper for PVsystCLI.exe, headless 3D pvShading/module_layout emitter, and legacy Win32 bridge
+├── native/       # Subprocess wrapper for PVsystCLI.exe, private-desktop process launcher, and headless native writers
 └── results.py    # Result CSV parser and hourly/sub-hourly aggregation
 ```
 

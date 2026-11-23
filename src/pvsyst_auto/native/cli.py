@@ -1016,15 +1016,6 @@ def read_result_page(path, columns, offset, limit):
             "units": {name: units.get(name, "") for name in columns}, "rows": page}
 
 
-def parse_result_csv(path: str | os.PathLike) -> tuple[list[str], list[list]]:
-    """Return all hourly SFI rows for callers that need random access."""
-    rows: list[list] = []
-    headers: list[str] = []
-    for headers, row in iter_result_csv(path):
-        rows.append(row)
-    return headers, rows
-
-
 def summarize_results(path: str | os.PathLike, columns: tuple[str, ...]) -> dict:
     """Shared streaming summaries; completeness covers timestamped rows in this file."""
     indices = None
@@ -1080,10 +1071,3 @@ def summarize_results(path: str | os.PathLike, columns: tuple[str, ...]) -> dict
                          "energy_kwh": observed if complete else None}
     return {"columns": headers, "rows": count, "first": first, "last": last,
             "step_minutes": step, "summary": summary}
-
-
-def summarize(path: str | os.PathLike, column: str = "E_Grid") -> dict:
-    """Summarize one column using the same missing-data handling as MCP."""
-    result = summarize_results(path, (column,))
-    return {"column": column, "rows": result["rows"], "step_minutes": result["step_minutes"],
-            **result["summary"][column]}

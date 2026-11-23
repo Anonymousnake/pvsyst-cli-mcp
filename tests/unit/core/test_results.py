@@ -13,7 +13,7 @@ from pvsyst_auto.api import app as _registered_app, context as server
 import pvsyst_auto.api.results as api_results
 from pvsyst_auto.engineering import comparison as eng_comparison
 import pvsyst_auto.results as results
-from pvsyst_auto.native.cli import PVsystCLI, summarize
+from pvsyst_auto.native.cli import PVsystCLI, summarize_results
 
 
 class ResultComparisonTests(unittest.TestCase):
@@ -166,19 +166,19 @@ class ResultComparisonTests(unittest.TestCase):
             for missing in ("", "NaN", "inf", "text"):
                 path.write_text(f"date;E_Grid\n;kW\n01/01/90 00:00;10\n01/01/90 01:00;{missing}\n01/01/90 02:00;10\n",
                                 encoding="utf-8")
-                direct = summarize(path)
+                direct = summarize_results(path, ("E_Grid",))
                 report = api_results.pvsyst_read_results(path.name, "E_Grid")
-                self.assertEqual(direct, {"column": "E_Grid", "rows": report["rows"],
-                                          "step_minutes": report["step_minutes"], **report["summary"]["E_Grid"]})
-                self.assertAlmostEqual(direct["coverage"], 2 / 3)
-                self.assertIsNone(direct["energy_kwh"])
+                self.assertEqual(direct, report)
+                self.assertAlmostEqual(direct["summary"]["E_Grid"]["coverage"], 2 / 3)
+                self.assertIsNone(direct["summary"]["E_Grid"]["energy_kwh"])
             for body, complete, step in (("00:00;\n01:00;NaN\n02:00;inf", False, 60),
                                          ("00:00;10\n01:00;10\n03:00;10", True, None),
                                          ("00:00;10", True, None)):
                 path.write_text("date;E_Grid\n;kW\n" + "\n".join("01/01/90 " + r for r in body.splitlines()) + "\n",
                                 encoding="utf-8")
-                direct = summarize(path)
-                self.assertEqual((direct["complete"], direct["step_minutes"], direct["energy_kwh"]), (complete, step, None))
+                direct = summarize_results(path, ("E_Grid",))
+                item = direct["summary"]["E_Grid"]
+                self.assertEqual((item["complete"], direct["step_minutes"], item["energy_kwh"]), (complete, step, None))
 
     def test_zero_row_iterators_raise_value_error_and_block_comparison(self):
         header_only = (

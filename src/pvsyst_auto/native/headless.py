@@ -63,7 +63,6 @@ FORMAT = {
     "ml_table_state": "mlDefStrings",
 }
 
-MAX_TABLES_BRIDGED = 2
 # The legacy None recipes stay on the proven 1..3 uniform-tilt single-orientation cap; an
 # explicit per-cell string_layout instead uses the author's real 1..MAX_TABLES contract and
 # the source module-capacity / per-table positive-cell invariants (no table-count cap).

@@ -16,14 +16,14 @@
 | `scene` | `.pvc2` 3D 房屋与光伏网格构建、有限 3D 地面多边形裁剪与阴影生成、XML 回读及空间坐标比对 | `author.py`、`ground.py`、`reader.py`、`mapping.py`、`state.py` |
 | `energy` | 负荷曲线、AC 耦合储能系统、TOU 48 槽 `PowerShift` 排程规划、电气参数、AC/DC 线缆与详细损失字段读写 | `profiles.py`、`load.py`、`storage.py`、`system.py`、`tou_planner.py`、`power.py`、`ac.py`、`dc.py` |
 | `weather` | 地理编码、Open-Meteo ERA5 / PVGIS v5.3 TMY / NASA POWER 下载、亚小时 CSV 与 `.SIT`/`.MET` 制备与核对 | `acquisition.py`、`preparation.py`、`review.py`、`csv.py` |
-| `native` | `PVsystCLI.exe` 命令行封装、免 GUI 3D 阴影/精细接线构建（`headless.py` / `_prep.py`）与旧版 Win32 GUI 辅助外壳 | `cli.py`、`headless.py`、`_prep.py`、`project.py`、`scene.py`、`horizon.py`、`dc.py` |
+| `native` | `PVsystCLI.exe` 命令行封装、免 GUI 3D 阴影/精细接线构建（`headless.py` / `_prep.py`）、私有非输入桌面进程隔离（`_winlaunch.py` / `_workspace_ini.py`）与各功能域原生写入器 | `cli.py`、`headless.py`、`_prep.py`、`_winlaunch.py`、`_workspace_ini.py`、`grid_limit.py`、`horizon.py`、`load.py`、`p50.py` |
 | `results.py` | 仿真结果 CSV 解析与逐时/亚小时指标汇总、年度能量平衡校核与双结果逐时对比 | `results.py` |
 
 阅读代码时的经验法则：
 - 想看某个 MCP 工具怎么接请求、转换异常，去 `api/` 下找对应分组文件。
 - 想看一整套任务（比如基于模板改参数并跑全年仿真）怎么编排，看 `workflows/`。
 - 想看某个 PVsyst 字段在文件里叫什么、改值时要联动改哪些 `Flags` 位掩码，去 `project/`、`components/`、`energy/`、`weather/` 或 `scene/`。
-- 想看怎么调 `PVsystCLI.exe` 或怎么用 Win32 消息控制 PVsyst 窗口，看 `native/`。
+- 想看怎么调 `PVsystCLI.exe`、私有桌面隔离或免 GUI 原生场景/参数构建，看 `native/`。
 
 Windows 上所有原始 CLI 调用统一经 `native/cli.PVsystCLI._run` 在私有非输入桌面启动的隔离机制、边界与验收状态，见[原生 CLI 私有非输入桌面隔离](native-cli-isolation.md)。
 
@@ -68,7 +68,6 @@ from pvsyst_auto import PVsystCLI, PVsystError
 | `pvsyst_house_task` | `pvsyst_auto.workflows.house` |
 | `pvsyst_engineering_task` | `pvsyst_auto.workflows.revision` |
 | `pvsyst_engineering_delivery` | `pvsyst_auto.workflows.delivery` |
-| `pvsyst_scene_native` | `pvsyst_auto.native.scene` |
 | `pvsyst_native_scene_mapping` | `pvsyst_auto.scene.mapping` |
 | `pvsyst_weather_flow` | `pvsyst_auto.weather.preparation` |
 | `pvsyst_results` | `pvsyst_auto.results` |

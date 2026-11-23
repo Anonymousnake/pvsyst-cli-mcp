@@ -80,8 +80,7 @@ class BatteryEditorTests(unittest.TestCase):
         edited = self.edit(updates={"Model": "Custom"})
         self.assertEqual(self.path.read_bytes(), original.replace(
             b"Capa_DischRate", b"CapaCourant").replace(b"Model=160Ah", b"Model=Custom"))
-        self.store.restore("BTR", "test.BTR", edited["backup_name"], confirm=True)
-        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / "BTR" / edited["backup_name"]).read_bytes(), original)
 
     def test_requires_hash_correct_existing_path_and_activation(self):
         self.rejected(expected_sha256="0" * 64)

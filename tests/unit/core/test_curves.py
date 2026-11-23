@@ -55,8 +55,7 @@ class CurveTests(unittest.TestCase):
             self.update(kind, curve_updates={canonical: fewer})
             curve = next(i for i in self.info(kind)["curves"]["items"] if i["path"] == canonical)
             self.assertEqual((curve["point_count"], curve["points"]), (4, fewer))
-            self.store.restore(kind, file_path.name, changed["backup_name"], True)
-            self.assertEqual(file_path.read_bytes(), original)
+            self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / kind / changed["backup_name"]).read_bytes(), original)
 
     def test_csv_roundtrip_growth_and_numeric_dialect(self):
         for kind, path, points, added in (

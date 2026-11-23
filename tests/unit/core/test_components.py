@@ -1,7 +1,6 @@
 """Offline component fixtures; no installed PVsyst or simulation quota required."""
 import json
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +10,7 @@ from pvsyst_auto.components import commercial
 from pvsyst_auto.components.builder import build_sourced_component
 from pvsyst_auto.components.editor import has_object, objects, replace_key, replace_value, root_block
 from pvsyst_auto.components.identity import sourced_component
-from pvsyst_auto.components.store import ComponentStore, MAX_PROJECT_BYTES
+from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.native.cli import PVsystCLI
 from pvsyst_auto.api import app as _registered_app, context as server
 import pvsyst_auto.api.components as api_components
@@ -177,49 +176,34 @@ class ComponentTests(unittest.TestCase):
         self.assertFalse(self.files["GEN"].with_name("danger.GEN").exists())
         self.assertFalse(self.files["BTR"].with_name("broken.BTR").exists())
 
-    def test_legacy_pan_bytes_copy_only(self):
+    def test_legacy_pan_bytes_validate_and_compare(self):
         legacy = b"pvModule;legacy\n\x00\xff\r\npvCommercial;;"
         source = self.files["PAN"]
         source.write_bytes(legacy)
+        source.with_name("legacy_copy.PAN").write_bytes(legacy)
         self.assertEqual(self.store.validate("PAN", source.name)["format"], "legacy-binary")
-        copied = self.store.copy("PAN", source.name, "legacy_copy.PAN")
-        self.assertEqual(copied["format"], "legacy-binary")
-        self.assertEqual(source.with_name("legacy_copy.PAN").read_bytes(), legacy)
         with self.assertRaisesRegex(ValueError, "Legacy binary"):
             self.store.update("PAN", source.name, {"Model": "Other"})
-        with self.assertRaisesRegex(ValueError, "Legacy binary"):
-            self.store.clone("PAN", source.name, "bad.PAN",
-                             {"Manufacturer": "Other", "Model": "Other"})
         self.assertNotIn("diff", self.store.compare("PAN", source.name, "legacy_copy.PAN"))
 
-    def test_clone_updates_backup_restore_and_no_overwrite(self):
+    def test_update_backup_compare_and_no_overwrite(self):
         for kind in self.files:
             with self.subTest(kind=kind):
-                target = f"fresh.{kind}"
-                result = self.store.clone(kind, f"sample.{kind}", target,
-                                          {"Manufacturer": "New", "Model": "Fresh"})
-                self.assertEqual(result["type"], kind)
-                self.assertEqual(self.store.validate(kind, target)["model"], "Fresh")
-                with self.assertRaises(FileExistsError):
-                    self.store.copy(kind, f"sample.{kind}", target)
                 original = self.files[kind].read_bytes()
+                target = f"fresh.{kind}"
+                self.store.create(kind, target, original.decode("utf-8").replace("Manufacturer=Lab", "Manufacturer=New"))
+                with self.assertRaises(FileExistsError):
+                    self.store.create(kind, target, original.decode("utf-8"))
                 changed = self.store.update(kind, f"sample.{kind}", {"Model": "Updated"})
                 self.assertEqual(self.store.validate(kind, f"sample.{kind}")["model"], "Updated")
-                with self.assertRaisesRegex(ValueError, "confirm=true"):
-                    self.store.restore(kind, f"sample.{kind}", changed["backup_name"])
-                restored = self.store.restore(kind, f"sample.{kind}",
-                                              changed["backup_name"], confirm=True)
-                self.assertIsNotNone(restored["previous_backup"])
-                self.assertEqual(self.files[kind].read_bytes(), original)
+                backup = self.workspace / "ComposPV" / ".mcp-backups" / kind / changed["backup_name"]
+                self.assertEqual(backup.read_bytes(), original)
         self.assertFalse(self.store.compare("GEN", "sample.GEN", "fresh.GEN")["same_bytes"])
         self.assertIn("-    Manufacturer=Lab", self.store.compare("GEN", "sample.GEN", "fresh.GEN")["diff"])
 
-    def test_clone_and_update_preserve_utf8_bom(self):
+    def test_update_preserves_utf8_bom(self):
         source = self.files["OND"]
         source.write_bytes(b"\xef\xbb\xbf" + OND.encode("utf-8"))
-        self.store.clone("OND", source.name, "with_bom.OND",
-                         {"Manufacturer": "New", "Model": "New"})
-        self.assertTrue(source.with_name("with_bom.OND").read_bytes().startswith(b"\xef\xbb\xbf"))
         self.store.update("OND", source.name, {"Model": "Updated"})
         self.assertTrue(source.read_bytes().startswith(b"\xef\xbb\xbf"))
 
@@ -243,11 +227,9 @@ class ComponentTests(unittest.TestCase):
             self.store.update("OND", "sample.OND", {"VAbsMax": "100"})
         with self.assertRaises(ValueError):
             self.store.update("GEN", "sample.GEN", {"Model": "x\nCFuelHor=0"})
-        invalid = self.files["GEN"].with_name("incomplete.GEN")
-        invalid.write_text(GEN.replace("  CFuelHor=0.25\n", ""), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "Incomplete"):
-            self.store.copy("GEN", invalid.name, "unsafe.GEN")
-        self.assertFalse(invalid.with_name("unsafe.GEN").exists())
+            self.store.create("GEN", "unsafe.GEN", GEN.replace("  CFuelHor=0.25\n", ""))
+        self.assertFalse(self.files["GEN"].with_name("unsafe.GEN").exists())
         self.store.update("GEN", "sample.GEN", {"TypeGen": "CustomFuel"})
         self.assertEqual(self.store.validate("GEN", "sample.GEN")["known_value_errors"], [])
 
@@ -275,12 +257,16 @@ class ComponentTests(unittest.TestCase):
         for bad in ("../sample.GEN", "..\\sample.GEN", "C:\\sample.GEN",
                     "sample.OND", "sample.GEN.", "CON/GEN"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                self.store.copy("GEN", "sample.GEN", bad)
+                self.store.create("GEN", bad, GEN)
         saved = self.store.backup("GEN", "sample.GEN")
-        with self.assertRaises(ValueError):
-            self.store.restore("GEN", "sample.GEN", "../" + saved["backup_name"], True)
-        self.assertEqual(self.store.copy("OND", "official.OND", "imported.OND", "builtin")["type"], "OND")
-        self.assertEqual(self.store.list("OND")["total"], 2)
+        backup_file = self.workspace / "ComposPV" / ".mcp-backups" / "GEN" / saved["backup_name"]
+        meta_file = backup_file.with_name(backup_file.name + ".json")
+        self.assertTrue(backup_file.is_file())
+        self.assertTrue(meta_file.is_file())
+        self.assertEqual(json.loads(meta_file.read_text(encoding="utf-8")), {
+            "version": 2, "type": "GEN", "name": "sample.GEN", "sha256": saved["sha256"],
+        })
+        self.assertEqual(self.store.list("OND", "builtin")["total"], 1)
 
     def test_reject_symlink_outside_workspace(self):
         external = self.workspace.parent / "external.GEN"
@@ -296,13 +282,6 @@ class ComponentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Symlink"):
             self.store.backup("GEN", path.name)
         self.assertEqual(external.read_text(encoding="utf-8"), GEN)
-        path.unlink()
-        other = path.with_name("other.GEN")
-        other.write_text(GEN, encoding="utf-8")
-        path.symlink_to(other)
-        with self.assertRaisesRegex(ValueError, "Symlink"):
-            self.store.archive("GEN", path.name, True)
-        self.assertTrue(other.is_file())
 
     def test_project_references_without_false_missing_claim(self):
         projects = self.workspace / "Projects"
@@ -345,73 +324,6 @@ class ComponentTests(unittest.TestCase):
         self.assertTrue(configuration["enclosure_threshold_present"])
         self.assertTrue(configuration["release_threshold_present"])
 
-    def test_archive_recurses_into_project_subdirectories(self):
-        projects = self.workspace / "Projects"
-        nested = projects / "SubFolder"
-        nested.mkdir(parents=True)
-        (nested / "uses.VC0").write_text("GensetFile=sample.GEN\n", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "SubFolder/uses.VC0"):
-            self.store.archive("GEN", "sample.GEN", True)
-        self.assertTrue(self.files["GEN"].exists())
-        (nested / "uses.VC0").write_text("GensetFile=other.GEN\n", encoding="utf-8")
-        result = self.store.archive("GEN", "sample.GEN", True)
-        self.assertIn("archive_name", result)
-
-    def test_archive_scans_large_projects_and_bounds_file_size(self):
-        projects = self.workspace / "Projects"
-        projects.mkdir()
-        large = projects / "large.VC0"
-        large.write_text("Comment=ok\n" * 200_000 + "GensetFile=sample.GEN\n",
-                         encoding="utf-8")
-        self.assertGreater(large.stat().st_size, 2_000_000)
-        with self.assertRaisesRegex(ValueError, "referenced by: large.VC0"):
-            self.store.archive("GEN", "sample.GEN", True)
-        large.write_text("Comment=ok\n" * 200_000, encoding="utf-8")
-        self.assertEqual(self.store._project_uses("GEN", "sample.GEN"), [])
-        with large.open("ab") as stream:
-            stream.truncate(MAX_PROJECT_BYTES + 1)
-        with self.assertRaisesRegex(ValueError, "oversized project file: large.VC0"):
-            self.store.archive("GEN", "sample.GEN", True)
-        self.assertTrue(self.files["GEN"].exists())
-
-    def test_archive_and_restore_only_unreferenced(self):
-        project = self.workspace / "Projects"
-        project.mkdir()
-        (project / "use.VC0").write_text("  GensetFile=sample.GEN\n", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "confirm=true"):
-            self.store.archive("GEN", "sample.GEN")
-        with self.assertRaisesRegex(ValueError, "referenced"):
-            self.store.archive("GEN", "sample.GEN", True)
-        self.assertTrue(self.files["GEN"].exists())
-        (project / "use.VC0").write_text("  GensetFile=other.GEN\n", encoding="utf-8")
-        original = self.files["GEN"].read_bytes()
-        archived = self.store.archive("GEN", "sample.GEN", True)
-        self.assertFalse(self.files["GEN"].exists())
-        with self.assertRaisesRegex(ValueError, "confirm=true"):
-            self.store.restore_archive("GEN", "sample.GEN", archived["archive_name"])
-        self.store.restore_archive("GEN", "sample.GEN", archived["archive_name"], True)
-        self.assertEqual(self.files["GEN"].read_bytes(), original)
-        with self.assertRaises(FileExistsError):
-            self.store.restore_archive("GEN", "sample.GEN", archived["archive_name"], True)
-        (project / "use.VC0").write_bytes(b"\xffGensetFile=sample.GEN\n")
-        with self.assertRaisesRegex(ValueError, "Cannot safely inspect project references"):
-            self.store.archive("GEN", "sample.GEN", True)
-        self.assertTrue(self.files["GEN"].exists())
-
-    def test_archive_rejects_nested_symlink_directory(self):
-        projects = self.workspace / "Projects"
-        projects.mkdir()
-        external = self.workspace.parent / "external-projects"
-        external.mkdir()
-        (external / "uses.VC0").write_text("GensetFile=sample.GEN\n", encoding="utf-8")
-        try:
-            (projects / "linked").symlink_to(external, target_is_directory=True)
-        except OSError:
-            self.skipTest("Symlink creation is unavailable on this Windows host")
-        with self.assertRaisesRegex(ValueError, "symlink project path: linked"):
-            self.store.archive("GEN", "sample.GEN", True)
-        self.assertTrue(self.files["GEN"].exists())
-
     def test_installed_library_discovery_uses_cli_not_workspace_name(self):
         install = self.workspace.parent / "install"
         install.mkdir()
@@ -424,8 +336,7 @@ class ComponentTests(unittest.TestCase):
         self.addCleanup(setattr, server, "_cli", None)
         with patch.dict(os.environ, {"PVSYST_BUILTIN_COMPONENTS": ""}):
             self.assertEqual(api_components.pvsyst_list_components("OND", "builtin")["total"], 1)
-            self.assertEqual(server.components().copy(
-                "OND", "official.OND", "imported.OND", "builtin")["type"], "OND")
+            self.assertEqual(server.components().inspect("OND", "official.OND", "builtin")["type"], "OND")
             second = install / "DataRO" / "PVsyst8.0_Data" / "ComposPV"
             second.mkdir(parents=True)
             with self.assertRaisesRegex(ValueError, "Multiple DataRO component libraries"):
@@ -613,35 +524,3 @@ class ComponentTests(unittest.TestCase):
         blocked = build(kind="OND", fields=(("PNomConv", 50, "kW", "50", "kW"),))
         self.assertEqual(blocked["status"], "blocked")
         self.assertIn("electrical fields are unreadable", blocked["issues"][-1]["message"])
-
-    def test_component_archive_repair_and_snapshot_tampering(self):
-        path = self.files["GEN"]
-        incomplete = GEN.replace("  Flags=$00\n", "").encode()
-        path.write_bytes(incomplete)
-        archived = self.store.archive("GEN", path.name, True)
-        restored = ComponentStore(self.workspace).restore_archive("GEN", path.name, archived["archive_name"], True)
-        self.assertEqual(path.read_bytes(), incomplete)
-        self.assertTrue(restored["integrity_verified"])
-
-        invalid_orig = GEN.replace("CFuelHor=0.25", "CFuelHor=0").encode()
-        path.write_bytes(invalid_orig)
-        repaired = self.store.update("GEN", path.name, {"CFuelHor": "0.25"})
-        self.store.restore("GEN", path.name, repaired["backup_name"], True)
-        self.assertEqual(path.read_bytes(), invalid_orig)
-
-        path.write_bytes(GEN.encode())
-        saved = self.store.backup("GEN", path.name)
-        meta = self.workspace / "ComposPV" / ".mcp-backups" / "GEN" / (saved["backup_name"] + ".json")
-        info = json.loads(meta.read_text())
-        info["name"] = "another.GEN"
-        meta.write_text(json.dumps(info))
-        with self.assertRaises(ValueError):
-            self.store.restore("GEN", path.name, saved["backup_name"], True)
-        meta.unlink()
-        with self.assertRaises(ValueError):
-            self.store.restore("GEN", path.name, saved["backup_name"], True)
-
-        legacy = self.store._backup_folder("GEN") / (path.name + "." + "a" * 32 + ".bak")
-        legacy.write_bytes(GEN.encode())
-        res = self.store.restore("GEN", path.name, legacy.name, True)
-        self.assertFalse(res["integrity_verified"])

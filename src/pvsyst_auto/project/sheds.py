@@ -18,11 +18,6 @@ from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 TYPES = ("Sheds", "SunShields")
-# Recorded owning field sequence; shape errors stop rather than being patched around.
-OWN = ("Comment", "Version", "Flags", "NoOrient", "FieldType", "FieldTilt", "FieldAzim",
-       "Pitch", "CollectorWidth", "InactiveBandWidth1", "InactiveBandWidth2", "NSheds",
-       "UsesElectricalEffect", "FracShadingFactor", "NModInWidth", "CellWidth",
-       "UsesTiltAver", "UsesAzimAver", "UsesSlopeAver", "BTNoTrackers")
 # Keys the caller may state, mapped to their native names.
 WRITABLE = {"field_tilt_deg": "FieldTilt", "field_azimuth_deg": "FieldAzim",
             "pitch_m": "Pitch", "collector_width_m": "CollectorWidth",

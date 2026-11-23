@@ -641,34 +641,10 @@ class ComponentStore:
                 metadata.unlink(missing_ok=True)
             raise
 
-    @staticmethod
-    def _verify_snapshot(kind: str, name: str, snapshot: Path, data: bytes) -> bool:
-        if not snapshot.name.startswith(name + ".v2-"):
-            return False  # Legacy snapshots have no recorded integrity hash.
-        metadata = snapshot.with_name(snapshot.name + ".json")
-        if (metadata.is_symlink() or metadata.resolve().parent != snapshot.parent
-                or not metadata.is_file() or metadata.stat().st_size > 4096):
-            raise ValueError("Missing or unsafe component snapshot metadata")
-        with metadata.open("r", encoding="utf-8") as stream:
-            recorded = json.load(stream)
-        if recorded != {"version": 2, "type": kind, "name": name,
-                        "sha256": hashlib.sha256(data).hexdigest()}:
-            raise ValueError("Component snapshot integrity check failed")
-        return True
-
-    def _recovery_info(self, kind: str, data: bytes) -> dict:
-        try:
-            info = self._inspect(kind, data)
-            return {key: info[key] for key in ("format", "structural_errors", "warnings",
-                                               "known_value_errors") if key in info}
-        except ValueError as exc:
-            return {"format": "unrecognized", "structural_errors": [str(exc)], "warnings": []}
-
-    def _new(self, kind: str, name: str, data: bytes, *, recovery: bool = False) -> dict:
+    def _new(self, kind: str, name: str, data: bytes) -> dict:
         path = self._path(kind, name)
-        result = self._recovery_info(kind, data) if recovery else self._inspect(kind, data)
-        if not recovery:
-            self._require_valid(result, complete=result["format"] == "text")
+        result = self._inspect(kind, data)
+        self._require_valid(result, complete=result["format"] == "text")
         path.parent.mkdir(parents=True, exist_ok=True)
         # Windows names are case-insensitive; enforce the same rule in tests on other OSes.
         if any(p.name.casefold() == name.casefold() for p in path.parent.iterdir()):
@@ -676,15 +652,7 @@ class ComponentStore:
         with path.open("xb") as stream:
             stream.write(data)
         return {"name": name, "type": kind, "format": result["format"],
-                "sha256": hashlib.sha256(data).hexdigest(),
-                **({"validation": result} if recovery else {})}
-
-    def copy(self, kind: str, source_name: str, new_name: str,
-             source_library: str = "workspace") -> dict:
-        kind = self._kind(kind)
-        with self.lock:
-            source = self._path(kind, source_name, source_library)
-            return self._new(kind, new_name, self._read(source))
+                "sha256": hashlib.sha256(data).hexdigest()}
 
     def create(self, kind: str, name: str, content: str) -> dict:
         """Create from complete UTF-8 PVObject_ text, without needing a template."""
@@ -727,38 +695,6 @@ class ComponentStore:
             line = lines[index]
             lines[index] = replace_value(line, value)
         return "".join(lines)
-
-    def clone(self, kind: str, source_name: str, new_name: str,
-              updates: dict[str, str], source_library: str = "workspace") -> dict:
-        kind = self._kind(kind)
-        with self.lock:
-            if kind == "REV":
-                # pvAddress has no Manufacturer/Model identity; cloning is a byte-preserving
-                # duplicate with optional Comment/Person/Address/Town/Country updates.
-                if not isinstance(updates, dict):
-                    raise ValueError("updates must be a dictionary")
-                source_data = self._read(self._path(kind, source_name, source_library))
-                has_bom = source_data.startswith(b"\xef\xbb\xbf")
-                _, source = self._text(kind, source_data)
-                self._require_valid(self._inspect(kind, source_data), complete=True)
-                candidate = self._replace_fields(kind, source, updates).encode("utf-8") if updates else source_data
-                if has_bom and updates:
-                    candidate = b"\xef\xbb\xbf" + candidate
-                self._require_valid(self._inspect(kind, candidate), complete=True)
-                return self._new(kind, new_name, candidate)
-            if not {"Manufacturer", "Model"}.issubset(updates):
-                raise ValueError("Cloning requires new Manufacturer and Model")
-            source_data = self._read(self._path(kind, source_name, source_library))
-            has_bom = source_data.startswith(b"\xef\xbb\xbf")
-            _, source = self._text(kind, source_data)
-            if source is None:
-                raise ValueError("Legacy binary PAN cannot be edited")
-            self._require_valid(self._inspect(kind, source.encode("utf-8")), complete=True)
-            candidate = self._replace_fields(kind, source, updates).encode("utf-8")
-            if has_bom:
-                candidate = b"\xef\xbb\xbf" + candidate
-            self._require_valid(self._inspect(kind, candidate), complete=True)
-            return self._new(kind, new_name, candidate)
 
     def update(self, kind: str, name: str, updates: dict[str, str],
                expected_sha256: str | None = None, dry_run: bool = False,
@@ -917,121 +853,6 @@ class ComponentStore:
                                             "Component changed while preparing the edit",
                                             prepare=unchanged_backup)
             return {**result, "backup_name": backup["backup_name"]}
-
-    def restore(self, kind: str, name: str, backup_name: str, confirm: bool = False) -> dict:
-        kind = self._kind(kind)
-        if not confirm:
-            raise ValueError("Restore requires confirm=true")
-        if not re.fullmatch(re.escape(name) + r"\.(?:v2-)?[0-9a-f]{32}\.bak", backup_name):
-            raise ValueError("Backup name must match the component")
-        with self.lock:
-            path = self._path(kind, name)
-            backup_path = self._backup_folder(kind) / backup_name
-            if backup_path.is_symlink():
-                raise ValueError("Symlink backups are not supported")
-            source = backup_path.resolve(strict=True)
-            if source.parent != self._backup_folder(kind):
-                raise ValueError("Backup resolves outside workspace")
-            data = self._read(source)
-            verified = self._verify_snapshot(kind, name, source, data)
-            validation = self._recovery_info(kind, data)
-            previous = self.backup(kind, name) if path.exists() else None
-            fileio.atomic_replace(path, data)
-            return {"name": name, "restored_from": backup_name,
-                    "sha256": hashlib.sha256(data).hexdigest(),
-                    "integrity_verified": verified, "validation": validation,
-                    "previous_backup": previous["backup_name"] if previous else None}
-
-    def _archive_folder(self, kind: str) -> Path:
-        components = (self.workspace / "ComposPV").resolve()
-        if components.parent != self.workspace:
-            raise ValueError("Component library resolves outside workspace")
-        base = (components / ".mcp-archive").resolve()
-        if base.parent != components:
-            raise ValueError("Archive folder resolves outside workspace")
-        folder = (base / kind).resolve()
-        if folder.parent != base:
-            raise ValueError("Archive folder resolves outside workspace")
-        folder.mkdir(parents=True, exist_ok=True)
-        return folder
-
-    def _project_uses(self, kind: str, name: str) -> list[str]:
-        root = (self.workspace / "Projects").resolve()
-        if root.parent != self.workspace:
-            raise ValueError("Projects folder resolves outside workspace")
-        if not root.is_dir():
-            return []
-        matches = []
-        directories = [root]
-        while directories:
-            directory = directories.pop()
-            for path in directory.iterdir():
-                relative = path.relative_to(root).as_posix()
-                if path.is_symlink() or path.resolve() != path:
-                    if path.is_dir() or path.suffix.upper() == ".PRJ" or re.fullmatch(
-                            r"\.VC[A-Za-z0-9]+", path.suffix, re.I):
-                        raise ValueError(f"Cannot safely inspect symlink project path: {relative}")
-                    continue
-                if path.is_dir():
-                    directories.append(path)
-                    continue
-                relevant = (path.suffix.upper() == ".PRJ"
-                            or re.fullmatch(r"\.VC[A-Za-z0-9]+", path.suffix, re.I))
-                if not relevant or not path.is_file():
-                    continue
-                if path.stat().st_size > MAX_PROJECT_BYTES:
-                    raise ValueError(f"Cannot check references in oversized project file: {relative}")
-                try:
-                    with path.open("r", encoding="utf-8-sig") as stream:
-                        for line in stream:
-                            match = REFERENCE.fullmatch(line.rstrip("\r\n"))
-                            if (match and REF_KIND[match[1]] == kind
-                                    and match[2].casefold() == name.casefold()):
-                                matches.append(relative)
-                                break
-                except (UnicodeDecodeError, OSError) as exc:
-                    raise ValueError(f"Cannot safely inspect project references: {relative}") from exc
-        return sorted(matches)
-
-    def archive(self, kind: str, name: str, confirm: bool = False) -> dict:
-        kind = self._kind(kind)
-        if not confirm:
-            raise ValueError("Archive requires confirm=true")
-        with self.lock:
-            path = self._path(kind, name)
-            data = self._read(path)
-            users = self._project_uses(kind, name)
-            if users:
-                raise ValueError("Component is still referenced by: " + ", ".join(users[:10]))
-            archived = self._archive_folder(kind) / f"{name}.v2-{uuid.uuid4().hex}.archived"
-            self._write_snapshot_metadata(kind, name, archived, data)
-            try:
-                os.replace(path, archived)
-            except BaseException:
-                archived.with_name(archived.name + ".json").unlink(missing_ok=True)
-                raise
-            return {"name": name, "archive_name": archived.name,
-                    "sha256": hashlib.sha256(data).hexdigest()}
-
-    def restore_archive(self, kind: str, name: str, archive_name: str,
-                        confirm: bool = False) -> dict:
-        kind = self._kind(kind)
-        if not confirm:
-            raise ValueError("Archive restore requires confirm=true")
-        self._path(kind, name)
-        if not re.fullmatch(re.escape(name) + r"\.(?:v2-)?[0-9a-f]{32}\.archived", archive_name):
-            raise ValueError("Archive name must match the component")
-        with self.lock:
-            archived_path = self._archive_folder(kind) / archive_name
-            if archived_path.is_symlink():
-                raise ValueError("Symlink archives are not supported")
-            source = archived_path.resolve(strict=True)
-            if source.parent != self._archive_folder(kind):
-                raise ValueError("Archive resolves outside workspace")
-            data = self._read(source)
-            verified = self._verify_snapshot(kind, name, source, data)
-            result = self._new(kind, name, data, recovery=True)
-            return {**result, "restored_from": archive_name, "integrity_verified": verified}
 
     def compare(self, kind: str, first: str, second: str,
                 second_library: str = "workspace") -> dict:

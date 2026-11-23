@@ -1,6 +1,6 @@
 # 单方案设计输入与全年流程
 
-`pvsyst_simulate_design(spec, dry_run=True)` 是面向单子阵列固定倾角并网项目（`fixed_unshaded_grid`）的最高层一站式入口。它把组件查找、模板筛选（或空工作区种子初始化）、串并联整数容量规划、天气下载/转换以及[模板全年仿真](automatic-simulation.md)打包在一个统一的 `spec` 里执行。
+`pvsyst_simulate_design(spec, dry_run=True)` 是面向单方案设计（固定倾角、地面棚架/跟踪器及离网系统）的最高层一站式入口。它把组件查找、零模板合成或模板筛选、串并联整数容量规划、天气下载/转换以及全年仿真打包在一个统一的 `spec` 里执行。
 
 如果只想把工程文件配好落盘、暂不跑全年仿真（例如后面还要导 3D 房屋场景），可以把完全相同的 `spec` 传给 [`pvsyst_prepare_design_project`](design-project-preparation.md)。
 
@@ -17,7 +17,7 @@
 | `weather` | 气象数据模式：`existing`（已有 `.SIT`/`.MET`）、`csv`（本地标准逐时 CSV）、`open_meteo`（Open-Meteo ERA5）、`pvgis_tmy`（PVGIS v5.3 典型气象年，v0.4.0）或 `nasa_power`（NASA POWER，v0.4.0） |
 | `capacity` / `electrical_design` | **二选一必填**：`capacity` 直接给算好的电压/电流边界；`electrical_design` 给带出处的温度系数与极值，由工具推导边界 |
 | `losses` | 可选损失参数覆盖，支持 `LIDLoss`、`PMismMPP`、`ModuleQualityLoss` 与主阵列 `UFactor` |
-| `report_pages` | 可选 PDF 报告页名列表，见[天气与报告](automatic-simulation.md#天气与报告) |
+| `report_pages` | 可选 PDF 报告页名列表（见[工具参考](tool-reference.md)） |
 
 调用示例：
 

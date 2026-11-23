@@ -58,10 +58,6 @@ def weather_text(year=2023, separator=";", skip=None, diffuse=True, unit="W/m2",
     return _weather_text_cached(year, separator, skip, diffuse, unit, tuple(extra or ()))
 
 
-weather_text.cache_info = _weather_text_cached.cache_info
-weather_text.cache_clear = _weather_text_cached.cache_clear
-
-
 def native_weather_commands(site="Test site", country="China", conversion="Conversion ended successfully...",
                             log=None):
     """Fake create-site/convert-meteo boundary: builds the SIT from the monthly CSV it is given.

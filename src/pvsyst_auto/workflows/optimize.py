@@ -23,12 +23,6 @@ from pvsyst_auto.native.headless import _next_variant_id
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
 
 MAX_ITERATIONS_CAP = 5
-_ACTIONABLE_CODES = frozenset((
-    "INVERTER_OVERVOLTAGE",
-    "INVERTER_UNDERVOLTAGE",
-    "INVERTER_CLIPPING_HIGH",
-    "SHADING_LOSS_HIGH",
-))
 
 
 def _parse_int(value: Any) -> int | None:

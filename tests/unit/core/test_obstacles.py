@@ -316,7 +316,7 @@ class ObstaclePipelineTests(unittest.TestCase):
         from pvsyst_auto.native.headless import (
             _next_variant_id, _resolve_table_owner, _support_gate, assemble_variant, build_pvshading,
         )
-        from pvsyst_auto.scene.author import _rotate_z, house_profile, table_profiles
+        from pvsyst_auto.scene.author import house_profile, table_profiles
 
         ws, comps, store = self._setup_ws()
 

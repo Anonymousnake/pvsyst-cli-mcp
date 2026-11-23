@@ -14,7 +14,6 @@ from pvsyst_auto.api.components import pvsyst_build_sourced_component
 from pvsyst_auto.api.schemas import SingleDesignRequest
 from pvsyst_auto.components.builder import build_sourced_component
 from pvsyst_auto.components.store import ComponentStore
-from pvsyst_auto.project.synthesize import placeholder_site_block
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.report import generate_report

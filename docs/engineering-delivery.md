@@ -49,12 +49,8 @@ If a run fails partway through, the working project, manifest, and any partial o
 
 ### Two-roof house workflow
 
-For residential rooftops with two roof planes, `pvsyst_run_house_task` chains `.pvc2` scene generation/reading, GUI scene import, orientation binding, coordinate verification, annual CLI simulation, and ZIP delivery (`operation="engineering_house"`).
+For residential rooftops with two (or more) roof planes, `pvsyst_run_house_task` chains `.pvc2` scene generation, headless native `.VCx` scene authoring (`scene_import_method="native"`, the default since legacy GUI scene import was removed in `v0.6.0`), annual `PVsystCLI.exe` simulation with `recompute_shading=True`, and checkpointed output verification.
 
-Supported layout and environment requirements:
-- **Electrical & orientation structure**: One house mesh and two fixed orientations (`ID 1` and `ID 2`), where each orientation owns one exclusive subarray and one PV table using the same `.PAN`/`.OND` models. Orientation 1 must have `FieldAzim=0` (the `anchor0` reference frame).
-- **GUI environment**: PVsyst 8.1.6 rev49278 in Chinese locale at 96 DPI, running in an owned workspace session.
-- **Coordinate mapping & precision**: During GUI import, PVsyst maps `anchor0` coordinates with inverted X/Y signs and unchanged Z, and can introduce small centimetre-level placement offsets. The bridge opens each PV table's properties dialog to bind the explicit orientation (`#1` / `#2`), exports `.SHD` data to check offsets, applies native position corrections (`Ctrl+B`), and deletes any confirmed empty third orientation group before saving the variant.
-- **7-character field check**: Because PVsyst's position inputs accept at most 7 characters, the adapter rejects requested coordinates whose 7-character rounding error exceeds `0.00002 m` (20 µm), and verifies that saved and reloaded table coordinates stay within that `0.00002 m` bound.
-
-Completed house task manifests include `native_reload_verified`, geometry residual checks, and the authored `.pvc2` and `.SFI` files alongside the `.PRJ`/`.VCx` and CSV/PDF reports.
+Supported structure requirements:
+- **Electrical & orientation structure**: One house mesh and paired fixed orientations (`ID 1`, `ID 2`, etc.), with matching subarrays and roof-aligned PV tables. In native multi-orientation layouts, orientation 1 uses `FieldAzim=0` (the `anchor0` reference frame) unless using a supported symmetric/zero-template setup.
+- **Native coordinates & inspection**: The authored `.pvc2` scene and native `.VCx` shading/module-layout records are verified before CLI execution, and completed task manifests record `stored_geometry_verified`, `native_consumption_verified`, annual metrics, and the `.pvc2`/`.SFI`/`.PRJ`/`.VCx` artifacts alongside simulation CSV/PDF reports.
