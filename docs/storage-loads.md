@@ -1,10 +1,10 @@
-# 用户负荷配置：常数/月度/日曲线与全年逐时 CSV 绑定
+# 用户负荷配置：常数/月度/日曲线/家用电器/概率分布与全年逐时 CSV 绑定
 
 在 PVsyst 8.1.6+ 中，给并网系统配置用户用电负荷（User's Needs）统一通过 `pvsyst_create_native_load_variant` 完成：
-1. **简明负荷（`mode="constant" | "monthly" | "daily"`）**：适用于无电池的纯光伏自发自用场景，直接写入常数功率（`kW`）、12 个月电量（`kWh`）或 24 小时日负荷曲线（`kW`）。
+1. **原生模式负荷（`mode="constant" | "monthly" | "daily" | "household" | "probability"`）**：适用于无电池的纯光伏自发自用场景，直接写入常数功率（`kW`）、12 个月电量（`kWh`）、24 小时日负荷曲线（`kW`）、家用电器分项清单（全年或分季）或概率分布曲线。
 2. **全年逐时负荷 CSV（`pvsyst_prepare_load_profile` + `pvsyst_create_native_load_variant(load={"mode": "hourly", "load_manifest_name": ...})`）**：校验 8760/8784 小时负荷 CSV，并将其编码为 `.VCx` 内部 `pvLoad` 的 `Energy/MJ` signed-base62 逐日缓存（适用于纯光伏自用或配合 [AC 光储系统](grid-storage-parameters.md)）。
 
-## 1. 常数、月度与 24 小时日曲线负荷（`pvsyst_create_native_load_variant`）
+## 1. 常数、月度、日曲线、家用电器与概率分布负荷（`pvsyst_create_native_load_variant`）
 
 在 PVsyst 8.1.6 单子阵列、单固定平面（朝向 1）、自由地平线、无 3D 阴影且无储能的纯光伏并网变体上，创建一个开启自发自用的新 `.VCx` 变体：
 
@@ -22,13 +22,15 @@
 }
 ```
 
-三种 `load.mode` 的入参与 `.VCx` 内部字段对照（数值步长精度均为 `0.001`，单项上限 `1e6`）：
+五种原生 `load.mode` 的入参与 `.VCx` 内部字段对照（基础数值步长精度为 `0.001`，单项上限 `1e6`）：
 
 | `mode` | 入参字段与单位 | `.VCx` 中 `pvLoad` 写入的字段 |
 |---|---|---|
 | `constant` | `constant_kw`（正数，单位 `kW`） | `LoadType=Constant`, `Flags=$00`, `ConstantLoad=<kW>` |
 | `monthly` | `monthly_energy_kwh`（12 个月的月用电量列表，**单位为 `kWh`**，至少 1 个月大于 0） | `LoadType=Monthly`, `Flags=$01`, `UsesModul=Yearly`, 15 槽 `ValMonth`（前 12 槽为月电量 + 3 个尾零槽） |
 | `daily` | `daily_power_kw`（24 个整点小时的功率列表，**单位为 `kW`**，至少 1 小时大于 0） | `LoadType=DailyProfile`, `Flags=$02`, `NHourlyValues=1`, 25 槽 `ValHour_1`（24 小时功率 + 第 25 槽日总和） |
+| `household` | 家用电器分项列表（`appliances`，含名称、数量、功率 `W` 与每日运行时长，支持全年或分季调制 `seasonal`） | `LoadType=Household`, 写入原生电器分项及对应的 24 小时/季节负荷分布 |
+| `probability` | 概率分布负荷参数（如日均用电量与各小时权重/概率分布，支持季节调制） | `LoadType=Probability`, 写入原生概率负荷参数并合成全年用电分布 |
 
 **两个底层踩坑点**：
 - 在 `Monthly` 模式下，虽然 `.VCx` 里的 `Energy Units` 字段字面上写着 `kW`，但 `ValMonth` 前 12 项实际保存的是每个月的**总千瓦时（kWh）**，不是 12 个功率值！

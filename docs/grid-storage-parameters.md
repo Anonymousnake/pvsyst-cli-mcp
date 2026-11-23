@@ -78,9 +78,10 @@
 
 底层關鍵细节：在从纯光伏变体构建光储系统时，除了在 `pvSystem` 挂电池硬件和 `pvGridStorage` 块、在 `pvLoad` 写入 366 天 `Energy/MJ` base62 负荷缓存外，工具还会自动置位变体根部 `pvVCalcul.Flags` 的 **bit 19**（`0x80000`）。如果不置位根部 bit 19，PVsyst 跑仿真时虽然会算电池，但用户负荷 `E_User` 和电网购电 `EFrGrid` 不会生效！
 
-## 3. 弱电网（`WeakGrid`）可用性 CSV 绑定与备用 SOC
+## 3. 弱电网（`WeakGrid`）可用性配置（外部 CSV 或确定性生成）与备用 SOC
 
-当配置 `strategy="weak_grid"` 时，需在顶层传入 `availability` 参数，指向 `UserData` 下的全年整点电网可用性 CSV（分号分隔，表头 `Date;Grid Available`、单位行 `;ratio`、时间格式 `YYYY-MM-DD HH:MM`，取值为严格的 `0` 或 `1`，且全年至少包含 1 个停电小时 `0`）：
+当配置 `strategy="weak_grid"` 时，需在顶层传入 `availability` 参数，支持两种模式：
+1. **外部逐时可用性 CSV（默认 / `mode="csv"`）**：指向 `UserData` 下的全年整点电网可用性 CSV（分号分隔，表头 `Date;Grid Available`、单位行 `;ratio`、时间格式 `YYYY-MM-DD HH:MM`，取值为严格的 `0` 或 `1`，且全年至少包含 1 个停电小时 `0`）：
 
 ```json
 {
@@ -91,7 +92,9 @@
 }
 ```
 
-- 电网可用性 CSV 的年份和固定标准时 UTC 偏移必须与负荷清单完全一致。工具会将其编码为有符号 base62 的 `+0` / `+G8`（`WRFactor=1000`）写入 `pvUnavail` 块的 `Day_DDMM` 缓存中。
+2. **确定性弱网停电生成器（`mode="generated"`）**：无需提前手工准备 8760 行 CSV，直接指定年份、停电率/停电次数、单次时长分布（或每日固定停电窗）与随机种子 `seed`，工具确定性地生成全年 `0`/`1` 电网可用性序列并直接编码写入 `pvUnavail`。
+
+- 外部 CSV 或生成序列的年份和固定标准时 UTC 偏移必须与负荷清单完全一致。工具会将其编码为有符号 base62 的 `+0` / `+G8`（`WRFactor=1000`）写入 `pvUnavail` 块的 `Day_DDMM` 缓存中。
 - **`reserve_soc`（`SOCDischSelf`）与 `soc_min`（`SOCDischDecl`）的区别**：在 `WeakGrid` 模式下，当电网正常供电（`1`）时，电池自发自用放电只会放到 `reserve_soc` 就停下，把剩余电量留作备电；一旦发生电网停电（`0`），电池则会继续向下放电直到触及硬下限 `soc_min`。
 
 ## 4. 防逆流开关（`allow_grid_export`）与能量平衡核对

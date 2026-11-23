@@ -18,10 +18,11 @@
 
 ## 只读检查与可写范围的区别
 
-`pvsyst_get_variant_parameters` 的覆盖面比写入接口更广——有些复杂块（比如 `FresnelSmooth`/`UserProfile` 的自定义 IAM 点表、多级变压器损耗字段、`SystemUnavail` 随机停运时段）目前只支持读出保存状态，尚未开放直接修改。
+`pvsyst_get_variant_parameters` 的覆盖面比写入接口略广——部分高阶结构（例如 `FresnelSmooth` / `UserProfile` 的自定义 IAM 折线点表、遗留 8.0 `DCGrid` 声明以及已保存 3D 场景的 `pv_bindings`）目前仍以只读检查为主；而多级 MV/HV 变压器（`pvsyst_configure_transformers`）、PV 系统计划/随机停运（`system_unavailability_updates`）、光谱修正（`spectral_updates`）以及原生 PDF 财务块（`native_economics_updates`）均已开放直接写入并通过 PVsyst 8.1.7 CLI 实测。
 
 各个可写领域的具体前提条件（例如 `p50_p90_updates` 要求变体已具备结果模板标志 `$01800001`）以对应写入工具的文档为准：
 - [P50/P90 参数编辑](p50-native-parameters.md)
 - [老化与 IAM 输入](native-model-inputs.md)
+- [详细损失、光谱修正与系统停运](native-detailed-losses.md)
 - [削峰放电控制](native-peak-shaving.md)
 - [AC 线缆配置](native-ac-cabling.md)与多级 MV/HV 变压器（`pvsyst_configure_transformers`）

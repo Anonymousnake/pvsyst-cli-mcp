@@ -4,13 +4,13 @@ The engineering workflow tools wrap a common four-step cycle around an existing 
 
 ## Workflow steps
 
-1. **Inspect inputs (`pvsyst_project_handoff`)** (requires `expert` in `PVSYST_TOOL_GROUPS`): Read-only check on `(project, variant, declarations?)`. Parses the saved equipment models, inverter/string counts, subarray-to-orientation links, `.SIT`/`.MET` bindings, load profile, and battery storage settings. Caller-provided declarations (such as nominal nameplate power or weather provenance) are kept separate from template-inherited fields, and any missing engineering inputs are returned with concrete follow-up actions.
+1. **Inspect inputs (`pvsyst_project_handoff`)**: Read-only check on `(project, variant, declarations?)`. Parses the saved equipment models, inverter/string counts, subarray-to-orientation links, `.SIT`/`.MET` bindings, load profile, and battery storage settings. Caller-provided declarations (such as nominal nameplate power or weather provenance) are kept separate from template-inherited fields, and any missing engineering inputs are returned with concrete follow-up actions.
 2. **Preview a revision (`pvsyst_run_engineering_task` with `dry_run=true`)**: Validates the source project and proposed `changes` without writing files. Supported revisions:
    - Fixed-plane grid projects: update `tilt`, `azimuth`, and supported loss scalars on a single-subarray, single-orientation variant (no active 3D scene or Module Layout).
    - `UnlimTracking` projects: update axis/backtracking/angle limits on an existing tracking template.
    - Centralized AC-coupled storage projects: bind a prepared hourly load and update storage scalars (see [engineering-storage.md](engineering-storage.md)).
 3. **Execute the revision (`pvsyst_run_engineering_task` with `dry_run=false`)**: Clones the source into `new_project` / `new_variant`, applies the parameter edits, runs a full calendar year through `PVsystCLI.exe`, and verifies the exported CSV/PDF (header context, full 8760/8784-hour calendar, units, finite columns, and standard PR). Writes a run manifest under `Results/<new-project-stem>_engineering_<year>.json`.
-4. **Package for delivery (`pvsyst_export_engineering_delivery`)** (requires `expert` in `PVSYST_TOOL_GROUPS`): Bundles `summary.md`, `inputs.md`, the `.PRJ` and selected `.VCx`, the simulation CSV/PDF, and the task manifest into a new `.zip` file under `Results`. If you pass `comparison_name`, the archive also includes the comparison JSON/CSV/Markdown reports and the `.PRJ`/`.VCx`/CSV/PDF assets for all two or three compared scenarios.
+4. **Package for delivery (`pvsyst_export_engineering_delivery`)**: Bundles `summary.md`, `inputs.md`, the `.PRJ` and selected `.VCx`, the simulation CSV/PDF, and the task manifest into a new `.zip` file under `Results`. If you pass `comparison_name`, the archive also includes the comparison JSON/CSV/Markdown reports and the `.PRJ`/`.VCx`/CSV/PDF assets for all two or three compared scenarios.
 
 Example request for `pvsyst_run_engineering_task`:
 

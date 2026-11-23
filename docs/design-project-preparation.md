@@ -6,11 +6,11 @@
 
 ## 入参说明
 
-请求体与 `pvsyst_simulate_design` 完全共用 `SingleDesignRequest` 结构（详见[单方案设计输入](single-design-inputs.md)）：
-- **适用范围**：单子阵列、单固定平面、无阴影场景的并网工程（`fixed_unshaded_grid`）。
-- **容量配置**：`capacity`（直接传电压/电流/温度边界）与 `electrical_design`（传带出处的温度系数和极值，由工具推导边界）二选一必填。
-- **气象配置**：`weather.mode` 支持 `existing`（直接绑定工作区已有 `.SIT`/`.MET`，可选传 `weather_manifest_name` 核对来源清单）、`csv`（把 `Meteo` 下的标准逐时 CSV 转成新 `.SIT`/`.MET`）和 `open_meteo`（从 Open-Meteo ERA5 下载指定年份数据并转成 `.SIT`/`.MET`）。
-- **模板选择**：传了 `template_project` / `variant` 就严格用指定模板；没传则自动扫描工作区筛选合格模板，若工作区为空还会自动用内置的标准种子模板初始化。
+请求体与 `pvsyst_simulate_design` 共用 `SingleDesignRequest` 结构（详见[单方案设计输入](single-design-inputs.md)）：
+- **适用范围**：支持并网单方案类型 `fixed_unshaded_grid`（单固定平面）、`ground_sheds`（无限棚架或有限 3D 地面阵列）与 `ground_tracker`（水平单轴跟踪）；`scope="stand_alone"` 离网方案暂不支持仅准备不仿真，会直接返回 `blocked`（请直接使用 `pvsyst_simulate_design`）。
+- **容量配置**：支持 `capacity`（直接传电压/电流/温度边界）、`electrical_design`（传带出处的温度系数和极值，由工具推导边界）或 `sizing_mode="auto_from_components"`（直接从明文 `.PAN`/`.OND` 自动推导并选型）。
+- **气象配置**：`weather.mode` 支持 `existing`（直接绑定工作区已有 `.SIT`/`.MET`，可选传 `weather_manifest_name` 核对来源清单）、`csv`（把 `Meteo` 下的标准逐时 CSV 转成新 `.SIT`/`.MET`）、`open_meteo`（Open-Meteo ERA5）、`pvgis_tmy`（PVGIS v5.3 TMY）和 `nasa_power`（NASA POWER）。
+- **模板选择**：传了 `template_project` / `variant` 就严格用指定模板；没传则自动扫描工作区筛选合格模板，若工作区为空还会自动用内置零模板合成器初始化。
 - **`report_pages`**：只校验页名是否合法并记入清单，留给后续真正跑仿真的工具使用。
 
 如果要一步到位完成“从资料摘录 → 准备源工程 → 3D 住宅建模与全年仿真”，也可以直接调用组合入口 `pvsyst_run_sourced_house_task`（见[引用资料到住宅交付](sourced-house-task.md)）。

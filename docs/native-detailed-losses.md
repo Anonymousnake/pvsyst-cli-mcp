@@ -1,6 +1,6 @@
-# 详细损失参数：失配、辅助耗电与停运配置
+# 详细损失参数：失配、辅助耗电、停运与光谱修正
 
-本文档说明 `pvsyst_update_variant_parameters` 中的 `string_mismatch_updates`（组串间电压失配）和 `auxiliary_updates` 的 `profile`（带阈值/比例的辅助耗电）模式。这两项均针对 PVsyst 8.1.6 单子阵列、单固定平面、自由地平线、无 3D 阴影的纯光伏并网变体，每次更新作为独立事务执行（可同时附带 `variant_name`）。
+本文档说明 `pvsyst_update_variant_parameters` 中的 `string_mismatch_updates`（组串间电压失配）、`auxiliary_updates` 的 `profile`（带阈值/比例的辅助耗电）、`system_unavailability_updates`（计划与随机停运）以及 `spectral_updates`（光谱修正）。每次更新作为独立事务执行（可同时附带 `variant_name`）。其中失配与辅助耗电 `profile` 要求单子阵列、单固定平面、自由地平线、无 3D 阴影的纯光伏并网变体；停运与光谱修正支持与多朝向及 3D 阴影变体叠加。
 
 ## 组串电压失配（`string_mismatch_updates`）
 
@@ -49,10 +49,18 @@
 ```
 
 - `mode="periods"`：传入 1..1000 条 `{date_beg, duration_hours}`（`date_beg` 为 `DD/MM/YY HH:MM`，`duration_hours` 为 `(0, 8784]` 小时），生成或替换 `SystemUnavail=TUnavailability`（`DefMode=Periods`）并置位 `pvSystem.Flags` 的 `0x00010000`。
+- `mode="random"`：按随机故障分布生成或替换 `SystemUnavail=TUnavailability`（传入目标停运比例 `time_fraction_pct` 或总时长、停运次数 `nb_periods` 与可选随机种子 `seed`），工具确定性地在全年内生成不重叠停运时段并置位 `0x00010000`。
 - `mode="none"`：移除所属 `pvSystem` 的 `SystemUnavail=TUnavailability` 子对象并清零 `0x00010000` 标志位。
 - 该操作支持单面或多面并网变体（可与 3D 阴影场景、DC/AC 线缆、负荷及详细损失叠加组合），已缓存的 `VarList` 会在写入时自动清理。
 
-配置更新返回的 `native_consumption_verified=false` 不是运行结果，实际仿真仍通过 `pvsyst_run_simulation` 执行；写入 `Periods` 后在 PVsystCLI 8.1.7 中已实测产生相应的发电中断与 `E_Grid` 下降。
+配置更新返回的 `native_consumption_verified=false` 不是运行结果，实际仿真仍通过 `pvsyst_run_simulation` 执行；写入 `Periods` 或 `Random` 后在 PVsystCLI 8.1.7 中已实测产生相应的发电中断与 `E_Grid` 下降。
+
+## 光谱修正（`spectral_updates`）
+
+在 `pvsyst_update_variant_parameters` 中传入 `spectral_updates` 可配置或清除组件光谱失配修正（已在 PVsystCLI 8.1.7 实测通过）：
+- `mode="first_solar"`：启用 First Solar 光谱修正模型（要求关联的 `.MET` 文件包含可降水量 PW 或相对湿度 RH 数据）。
+- `mode="user_monthly"`：传入 12 个月的自定义光谱修正比例列表（`monthly_pct`），按月修正入射有效辐照度。
+- `mode="none"`：关闭光谱修正并清理对应的原生标志位与参数块。
 
 ## 其他详细损失项入口索引
 
