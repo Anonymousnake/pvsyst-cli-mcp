@@ -10,11 +10,12 @@ gate. Standard library only.
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import re
 
-from pvsyst_auto.components.editor import objects, replace_value
-from pvsyst_auto.project.tracking import _decimal, _require_scope
+from pvsyst_auto.components.editor import objects, replace_value, root_block
+from pvsyst_auto.project.tracking import _decimal
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
-from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
+from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 TYPES = ("Sheds", "SunShields")
 # Recorded owning field sequence; shape errors stop rather than being patched around.
@@ -45,6 +46,45 @@ NONNEGATIVE_LENGTHS = ("InactiveBandWidth1", "InactiveBandWidth2")
 FACTOR_LIMITS = (Decimal("0"), Decimal("1"))
 
 
+_HEX_FLAG = re.compile(r"\$[0-9A-Fa-f]{1,8}")
+
+
+def _require_shed_scope(store, lines, arrays, system):
+    """Allow native or synthesized single-orientation Grid Sheds/SunShields variants (including non-zero root/trf Flags)."""
+    root = root_block(lines)
+    if root.one("Version")[1] not in NATIVE_TEXT_OR_SEED:
+        raise ValueError(f"Requires a native {SEED_LABEL} variant")
+    if not _HEX_FLAG.fullmatch(root.one("Flags")[1]):
+        raise ValueError("Root Flags must be hexadecimal")
+    if system is None or len(arrays) != 1:
+        raise ValueError("Requires one pvSystem and one subarray")
+    system_root = root_block(lines, system)
+    if system_root.one("SystemType")[1] != "Grid":
+        raise ValueError("Requires SystemType=Grid")
+    if "Flags" in system_root.fields and not _HEX_FLAG.fullmatch(system_root.one("Flags")[1]):
+        raise ValueError("pvSystem Flags must be hexadecimal")
+    main = store._main_array(lines)
+    if main is None:
+        raise ValueError("A pvMainArray section is required")
+    main_root = root_block(lines, main)
+    if not _HEX_FLAG.fullmatch(main_root.one("Flags")[1]) or main_root.one("Flags2")[1] != "$082A":
+        raise ValueError("Main array requires hexadecimal Flags and Flags2=$082A")
+    sub_root = root_block(lines, next(iter(arrays.values())))
+    if sub_root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or not _HEX_FLAG.fullmatch(sub_root.one("Flags")[1]):
+        raise ValueError(f"Subarray requires native {SEED_LABEL} and hexadecimal Flags")
+    strings = sub_root.one("NStringCh")[1]
+    if (sub_root.one("NoOrientation")[1] != "1" or not strings.isdigit() or int(strings) < 1
+            or sub_root.one("NStrOrient1")[1] != strings):
+        raise ValueError("Requires all strings on orientation 1 with NStrOrient1 equal to NStringCh")
+    if any(key.startswith("NStrOrient") and key != "NStrOrient1" and sub_root.one(key)[1] != "0"
+           for key in sub_root.fields):
+        raise ValueError("Every other NStrOrient* must be zero")
+    store._orientation_list(lines)
+    store._require_no_geometry(lines)
+    if any(block.object_type in ("pvLoad", "pvGridStorage") for block in objects("".join(lines))):
+        raise ValueError("Load and storage objects are outside this batch")
+
+
 def orient_block(lines):
     """Return the one directly owned shed/sun-shield record after checking its shape."""
     blocks = objects("".join(lines))
@@ -57,24 +97,28 @@ def orient_block(lines):
     fieldtype = block.one("FieldType")[1]
     if fieldtype not in TYPES:
         raise ValueError(f"Only a Sheds or SunShields record is supported, not {fieldtype}")
-    if set(block.fields) != set(OWN):
-        raise ValueError(f"{fieldtype} record fields do not match the recorded native shape")
-    for name in OWN:
+    required = set(WRITABLE.values()) | {"NoOrient", "FieldType"}
+    if not required <= set(block.fields):
+        missing = sorted(required - set(block.fields))
+        raise ValueError(f"{fieldtype} record is missing required shed fields: {', '.join(missing)}")
+    for name in required:
         block.one(name)  # duplicates stop here
-    if block.one("Version")[1] not in NATIVE_TEXT or block.one("Flags")[1] != "$00":
-        raise ValueError(f"pvOrient requires Version={TEXT_LABEL} and Flags=$00")
+    if "Version" in block.fields and block.one("Version")[1] not in NATIVE_TEXT_OR_SEED:
+        raise ValueError(f"pvOrient requires Version={SEED_LABEL}")
+    if "Flags" in block.fields and block.one("Flags")[1] != "$00":
+        raise ValueError("pvOrient requires Flags=$00")
     if block.one("NoOrient")[1] != "1":
         raise ValueError("Only orientation 1 is supported")
     targets = set(WRITABLE.values())
     for other in blocks:
-        if other is block:
+        if other is block or other.object_type in ("pvBiFacial", "pvBiFacialSheds", "pvBiFacialTrackers"):
             continue
         if set(other.fields) & targets:
             raise ValueError("Shed geometry fields must exist only in the owning pvOrient record")
     for name in AVER:
-        if block.one(name)[1] != "False":
+        if name in block.fields and block.one(name)[1] != "False":
             raise ValueError(f"{name} must stay False")
-    if block.one("BTNoTrackers")[1] != BT_NO_TRACKERS:
+    if "BTNoTrackers" in block.fields and block.one("BTNoTrackers")[1] != BT_NO_TRACKERS:
         raise ValueError(f"BTNoTrackers must stay {BT_NO_TRACKERS}")
     _check_domain(block)
     return block
@@ -172,7 +216,7 @@ def create_shed_variant(store, *, project, source_variant, new_variant, geometry
     """Preview or create a NEW VC editing the shed or sun-shield geometry."""
     def build(*, lines, **_):
         arrays, system = store._sections(lines)
-        _require_scope(store, lines, arrays, system)
+        _require_shed_scope(store, lines, arrays, system)
         block = orient_block(lines)
         fieldtype = block.one("FieldType")[1]
         values = shed_values(geometry)
@@ -183,7 +227,7 @@ def create_shed_variant(store, *, project, source_variant, new_variant, geometry
 
         def verify(checked, _, res):
             checked_arrays, checked_system = store._sections(checked)
-            _require_scope(store, checked, checked_arrays, checked_system)
+            _require_shed_scope(store, checked, checked_arrays, checked_system)
             verified = orient_block(checked)
             if verified.one("FieldType")[1] != fieldtype or any(
                     verified.one(name)[1] != rendered for name, rendered in values.items()):

@@ -541,6 +541,22 @@ def run_utility_design(
                         f"Selected PAN {pan_name} is monofacial (pvModule Flags lacks bifacial bit 23 / $00800000); "
                         "PVsystCLI ignores pvBiFacial unless the .PAN module declares bifaciality",
                     )
+            trf_spec = spec.get("transformers")
+            if trf_spec:
+                from pvsyst_auto.energy.transformers import apply_transformers_to_variant_text
+                vc0_with_trf, trf_summary = apply_transformers_to_variant_text(
+                    synth_preview["vc0_text"],
+                    mv=trf_spec.get("mv"),
+                    hv=trf_spec.get("hv"),
+                    default_ref_power_kw=nominal_dc_kw,
+                    components=getattr(store, "components", None),
+                )
+                synth_preview["vc0_text"] = vc0_with_trf
+                result["utility_summary"]["transformers"] = trf_summary
+                result["warnings"].extend(trf_summary.get("warnings") or ())
+            # Validate synthesized .VC0 object structure in memory during preflight (including dry_run)
+            from pvsyst_auto.components.editor import objects as parse_objects
+            parse_objects(synth_preview["vc0_text"].lstrip("\ufeff"))
         except (ValueError, OSError, KeyError) as exc:
             issue("utility_synthesis", exc)
 
@@ -567,15 +583,6 @@ def run_utility_design(
         stage("synthesize")
         vc0_text = synth_preview["vc0_text"]
         trf_spec = spec.get("transformers")
-        if trf_spec:
-            from pvsyst_auto.energy.transformers import apply_transformers_to_variant_text
-            vc0_text, trf_summary = apply_transformers_to_variant_text(
-                vc0_text,
-                mv=trf_spec.get("mv"),
-                hv=trf_spec.get("hv"),
-                default_ref_power_kw=capacity_plan.get("actual_dc_kw") or spec.get("target_dc_kw"),
-            )
-            result["utility_summary"]["transformers"] = trf_summary
         created = store.create_project(new_project, synth_preview["prj_text"], {variant: vc0_text})
         result["transactions"].append({"tool": "create_project", "result": created})
         result["working_files"] = store.inspect_project(new_project)["files"]

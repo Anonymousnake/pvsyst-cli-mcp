@@ -139,9 +139,24 @@ class VariantStore:
 
     @staticmethod
     def _field_indices(lines: list[str], bounds: tuple[int, int], key: str) -> list[int]:
-        if lines[bounds[0]].strip() in (*STARTS.values(), "PVObject_PVMainArray=pvMainArray"):
+        first = lines[bounds[0]].strip()
+        if first in (*STARTS.values(), "PVObject_PVMainArray=pvMainArray"):
             root = next(block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path)
             return [bounds[0] + index for index, _ in root.fields.get(key, [])]
+        if first == "PVObject_=pvOrient":
+            depth = 0
+            found: list[int] = []
+            for index in range(bounds[0] + 1, bounds[1]):
+                stripped = lines[index].strip()
+                if stripped.startswith("PVObject_"):
+                    depth += 1
+                    continue
+                if stripped.startswith("End of PVObject "):
+                    depth = max(0, depth - 1)
+                    continue
+                if depth == 0 and (match := FIELD.fullmatch(lines[index].rstrip("\r\n"))) and match[1] == key:
+                    found.append(index)
+            return found
         return [index for index in range(bounds[0] + 1, bounds[1])
                 if (match := FIELD.fullmatch(lines[index].rstrip("\r\n"))) and match[1] == key]
 
@@ -303,17 +318,30 @@ class VariantStore:
             raise ValueError(f"Orientation has no assigned subarray: {sorted(unused)}")
         return header, groups
 
+    # Documented pvMainArray.Flags bits toggled by MV/HV transformers, AC cabling, and default-loss overrides
+    _VERIFIED_MAIN_FLAG_MASK = 0x21EC0000
+
+    @classmethod
+    def _is_verified_main_flags(cls, raw: str) -> bool:
+        if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", raw):
+            return False
+        return (int(raw[1:], 16) & ~cls._VERIFIED_MAIN_FLAG_MASK) in (0x00100400, 0x00000400)
+
     @staticmethod
-    def _ordinary_fixed_plane(lines, bounds, allow_missing_flags=False):
-        if any(line.strip().startswith("PVObject_") or line.strip().endswith("=Start")
+    def _ordinary_fixed_plane(lines, bounds, allow_missing_flags=False, allow_sheds=False):
+        _allowed_nested = ("PVObject_Bifacial=", "PVObject_BiFacialShedModel=", "PVObject_BiFacialTrackerModel=")
+        if any((line.strip().startswith("PVObject_") and not line.strip().startswith(_allowed_nested))
+               or line.strip().endswith("=Start")
                for line in lines[bounds[0] + 1:bounds[1]]):
             raise ValueError("Operation requires a flat fixed-plane record")
-        for key, expected in (("FieldType", "FixedPlane"), ("Flags", "$00")):
-            indices = VariantStore._field_indices(lines, bounds, key)
-            if key == "Flags" and not indices and allow_missing_flags:
-                continue
-            if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] != expected:
-                raise ValueError(f"Operation requires ordinary {key}={expected}")
+        allowed_types = ("FixedPlane", "Sheds") if allow_sheds else ("FixedPlane",)
+        ft_indices = VariantStore._field_indices(lines, bounds, "FieldType")
+        if len(ft_indices) != 1 or FIELD.fullmatch(lines[ft_indices[0]].rstrip("\r\n"))[2] not in allowed_types:
+            raise ValueError("Operation requires ordinary FieldType=FixedPlane" + (" or Sheds" if allow_sheds else ""))
+        fl_indices = VariantStore._field_indices(lines, bounds, "Flags")
+        if fl_indices or not allow_missing_flags:
+            if len(fl_indices) != 1 or FIELD.fullmatch(lines[fl_indices[0]].rstrip("\r\n"))[2] != "$00":
+                raise ValueError("Operation requires ordinary Flags=$00")
         for key in ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"):
             indices = VariantStore._field_indices(lines, bounds, key)
             if indices and (len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] != "False"):
@@ -349,7 +377,7 @@ class VariantStore:
             raise ValueError(f"UVFactor editing requires a verified {SEED_LABEL} grid main array")
         flags = VariantStore._field_indices(lines, main_array, "Flags")
         flags2 = VariantStore._field_indices(lines, main_array, "Flags2")
-        if (len(flags) != 1 or FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2] not in ("$00100400", "$01900400")
+        if (len(flags) != 1 or not VariantStore._is_verified_main_flags(FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2])
                 or len(flags2) != 1 or FIELD.fullmatch(lines[flags2[0]].rstrip("\r\n"))[2] != "$082A"):
             raise ValueError("UVFactor editing requires verified main-array Flags/Flags2")
         if len(VariantStore._field_indices(lines, main_array, "UVFactor")) != 1:

@@ -93,9 +93,17 @@ def _normalize_mv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str
     v_kv = _finite_pos(raw.get("output_voltage_kv", 20.0), "mv.output_voltage_kv")
     if not 1.0 <= v_kv <= 66.0:
         raise ValueError("mv.output_voltage_kv must be in [1.0, 66.0] kV")
+    night = raw.get("night_disconnect", False)
+    if type(night) is not bool:
+        raise ValueError("mv.night_disconnect must be a strict boolean")
+    cable = _normalize_cable(raw.get("cable"), "mv", default_section=150, default_metal="Copper")
+
     ref = raw.get("stc_ref_power_kw") if raw.get("stc_ref_power_kw") is not None else default_ref_kw
     if ref is None:
-        raise ValueError("mv.stc_ref_power_kw is required when the source has no reference power")
+        raise ValueError(
+            "mv.stc_ref_power_kw is required when the source has no reference power "
+            "(cannot infer from variant or .PAN files)"
+        )
     ref_kw = _finite_pos(ref, "mv.stc_ref_power_kw")
 
     ds_nom = raw.get("nominal_power_kva")
@@ -115,12 +123,11 @@ def _normalize_mv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str
         iron_frac = _finite_pos(raw.get("iron_loss_frac", 0.001), "mv.iron_loss_frac", allow_zero=True)
         copper_frac = _finite_pos(raw.get("copper_loss_frac", 0.010), "mv.copper_loss_frac", allow_zero=True)
     if iron_frac > 0.05 or copper_frac > 0.15:
-        raise ValueError("MV transformer loss fractions out of realistic bounds (iron <= 5%, copper <= 15%)")
+        raise ValueError(
+            f"MV transformer loss fractions out of realistic bounds (iron <= 5%, copper <= 15%; "
+            f"got iron={iron_frac * 100:.2f}%, copper={copper_frac * 100:.2f}% using stc_ref_power_kw={ref_kw:g} kW)"
+        )
 
-    night = raw.get("night_disconnect", False)
-    if type(night) is not bool:
-        raise ValueError("mv.night_disconnect must be a strict boolean")
-    cable = _normalize_cable(raw.get("cable"), "mv", default_section=150, default_metal="Copper")
     return {
         "count": count,
         "output_voltage_kv": v_kv,
@@ -144,9 +151,17 @@ def _normalize_hv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str
     v_kv = _finite_pos(raw.get("output_voltage_kv", 110.0), "hv.output_voltage_kv")
     if not 30.0 <= v_kv <= 500.0:
         raise ValueError("hv.output_voltage_kv must be in [30.0, 500.0] kV")
+    night = raw.get("night_disconnect", False)
+    if type(night) is not bool:
+        raise ValueError("hv.night_disconnect must be a strict boolean")
+    cable = _normalize_cable(raw.get("cable"), "hv", default_section=240, default_metal="Aluminium")
+
     ref = raw.get("stc_ref_power_kw") if raw.get("stc_ref_power_kw") is not None else default_ref_kw
     if ref is None:
-        raise ValueError("hv.stc_ref_power_kw is required when the source has no reference power")
+        raise ValueError(
+            "hv.stc_ref_power_kw is required when the source has no reference power "
+            "(cannot infer from variant or .PAN files)"
+        )
     ref_kw = _finite_pos(ref, "hv.stc_ref_power_kw")
     # PVsyst 8.1.7 ALWAYS requires HV datasheet specifications (HVTrfDSNomPower / IronLoss / CopperLoss)
     ds_nom = _finite_pos(raw["nominal_power_kva"], "hv.nominal_power_kva") if raw.get("nominal_power_kva") is not None else round(ref_kw * 1.15, 2)
@@ -165,11 +180,10 @@ def _normalize_hv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str
         copper_frac = _finite_pos(copper_frac_in if copper_frac_in is not None else 0.0065, "hv.copper_loss_frac", allow_zero=True)
         ds_copper = round(copper_frac * ds_nom * ds_nom / ref_kw, 5)
     if iron_frac > 0.05 or copper_frac > 0.15:
-        raise ValueError("HV transformer loss fractions out of realistic bounds (iron <= 5%, copper <= 15%)")
-    night = raw.get("night_disconnect", False)
-    if type(night) is not bool:
-        raise ValueError("hv.night_disconnect must be a strict boolean")
-    cable = _normalize_cable(raw.get("cable"), "hv", default_section=240, default_metal="Aluminium")
+        raise ValueError(
+            f"HV transformer loss fractions out of realistic bounds (iron <= 5%, copper <= 15%; "
+            f"got iron={iron_frac * 100:.2f}%, copper={copper_frac * 100:.2f}% using stc_ref_power_kw={ref_kw:g} kW)"
+        )
     return {
         "output_voltage_kv": v_kv,
         "output_voltage_v": int(round(v_kv * 1000.0)),
@@ -185,30 +199,77 @@ def _normalize_hv(raw: dict[str, Any], default_ref_kw: float | None) -> dict[str
     }
 
 
-def _infer_ref_power_kw(lines: list[str], default_ref_kw: float | None = None) -> float | None:
+def _read_pan_pnom_wp(components, pan_name: str) -> float | None:
+    if components is None or not pan_name:
+        return None
+    for library in ("workspace", "builtin"):
+        try:
+            pan_path = components._path("PAN", pan_name, library)
+            if not pan_path.is_file():
+                continue
+            raw = components._read(pan_path)
+            text = raw.decode("utf-8-sig", errors="replace")
+            for blk in objects(text):
+                if blk.object_type == "pvModule" and "PNom" in blk.fields:
+                    val = float(blk.one("PNom")[1])
+                    if math.isfinite(val) and val > 0:
+                        return val
+        except (ValueError, OSError, KeyError, AttributeError):
+            continue
+    return None
+
+
+def _infer_ref_power_kw(
+    lines: list[str],
+    default_ref_kw: float | None = None,
+    *,
+    components=None,
+) -> tuple[float | None, str]:
     if default_ref_kw is not None and default_ref_kw > 0:
-        return float(default_ref_kw)
+        return float(default_ref_kw), "explicit_default"
     blocks = objects("".join(lines))
     total_pnom = 0.0
     for b in blocks:
-        if b.object_type == "pvSubArray":
-            if "PNomSizing" in b.fields:
-                try:
-                    val = float(b.one("PNomSizing")[1])
-                    if val > 0:
-                        total_pnom += val
-                except (ValueError, TypeError):
-                    pass
+        if b.object_type == "pvSubArray" and "PNomSizing" in b.fields:
+            try:
+                val = float(b.one("PNomSizing")[1])
+                if math.isfinite(val) and val > 0:
+                    total_pnom += val
+            except (ValueError, TypeError):
+                pass
     if total_pnom > 0:
-        return total_pnom
+        return total_pnom, "pnom_sizing"
+
+    # Derive actual installed STC DC power: sum(NModSerie * NStringCh * PAN.PNom / 1000)
+    if components is not None:
+        subarrays = [b for b in blocks if b.object_type == "pvSubArray"]
+        if subarrays:
+            derived_kw = 0.0
+            all_resolved = True
+            for sa in subarrays:
+                try:
+                    pan_name = sa.one("PVModule")[1].strip()
+                    n_serie = int(sa.one("NModSerie")[1].strip())
+                    n_str = int(sa.one("NStringCh")[1].strip())
+                except (ValueError, KeyError):
+                    all_resolved = False
+                    break
+                pnom_wp = _read_pan_pnom_wp(components, pan_name)
+                if pnom_wp is None or n_serie <= 0 or n_str <= 0:
+                    all_resolved = False
+                    break
+                derived_kw += (n_serie * n_str * pnom_wp) / 1000.0
+            if all_resolved and derived_kw > 0:
+                return round(derived_kw, 5), "pan_subarray_stc"
+
     # Fallback to existing TransformerNode STCRefPower if present
     for b_line in lines:
         m = re.match(r"^\s*STCRefPower=([0-9.]+)\s*$", b_line)
         if m:
             val = float(m.group(1))
-            if val > 0:
-                return val
-    return None
+            if math.isfinite(val) and val > 0:
+                return val, "existing_stc_ref_power"
+    return None, "unknown"
 
 
 def _cable_block(cable: dict[str, Any] | None, indent: str, eol: str) -> list[str]:
@@ -295,6 +356,7 @@ def apply_transformers_to_variant_lines(
     hv: dict[str, Any] | None = None,
     remove_transformers: bool = False,
     default_ref_power_kw: float | None = None,
+    components=None,
 ) -> tuple[list[str], dict[str, Any]]:
     """Pure text transformer builder/editor operating on parsed .VCx lines."""
     if remove_transformers and (mv is not None or hv is not None):
@@ -302,7 +364,10 @@ def apply_transformers_to_variant_lines(
     if not remove_transformers and mv is None:
         raise ValueError("Provide mv transformer specification (with optional hv), or set remove_transformers=True")
 
-    blocks = objects("".join(lines))
+    has_bom = bool(lines and lines[0].startswith("\ufeff"))
+    clean_lines = [lines[0].lstrip("\ufeff"), *lines[1:]] if has_bom else list(lines)
+
+    blocks = objects("".join(clean_lines))
     mains = [b for b in blocks if b.object_type == "pvMainArray"]
     systems = [b for b in blocks if b.object_type == "pvSystem"]
     if len(mains) != 1 or not mains[0].end_line:
@@ -315,13 +380,32 @@ def apply_transformers_to_variant_lines(
         raise ValueError("pvMainArray Flags must be hex ($XXXXXXXX)")
     flags_val = int(raw_flags[1:], 16)
 
-    eol = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
-    inj_start, inj_end, inv_blocks, _ = _extract_inverter_subtrees(lines)
-    base_indent = lines[inj_start][:len(lines[inj_start]) - len(lines[inj_start].lstrip(" "))]
+    eol = "\r\n" if clean_lines and clean_lines[0].endswith("\r\n") else "\n"
+    inj_start, inj_end, inv_blocks, _ = _extract_inverter_subtrees(clean_lines)
+    base_indent = clean_lines[inj_start][:len(clean_lines[inj_start]) - len(clean_lines[inj_start].lstrip(" "))]
 
-    ref_kw = _infer_ref_power_kw(lines, default_ref_power_kw)
+    ref_kw, ref_source = _infer_ref_power_kw(clean_lines, default_ref_power_kw, components=components)
     mv_norm = None if remove_transformers else _normalize_mv(mv, ref_kw)  # type: ignore[arg-type]
-    hv_norm = None if (remove_transformers or hv is None) else _normalize_hv(hv, ref_kw)
+    hv_default_ref = ref_kw if ref_kw is not None else (mv_norm["stc_ref_power_kw"] if mv_norm is not None else None)
+    hv_norm = None if (remove_transformers or hv is None) else _normalize_hv(hv, hv_default_ref)
+
+    warnings: list[str] = []
+    if mv_norm is not None and mv_norm.get("ds_nom_power") is not None:
+        mv_total_kva = mv_norm["count"] * mv_norm["ds_nom_power"]
+        ratio = mv_total_kva / mv_norm["stc_ref_power_kw"]
+        if ratio < 0.2 or ratio > 5.0:
+            warnings.append(
+                f"MV total transformer rating ({mv_norm['count']} x {mv_norm['ds_nom_power']:g} = {mv_total_kva:g} kVA) "
+                f"is {ratio:.2f}x of stc_ref_power_kw ({mv_norm['stc_ref_power_kw']:g} kW); verify rating/count/units."
+            )
+    if hv_norm is not None and hv_norm.get("ds_nom_power") is not None:
+        hv_kva = hv_norm["ds_nom_power"]
+        ratio = hv_kva / hv_norm["stc_ref_power_kw"]
+        if ratio < 0.2 or ratio > 5.0:
+            warnings.append(
+                f"HV transformer rating ({hv_kva:g} kVA) is {ratio:.2f}x of "
+                f"stc_ref_power_kw ({hv_norm['stc_ref_power_kw']:g} kW); verify rating/units."
+            )
 
     # 1. Build new InjectionPointNode tree
     new_inj: list[str] = [f"{base_indent}InjectionPointNode Start;{eol}"]
@@ -356,7 +440,7 @@ def apply_transformers_to_variant_lines(
     new_inj.append(f"{base_indent}InjectionPointNode End;{eol}")
 
     # 2. Replace InjectionPointNode in candidate lines
-    cand = list(lines[:inj_start]) + new_inj + list(lines[inj_end:])
+    cand = list(clean_lines[:inj_start]) + new_inj + list(clean_lines[inj_end:])
 
     # 3. Update pvMainArray Flags and header transformer scalar tags
     # Re-locate pvMainArray header (lines before PVObject_SystemCircuit=pvCircuit)
@@ -450,7 +534,8 @@ def apply_transformers_to_variant_lines(
     cand = cand[:main_start] + final_header + cand[circ_start:]
     cand, _ = strip_result_cache(cand)
 
-    # Verify structural integrity immediately
+    # Verify structural integrity immediately (both object tags and transformer circuit)
+    objects("".join(cand))
     state = transformer_state(cand)
     if state["issues"]:
         raise ValueError("Generated transformer circuit failed validation: " + "; ".join(state["issues"]))
@@ -458,12 +543,20 @@ def apply_transformers_to_variant_lines(
     if state["count"] != expected_layers:
         raise ValueError(f"Expected {expected_layers} TransformerNode layer(s), found {state['count']}")
 
+    if has_bom and cand:
+        cand[0] = "\ufeff" + cand[0]
+
     summary = {
         "remove_transformers": remove_transformers,
         "main_array_flags": f"${flags_val:08X}",
+        "stc_ref_power_kw": mv_norm["stc_ref_power_kw"] if mv_norm is not None else ref_kw,
+        "stc_ref_power_source": (
+            "explicit_mv" if (mv is not None and mv.get("stc_ref_power_kw") is not None) else ref_source
+        ),
         "mv": mv_norm,
         "hv": hv_norm,
         "transformer_state": state,
+        "warnings": warnings,
     }
     return cand, summary
 
@@ -479,6 +572,7 @@ def apply_transformers_to_variant_text(
     hv: dict[str, Any] | None = None,
     remove_transformers: bool = False,
     default_ref_power_kw: float | None = None,
+    components=None,
 ) -> tuple[str, dict[str, Any]]:
     """Convenience wrapper operating on a full .VCx text string."""
     lines = vc_text.splitlines(keepends=True)
@@ -488,6 +582,7 @@ def apply_transformers_to_variant_text(
         hv=hv,
         remove_transformers=remove_transformers,
         default_ref_power_kw=default_ref_power_kw,
+        components=components,
     )
     return "".join(new_lines), summary
 
@@ -520,15 +615,19 @@ def configure_transformers(
             mv=mv,
             hv=hv,
             remove_transformers=remove_transformers,
+            components=getattr(store, "components", None),
         )
 
         def verify(checked, _, res):
             verified = transformer_state(checked)
             if verified["issues"]:
                 raise ValueError("Verified variant transformer circuit has issues: " + "; ".join(verified["issues"]))
+            res["warnings"].extend(summary.get("warnings") or ())
             res["transformers"] = {
                 "remove_transformers": remove_transformers,
                 "main_array_flags": summary["main_array_flags"],
+                "stc_ref_power_kw": summary["stc_ref_power_kw"],
+                "stc_ref_power_source": summary["stc_ref_power_source"],
                 "mv": summary["mv"],
                 "hv": summary["hv"],
                 "layers": verified["count"],

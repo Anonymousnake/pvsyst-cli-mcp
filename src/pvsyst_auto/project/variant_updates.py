@@ -71,6 +71,22 @@ _EXCLUSIVE_CONTROLS = (
 )
 
 
+# Orthogonal whole-system/loss controls that can be safely applied in one transaction
+_COMPOSABLE_CONTROLS = frozenset({
+    "soiling_updates",
+    "system_unavailability_updates",
+    "grid_limit_updates",
+    "auxiliary_updates",
+    "inverter_temperature_updates",
+    "power_factor_updates",
+    "p50_p90_updates",
+    "power_controls_updates",
+    "bifacial_updates",
+    "spectral_updates",
+    "native_economics_updates",
+})
+
+
 def _validate_request(store, *, requested, generator_updates, dry_run, add_utf8_bom, variant_name,
                       power_sharing_enabled, independent_mppt_enabled, control_params):
     ageing_enabled = control_params.get("ageing_enabled")
@@ -85,7 +101,8 @@ def _validate_request(store, *, requested, generator_updates, dry_run, add_utf8_
     )
     active_controls = [(param, label, verb) for param, label, _, verb in _EXCLUSIVE_CONTROLS
                        if control_params.get(param) is not None]
-    if active_controls and (has_core_edit or len(active_controls) > 1):
+    all_composable = bool(active_controls) and all(param in _COMPOSABLE_CONTROLS for param, _, _ in active_controls)
+    if active_controls and (has_core_edit or (len(active_controls) > 1 and not all_composable)):
         _, label, verb = active_controls[0]
         if any(p == "system_unavailability_updates" for p, _, _ in active_controls):
             label, verb = "System-unavailability removal", "requires"
@@ -138,10 +155,11 @@ def _apply_core_edits(store, lines, arrays, system, *, subarray_id, orientation_
                 or any(len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT_OR_SEED
                        for indices in versions)):
             raise ValueError(f"Thermal editing requires a verified {SEED_LABEL} grid main array")
-        for key, accepted in (("Flags", ("$00100400", "$01900400")), ("Flags2", ("$082A",))):
-            indices = store._field_indices(lines, main_array, key)
-            if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in accepted:
-                raise ValueError("Thermal editing requires verified main-array Flags/Flags2")
+        flags = store._field_indices(lines, main_array, "Flags")
+        flags2 = store._field_indices(lines, main_array, "Flags2")
+        if (len(flags) != 1 or not store._is_verified_main_flags(FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2])
+                or len(flags2) != 1 or FIELD.fullmatch(lines[flags2[0]].rstrip("\r\n"))[2] != "$082A"):
+            raise ValueError("Thermal editing requires verified main-array Flags/Flags2")
     elif uv_only:
         store._uv_edit_gate(lines, system, arrays, main_array)
 
@@ -182,7 +200,7 @@ def _apply_core_edits(store, lines, arrays, system, *, subarray_id, orientation_
         if any("PVObject_ShdTable" in line for line in lines[bounds[0]:bounds[1] + 1]):
             raise ValueError("Orientation has a dependent shading table")
         store._require_no_geometry(lines)
-        store._ordinary_fixed_plane(lines, bounds, allow_missing_flags=True)
+        store._ordinary_fixed_plane(lines, bounds, allow_missing_flags=True, allow_sheds=True)
         targets.append((orientation_updates, ALLOWED_ORIENTATION, bounds))
 
     uv_changed = False
@@ -231,8 +249,8 @@ def _apply_core_edits(store, lines, arrays, system, *, subarray_id, orientation_
             raise ValueError("Capacity orientation ID must be an integer")
         orientation = store._orientation(lines, int(orientation_raw))
         types = store._field_indices(lines, orientation, "FieldType")
-        if len(types) != 1 or FIELD.fullmatch(lines[types[0]].rstrip("\r\n"))[2] != "FixedPlane":
-            raise ValueError("Capacity editing requires a fixed-plane orientation")
+        if len(types) != 1 or FIELD.fullmatch(lines[types[0]].rstrip("\r\n"))[2] not in ("FixedPlane", "Sheds"):
+            raise ValueError("Capacity editing requires a fixed-plane or unlimited sheds orientation")
         if independent_mppt_enabled is not None:
             extras["mppt_mode"] = set_independent_mppt(lines, arrays, subarray_id, independent_mppt_enabled)
         if power_sharing_enabled is not None:
@@ -278,14 +296,29 @@ def _apply_core_edits(store, lines, arrays, system, *, subarray_id, orientation_
     return uv_changed, extras
 
 
-def _apply_single_control(store, lines, arrays, system, *, subarray_id, orientation_id,
-                          bom_prefix, control_params):
+def _apply_controls(store, lines, arrays, system, *, subarray_id, orientation_id,
+                    bom_prefix, control_params):
     active = [(p, label, rkey) for p, label, rkey, _ in _EXCLUSIVE_CONTROLS
               if control_params.get(p) is not None]
     if not active:
         return {}
-    param_key, control, result_key = active[0]
-    payload = control_params[param_key]
+    combined = {}
+    for param_key, control, result_key in active:
+        # Refresh section bounds before each control in case a prior control inserted/removed lines
+        cur_arrays, cur_system = store._sections(lines)
+        step = _apply_one_control(
+            store, lines, cur_arrays, cur_system,
+            param_key=param_key, control=control, result_key=result_key,
+            payload=control_params[param_key],
+            subarray_id=subarray_id, orientation_id=orientation_id,
+            bom_prefix=bom_prefix,
+        )
+        combined.update(step)
+    return combined
+
+
+def _apply_one_control(store, lines, arrays, system, *, param_key, control, result_key, payload,
+                       subarray_id, orientation_id, bom_prefix):
     ageing_tx = param_key in ("ageing_updates", "ageing_enabled")
     if param_key == "power_controls_updates":
         control = "Combined power controls"
@@ -341,11 +374,12 @@ def _apply_single_control(store, lines, arrays, system, *, subarray_id, orientat
             or (param_key != "system_unavailability_updates" and has_object(lines, "pvGridStorage"))):
         raise ValueError(f"{control} editing requires a native {version_label} PV-only single-subarray Grid variant")
 
-    for key, accepted in (("Flags", ("$00100400", "$01900400")), ("Flags2", ("$082A",))):
-        if key == "Flags2" and ageing_tx:
-            continue
-        indices = store._field_indices(lines, main, key)
-        if len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in accepted:
+    flags_idx = store._field_indices(lines, main, "Flags")
+    if len(flags_idx) != 1 or not store._is_verified_main_flags(FIELD.fullmatch(lines[flags_idx[0]].rstrip("\r\n"))[2]):
+        raise ValueError(f"{control} editing requires verified main-array Flags/Flags2")
+    if not ageing_tx:
+        flags2_idx = store._field_indices(lines, main, "Flags2")
+        if len(flags2_idx) != 1 or FIELD.fullmatch(lines[flags2_idx[0]].rstrip("\r\n"))[2] != "$082A":
             raise ValueError(f"{control} editing requires verified main-array Flags/Flags2")
     if param_key == "seasonal_updates":
         store._require_no_geometry(lines)
@@ -484,7 +518,7 @@ def update_parameters(store, project: str, variant: str, expected_sha256: str | 
             independent_mppt_enabled=independent_mppt_enabled,
         )
         generator = replace_generator(lines, arrays, system, generator_updates, store.components) if generator_updates is not None else None
-        control_extras = _apply_single_control(
+        control_extras = _apply_controls(
             store, lines, arrays, system,
             subarray_id=subarray_id, orientation_id=orientation_id,
             bom_prefix=bom_prefix, control_params=control_params,
