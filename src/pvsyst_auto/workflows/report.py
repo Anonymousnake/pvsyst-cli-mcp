@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import html
+import itertools
 import math
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from pvsyst_auto.engineering.diagnostics import diagnose_simulation_csv
 from pvsyst_auto.engineering.economics import evaluate_economics
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.results import RegularResultCsv, energy_unit_scale
+from pvsyst_auto.validation import finite_number as _finite
 
 _PR_SCALE = {"ratio": 1.0, "%": 0.01}
 
@@ -32,6 +34,8 @@ _I18N = {
         "kpi_lcoe": "度电成本 LCOE",
         "kpi_npv": "净现值 NPV",
         "kpi_irr": "内部收益率 IRR",
+        "kpi_equity_irr": "资本金 IRR",
+        "kpi_min_dscr": "最低偿债备付率 DSCR",
         "kpi_payback": "静态回收期",
         "kpi_demand_savings": "年需量电费节省",
         "kpi_diag": "物理诊断",
@@ -101,6 +105,8 @@ _I18N = {
         "kpi_lcoe": "LCOE",
         "kpi_npv": "NPV",
         "kpi_irr": "IRR",
+        "kpi_equity_irr": "Equity IRR",
+        "kpi_min_dscr": "Min DSCR",
         "kpi_payback": "Simple Payback",
         "kpi_demand_savings": "Annual Demand Savings",
         "kpi_diag": "Diagnostics",
@@ -179,110 +185,127 @@ def _resolve_csv(workspace: Path | None, csv_name: str) -> Path:
 
 
 def _summarize_csv_for_report(csv_path: Path) -> dict[str, Any]:
-    """Single streaming pass to extract monthly PV yield/PR and loss-chain totals for charts.
+    """Single streaming pass to extract monthly PV yield/PR and loss-chain totals for charts."""
+    return _summarize_multi_csv_for_report([csv_path], [1.0])
 
-    Aligns monthly and annual PV yield with economics settlement: prefers EToGrid over E_Grid
-    and includes self-consumed PV energy (max(0, E_User - EFrGrid)) when E_User is present so
-    self-consumption and storage reports agree with economics tables.
-    """
-    reader = RegularResultCsv(
-        csv_path,
-        empty_message="Result CSV has no data rows",
-        irregular_message=(
-            "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
-            "cannot compute monthly energy or losses reliably"
-        ),
-        required_any_of=("EToGrid", "E_Grid"),
-        missing_required_message="Result CSV must include E_Grid or EToGrid for report generation",
-    )
 
-    idx: dict[str, int] = {}
-    export_col: str | None = None
+def _summarize_multi_csv_for_report(csv_paths: list[Path], weights: list[float]) -> dict[str, Any]:
+    """Single streaming pass over one or more aligned SFI CSVs for merged monthly yield/PR and losses."""
+    if not csv_paths or len(csv_paths) != len(weights):
+        raise ValueError("csv_paths and weights must be non-empty lists of identical length")
+    readers = [
+        RegularResultCsv(
+            p,
+            empty_message=f"Result CSV {p.name} has no data rows",
+            irregular_message=(
+                f"Result CSV {p.name} timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+                "cannot compute monthly energy or losses reliably"
+            ),
+            required_any_of=("EToGrid", "E_Grid"),
+            missing_required_message=f"Result CSV {p.name} must include E_Grid or EToGrid for report generation",
+        )
+        for p in csv_paths
+    ]
+
+    per_meta: list[dict[str, Any]] = []
     has_load = False
-    has_import = False
-    col_scale: dict[str, tuple[float, bool]] = {}
-    pr_scale = _PR_SCALE.get(reader.units.get("PR", ""), 1.0)
-
     monthly_pv_kwh = {m: 0.0 for m in range(1, 13)}
     monthly_pr_num = {m: 0.0 for m in range(1, 13)}
     monthly_pr_den = {m: 0.0 for m in range(1, 13)}
-    col_sums: dict[str, float] = {}
+    loss_cols = ("EArray", "E_Grid", "EToGrid", "IL_Pmax", "IL_Vmax", "IL_Vmin", "IL_Imax", "ShdElec", "EGrdLim", "EUnused")
+    loss_kwh_sums: dict[str, float] = {}
+    loss_seen: set[str] = set()
 
-    for stamp, row_data, dt_hours in reader.iter_rows():
-        if not col_scale:
-            idx = reader.idx
-            col_sums = {name: 0.0 for name in idx}
-            export_col = "EToGrid" if "EToGrid" in idx else "E_Grid"
-            has_load = "E_User" in idx
-            has_import = "EFrGrid" in idx
-            col_scale = {col: energy_unit_scale(reader.units.get(col, "")) for col in idx}
+    sentinel = object()
+    for row_idx, items in enumerate(itertools.zip_longest(*(r.iter_rows() for r in readers), fillvalue=sentinel)):
+        if any(item is sentinel for item in items):
+            raise ValueError("Merged result CSVs have different row counts; all portfolio CSVs must align")
+        stamp, _, dt_hours = items[0]
+        for k, (st_k, _, dt_k) in enumerate(items[1:], start=1):
+            if st_k != stamp or abs(dt_k - dt_hours) > 1e-6:
+                raise ValueError(
+                    f"Merged result CSV {csv_paths[k].name} timestamp mismatch at row {row_idx + 1}"
+                )
+        if not per_meta:
+            for r in readers:
+                idx = r.idx
+                per_meta.append({
+                    "reader": r,
+                    "idx": idx,
+                    "export_col": "EToGrid" if "EToGrid" in idx else "E_Grid",
+                    "has_load": "E_User" in idx,
+                    "has_import": "EFrGrid" in idx,
+                    "col_scale": {col: energy_unit_scale(r.units.get(col, "")) for col in idx},
+                    "pr_scale": _PR_SCALE.get(r.units.get("PR", ""), 1.0),
+                })
+                for lc in loss_cols:
+                    if lc in idx:
+                        loss_seen.add(lc)
+                        loss_kwh_sums.setdefault(lc, 0.0)
+            has_load = any(m["has_load"] for m in per_meta)
 
-        def kwh(col: str) -> float:
-            col_i = idx.get(col)
-            if col_i is None:
-                return 0.0
-            factor, needs_dt = col_scale[col]
-            if factor == 0.0:
-                raise ValueError(f"{col} requires a power or energy unit, got {reader.units.get(col, '')!r}")
-            v = row_data[col_i]
-            val = float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
-            return val * factor * (dt_hours if needs_dt else 1.0)
+        for meta, w, (_, row_data, dt_k) in zip(per_meta, weights, items):
+            idx = meta["idx"]
+            col_scale = meta["col_scale"]
+            reader_k = meta["reader"]
 
-        for name, col_i in idx.items():
-            v = row_data[col_i]
-            if isinstance(v, (int, float)) and math.isfinite(v):
-                col_sums[name] += float(v)
+            def kwh(col: str) -> float:
+                col_i = idx.get(col)
+                if col_i is None:
+                    return 0.0
+                factor, needs_dt = col_scale[col]
+                if factor == 0.0:
+                    raise ValueError(f"{col} requires a power or energy unit, got {reader_k.units.get(col, '')!r}")
+                v = row_data[col_i]
+                val = float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
+                return val * factor * (dt_k if needs_dt else 1.0)
 
-        raw_eg = kwh(export_col) if export_col else 0.0
-        e_exp = max(0.0, raw_eg)
-        if has_load:
-            e_user = max(0.0, kwh("E_User"))
-            if has_import:
-                e_imp = max(0.0, kwh("EFrGrid"))
-            elif "E_Solar" in idx:
-                e_imp = max(0.0, e_user - max(0.0, kwh("E_Solar")))
-            elif raw_eg < 0:
-                e_imp = -raw_eg
+            for lc in loss_cols:
+                if lc in idx:
+                    loss_kwh_sums[lc] += w * kwh(lc)
+
+            raw_eg = kwh(meta["export_col"])
+            e_exp = max(0.0, raw_eg)
+            if meta["has_load"]:
+                e_user = max(0.0, kwh("E_User"))
+                if meta["has_import"]:
+                    e_imp = max(0.0, kwh("EFrGrid"))
+                elif "E_Solar" in idx:
+                    e_imp = max(0.0, e_user - max(0.0, kwh("E_Solar")))
+                elif raw_eg < 0:
+                    e_imp = -raw_eg
+                else:
+                    e_imp = 0.0
+                self_cons = max(0.0, e_user - e_imp)
+                monthly_pv_kwh[stamp.month] += w * (e_exp + self_cons)
             else:
-                e_imp = 0.0
-            self_cons = max(0.0, e_user - e_imp)
-            monthly_pv_kwh[stamp.month] += e_exp + self_cons
-        else:
-            monthly_pv_kwh[stamp.month] += e_exp
+                monthly_pv_kwh[stamp.month] += w * e_exp
 
-        if "PR" in idx and "GlobInc" in idx:
-            gi = row_data[idx["GlobInc"]]
-            pr = row_data[idx["PR"]]
-            if (isinstance(gi, (int, float)) and math.isfinite(gi) and gi > 0
-                    and isinstance(pr, (int, float)) and math.isfinite(pr)):
-                monthly_pr_num[stamp.month] += float(gi) * float(pr) * pr_scale
-                monthly_pr_den[stamp.month] += float(gi)
+            if "PR" in idx and "GlobInc" in idx:
+                gi = row_data[idx["GlobInc"]]
+                pr = row_data[idx["PR"]]
+                if (isinstance(gi, (int, float)) and math.isfinite(gi) and gi > 0
+                        and isinstance(pr, (int, float)) and math.isfinite(pr)):
+                    monthly_pr_num[stamp.month] += w * float(gi) * float(pr) * meta["pr_scale"]
+                    monthly_pr_den[stamp.month] += w * float(gi)
 
-    rows = reader.rows_count
-    step_hours = (reader.step_minutes if reader.step_minutes else 60.0) / 60.0
-
-    def to_kwh(col: str, raw: float) -> float:
-        factor, needs_dt = col_scale.get(col, (0.0, False))
-        if factor == 0.0:
-            raise ValueError(f"{col} requires a power or energy unit, got {reader.units.get(col, '')!r}")
-        return raw * factor * (step_hours if needs_dt else 1.0)
-
+    rows = readers[0].rows_count
+    step_hours = (readers[0].step_minutes if readers[0].step_minutes else 60.0) / 60.0
     monthly_kwh = [round(monthly_pv_kwh[m], 2) for m in range(1, 13)]
     monthly_pr_pct = [
         round((monthly_pr_num[m] / monthly_pr_den[m]) * 100.0, 2) if monthly_pr_den[m] > 0 else None
         for m in range(1, 13)
     ]
-    losses = {
-        col: round(to_kwh(col, col_sums[col]), 2)
-        for col in ("EArray", "E_Grid", "EToGrid", "IL_Pmax", "IL_Vmax", "IL_Vmin", "IL_Imax", "ShdElec", "EGrdLim", "EUnused")
-        if col in col_sums
-    }
+    total_pr_den = sum(monthly_pr_den.values())
+    overall_weighted_pr = (sum(monthly_pr_num.values()) / total_pr_den) if total_pr_den > 0 else None
+    losses = {col: round(loss_kwh_sums[col], 2) for col in loss_cols if col in loss_seen}
     return {
         "rows": rows,
         "step_minutes": step_hours * 60.0,
         "has_load": has_load,
         "monthly_kwh": monthly_kwh,
         "monthly_pr_pct": monthly_pr_pct,
+        "overall_weighted_pr": round(overall_weighted_pr, 4) if overall_weighted_pr is not None else None,
         "losses_kwh": losses,
         "annual_e_grid_kwh": round(sum(monthly_pv_kwh.values()), 2),
     }
@@ -348,30 +371,80 @@ def generate_report(
             raise ValueError(f"Duplicate scenario label {label!r}; scenario labels must be unique")
         seen_labels.add(label)
         csv_name = sc.get("csv_name")
-        if not csv_name:
-            raise ValueError(f"scenarios[{idx_s}] ({label}) requires csv_name")
-        csv_path = _resolve_csv(workspace, csv_name)
+        csv_names = sc.get("csv_names")
+        if csv_name and csv_names:
+            raise ValueError(f"scenarios[{idx_s}] ({label}): specify either csv_name or csv_names, not both")
         proj = sc.get("project")
         var = sc.get("variant")
-        diag = diagnose_simulation_csv(
-            csv_path,
-            store=store if (proj and var) else None,
-            project=proj,
-            variant=var,
-            thresholds=thresholds,
-        )
-        csv_stats = _summarize_csv_for_report(csv_path)
-        parsed_scenarios.append({
-            "label": label,
-            "csv_name": csv_path.name,
-            "project": proj,
-            "variant": var,
-            "installed_dc_kw": sc.get("installed_dc_kw"),
-            "battery_kwh": sc.get("battery_kwh"),
-            "stats": csv_stats,
-            "diagnostics": diag,
-        })
-        econ_entry = {"label": label, "csv_path": csv_path}
+        if csv_names:
+            if not isinstance(csv_names, list) or not 1 <= len(csv_names) <= 20:
+                raise ValueError(f"scenarios[{idx_s}] ({label}): csv_names must contain 1..20 entries")
+            csv_paths = [_resolve_csv(workspace, name) for name in csv_names]
+            raw_weights = sc.get("csv_weights")
+            if raw_weights is None:
+                weights = [1.0] * len(csv_paths)
+            else:
+                if not isinstance(raw_weights, list) or len(raw_weights) != len(csv_paths):
+                    raise ValueError(f"scenarios[{idx_s}] ({label}): csv_weights length must match csv_names")
+                weights = [
+                    _finite(w, f"scenarios[{idx_s}].csv_weights[{wi}]", minimum=1e-9)
+                    for wi, w in enumerate(raw_weights)
+                ]
+            csv_stats = _summarize_multi_csv_for_report(csv_paths, weights)
+            member_diags = [
+                diagnose_simulation_csv(p, store=None, project=None, variant=None, thresholds=thresholds)
+                for p in csv_paths
+            ]
+            merged_findings: list[dict[str, Any]] = []
+            for p, d in zip(csv_paths, member_diags):
+                for f in d.get("findings") or ():
+                    item = dict(f)
+                    if len(csv_paths) > 1:
+                        item["message"] = f"[{p.name}] {item.get('message', '')}"
+                    merged_findings.append(item)
+            diag = {
+                "status": "blocked" if any(d.get("status") == "blocked" for d in member_diags) else "ok",
+                "needs_review": any(bool(d.get("needs_review")) for d in member_diags),
+                "finding_count": len(merged_findings),
+                "findings": merged_findings,
+                "weighted_pr": csv_stats.get("overall_weighted_pr"),
+            }
+            parsed_scenarios.append({
+                "label": label,
+                "csv_name": ", ".join(p.name for p in csv_paths),
+                "project": proj,
+                "variant": var,
+                "installed_dc_kw": sc.get("installed_dc_kw"),
+                "battery_kwh": sc.get("battery_kwh"),
+                "stats": csv_stats,
+                "diagnostics": diag,
+            })
+            econ_entry: dict[str, Any] = {"label": label, "csv_paths": csv_paths, "csv_weights": weights}
+        else:
+            if not csv_name:
+                raise ValueError(f"scenarios[{idx_s}] ({label}) requires csv_name or csv_names")
+            if sc.get("csv_weights") is not None:
+                raise ValueError(f"scenarios[{idx_s}] ({label}): csv_weights requires csv_names")
+            csv_path = _resolve_csv(workspace, csv_name)
+            diag = diagnose_simulation_csv(
+                csv_path,
+                store=store if (proj and var) else None,
+                project=proj,
+                variant=var,
+                thresholds=thresholds,
+            )
+            csv_stats = _summarize_csv_for_report(csv_path)
+            parsed_scenarios.append({
+                "label": label,
+                "csv_name": csv_path.name,
+                "project": proj,
+                "variant": var,
+                "installed_dc_kw": sc.get("installed_dc_kw"),
+                "battery_kwh": sc.get("battery_kwh"),
+                "stats": csv_stats,
+                "diagnostics": diag,
+            })
+            econ_entry = {"label": label, "csv_path": csv_path}
         for k in ("installed_dc_kw", "battery_kwh", "capex_total", "annual_opex", "replacement_events"):
             if sc.get(k) is not None:
                 econ_entry[k] = sc[k]
@@ -669,6 +742,11 @@ def generate_report(
         ])
         if primary_dc_summary is not None:
             kpis.append((t["kpi_demand_savings"], _fmt_num(primary_dc_summary.get("annual_demand_savings"), 0, f" {curr}")))
+        fin_sum = pf.get("financing_summary")
+        if isinstance(fin_sum, dict):
+            kpis.append((t["kpi_equity_irr"], _fmt_num(fin_sum.get("equity_irr_pct"), 2, " %")))
+            if fin_sum.get("min_dscr") is not None:
+                kpis.append((t["kpi_min_dscr"], _fmt_num(fin_sum.get("min_dscr"), 2, "x")))
 
     kpi_html = "".join(
         f'<div class="kpi"><div class="kpi-label">{html.escape(lbl)}</div><div class="kpi-val">{html.escape(val)}</div></div>'

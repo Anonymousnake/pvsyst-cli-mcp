@@ -76,10 +76,10 @@ EQUIPMENT_KEYS = frozenset(("file_name", "manufacturer", "model"))
 WEATHER_KEYS = frozenset((
     "mode", "sit_name", "met_name", "csv_name", "country_code", "time_basis", "location_id",
     "latitude", "longitude", "site_label", "altitude", "timezone_name", "temperature_method",
-    "weather_manifest_name",
+    "weather_manifest_name", "strict_dhi",
 ))
 REMOTE_WEATHER_MODES = ("open_meteo", "pvgis_tmy", "nasa_power")
-WEATHER_MODES = ("existing", "csv", *REMOTE_WEATHER_MODES)
+WEATHER_MODES = ("existing", "synthetic_from_site", "csv", *REMOTE_WEATHER_MODES)
 _PROVIDER_FOR_MODE = {
     "open_meteo": "open_meteo_era5",
     "pvgis_tmy": "pvgis_tmy",
@@ -270,8 +270,10 @@ def _check_weather(weather, spec_issues):
         bad(f"weather.{key}", "Unknown weather input")
     mode = weather.get("mode")
     if mode not in WEATHER_MODES:
-        bad("weather.mode", "Choose existing, csv, open_meteo, pvgis_tmy or nasa_power")
+        bad("weather.mode", "Choose existing, synthetic_from_site, csv, open_meteo, pvgis_tmy or nasa_power")
         return
+    if "strict_dhi" in weather and type(weather["strict_dhi"]) is not bool:
+        bad("weather.strict_dhi", "Use a strict boolean for strict_dhi")
     country_code = weather.get("country_code")
     if country_code is not None and (not _is_text(country_code) or not ISO_COUNTRY.fullmatch(country_code)):
         bad("weather.country_code", "Use an explicit uppercase ISO alpha-2 country code")
@@ -285,6 +287,12 @@ def _check_weather(weather, spec_issues):
         for key in ("sit_name", "met_name"):
             if not _is_text(weather.get(key)):
                 bad(f"weather.{key}", "Existing weather requires an explicit workspace SIT and MET filename")
+        return
+    if mode == "synthetic_from_site":
+        if not _is_text(weather.get("sit_name")):
+            bad("weather.sit_name", "synthetic_from_site requires an explicit workspace SIT filename")
+        if weather.get("met_name") is not None:
+            bad("weather.met_name", "synthetic_from_site generates hourly meteo from sit_name; omit met_name or use mode='existing'")
         return
     if mode == "csv":
         if not _is_text(weather.get("csv_name")):
@@ -652,7 +660,10 @@ def _native_preflight(cli, mode, *, prepare_only=False, allow_window_creation=No
         if not prepare_only:
             for option in SIMULATION_OPTIONS:
                 cli._require("run-simulation", option, allow_window_creation=allow_window_creation)
-        if mode != "existing":
+            if mode == "synthetic_from_site":
+                cli._require("run-simulation", "synthetic-weatherdata-generation",
+                             allow_window_creation=allow_window_creation)
+        if mode not in ("existing", "synthetic_from_site"):
             for option in SITE_OPTIONS:
                 cli._require("create-site", option, allow_window_creation=allow_window_creation)
             cli.command_help("convert-meteo", allow_window_creation=allow_window_creation)
@@ -722,9 +733,10 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     module, inverter, weather = spec["module"], spec["inverter"], spec["weather"]
     design, direct = spec.get("electrical_design"), spec.get("capacity")
     mode = weather["mode"]
+    synthetic_weather = mode == "synthetic_from_site"
     stem = Path(new_project).stem
     sit_name = weather.get("sit_name") or f"{stem}.SIT"
-    met_name = weather.get("met_name") or f"{stem}.MET"
+    met_name = "" if synthetic_weather else (weather.get("met_name") or f"{stem}.MET")
     csv_suffix = "openmeteo" if mode == "open_meteo" else mode
     csv_name = weather.get("csv_name") or (f"{stem}_{csv_suffix}.csv" if mode in REMOTE_WEATHER_MODES else "")
     country_code = weather.get("country_code") or ""
@@ -933,6 +945,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
                     country_code=country_code,
                     timezone_name=weather.get("timezone_name") or "",
                     temperature_method=weather.get("temperature_method") or TEMPERATURE_METHOD,
+                    strict_dhi=bool(weather.get("strict_dhi", False)),
                     dry_run=run,
                 )
                 if mode != "open_meteo":
@@ -1005,6 +1018,11 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         if dry_run:
             return _stop(result, "planned", "ready_for_weather")
         manifest_name = Path((prepare.get("artifacts") or {}).get("manifest", "")).name or manifest_name
+    elif synthetic_weather:
+        result["warnings"].append(
+            "weather.mode='synthetic_from_site' runs PVsystCLI with --synthetic-weather from the "
+            f"monthly site file {sit_name} without a pre-built hourly .MET file."
+        )
     elif not manifest_name:
         result["warnings"].append(
             "No prepared weather manifest was supplied for the existing weather inputs; the native "
@@ -1073,7 +1091,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             capacity_plan=utility_plan, sit_name=sit_name, met_name=met_name,
             weather_manifest_name=manifest_name, dry_run=dry_run, prepare_only=prepare_only,
             preparation_context=context.get("preparation_context"),
-            allow_window_creation=allow_window_creation))
+            allow_window_creation=allow_window_creation,
+            synthetic_weather=synthetic_weather))
     else:
         runner = prepare_template if prepare_only else simulate_template
         runner_kwargs = {"allow_window_creation": allow_window_creation} if prepare_only else {}
@@ -1082,7 +1101,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             pan_name=pan_name, ond_name=ond_name, site_name=sit_name, met_name=met_name, tilt=tilt,
             year=year, dry_run=dry_run, capacity=flat_capacity, weather_manifest_name=manifest_name,
             azimuth=azimuth, losses=losses or None,
-            report_pages=spec.get("report_pages"), **context, **runner_kwargs))
+            report_pages=spec.get("report_pages"), synthetic_weather=synthetic_weather,
+            **context, **runner_kwargs))
     if stopped is not None:
         result["warnings"].append(RETAINED_NOTE)
         return stopped

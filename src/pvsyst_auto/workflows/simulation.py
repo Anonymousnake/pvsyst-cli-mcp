@@ -22,13 +22,15 @@ def simulate_template(cli, store, *, template_project="", variant="", new_projec
                       pan_name="", ond_name="", site_name="", met_name="",
                       tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
                       report_pages=None, tracking=None, tracking_variant="",
-                      nominal_dc_power_kw=None, tracking_power_source=""):
+                      nominal_dc_power_kw=None, tracking_power_source="",
+                      synthetic_weather=False):
     # Hold one workspace lock; use separate workspaces for parallel native runs.
     with store.lock:
         return _simulate_template(cli, store, template_project, variant, new_project,
                                   pan_name, ond_name, site_name, met_name, tilt, year, dry_run, capacity, weather_manifest_name, azimuth, losses,
                                   report_pages=report_pages, tracking=tracking, tracking_variant=tracking_variant,
-                                  nominal_dc_power_kw=nominal_dc_power_kw, tracking_power_source=tracking_power_source)
+                                  nominal_dc_power_kw=nominal_dc_power_kw, tracking_power_source=tracking_power_source,
+                                  synthetic_weather=synthetic_weather)
 
 
 def prepare_template(cli, store, **kwargs):
@@ -42,11 +44,14 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                        dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
                        *, report_pages=None, prepare_only=False, preparation_context=None,
                        tracking=None, tracking_variant="", nominal_dc_power_kw=None, tracking_power_source="",
-                       allow_window_creation=None):
+                       allow_window_creation=None, synthetic_weather=False):
     tracking_mode = tracking is not None
     request = dict(template_project=template_project, variant=variant, new_project=new_project,
                    pan_name=pan_name, ond_name=ond_name, site_name=site_name, met_name=met_name,
                    tilt=tilt, year=year)
+    if synthetic_weather:
+        request.pop("met_name", None)
+        request["synthetic_weather"] = True
     if weather_manifest_name:
         request["weather_manifest_name"] = weather_manifest_name
     if capacity is not None:
@@ -213,8 +218,12 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             assets[kind] = {"path": str(path), "sha256": info["sha256"], "library": library}
         except (ValueError, OSError) as exc:
             issue("pan_name" if kind == "PAN" else "ond_name", exc)
-    for field, folder, name, extension in (("site_name", "Sites", site_name, ".SIT"),
-                                           ("met_name", "Meteo", met_name, ".MET")):
+    weather_targets = (
+        (("site_name", "Sites", site_name, ".SIT"),)
+        if synthetic_weather
+        else (("site_name", "Sites", site_name, ".SIT"), ("met_name", "Meteo", met_name, ".MET"))
+    )
+    for field, folder, name, extension in weather_targets:
         try:
             path = workspace_file(cli.workspace, folder, name, extension)
             if not path.is_file():
@@ -335,7 +344,10 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
         cloned = store.clone_project(template_project, new_project)
         transaction("clone_project", cloned)
         stage("sources")
-        sources = store.update_project_sources(new_project, site_name, met_name, cloned["files"])
+        sources = store.update_project_sources(
+            new_project, site_name, "" if synthetic_weather else met_name, cloned["files"],
+            allow_synthetic_met=synthetic_weather,
+        )
         transaction("update_project_sources", sources, {
             "action": "restore_project_sources", "arguments": {
                 "project": new_project, "backups": sources["backups"],
@@ -401,8 +413,12 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             if weather_report is not None:
                 variables.extend(["viGlobHor", "viDiffHor", "viT_Amb"])
             build_sfi(paths["sfi"], variables)
-            native_inputs = ({"site": Path(assets["site_name"]["path"]), "met": Path(assets["met_name"]["path"])}
-                             if weather_report is not None else {})
+            if synthetic_weather:
+                native_inputs = {"site": Path(assets["site_name"]["path"]), "synthetic_weather": True}
+            elif weather_report is not None:
+                native_inputs = {"site": Path(assets["site_name"]["path"]), "met": Path(assets["met_name"]["path"])}
+            else:
+                native_inputs = {}
             run = cli.run_simulation(new_project, variant, sfi=paths["sfi"], out_csv=paths["csv"],
                                      report_pdf=paths["pdf"], time_step="hour", start_date=f"{year}.01.01",
                                      end_date=f"{year}.12.31", report_language="en", log_level=3,
@@ -411,8 +427,10 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             result["warnings"].extend(run.get("warnings", []))
             stage("results")
             output_snapshot = fingerprint(paths["csv"])
-            expected_context = {"Project": new_project, "Geographical Site": site_name, "Weather data": met_name,
+            expected_context = {"Project": new_project, "Geographical Site": site_name,
                                 "Simulation variant": f"{Path(new_project).stem}.{variant}"}
+            if not synthetic_weather:
+                expected_context["Weather data"] = met_name
             context = {}
             with paths["csv"].open(encoding="utf-8-sig", errors="replace", newline="") as stream:
                 for row in csv.reader(stream, delimiter=";"):

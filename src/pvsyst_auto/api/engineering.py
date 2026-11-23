@@ -98,14 +98,15 @@ def pvsyst_evaluate_economics(
         tariff: EconomicsTariffConfig | None = None,
         sensitivity: EconomicsSensitivityConfig | None = None,
         rank_by: Literal[
-            "npv", "irr", "lcoe", "simple_payback_years",
+            "npv", "irr", "equity_irr", "lcoe", "simple_payback_years",
             "discounted_payback_years", "year1_net_benefit",
         ] = "npv",
         include_cashflow_schedule: StrictBool = True) -> dict:
-    """Pure-Python PV and PV+BESS financial evaluator: streams hourly or sub-hourly SFI CSVs
-    (or UserBatch summary CSVs) under fixed, time-of-use (TOU), or two-part demand-charge tariffs
-    to compute LCOE, NPV, IRR, simple/discounted payback, battery replacement cashflows,
-    one-at-a-time sensitivity sweeps, and scenario rankings."""
+    """Pure-Python PV and PV+BESS financial evaluator: streams single or weighted multi-CSV
+    hourly/sub-hourly SFI CSVs (or UserBatch summary CSVs) under fixed, TOU, or two-part
+    demand-charge tariffs to compute LCOE, NPV, pre/post-tax project IRR, levered Equity IRR
+    and DSCR (via optional composable VAT, CIT, loan financing, and staged OPEX tiers),
+    payback, sensitivity sweeps, and scenario rankings."""
     from pvsyst_auto.engineering.economics import evaluate_economics
     return evaluate_economics(
         workspace=cli().workspace,

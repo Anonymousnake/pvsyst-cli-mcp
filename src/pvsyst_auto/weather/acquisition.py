@@ -526,12 +526,29 @@ def _index_payload(payload):
     return values, labels
 
 
-def _build_rows(values, *, year, utc_start):
+TWILIGHT_GHI_MAX_WM2 = 30.0
+TWILIGHT_DHI_EXCESS_MAX_WM2 = 15.0
+
+
+def _clamp_dhi(ghi: float, dhi: float, *, strict_dhi: bool, allow_rounding: bool = True) -> tuple[float, str | None]:
+    """Return (clamped_dhi, reason) where reason is None, 'rounding', 'twilight', or 'reject'."""
+    if dhi <= ghi:
+        return dhi, None
+    excess = dhi - ghi
+    if allow_rounding and excess <= 2.0:
+        return ghi, "rounding"
+    if not strict_dhi and 0.0 < ghi < TWILIGHT_GHI_MAX_WM2 and excess <= TWILIGHT_DHI_EXCESS_MAX_WM2:
+        return ghi, "twilight"
+    return dhi, "reject"
+
+
+def _build_rows(values, *, year, utc_start, strict_dhi=False):
     """Build local-standard interval-start rows; every gap is a block, never a fill."""
     hours = _year_hours(year)
     local_start = datetime(year, 1, 1)
     missing, missing_count = [], 0
     inverted, negative, extreme = [], [], []
+    twilight_clamped, twilight_max_excess, twilight_sample = 0, 0.0, None
     rows = []
     for index in range(hours):
         local = local_start + timedelta(hours=index)
@@ -564,8 +581,17 @@ def _build_rows(values, *, year, utc_start):
                 + taken[(temperature_end, "temperature_2m")]) / 2
         if (ghi < 0 or dhi < 0) and len(negative) < 6:
             negative.append(f"{local.isoformat()} GHI={ghi} DHI={dhi}")
-        if dhi > ghi and len(inverted) < 6:
-            inverted.append(f"{local.isoformat()} GHI={ghi} DHI={dhi}")
+        if dhi > ghi:
+            clamped, reason = _clamp_dhi(ghi, dhi, strict_dhi=strict_dhi, allow_rounding=False)
+            if reason == "twilight":
+                excess = dhi - ghi
+                twilight_clamped += 1
+                if excess > twilight_max_excess:
+                    twilight_max_excess = excess
+                    twilight_sample = f"{local.isoformat()} GHI={ghi:.2f} DHI={dhi:.2f}"
+                dhi = clamped
+            elif len(inverted) < 6:
+                inverted.append(f"{local.isoformat()} GHI={ghi} DHI={dhi}")
         if tamb <= -273.15 and len(extreme) < 6:
             extreme.append(f"{local.isoformat()} Tamb={tamb}")
         rows.append((local, ghi, dhi, tamb))
@@ -582,6 +608,12 @@ def _build_rows(values, *, year, utc_start):
     if not issues and len(rows) != hours:
         issues.append(f"expected {hours} rows, built {len(rows)}")
     warnings = []
+    if twilight_clamped:
+        warnings.append(
+            f"Clamped {twilight_clamped} low-irradiance twilight hour(s) where DHI slightly exceeded "
+            f"GHI (0 < GHI < {TWILIGHT_GHI_MAX_WM2:g} W/m2, max excess {twilight_max_excess:.2f} W/m2, "
+            f"e.g. {twilight_sample}); pass strict_dhi=true to reject instead."
+        )
     if rows and any(row[3] < -60 or row[3] > 60 for row in rows):
         warnings.append("ambient temperatures outside -60..60 deg.C need source review")
     return rows, issues, warnings
@@ -623,6 +655,7 @@ def _download_pvgis_tmy(
     site: dict,
     notes: list[str],
     dry_run: bool,
+    strict_dhi: bool = False,
 ) -> dict:
     tmy_year = 2021 if year is None else year
     if type(tmy_year) is not int or not PREPARED_MIN_YEAR <= tmy_year <= MAX_YEAR:
@@ -719,6 +752,9 @@ def _download_pvgis_tmy(
         base_start = datetime(tmy_year, 1, 1, 0, 0)
         by_local_idx: dict[int, tuple[float, float, float]] = {}
         clamped_dhi = 0
+        twilight_clamped = 0
+        twilight_max_excess = 0.0
+        twilight_sample = None
         for row_idx, item in enumerate(hourly):
             if not isinstance(item, dict):
                 raise WeatherAcquisitionError(f"PVGIS TMY row {row_idx} is not an object")
@@ -738,9 +774,17 @@ def _download_pvgis_tmy(
             if ghi < 0 or dhi < 0:
                 raise WeatherAcquisitionError(f"Negative irradiance in PVGIS row {row_idx}")
             if dhi > ghi:
-                if dhi - ghi <= 2.0:
-                    dhi = ghi
+                clamped, reason = _clamp_dhi(ghi, dhi, strict_dhi=strict_dhi)
+                if reason == "rounding":
+                    dhi = clamped
                     clamped_dhi += 1
+                elif reason == "twilight":
+                    excess = dhi - ghi
+                    twilight_clamped += 1
+                    if excess > twilight_max_excess:
+                        twilight_max_excess = excess
+                        twilight_sample = f"{raw_time} GHI={ghi:.2f} DHI={dhi:.2f}"
+                    dhi = clamped
                 else:
                     raise WeatherAcquisitionError(f"PVGIS row {row_idx} has DHI ({dhi}) > GHI ({ghi})")
             by_local_idx[local_index] = (ghi, dhi, tamb)
@@ -749,6 +793,12 @@ def _download_pvgis_tmy(
             raise WeatherAcquisitionError(f"PVGIS TMY mapped {len(by_local_idx)} unique local hours; expected 8760")
         if clamped_dhi:
             result["warnings"].append(f"Clamped tiny rounding excess (<= 2 W/m2) where DHI > GHI on {clamped_dhi} hours.")
+        if twilight_clamped:
+            result["warnings"].append(
+                f"Clamped {twilight_clamped} low-irradiance twilight hour(s) where DHI slightly exceeded "
+                f"GHI (0 < GHI < {TWILIGHT_GHI_MAX_WM2:g} W/m2, max excess {twilight_max_excess:.2f} W/m2, "
+                f"e.g. {twilight_sample}); pass strict_dhi=true to reject instead."
+            )
         rows = [(base_start + timedelta(hours=h), *by_local_idx[h]) for h in range(8760)]
 
         result["stage"] = "write"
@@ -785,6 +835,7 @@ def _download_nasa_power(
     site: dict,
     notes: list[str],
     dry_run: bool,
+    strict_dhi: bool = False,
 ) -> dict:
     if type(year) is not int or not 2001 <= year <= MAX_YEAR:
         raise WeatherAcquisitionError(f"year for nasa_power must be an integer in 2001..{MAX_YEAR}")
@@ -889,6 +940,9 @@ def _download_nasa_power(
 
         rows = []
         clamped_dhi = 0
+        twilight_clamped = 0
+        twilight_max_excess = 0.0
+        twilight_sample = None
         for step in range(hours):
             utc_dt = utc_start + timedelta(hours=step)
             local_dt = datetime(year, 1, 1) + timedelta(hours=step)
@@ -903,15 +957,29 @@ def _download_nasa_power(
             if ghi < 0 or dhi < 0:
                 raise WeatherAcquisitionError(f"NASA POWER negative irradiance at UTC hour {key}")
             if dhi > ghi:
-                if dhi - ghi <= 2.0:
-                    dhi = ghi
+                clamped, reason = _clamp_dhi(ghi, dhi, strict_dhi=strict_dhi)
+                if reason == "rounding":
+                    dhi = clamped
                     clamped_dhi += 1
+                elif reason == "twilight":
+                    excess = dhi - ghi
+                    twilight_clamped += 1
+                    if excess > twilight_max_excess:
+                        twilight_max_excess = excess
+                        twilight_sample = f"{key} GHI={ghi:.2f} DHI={dhi:.2f}"
+                    dhi = clamped
                 else:
                     raise WeatherAcquisitionError(f"NASA POWER DHI ({dhi}) > GHI ({ghi}) at UTC hour {key}")
             rows.append((local_dt, ghi, dhi, tamb))
 
         if clamped_dhi:
             result["warnings"].append(f"Clamped tiny rounding excess (<= 2 W/m2) where DHI > GHI on {clamped_dhi} hours.")
+        if twilight_clamped:
+            result["warnings"].append(
+                f"Clamped {twilight_clamped} low-irradiance twilight hour(s) where DHI slightly exceeded "
+                f"GHI (0 < GHI < {TWILIGHT_GHI_MAX_WM2:g} W/m2, max excess {twilight_max_excess:.2f} W/m2, "
+                f"e.g. {twilight_sample}); pass strict_dhi=true to reject instead."
+            )
         result["stage"] = "write"
         _bounded_write(csv_path, _standard_csv_text_with_source(
             rows, site=site, year=year, offset_hours=offset_hours, data_source_label=label
@@ -941,7 +1009,7 @@ def _download_nasa_power(
 def download_weather(workspace, *, csv_name="", year=None, location_id=None, latitude=None,
                      longitude=None, site_name="", country_code="", altitude=None,
                      timezone_name="", temperature_method="endpoint_mean",
-                     provider="open_meteo_era5", dry_run=True):
+                     provider="open_meteo_era5", strict_dhi=False, dry_run=True):
     """Plan or execute weather acquisition as a PVsyst standard hourly CSV.
 
     Supports ``provider="open_meteo_era5"`` (default), ``"pvgis_tmy"`` (PVGIS v5.3 TMY),
@@ -951,6 +1019,12 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
         return {
             "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
             "provider": {"name": str(provider)}, "issues": [f"provider must be one of {list(PROVIDERS)}"],
+            "warnings": [], "artifacts": {}, "created_files": {},
+        }
+    if type(strict_dhi) is not bool:
+        return {
+            "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
+            "provider": {"name": provider}, "issues": ["strict_dhi must be a strict boolean"],
             "warnings": [], "artifacts": {}, "created_files": {},
         }
     if provider in ("pvgis_tmy", "nasa_power"):
@@ -968,10 +1042,12 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
             )
             if provider == "pvgis_tmy":
                 return _download_pvgis_tmy(
-                    Path(workspace), csv_name=csv_name, year=year, site=site, notes=notes, dry_run=dry_run
+                    Path(workspace), csv_name=csv_name, year=year, site=site, notes=notes,
+                    dry_run=dry_run, strict_dhi=strict_dhi,
                 )
             return _download_nasa_power(
-                Path(workspace), csv_name=csv_name, year=year, site=site, notes=notes, dry_run=dry_run
+                Path(workspace), csv_name=csv_name, year=year, site=site, notes=notes,
+                dry_run=dry_run, strict_dhi=strict_dhi,
             )
         except WeatherAcquisitionError as error:
             return {
@@ -1126,7 +1202,7 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
             result.update(status="blocked", stage="validation")
             result["issues"].append(str(error))
             return result
-        rows, issues, warnings = _build_rows(values, year=year, utc_start=utc_start)
+        rows, issues, warnings = _build_rows(values, year=year, utc_start=utc_start, strict_dhi=strict_dhi)
         result["warnings"].extend(warnings)
         result["plan"]["provider_labels"] = len(labels)
         if issues:
