@@ -276,7 +276,7 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
         fake_cli.run_simulation.side_effect = _fake_sim
         fake_store = MagicMock()
 
-        with patch("pvsyst_auto.energy.system.create_grid_storage_system") as mock_create:
+        with patch("pvsyst_auto.energy.system.create_grid_storage_system", return_value={"status": "created"}) as mock_create:
             verified = optimize_bess_sizing(
                 workspace=self.root,
                 cli=fake_cli,
@@ -302,7 +302,7 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
         # Re-running Stage 2 with same prefix + peak_shaving + pcs_capex_per_kw must not crash
         # on existing SFI, must omit load_manifest for peak_shaving, and must include PCS CAPEX
         v_cfg_ps = dict(v_cfg, load_manifest_name="load_manifest.json")
-        with patch("pvsyst_auto.energy.system.create_grid_storage_system") as mock_create_ps:
+        with patch("pvsyst_auto.energy.system.create_grid_storage_system", return_value={"status": "created"}) as mock_create_ps:
             verified_ps = optimize_bess_sizing(
                 workspace=self.root,
                 cli=fake_cli,
@@ -324,6 +324,28 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
         self.assertIsNone(mock_create_ps.call_args.kwargs["load_manifest_name"])
         # 120*3500 + 100*900 + 50*600 = 540,000
         self.assertEqual(verified_ps["stage2_verification"]["verified_comparisons"][0]["capex_total"], 540_000.0)
+
+    def test_public_stage2_stops_on_blocked_storage_creation(self) -> None:
+        from pvsyst_auto.api.schemas import BessVerifyConfig, EconomicsFinancialConfig, EconomicsTariffConfig
+        from pvsyst_auto.api.simulation import pvsyst_optimize_bess_sizing
+
+        csv_path = _write_pv_load_csv(self.root / "Results" / "blocked.csv", days=2)
+        fake_cli = MagicMock(workspace=self.root)
+        fake_cli.run_simulation.side_effect = RuntimeError("unexpected simulation")
+        with patch("pvsyst_auto.api.simulation.cli", return_value=fake_cli), \
+             patch("pvsyst_auto.api.simulation.variant_store"), \
+             patch("pvsyst_auto.energy.system.create_grid_storage_system", return_value={
+                 "status": "blocked", "issues": ["battery missing"]}):
+            with self.assertRaisesRegex(ValueError, "battery missing"):
+                pvsyst_optimize_bess_sizing(
+                    baseline_csv=csv_path.name, installed_dc_kw=100, bess_kwh_values=[100], pcs_kw_values=[50],
+                    tariff=EconomicsTariffConfig(mode="self_consumption_flat", import_tariff=1),
+                    financial=EconomicsFinancialConfig(fixed_capex=1000), verify_top_k=1,
+                    verify_config=BessVerifyConfig(project="Demo.PRJ", source_variant="VC0",
+                        battery_file_name="Cell.BTR", battery_unit_kwh=100, variant_prefix="VC"),
+                    dry_run=False, confirm=True,
+                )
+        fake_cli.run_simulation.assert_not_called()
 
     def test_tou_wraparound_no_load_sc_totals_self_cons_pv_reconstruction_and_irregular_cadence(self) -> None:
         # 1. TOU planner must not schedule daytime charge after segment-0 peak when a later peak exists

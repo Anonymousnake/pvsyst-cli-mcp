@@ -455,7 +455,7 @@ def _run_stage2_verify(
             "cycle_sow": cycle_sow,
             "static_sow": static_sow,
         }
-        create_grid_storage_system(
+        creation = create_grid_storage_system(
             store,
             project=project,
             source_variant=source_variant,
@@ -465,6 +465,9 @@ def _run_stage2_verify(
             load_manifest_name=None if strat == "peak_shaving" else load_manifest,
             dry_run=False,
         )
+        if creation.get("status") != "created":
+            raise ValueError(f"Storage variant {new_var} creation {creation.get('status')}: "
+                             + "; ".join(str(issue) for issue in creation.get("issues", [])))
 
         out_csv = ws / "Results" / f"{prefix}_{idx}_{int(round(actual_kwh))}kWh_{int(round(pcs_kw))}kW.csv"
         sim_res = cli.run_simulation(project, new_var, sfi=sfi_path, out_csv=out_csv, log_level=3)
