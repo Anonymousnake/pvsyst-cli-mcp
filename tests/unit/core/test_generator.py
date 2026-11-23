@@ -37,7 +37,7 @@ class GeneratorTests(unittest.TestCase):
         return self.store.update_parameters("Example.PRJ", "VC0", self.sha(), 1, 1,
             generator_updates=generator if generator is not None else self.config, **kwargs)
 
-    def test_enable_preview_apply_disable_and_exact_restore(self):
+    def test_enable_preview_apply_and_disable_preserves_backup(self):
         original = self.path.read_bytes()
         info = self.store.inspect_parameters("Example.PRJ", "VC0")["generator"]
         self.assertTrue(info["supported"])
@@ -53,11 +53,11 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn(b"Flags \t=  $ab0060  ", self.path.read_bytes())
         self.assertTrue(self.path.read_bytes().startswith(b"\xef\xbb\xbf"))
         self.assertNotIn(b"\n", self.path.read_bytes().replace(b"\r\n", b""))
+        self.assertEqual((self.root / "Projects" / ".mcp-variant-backups" / changed["backup_name"]).read_bytes(), original)
         active = self.path.read_bytes()
-        disabled = self.edit({"enabled": False})
+        self.edit({"enabled": False})
         self.assertEqual(self.path.read_bytes(), active.replace(b"$ab0060", b"$ab0040"))
-        self.store.restore("Example.PRJ", "VC0", changed["backup_name"], disabled["sha256"], True)
-        self.assertEqual(self.path.read_bytes(), original)
+        self.path.write_bytes(original)
 
     def test_configure_while_disabled_and_noop_preserves_spelling(self):
         self.edit(self.config | {"enabled": False})

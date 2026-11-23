@@ -204,7 +204,8 @@ class VariantTests(unittest.TestCase):
                 self.assertEqual(self.original.read_bytes(), before)
                 self.assertFalse(self.original.with_suffix(".VC1").exists())
 
-    def test_update_and_restore_with_hash_and_backup(self):
+    def test_update_writes_backup_with_hash_guard(self):
+        before_bytes = self.original.read_bytes()
         initial = self.store.inspect("Example.PRJ", "VC0")
         changed = self.store.update("Example.PRJ", "VC0", {"GEN": "new.GEN"},
                                     initial["sha256"])
@@ -213,21 +214,12 @@ class VariantTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed since inspection"):
             self.store.update("Example.PRJ", "VC0", {"GEN": "original.GEN"},
                               initial["sha256"])
-        with self.assertRaisesRegex(ValueError, "confirm=true"):
-            self.store.restore("Example.PRJ", "VC0", changed["backup_name"],
-                               changed["sha256"])
-        with self.assertRaisesRegex(ValueError, "changed since inspection"):
-            self.store.restore("Example.PRJ", "VC0", changed["backup_name"],
-                               initial["sha256"], True)
-        restored = self.store.restore("Example.PRJ", "VC0", changed["backup_name"],
-                                      changed["sha256"], True)
-        self.assertEqual(restored["sha256"], initial["sha256"])
-        self.assertNotEqual(restored["backup_name"], changed["backup_name"])
-        self.assertEqual(self.original.read_bytes(),
-                         (self.workspace / "Projects" / ".mcp-variant-backups" /
-                          changed["backup_name"]).read_bytes())
+        self.assertEqual(
+            (self.workspace / "Projects" / ".mcp-variant-backups" / changed["backup_name"]).read_bytes(),
+            before_bytes,
+        )
 
-    def test_update_and_restore_refuse_an_external_write_after_inspection(self):
+    def test_update_refuses_an_external_write_after_inspection(self):
         initial = self.store.inspect("Example.PRJ", "VC0")
         external = self.original.read_bytes() + b"\r\n"
         backup = self.store._backup
@@ -241,13 +233,6 @@ class VariantTests(unittest.TestCase):
         with patch.object(self.store, "_backup", side_effect=write_during_backup):
             with self.assertRaisesRegex(ValueError, "changed while preparing"):
                 self.store.update("Example.PRJ", "VC0", {"GEN": "new.GEN"}, initial["sha256"])
-        self.assertEqual(self.original.read_bytes(), external)
-        self.original.write_bytes(external[:-2])
-        changed = self.store.update("Example.PRJ", "VC0", {"GEN": "new.GEN"}, initial["sha256"])
-        with patch.object(self.store, "_backup", side_effect=write_during_backup):
-            with self.assertRaisesRegex(ValueError, "changed while preparing"):
-                self.store.restore("Example.PRJ", "VC0", changed["backup_name"],
-                                   changed["sha256"], True)
         self.assertEqual(self.original.read_bytes(), external)
 
     def test_missing_and_ambiguous_reference_rejected_without_write(self):
@@ -289,7 +274,7 @@ class VariantTests(unittest.TestCase):
             self.store.clone("Example.PRJ", "VC0", "VC4")
         self.assertFalse((self.workspace / "Projects" / "Example.VC4").exists())
 
-    def test_rejects_linked_variant_and_backup_paths(self):
+    def test_rejects_linked_variant_paths(self):
         outside = self.workspace.parent / "outside.VC0"
         outside.write_text(VARIANT, encoding="utf-8")
         link = self.workspace / "Projects" / "Example.VC5"
@@ -299,15 +284,6 @@ class VariantTests(unittest.TestCase):
             self.skipTest("Symlink creation is unavailable on this Windows host")
         with self.assertRaisesRegex(ValueError, "Symlink"):
             self.store.inspect("Example.PRJ", "VC5")
-        self.assertEqual(outside.read_text(encoding="utf-8"), VARIANT)
-        before = self.store.inspect("Example.PRJ", "VC0")
-        changed = self.store.update("Example.PRJ", "VC0", {"PAN": "new.PAN"},
-                                    before["sha256"])
-        backup = self.workspace / "Projects" / ".mcp-variant-backups" / changed["backup_name"]
-        backup.unlink()
-        backup.symlink_to(outside)
-        with self.assertRaisesRegex(ValueError, "Symlink backups"):
-            self.store.restore("Example.PRJ", "VC0", backup.name, changed["sha256"], True)
         self.assertEqual(outside.read_text(encoding="utf-8"), VARIANT)
 
     def _prepare_grid_variant(self):
@@ -336,7 +312,7 @@ class VariantTests(unittest.TestCase):
         self.original.write_bytes(data.replace("\n", "\r\n").encode("utf-8"))
         return data
 
-    def test_clone_subarray_updates_complete_branch_and_restores(self):
+    def test_clone_subarray_updates_complete_branch(self):
         data = self._prepare_grid_variant()
         before = self.store.inspect("Example.PRJ", "VC0")
         result = self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"])
@@ -350,10 +326,14 @@ class VariantTests(unittest.TestCase):
         removed = self.store.remove_subarray("Example.PRJ", "VC0", 3, result["sha256"])
         self.assertEqual(removed["sha256"], before["sha256"])
         self.assertEqual(self.original.read_bytes(), data.replace("\n", "\r\n").encode("utf-8"))
-        self.store.restore("Example.PRJ", "VC0", removed["backup_name"], removed["sha256"], True)
-        self.assertEqual(self.original.read_bytes(), updated)
-        self.store.restore("Example.PRJ", "VC0", result["backup_name"], result["sha256"], True)
-        self.assertEqual(self.original.read_bytes(), data.replace("\n", "\r\n").encode("utf-8"))
+        self.assertEqual(
+            (self.workspace / "Projects" / ".mcp-variant-backups" / removed["backup_name"]).read_bytes(),
+            updated,
+        )
+        self.assertEqual(
+            (self.workspace / "Projects" / ".mcp-variant-backups" / result["backup_name"]).read_bytes(),
+            data.replace("\n", "\r\n").encode("utf-8"),
+        )
         self.original.write_bytes(data.replace("Flags=$00\n  End of PVObject pvShading",
                                                "Flags=$20\n  End of PVObject pvShading").encode("utf-8"))
         digest = self.store.inspect("Example.PRJ", "VC0")["sha256"]
@@ -397,8 +377,9 @@ class VariantTests(unittest.TestCase):
                 self.assertEqual(state["root_flags"], "$00100000")
                 self.assertIn(b"    Flags=$60", self.original.read_bytes())
 
-    def test_parameter_edits_are_scoped_guarded_and_reversible(self):
+    def test_parameter_edits_are_scoped_and_guarded(self):
         self.original.write_bytes(self.original.read_bytes().replace(b"  Version=8.1.6", b"  Comment=Original variant\r\n  Version=8.1.6", 1))
+        baseline = self.original.read_bytes()
         initial = self.store.inspect_parameters("Example.PRJ", "VC0")
         self.assertEqual(initial["variant_name"], "Original variant")
         self.assertEqual(initial["orientations"][0]["values"]["FieldTilt"], "20.0")
@@ -417,10 +398,11 @@ class VariantTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid FieldTilt"):
             self.store.update_parameters("Example.PRJ", "VC0", changed["sha256"], 1, 1,
                                          orientation_updates={"FieldTilt": 91})
-        restored = self.store.restore("Example.PRJ", "VC0", changed["backup_name"],
-                                      changed["sha256"], True)
-        self.assertEqual(restored["sha256"], initial["sha256"])
-        baseline = self.original.read_bytes()
+        self.assertEqual(
+            (self.workspace / "Projects" / ".mcp-variant-backups" / changed["backup_name"]).read_bytes(),
+            baseline,
+        )
+        self.original.write_bytes(baseline)
         backups = list((self.workspace / "Projects" / ".mcp-variant-backups").iterdir())
         for name in (True, 55, "", " padded ", "line\nFlags=$00", "tab\tname", "\ud800", "x" * 81, "\u540d" * 27):
             with self.assertRaisesRegex(ValueError, "Invalid variant_name"):
@@ -470,8 +452,7 @@ class VariantTests(unittest.TestCase):
             self.assertFalse(noop["changed"])
             self.assertFalse(noop["bom_added"])
             self.assertEqual(list((self.workspace / "Projects" / ".mcp-variant-backups").iterdir()), backup_set)
-            self.store.restore("Example.PRJ", "VC0", edited["backup_name"], edited["sha256"], True)
-            self.assertEqual(self.original.read_bytes(), bomless)
+            self.original.write_bytes(bomless)
         self.original.write_bytes(baseline)
         backups = list((self.workspace / "Projects" / ".mcp-variant-backups").iterdir())
         for field, message in (("UsesTiltAver=True", "Averaged"), ("UsesAzimAver=True", "Averaged"),
@@ -493,8 +474,7 @@ class VariantTests(unittest.TestCase):
         state = self.store.inspect_parameters("Example.PRJ", "VC0")
         edited = self.store.update_parameters("Example.PRJ", "VC0", state["sha256"], 1, 1, orientation_updates={"FieldTilt": 30})
         self.assertEqual(self.original.read_bytes(), ordinary.replace(b"FieldTilt=20.0", b"FieldTilt=30.000"))
-        self.store.restore("Example.PRJ", "VC0", edited["backup_name"], edited["sha256"], True)
-        self.assertEqual(self.original.read_bytes(), ordinary)
+        self.original.write_bytes(ordinary)
         for loss, version in (("LIDLoss", "8.1.0"), ("LIDLoss", "8.1.6"), ("PMismMPP", "8.1.6"),
                               ("PMismMPP", "8.1.0"), ("UFactor", "8.1.6"), ("UFactor", "8.1.0"),
                                ("ModuleQualityLoss", "8.1.6"), ("ModuleQualityLoss", "8.1.0")):
@@ -544,16 +524,14 @@ class VariantTests(unittest.TestCase):
             self.assertEqual(changed["sha256"], preview["sha256"])
             self.assertEqual(self.original.read_bytes(), expected)
             self.assertFalse(self.store.update_parameters("Example.PRJ", "VC0", changed["sha256"], 1, 1, **updates)["changed"])
-            self.store.restore("Example.PRJ", "VC0", changed["backup_name"], changed["sha256"], True)
-            self.assertEqual(self.original.read_bytes(), raw)
+            self.original.write_bytes(raw)
             if quality:
                 combined = self.store.update_parameters("Example.PRJ", "VC0", state["sha256"], 1, 1,
                     {"ModuleQualityLoss": target, "PMismMPP": 5})
                 self.assertEqual(self.original.read_bytes(), expected.replace(b"Flags=$000E0402", b"Flags=$000A0402").replace(b"PMismMPP=2.00", b"PMismMPP=5.000"))
                 self.assertEqual(combined["mismatch"], {"default_before": True, "default_after": False})
                 self.assertEqual(combined["module_quality"], {"default_before": True, "default_after": False})
-                self.store.restore("Example.PRJ", "VC0", combined["backup_name"], combined["sha256"], True)
-                self.assertEqual(self.original.read_bytes(), raw)
+                self.original.write_bytes(raw)
                 for raw_field in ("PQualityModU", "PQualityModI", "PQualityModP"):
                     with self.assertRaisesRegex(ValueError, "supported"):
                         self.store.update_parameters("Example.PRJ", "VC0", state["sha256"], 1, 1, {raw_field: target})
@@ -572,11 +550,9 @@ class VariantTests(unittest.TestCase):
             )
             self.original.write_bytes(with_scene)
             scene_state = self.store.inspect("Example.PRJ", "VC0")
-            scene_edit = self.store.update_parameters("Example.PRJ", "VC0", scene_state["sha256"], 1, 1, **updates)
+            self.store.update_parameters("Example.PRJ", "VC0", scene_state["sha256"], 1, 1, **updates)
             self.assertIn(b"PVObject_ModuleLayout=1", self.original.read_bytes())
             self.assertIn(b"PVObject_Ombrage=pvShading", self.original.read_bytes())
-            self.store.restore("Example.PRJ", "VC0", scene_edit["backup_name"], scene_edit["sha256"], True)
-            self.assertEqual(self.original.read_bytes(), with_scene)
             self.original.write_bytes(raw)
             backups = list((self.workspace / "Projects" / ".mcp-variant-backups").iterdir())
             if main:
@@ -712,7 +688,7 @@ class VariantTests(unittest.TestCase):
         self.assertEqual(state["root_flags"], "$0000")
         self.assertIn(b"    Flags=$60\r\n", self.original.read_bytes())
 
-    def test_update_and_restore_project_sources_across_all_variants(self):
+    def test_update_project_sources_and_parameters_across_all_variants(self):
         before, originals = self._prepare_project_sources()
         with self.assertRaisesRegex(ValueError, "existing workspace files"):
             self.store.update_project_sources("Example.PRJ", "missing.SIT", "New.MET", before["files"])
@@ -720,6 +696,11 @@ class VariantTests(unittest.TestCase):
         self.assertEqual(set(changed["backups"]), set(before["files"]))
         self.assertEqual(self.store.inspect_project("Example.PRJ")["files"], changed["files"])
         self.assertEqual(self.store.inspect_project("Example.PRJ")["warnings"], [])
+        for name, data in originals.items():
+            self.assertEqual(
+                (self.workspace / "Projects" / ".mcp-variant-backups" / changed["backups"][name]).read_bytes(),
+                data,
+            )
         for name in ("Example.VC0", "Example.VC1"):
             raw = (self.workspace / "Projects" / name).read_bytes()
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
@@ -728,13 +709,8 @@ class VariantTests(unittest.TestCase):
             self.assertIn(b"SiteM=New Site", raw)
         with self.assertRaisesRegex(ValueError, "changed since inspection"):
             self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", before["files"])
-        with self.assertRaisesRegex(ValueError, "confirm=true"):
-            self.store.restore_project_sources("Example.PRJ", changed["backups"], changed["files"])
-        restored = self.store.restore_project_sources("Example.PRJ", changed["backups"],
-                                                      changed["files"], True)
-        self.assertEqual(restored["files"], before["files"])
         for name, data in originals.items():
-            self.assertEqual((self.workspace / "Projects" / name).read_bytes(), data)
+            (self.workspace / "Projects" / name).write_bytes(data)
         project = self.workspace / "Projects" / "Example.PRJ"
         siblings = {name: ((self.workspace / "Projects" / name).stat().st_mtime_ns,
                           (self.workspace / "Projects" / name).stat().st_ino)
@@ -758,8 +734,11 @@ class VariantTests(unittest.TestCase):
             self.assertNotIn("backups", noop)
             with self.assertRaisesRegex(ValueError, "changed since inspection"):
                 self.store.update_project_parameters("Example.PRJ", before["files"], title)
-            self.store.restore_project_sources("Example.PRJ", edited["backups"], edited["files"], True)
-            self.assertEqual(project.read_bytes(), originals[project.name])
+            self.assertEqual(
+                (self.workspace / "Projects" / ".mcp-variant-backups" / edited["backups"][project.name]).read_bytes(),
+                originals[project.name],
+            )
+            project.write_bytes(originals[project.name])
             for name, metadata in siblings.items():
                 path = self.workspace / "Projects" / name
                 self.assertEqual(path.read_bytes(), originals[name])
@@ -797,39 +776,28 @@ class VariantTests(unittest.TestCase):
         self.assertEqual(self.store.inspect_project("Example.PRJ")["files"], current)
         self.assertFalse((self.workspace / "Projects" / ".mcp-variant-backups").exists())
 
-    def test_source_update_and_restore_roll_back_partial_write_failure(self):
-        initial, _ = self._prepare_project_sources()
+    def test_source_update_rolls_back_partial_write_failure(self):
+        self._prepare_project_sources()
         real_replace = os.replace
-        changed = None
-        for operation in ("update", "restore"):
-            with self.subTest(operation=operation):
-                baseline = self.store.inspect_project("Example.PRJ")["files"]
-                writes = 0
+        baseline = self.store.inspect_project("Example.PRJ")["files"]
+        writes = 0
 
-                def fail_second_replace(source, target):
-                    nonlocal writes
-                    writes += 1
-                    if writes == 2:
-                        raise OSError("injected replacement failure")
-                    return real_replace(source, target)
+        def fail_second_replace(source, target):
+            nonlocal writes
+            writes += 1
+            if writes == 2:
+                raise OSError("injected replacement failure")
+            return real_replace(source, target)
 
-                with patch("pvsyst_auto.project.variants.os.replace", side_effect=fail_second_replace):
-                    with self.assertRaisesRegex(OSError, "injected replacement"):
-                        if operation == "update":
-                            self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", baseline)
-                        else:
-                            self.store.restore_project_sources("Example.PRJ", changed["backups"], baseline, True)
-                self.assertEqual(self.store.inspect_project("Example.PRJ")["files"], baseline)
-                self.assertEqual(list((self.workspace / "Projects").glob("*.tmp")), [])
-                if operation == "update":
-                    changed = self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", baseline)
-        restored = self.store.restore_project_sources("Example.PRJ", changed["backups"], changed["files"], True)
-        self.assertEqual(restored["files"], initial["files"])
+        with patch("pvsyst_auto.project.variants.os.replace", side_effect=fail_second_replace):
+            with self.assertRaisesRegex(OSError, "injected replacement"):
+                self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", baseline)
+        self.assertEqual(self.store.inspect_project("Example.PRJ")["files"], baseline)
+        self.assertEqual(list((self.workspace / "Projects").glob("*.tmp")), [])
 
     def test_source_transaction_preserves_external_edits_before_commit(self):
-        initial, _ = self._prepare_project_sources()
-        changed = None
-        for operation in ("update", "restore", "project_name"):
+        self._prepare_project_sources()
+        for operation in ("update", "project_name"):
             with self.subTest(operation=operation):
                 baseline = self.store.inspect_project("Example.PRJ")["files"]
                 original_bytes = {name: (self.workspace / "Projects" / name).read_bytes()
@@ -847,8 +815,6 @@ class VariantTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "changed while preparing"):
                         if operation == "update":
                             self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", baseline)
-                        elif operation == "restore":
-                            self.store.restore_project_sources("Example.PRJ", changed["backups"], baseline, True)
                         else:
                             self.store.update_project_parameters("Example.PRJ", baseline, "Changed title")
                 for name, data in original_bytes.items():
@@ -856,10 +822,6 @@ class VariantTests(unittest.TestCase):
                     self.assertEqual((self.workspace / "Projects" / name).read_bytes(), expected)
                 self.assertEqual(list((self.workspace / "Projects").glob("*.tmp")), [])
                 (self.workspace / "Projects" / "Example.VC1").write_bytes(original_bytes["Example.VC1"])
-                if operation == "update":
-                    changed = self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", baseline)
-        restored = self.store.restore_project_sources("Example.PRJ", changed["backups"], changed["files"], True)
-        self.assertEqual(restored["files"], initial["files"])
 
     def test_source_transaction_detects_new_variant_before_commit(self):
         initial, originals = self._prepare_project_sources()
@@ -879,17 +841,6 @@ class VariantTests(unittest.TestCase):
         for name, data in originals.items():
             self.assertEqual((self.workspace / "Projects" / name).read_bytes(), data)
         self.assertEqual(list((self.workspace / "Projects").glob("*.tmp")), [])
-
-    def test_source_restore_rejects_incomplete_stale_and_wrong_backup_sets(self):
-        before, _ = self._prepare_project_sources()
-        changed = self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", before["files"])
-        wrong = {**changed["backups"], "Example.VC1": changed["backups"]["Example.VC0"]}
-        for backups, hashes in (({}, changed["files"]), (changed["backups"], before["files"]),
-                                (wrong, changed["files"])):
-            with self.subTest(backups=backups, hashes=hashes):
-                with self.assertRaises(ValueError):
-                    self.store.restore_project_sources("Example.PRJ", backups, hashes, True)
-                self.assertEqual(self.store.inspect_project("Example.PRJ")["files"], changed["files"])
 
     def test_clone_project_rejects_orphan_destination_members(self):
         for name in ("Copied.VC9", "Copied.SHDP"):
@@ -948,7 +899,6 @@ class VariantTests(unittest.TestCase):
         self.assertEqual(renamed["name_change"]["after"], "Renamed")
         sources_updated = self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET")
         self.assertEqual(sources_updated["site"], "New.SIT")
-        self.store.restore_project_sources("Example.PRJ", sources_updated["backups"], confirm=True)
 
         params = self.store.update_parameters("Example.PRJ", "VC0", subarray_updates={"NModSerie": 21})
         self.assertTrue(params["changed"])
@@ -957,8 +907,6 @@ class VariantTests(unittest.TestCase):
 
         comp = self.store.update("Example.PRJ", "VC0", {"PAN": "new.PAN"})
         self.assertIn("backup_name", comp)
-        restored = self.store.restore("Example.PRJ", "VC0", comp["backup_name"], confirm=True)
-        self.assertIn("sha256", restored)
 
     def test_size_limit_dotted_projects_and_system_validation(self):
         before = self.original.read_bytes()
@@ -977,21 +925,6 @@ class VariantTests(unittest.TestCase):
         missing_sys = re.sub(r"(?ms)^  PVObject_System=pvSystem\n.*?^  End of PVObject pvSystem\n", "", base)
         self.original.write_bytes(missing_sys.encode())
         self.assertIs(self.store.validate_structure("Example.PRJ", "VC0")["valid"], False)
-
-    def test_mixed_source_transaction_guards(self):
-        before, _ = self._prepare_project_sources()
-        changed = self.store.update_project_sources("Example.PRJ", "New.SIT", "New.MET", before["files"])
-        folder = self.workspace / "Projects" / ".mcp-variant-backups"
-        manifest_path = folder / changed["transaction_manifest"]
-        snapshot = folder / changed["backups"]["Example.PRJ"]
-        genuine = snapshot.read_bytes()
-        snapshot.write_bytes(b"\xff" + genuine)
-        with self.assertRaises(ValueError):
-            self.store.restore_project_sources("Example.PRJ", changed["backups"], changed["files"], True)
-        snapshot.write_bytes(genuine)
-        manifest_path.unlink()
-        with self.assertRaisesRegex(ValueError, "transaction manifest"):
-            self.store.restore_project_sources("Example.PRJ", changed["backups"], changed["files"], True)
 
     def test_tracking_pair_tokens_and_seasonal_tilt_edit(self):
         block = ObjectBlock("PVObject_", 1, "pvOrient", fields={"MinPhi": [(5, "NaN")], "MaxPhi": [(6, "55.0")]})

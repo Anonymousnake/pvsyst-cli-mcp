@@ -319,10 +319,8 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
         result.update(status="running", stage=name)
         save()
 
-    def transaction(tool, response, recovery=None):
+    def transaction(tool, response):
         result["transactions"].append({"tool": tool, "result": response})
-        if recovery and not tracking_mode:
-            result["recovery"].insert(0, recovery)
         save()
 
     def check_inputs():
@@ -344,32 +342,34 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
         check_inputs()
         cloned = store.clone_project(template_project, new_project)
         transaction("clone_project", cloned)
+        if not tracking_mode:
+            result["recovery"] = [{
+                "action": "retain_isolated_project_for_review",
+                "automatic": False,
+                "project": new_project,
+                "artifacts": dict(result["artifacts"]),
+                "reason": (
+                    "Original template is retained untouched. Review/archive the isolated project, "
+                    "its .mcp-variant-backups snapshots, and any outputs before retrying under a new project name."
+                ),
+            }]
         stage("sources")
         sources = store.update_project_sources(
             new_project, site_name, "" if synthetic_weather else met_name, cloned["files"],
             allow_synthetic_met=synthetic_weather,
         )
-        transaction("update_project_sources", sources, {
-            "action": "restore_project_sources", "arguments": {
-                "project": new_project, "backups": sources["backups"],
-                "expected_files": sources["files"], "confirm": True}})
+        transaction("update_project_sources", sources)
         if not tracking_mode:
             stage("components")
             edited = store.update(new_project, variant, {"PAN": pan_name, "OND": ond_name},
                                   store.inspect(new_project, variant)["sha256"], array_id)
-            transaction("update_variant_components", edited, {
-                "action": "restore_variant", "arguments": {
-                    "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
-                    "expected_sha256": edited["sha256"], "confirm": True}})
+            transaction("update_variant_components", edited)
         if capacity is not None:
             stage("capacity")
             for updates in result["capacity_plan"]["steps"]:
                 edited = store.update_parameters(new_project, variant, edited["sha256"], array_id, orientation_id,
                                                  subarray_updates=updates)
-                transaction("update_variant_parameters", edited, {
-                    "action": "restore_variant", "arguments": {
-                        "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
-                        "expected_sha256": edited["sha256"], "confirm": True}} if edited.get("backup_name") else None)
+                transaction("update_variant_parameters", edited)
             actual = store.inspect_parameters(new_project, variant)["subarrays"][0]["values"]
             planned = result["capacity_plan"]
             if any(int(actual[key]) != planned[value] for key, value in (
@@ -391,10 +391,7 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                                              orientation_updates=angles,
                                               subarray_updates=subarray_losses or None,
                                               main_array_updates=main_losses or None)
-            transaction("update_variant_parameters", edited, {
-                "action": "restore_variant", "arguments": {
-                    "project": new_project, "variant": variant, "backup_name": edited["backup_name"],
-                    "expected_sha256": edited["sha256"], "confirm": True}} if edited.get("backup_name") else None)
+            transaction("update_variant_parameters", edited)
         result["working_files"] = store.inspect_project(new_project)["files"]
         if store.validate_structure(new_project, variant)["valid"] is not True:
             raise ValueError("Configured working variant failed structural validation")
