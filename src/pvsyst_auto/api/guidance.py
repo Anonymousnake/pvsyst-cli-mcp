@@ -31,7 +31,7 @@ Quick workflow selection:
    - Generate interactive Plotly HTML engineering reports (zh/en, with demand shaving, tornado, and BESS heatmap charts) via `pvsyst_generate_report`, and bundle deliverables via `pvsyst_export_engineering_delivery`.
 7. Safety & verification conventions:
    - For mutating tools whose schema declares a `dry_run` parameter (including `pvsyst_generate_report`), always preview with `dry_run=true` before executing `dry_run=false`.
-   - Direct writers without a `dry_run` parameter (such as `pvsyst_build_sfi` and `pvsyst_run_simulation`, plus `pvsyst_create_site`/`pvsyst_build_monthly_weather`/`pvsyst_convert_meteo` when `expert` tools are enabled) write immediately; never overwrite existing projects/outputs and always pick fresh output filenames.
+   - Direct writers without a `dry_run` parameter (such as `pvsyst_build_sfi`, `pvsyst_clone_variant`, `pvsyst_create_component`, and `pvsyst_run_simulation`, plus `pvsyst_create_site`/`pvsyst_build_monthly_weather`/`pvsyst_convert_meteo` when `expert` tools are enabled) write immediately; never overwrite existing projects/outputs and always pick fresh output filenames.
    - Consult on-demand resources `pvsyst://guide/workflows`, `pvsyst://guide/variables`, `pvsyst://workspace/projects`, `pvsyst://workspace/components`, and `pvsyst://workspace/results` for live workspace state, SFI variables, and multi-step recipes.
 """
 

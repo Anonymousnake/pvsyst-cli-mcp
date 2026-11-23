@@ -456,7 +456,7 @@ def diagnose_simulation_csv(
             "finding_count": 0,
             "counts_by_severity": {"critical": 0, "high": 0, "medium": 0, "info": 0},
             "needs_review": False,
-            "rows": reader.rows_count,
+            "rows": None,
             "step_minutes": None,
             "is_bifacial": False,
             "weighted_pr": None,
