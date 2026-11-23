@@ -245,7 +245,8 @@ def pvsyst_configure_transformers(
 ) -> dict:
     """Create a new variant configuring single/parallel MV transformers, optional cascaded HV substation
     transformer, custom iron/copper losses, MV/HV AC collection cables, and night disconnect (or strip all
-    transformers with remove_transformers=true). Defaults to dry_run=true."""
+    transformers with remove_transformers=true). Enforces PVsyst 8.1.7 native rating (80%-200% PNomInvAC),
+    voltage ordering, and loss bounds (<=1% iron, <=5% copper). Defaults to dry_run=true."""
     from pvsyst_auto.energy.transformers import configure_transformers
     return configure_transformers(
         variant_store(),

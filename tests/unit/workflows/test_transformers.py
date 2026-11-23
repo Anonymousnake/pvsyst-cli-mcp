@@ -38,7 +38,9 @@ class TransformersTests(unittest.TestCase):
             n_mod_serie=20,
             n_string_ch=100,
             n_inverter=10,
-            n_inv_mppt=10,
+            n_inv_mppt=1,
+            independent_mppt=False,
+            pnom_ac_in_mppt=50.0,
             tilt_deg=25.0,
             azimuth_deg=0.0,
         )
@@ -78,7 +80,7 @@ class TransformersTests(unittest.TestCase):
         with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
             result = pvsyst_configure_transformers(
                 "TrfTest.PRJ", "VC0", "VC1", mv=MvTransformerSpec(stc_ref_power_kw=1000),
-                hv=HvTransformerSpec(stc_ref_power_kw=1000, nominal_power_kva=2000,
+                hv=HvTransformerSpec(stc_ref_power_kw=1000, nominal_power_kva=800,
                                      iron_loss_frac=0.005, copper_loss_frac=0.01), dry_run=False,
             )
         self.assertEqual(result["status"], "created")
@@ -128,19 +130,19 @@ class TransformersTests(unittest.TestCase):
             self.store, project="TrfTest.PRJ", source_variant="VC1", new_variant="VC2",
             mv={
                 "count": 2, "output_voltage_kv": 35.0, "stc_ref_power_kw": 440.0,
-                "nominal_power_kva": 1250.0, "iron_loss_kw": 1.1, "copper_loss_kw": 12.0,
+                "nominal_power_kva": 315.0, "iron_loss_kw": 0.45, "copper_loss_kw": 3.5,
                 "night_disconnect": False,
                 "cable": {"length_m": 600.0, "metal": "Copper", "section_mm2": 185},
             },
             hv={
                 "output_voltage_kv": 110.0, "stc_ref_power_kw": 440.0,
-                "nominal_power_kva": 3000.0, "iron_loss_kw": 2.4, "copper_loss_kw": 21.0,
+                "nominal_power_kva": 630.0, "iron_loss_kw": 0.7, "copper_loss_kw": 4.5,
                 "night_disconnect": False,
                 "cable": {"length_m": 2500.0, "metal": "Aluminium", "section_mm2": 240},
             },
             dry_run=False,
         )
-        self.assertEqual(hv_res["status"], "created")
+        self.assertEqual(hv_res["status"], "created", hv_res)
         self.assertEqual(hv_res["transformers"]["layers"], 2)
         self.assertTrue(hv_res["transformers"]["nested_hv_mv"])
         vc2_lines = (self.root / "Projects" / "TrfTest.VC2").read_text(encoding="utf-8-sig").splitlines(keepends=True)
@@ -154,8 +156,8 @@ class TransformersTests(unittest.TestCase):
         self.assertEqual(st["layers"][1]["fields"]["OutputVoltage"], "35 kV")
         vc2_text = "".join(vc2_lines)
         self.assertIn("VOutHVTransfo=110000", vc2_text)
-        self.assertIn("HVTrfDSNomPower=3000.00", vc2_text)
-        self.assertIn("MVTrfDSNomPower=1250.00", vc2_text)
+        self.assertIn("HVTrfDSNomPower=630.00", vc2_text)
+        self.assertIn("MVTrfDSNomPower=315.00", vc2_text)
 
         # 4. Strip all transformers cleanly VC2 -> VC3
         rm_res = configure_transformers(
@@ -242,7 +244,9 @@ class TransformersTests(unittest.TestCase):
         )
         self.assertTrue(vc_trf.startswith("\ufeff"))
         self.assertAlmostEqual(trf_sum["mv"]["stc_ref_power_kw"], 129360.0, places=1)
-        self.assertAlmostEqual(trf_sum["mv"]["iron_loss_kw"], 129360.0 * 0.00095, places=1)
+        # PVsyst 8.1.7 evaluates MV fractional iron loss on PNomInvAC (2100 * 50 kW = 105,000 kW), not DC STC
+        self.assertAlmostEqual(trf_sum["inverter_ac_power_kw"], 105000.0, places=1)
+        self.assertAlmostEqual(trf_sum["mv"]["iron_loss_kw"], 105000.0 * 0.00095, places=2)
 
         # P0-1: configure_transformers auto-infers 129,360 kWp from Lab440.PAN (NOT 1000 kW!)
         self.store.create_project("Utility120MW.PRJ", synth["prj_text"], {"VC0": synth["vc0_text"]})
@@ -255,25 +259,26 @@ class TransformersTests(unittest.TestCase):
         self.assertEqual(trf_res["status"], "created", trf_res)
         self.assertAlmostEqual(trf_res["transformers"]["stc_ref_power_kw"], 129360.0, places=1)
         self.assertEqual(trf_res["transformers"]["stc_ref_power_source"], "pan_subarray_stc")
-        self.assertAlmostEqual(trf_res["transformers"]["mv"]["iron_loss_kw"], 129360.0 * 0.00095, places=2)
+        self.assertAlmostEqual(trf_res["transformers"]["inverter_ac_power_kw"], 105000.0, places=1)
+        self.assertAlmostEqual(trf_res["transformers"]["mv"]["iron_loss_kw"], 105000.0 * 0.00095, places=2)
 
-        # Undersized 1 MVA transformer on 129.36 MWp array fails copper bounds WITH inferred stc_ref_power_kw in error
+        # Undersized 1 MVA transformer on 105 MW AC array is blocked by PVsyst 8.1.7 80% undersizing bound
         undersized = configure_transformers(
             self.store, project="Utility120MW.PRJ", source_variant="VC0", new_variant="VC2",
             mv={"count": 1, "output_voltage_kv": 35.0, "nominal_power_kva": 1000.0, "iron_loss_kw": 1.0, "copper_loss_kw": 5.0},
             dry_run=True,
         )
         self.assertEqual(undersized["status"], "blocked")
-        self.assertTrue(any("129360" in msg for msg in undersized["issues"]), undersized["issues"])
+        self.assertTrue(any("84000" in msg or "80%" in msg for msg in undersized["issues"]), undersized["issues"])
 
-        # Oversized transformer (>5x array STC) passes dry_run with a clear magnitude mismatch warning
-        mismatch = configure_transformers(
+        # Oversized 1000 MVA transformer (>200% of 105 MW AC) is blocked by PVsyst 8.1.7 TransfoPowerGTInverterXX
+        oversized = configure_transformers(
             self.store, project="Utility120MW.PRJ", source_variant="VC0", new_variant="VC2",
             mv={"count": 1, "output_voltage_kv": 35.0, "nominal_power_kva": 1000000.0, "iron_loss_kw": 50.0, "copper_loss_kw": 500.0},
             dry_run=True,
         )
-        self.assertEqual(mismatch["status"], "ready", mismatch)
-        self.assertTrue(any("stc_ref_power_kw" in w for w in mismatch["warnings"]), mismatch["warnings"])
+        self.assertEqual(oversized["status"], "blocked", oversized)
+        self.assertTrue(any("210000" in msg or "200%" in msg for msg in oversized["issues"]), oversized["issues"])
 
         # P0-4: After transformers on bifacial Sheds, combined soiling + unavailability works in ONE transaction!
         vc1_info = self.store.inspect("Utility120MW.PRJ", "VC1")
@@ -320,6 +325,196 @@ class TransformersTests(unittest.TestCase):
         self.assertEqual(shed_res["status"], "created", shed_res)
         self.assertEqual(shed_res["geometry"]["FieldAzim"], "45.0")
         self.assertEqual(shed_res["geometry"]["Pitch"], "11.500")
+
+    def _make_demo_utility_vc(self, *, with_grid_limit_kw: float | None = None) -> str:
+        """Build a 10,120 kWp DC / 8,000 kW AC ordinary-mode variant matching _DEMO_Utility.VC0."""
+        vc0 = (self.root / "Projects" / "TrfTest.VC0").read_text(encoding="utf-8-sig")
+        # Ordinary mode: 4 x 2,000 kW inverter (missing on disk like encrypted InverterDB.csv Generic_2000kW.OND)
+        vc = (
+            vc0
+            .replace("      PNomSizing=440.0\n", "")
+            .replace("      GInverter=Lab50.OND", "      GInverter=Generic_2000kW.OND")
+            .replace("      NModSerie=20", "      NModSerie=25")
+            .replace("      NStringCh=100", "      NStringCh=920")
+            .replace("      NStrOrient1=100", "      NStrOrient1=920")
+            .replace("      NInverter=10", "      NInverter=4")
+            .replace("      PNomAC_InMPPT=50.00", "      PNomAC_InMPPT=2000.00")
+            .replace("          NElements=10\n", "          NElements=4\n")
+            .replace("            NElements=10\n", "            NElements=230\n")
+        )
+        if with_grid_limit_kw is not None:
+            vc = vc.replace(
+                "  PVObject_System=pvSystem\n    Flags=$00\n    SystemType=Grid",
+                f"  PVObject_System=pvSystem\n    Flags=$01000000\n    SystemType=Grid\n    PLimGrid={with_grid_limit_kw:.1f}\n    LimGrSeparLoss=True",
+            )
+        return vc
+
+    def test_pvsyst817_mv_fractional_uses_inverter_ac_basis_and_warns_on_explicit_stc_mismatch(self) -> None:
+        vc_demo = self._make_demo_utility_vc()
+        out_text, summary = apply_transformers_to_variant_text(
+            vc_demo,
+            mv={
+                "count": 1,
+                "output_voltage_kv": 20.0,
+                "stc_ref_power_kw": 10120.0,
+                "iron_loss_frac": 0.001,
+                "copper_loss_frac": 0.010,
+                "cable": {"length_m": 500.0, "metal": "Copper", "section_mm2": 500},
+            },
+            components=self.comp,
+        )
+        self.assertAlmostEqual(summary["inverter_ac_power_kw"], 8000.0, places=3)
+        self.assertEqual(summary["inverter_ac_power_source"], "subarray_pnom_ac_in_mppt")
+        mv = summary["mv"]
+        self.assertEqual(mv["loss_basis"], "inverter_ac_nominal")
+        # Native simulation iron loss = 0.001 * 8000 kW = 8.0 kW (NOT 10.12 kW)
+        self.assertAlmostEqual(mv["iron_loss_kw"], 8.0, places=5)
+        self.assertAlmostEqual(mv["main_iron_loss_frac"], 0.001, places=5)
+        self.assertAlmostEqual(mv["main_copper_loss_frac"], 0.010, places=5)
+        self.assertAlmostEqual(mv["stc_iron_loss_frac"], 8.0 / 10120.0, places=5)
+        self.assertAlmostEqual(mv["stc_copper_loss_frac"], 0.010 * 10120.0 / 8000.0, places=5)
+        self.assertIn("TrfIronLossFrac=0.00100", out_text)
+        self.assertIn("TrfResLossFrac=0.01000", out_text)
+        self.assertIn("STCIronLoss=8.00000", out_text)
+        self.assertIn("STCIronLossFrac=0.00079", out_text)
+        self.assertIn("STCCopperLossFrac=0.01265", out_text)
+        self.assertTrue(any("PNomInvAC=8000 kW" in w for w in summary["warnings"]), summary["warnings"])
+
+    def test_pvsyst817_hv_and_mv_native_power_bounds_and_grid_limit(self) -> None:
+        vc_demo = self._make_demo_utility_vc()
+        mv_ok = {"count": 1, "output_voltage_kv": 20.0, "stc_ref_power_kw": 10120.0, "iron_loss_frac": 0.001, "copper_loss_frac": 0.010}
+
+        # Issue #255 reproducer: 20,240 kVA HV on 8,000 kW inverter (> 200% = 16,000 kVA) MUST be rejected
+        with self.assertRaisesRegex(ValueError, "TransfoPowerGTInverterXX"):
+            apply_transformers_to_variant_text(
+                vc_demo, mv=mv_ok,
+                hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 20240.0, "iron_loss_kw": 50.6, "copper_loss_kw": 404.8},
+                components=self.comp,
+            )
+
+        # Exact native upper (16,000 kVA = 2.00x) and lower (6,400 kVA = 0.80x) bounds pass
+        for valid_kva in (6400.0, 16000.0):
+            _, s = apply_transformers_to_variant_text(
+                vc_demo, mv=mv_ok,
+                hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": valid_kva, "iron_loss_kw": 40.0, "copper_loss_kw": 250.0},
+                components=self.comp,
+            )
+            self.assertAlmostEqual(s["hv"]["ds_nom_power"], valid_kva, places=2)
+
+        # Strictly below 80% (6,399 kVA) and above 200% (16,001 kVA) fail
+        with self.assertRaisesRegex(ValueError, "TransfoPowerLTInverterXX"):
+            apply_transformers_to_variant_text(
+                vc_demo, mv=mv_ok,
+                hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 6399.0, "iron_loss_kw": 40.0, "copper_loss_kw": 250.0},
+                components=self.comp,
+            )
+        with self.assertRaisesRegex(ValueError, "TransfoPowerGTInverterXX"):
+            apply_transformers_to_variant_text(
+                vc_demo, mv=mv_ok,
+                hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 16001.0, "iron_loss_kw": 40.0, "copper_loss_kw": 250.0},
+                components=self.comp,
+            )
+
+        # Active PLimGrid=5000 kW lowers the 80% floor to 4000 kVA (matching TransfoPowerLTGridLimXX)
+        vc_lim = self._make_demo_utility_vc(with_grid_limit_kw=5000.0)
+        _, s_lim = apply_transformers_to_variant_text(
+            vc_lim, mv=mv_ok,
+            hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 4000.0, "iron_loss_kw": 20.0, "copper_loss_kw": 150.0},
+            components=self.comp,
+        )
+        self.assertAlmostEqual(s_lim["grid_limit_kw"], 5000.0, places=2)
+        with self.assertRaisesRegex(ValueError, "PLimGrid=5000"):
+            apply_transformers_to_variant_text(
+                vc_lim, mv=mv_ok,
+                hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 3999.0, "iron_loss_kw": 20.0, "copper_loss_kw": 150.0},
+                components=self.comp,
+            )
+
+        # Omitted hv.nominal_power_kva defaults to 1.15x PNomInvAC (9,200 kVA), safe even at high DC/AC
+        _, s_def = apply_transformers_to_variant_text(
+            vc_demo, mv=mv_ok,
+            hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 18000.0},
+            components=self.comp,
+        )
+        self.assertAlmostEqual(s_def["hv"]["ds_nom_power"], 9200.0, places=2)
+
+    def test_pvsyst817_parallel_mv_datasheet_scaling_and_native_checks(self) -> None:
+        vc_demo = self._make_demo_utility_vc()
+        # 2 x 4,500 kVA MV datasheet transformers (4 kW iron, 40 kW copper per unit) on 8,000 kW AC / 10,120 kWp DC
+        out_text, summary = apply_transformers_to_variant_text(
+            vc_demo,
+            mv={
+                "count": 2,
+                "output_voltage_kv": 20.0,
+                "stc_ref_power_kw": 10120.0,
+                "nominal_power_kva": 4500.0,
+                "iron_loss_kw": 4.0,
+                "copper_loss_kw": 40.0,
+            },
+            components=self.comp,
+        )
+        mv = summary["mv"]
+        self.assertAlmostEqual(mv["iron_loss_kw"], 8.0, places=5)
+        self.assertAlmostEqual(mv["stc_iron_loss_frac"], 8.0 / 10120.0, places=5)
+        self.assertAlmostEqual(mv["stc_copper_loss_frac"], 40.0 * (10120.0 / 2.0) / (4500.0 ** 2), places=5)
+        self.assertIn("STCIronLoss=8.00000", out_text)
+        self.assertIn("MVTrfDSNomPower=4500.00", out_text)
+        self.assertIn("MVTrfDSIronLoss=4.0000", out_text)
+        self.assertIn("MVTrfDSCopperLoss=40.0000", out_text)
+
+        # Parallel MV per-unit oversizing: 2 x 8,100 kVA (> 2.0 * 4,000 kW per unit) rejected
+        with self.assertRaisesRegex(ValueError, "TransfoPowerGTInverterXX"):
+            apply_transformers_to_variant_text(
+                vc_demo,
+                mv={"count": 2, "output_voltage_kv": 20.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 8100.0, "iron_loss_kw": 4.0, "copper_loss_kw": 40.0},
+                components=self.comp,
+            )
+
+        # Datasheet zero iron/copper rejected (TransfoDataSheetsNotWellDef)
+        with self.assertRaisesRegex(ValueError, "must be > 0"):
+            apply_transformers_to_variant_text(
+                vc_demo,
+                mv={"count": 1, "output_voltage_kv": 20.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 9000.0, "iron_loss_kw": 8.0, "copper_loss_kw": 0.0},
+                components=self.comp,
+            )
+        with self.assertRaisesRegex(ValueError, "must be > 0"):
+            apply_transformers_to_variant_text(
+                vc_demo,
+                mv={"count": 1, "output_voltage_kv": 20.0, "stc_ref_power_kw": 10120.0, "iron_loss_frac": 0.001, "copper_loss_frac": 0.010},
+                hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 15000.0, "iron_loss_kw": 0.0, "copper_loss_kw": 300.0},
+                components=self.comp,
+            )
+
+        # Native loss upper bounds: HV iron/nom > 1% and copper/nom > 5% rejected; MV STC copper > 5% rejected
+        with self.assertRaisesRegex(ValueError, "iron/nom <= 1%"):
+            apply_transformers_to_variant_text(
+                vc_demo,
+                mv={"count": 1, "output_voltage_kv": 20.0, "stc_ref_power_kw": 10120.0, "iron_loss_frac": 0.001, "copper_loss_frac": 0.010},
+                hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 15000.0, "iron_loss_kw": 200.0, "copper_loss_kw": 300.0},
+                components=self.comp,
+            )
+        with self.assertRaisesRegex(ValueError, "copper/nom <= 5%"):
+            apply_transformers_to_variant_text(
+                vc_demo,
+                mv={"count": 1, "output_voltage_kv": 20.0, "stc_ref_power_kw": 10120.0, "iron_loss_frac": 0.001, "copper_loss_frac": 0.010},
+                hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 15000.0, "iron_loss_kw": 40.0, "copper_loss_kw": 825.0},
+                components=self.comp,
+            )
+        with self.assertRaisesRegex(ValueError, "copper <= 5%"):
+            apply_transformers_to_variant_text(
+                vc_demo,
+                mv={"count": 1, "output_voltage_kv": 20.0, "stc_ref_power_kw": 10120.0, "iron_loss_frac": 0.001, "copper_loss_frac": 0.045},
+                components=self.comp,
+            )
+
+        # Voltage ordering: HV < MV rejected (TransfoHT_DefGridVoltage)
+        with self.assertRaisesRegex(ValueError, "TransfoHT_DefGridVoltage"):
+            apply_transformers_to_variant_text(
+                vc_demo,
+                mv={"count": 1, "output_voltage_kv": 35.0, "stc_ref_power_kw": 10120.0, "iron_loss_frac": 0.001, "copper_loss_frac": 0.010},
+                hv={"output_voltage_kv": 30.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 10000.0, "iron_loss_kw": 10.0, "copper_loss_kw": 50.0},
+                components=self.comp,
+            )
 
 
 if __name__ == "__main__":
