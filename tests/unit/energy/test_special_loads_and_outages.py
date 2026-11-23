@@ -89,7 +89,7 @@ class SpecialLoadsAndOutagesTests(unittest.TestCase):
             lines, (0, 3),
             {
                 "mode": "random",
-                "time_fraction_pct": 2.5,
+                "time_fraction_pct": 1.0,
                 "period_count": 6,
                 "min_duration_hours": 4,
                 "max_duration_hours": 24,
@@ -99,7 +99,8 @@ class SpecialLoadsAndOutagesTests(unittest.TestCase):
         self.assertEqual(res["after"]["mode"], "Periods")
         self.assertEqual(res["after"]["period_count"], 6)
         self.assertEqual(res["after"]["settings"]["NbPeriods"], "6")
-        self.assertEqual(res["after"]["settings"]["TimeFraction"], "0.0250")
+        self.assertEqual(res["after"]["settings"]["TimeFraction"], "0.0100")
+        self.assertAlmostEqual(sum(float(p['duration']) for p in res['after']['periods']), 87.6, places=1)
         joined = "".join(lines)
         self.assertIn("UnavailPeriods=Start", joined)
         self.assertIn("RandomInit =42", joined)
@@ -107,6 +108,17 @@ class SpecialLoadsAndOutagesTests(unittest.TestCase):
         # Removal cleanly restores state
         rm = replace_system_unavailability(lines, (0, len(lines) - 1), {"mode": "none"})
         self.assertFalse(rm["after"]["configured"])
+
+    def test_random_system_unavailability_rejects_infeasible_total(self) -> None:
+        lines = ['PVObject_System=pvSystem\n', '  Flags=$00\n', '  SystemType=Grid\n',
+                 'End of PVObject pvSystem\n']
+        original = list(lines)
+        with self.assertRaisesRegex(ValueError, 'time_fraction_pct'):
+            replace_system_unavailability(lines, (0, 3), {
+                'mode': 'random', 'time_fraction_pct': 10, 'period_count': 2,
+                'min_duration_hours': 1, 'max_duration_hours': 5,
+            })
+        self.assertEqual(lines, original)
 
 
 if __name__ == "__main__":
