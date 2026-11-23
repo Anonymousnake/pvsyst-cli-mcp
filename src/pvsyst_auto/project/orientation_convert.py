@@ -1,13 +1,13 @@
 """In-place cross-orientation conversion for existing Grid variants (Fixed <-> Seasonal <-> Sheds <-> Tracker)."""
 from __future__ import annotations
 
-import math
 import re
 from typing import Any
 
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
+from pvsyst_auto.validation import bounded_number as _finite
 
 TARGET_TYPES = {
     "fixed": "FixedPlane",
@@ -16,15 +16,6 @@ TARGET_TYPES = {
     "tracker_ns": "UnlimTracking",
     "tracker_2axis": "TrackTwoAxis",
 }
-
-
-def _finite(val: Any, name: str, lo: float, hi: float) -> float:
-    if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
-        raise ValueError(f"{name} must be a finite number")
-    out = float(val)
-    if not lo <= out <= hi:
-        raise ValueError(f"{name} must lie in [{lo}, {hi}]")
-    return out
 
 
 def _strip_block(lines: list[str], start_marker: str, end_marker: str) -> tuple[list[str], bool]:

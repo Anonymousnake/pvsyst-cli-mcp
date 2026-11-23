@@ -12,8 +12,16 @@ __pycache__/
 *.MET
 *.MEF
 *.SIT
+*.PAN
+*.OND
+*.BTR
+*.GEN
+*.REV
+*.pvc2
+.mcp-component-index.json
 *.csv
 *.pdf
+*.html
 *.zip
 *.log
 *.exe

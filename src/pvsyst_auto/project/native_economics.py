@@ -1,17 +1,13 @@
 """Native PVsyst 8.1.7 TEcoEvaluation writer so official CLI PDF reports include financial pages."""
 from __future__ import annotations
 
-import math
 from typing import Any
+
+from pvsyst_auto.validation import finite_number
 
 
 def _finite(val: Any, name: str, *, allow_zero: bool = True) -> float:
-    if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
-        raise ValueError(f"{name} must be a finite number")
-    out = float(val)
-    if (out < 0.0) if allow_zero else (out <= 0.0):
-        raise ValueError(f"{name} must be {'>= 0' if allow_zero else '> 0'}")
-    return out
+    return finite_number(val, name, minimum=0, strict_min=not allow_zero)
 
 
 def format_native_economics_block(cfg: dict[str, Any], eol: str) -> list[str]:

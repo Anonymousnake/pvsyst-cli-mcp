@@ -198,9 +198,7 @@ def categorized_tool():
         description = f"[{category}] {inspect.getdoc(func)}"
         _tool_registry[func.__name__] = (description, guarded, params)
         if func.__name__ in ACTIVE_TOOL_NAMES:
-            if func.__name__ in STRICT_ARGUMENT_TOOLS:
-                # Typos are rejected against the published signature, so the whitelist cannot drift.
-                _strict_arguments[func.__name__] = params
+            _strict_arguments[func.__name__] = params
             mcp.tool(description=description)(guarded)
         return func
     return register
@@ -212,7 +210,7 @@ def create_mcp_server(tool_groups: str | None = None) -> MCPServer:
     names = tool_names_for_groups(groups)
     for mod in import_modules_for_groups(groups):
         import_module(f".{mod}", __package__)
-    missing = sorted((set(STRICT_ARGUMENT_TOOLS) & names) - set(_tool_registry))
+    missing = sorted(names - set(_tool_registry))
     if missing:
         raise RuntimeError(f"Unregistered strict entry points: {missing}")
     server = MCPServer("pvsyst-cli", instructions=SERVER_INSTRUCTIONS)
@@ -221,8 +219,7 @@ def create_mcp_server(tool_groups: str | None = None) -> MCPServer:
     server.middleware.append(make_strict_middleware(strict_map))
     for name in sorted(names):
         description, guarded, params = _tool_registry[name]
-        if name in STRICT_ARGUMENT_TOOLS:
-            strict_map[name] = params
+        strict_map[name] = params
         server.tool(description=description)(guarded)
     return server
 

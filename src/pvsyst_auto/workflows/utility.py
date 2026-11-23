@@ -22,6 +22,7 @@ from pvsyst_auto.project.paths import project_path, workspace_file, write_json
 from pvsyst_auto.project.synthesize import synthesize_project_and_variant, synthesize_utility_project
 from pvsyst_auto.project.template import _mppt_inputs
 from pvsyst_auto.results import IRRAD_UNIT_KIND, POWER_UNIT_KIND, annual_summary, fingerprint
+from pvsyst_auto.validation import is_finite_number as _is_number
 from pvsyst_auto.weather.preparation import compare_native_weather, inspect_met_calendar, load_weather_manifest
 
 UTILITY_SCOPES = ("ground_sheds", "ground_tracker")
@@ -52,10 +53,6 @@ BIFACIAL_EXTRA_VARS = (
     "viGlobGnd", "viDiffGnd", "viGlobBak",
     "viBeamBak", "viDifSBak", "viBmSFBak", "viMismBak", "viPRBifi",
 )
-
-
-def _is_number(value) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 
 
 def _is_int(value) -> bool:

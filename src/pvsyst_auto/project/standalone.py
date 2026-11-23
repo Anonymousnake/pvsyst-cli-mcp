@@ -1,7 +1,6 @@
 """Zero-template Stand-Alone off-grid PV + BESS + Controller + optional Backup Genset synthesis and workflow."""
 from __future__ import annotations
 
-import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +21,7 @@ from pvsyst_auto.project.synthesize import (
     synthesize_orientation_block,
     synthesize_project_text,
 )
+from pvsyst_auto.validation import bounded_number as _finite
 
 STANDALONE_SCOPE = "stand_alone"
 DEFAULT_MPPT_CONTROLLER = "Universal_Controller_LA_MPPT.RLT"
@@ -33,15 +33,6 @@ def _pos_int(val: Any, name: str) -> int:
     if type(val) is not int or val < 1:
         raise ValueError(f"{name} must be a positive integer")
     return val
-
-
-def _finite(val: Any, name: str, *, lo: float = -math.inf, hi: float = math.inf) -> float:
-    if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
-        raise ValueError(f"{name} must be a finite number")
-    out = float(val)
-    if not lo <= out <= hi:
-        raise ValueError(f"{name} must lie in [{lo}, {hi}]")
-    return out
 
 
 def generate_genset_text(

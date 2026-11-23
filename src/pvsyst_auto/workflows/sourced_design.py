@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import difflib
-import math
 import re
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.engineering.envelope import prepare_design_envelope
+from pvsyst_auto.validation import (
+    append_issue as _issue,
+    is_finite_number as _is_number,
+    is_printable_text,
+)
 
 
 SOURCE_KEYS = ("kind", "title", "locator", "text", "model")
@@ -104,10 +108,6 @@ def _suggest_fields(bad_field: str, allowed_fields: list[str]) -> list[str]:
     return suggestions[:4]
 
 
-def _issue(result, field, message):
-    result["issues"].append({"field": field, "message": message})
-
-
 def _warn(result, field, message):
     result["warnings"].append({"field": field, "message": message})
 
@@ -122,17 +122,8 @@ def _report_unknown_keys(container, allowed, prefix, result, label="Unknown key"
         _issue(result, prefix, "Every object key must be a printable string")
 
 
-def _is_number(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:
-        return False
-
-
 def _is_text(value, limit=MAX_META_CHARS):
-    return isinstance(value, str) and bool(value.strip()) and value.isprintable() and len(value) <= limit
+    return is_printable_text(value, limit)
 
 
 def _norm_ws(value):
