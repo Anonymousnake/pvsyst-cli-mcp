@@ -692,8 +692,8 @@ class PVsystCLI:
                     if partial is not None and partial.is_file():
                         try:
                             partial.unlink()
-                        except OSError:
-                            pass
+                        except OSError as exc:
+                            raise PVsystError(f"Cannot remove partial simulation output {partial.name}: {exc}") from exc
                 time.sleep(0.25)
                 continue
             code_note = f" (exit code {result.returncode})" if result.returncode != 0 else ""
