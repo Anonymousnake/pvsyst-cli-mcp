@@ -257,6 +257,12 @@ class BatchSweepUnitTests(unittest.TestCase):
             self.assertEqual(started["status"], "running")
             self.assertEqual(started["job_id"], "BgSweep")
 
+            other = _make_fake_cli(ws / "other")
+            self.assertEqual(poll_batch_sweep_job(other, "BgSweep")["status"], "not_found")
+            (other.workspace / "UserBatch" / "BgSweep_job.json").write_text(
+                '{"artifacts": {"expected_batch_summary": "missing-summary.csv"}}', encoding="utf-8"
+            )
+            self.assertEqual(poll_batch_sweep_job(other, "BgSweep")["status"], "unknown")
             polled = None
             for _ in range(40):
                 polled = poll_batch_sweep_job(cli, "BgSweep")

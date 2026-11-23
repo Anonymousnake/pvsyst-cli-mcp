@@ -26,7 +26,7 @@ ASYNC_RECOMMENDED_THRESHOLD = 8
 DEFAULT_BATCH_RESULT_VARS = ("GlobInc", "GlobEff", "EArray", "E_Grid", "PR", "IL_Pmax")
 
 _BATCH_JOBS_LOCK = threading.Lock()
-_BATCH_JOBS: dict[str, dict[str, Any]] = {}
+_BATCH_JOBS: dict[tuple[Path, str], dict[str, Any]] = {}
 
 
 @dataclass(frozen=True)
@@ -510,7 +510,7 @@ def poll_batch_sweep_job(cli: PVsystCLI, job_id: str) -> dict[str, Any]:
         raise ValueError("job_id must be a valid sweep_name identifier")
 
     with _BATCH_JOBS_LOCK:
-        mem = _BATCH_JOBS.get(job_id)
+        mem = _BATCH_JOBS.get((Path(cli.workspace).resolve(), job_id))
     if mem is not None:
         thread: threading.Thread = mem["thread"]
         if thread.is_alive():
@@ -557,7 +557,8 @@ def poll_batch_sweep_job(cli: PVsystCLI, job_id: str) -> dict[str, Any]:
         except (ValueError, OSError):
             pass
     return {
-        "status": "running",
+        "status": "unknown",
+        "issues": ["No local worker or completed batch result was found."],
         "stage": "simulation",
         "job_id": job_id,
         "sweep_name": meta.get("sweep_name", job_id),
@@ -782,7 +783,7 @@ def run_batch_sweep(
                 worker_thread = threading.Thread(target=_worker, name=f"pvsyst-batch-{job_id}", daemon=True)
                 job_entry["thread"] = worker_thread
                 with _BATCH_JOBS_LOCK:
-                    _BATCH_JOBS[job_id] = job_entry
+                    _BATCH_JOBS[Path(cli.workspace).resolve(), job_id] = job_entry
                 worker_thread.start()
                 return {
                     "status": "running",
