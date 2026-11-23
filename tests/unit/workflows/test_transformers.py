@@ -42,14 +42,53 @@ class TransformersTests(unittest.TestCase):
             tilt_deg=25.0,
             azimuth_deg=0.0,
         )
-        self.store.create_project("TrfTest.PRJ", synth["prj_text"], {"VC0": synth["vc0_text"]})
+        vc0 = synth["vc0_text"].replace("      NoOrientation=1", "      PNomSizing=440.0\n      NoOrientation=1")
+        self.store.create_project("TrfTest.PRJ", synth["prj_text"], {"VC0": vc0})
+
+    def test_public_tool_requires_reference_when_source_has_none(self) -> None:
+        from unittest.mock import patch
+        from pvsyst_auto.api.projects import pvsyst_configure_transformers
+        from pvsyst_auto.api.schemas import MvTransformerSpec
+
+        source = self.root / "Projects" / "TrfTest.VC0"
+        text = source.read_text(encoding="utf-8-sig").replace("      PNomSizing=440.0\n", "")
+        source.write_text(text, encoding="utf-8")
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
+            result = pvsyst_configure_transformers(
+                "TrfTest.PRJ", "VC0", "VC1", mv=MvTransformerSpec(), dry_run=False,
+            )
+            self.assertEqual(result["status"], "blocked")
+            self.assertIn("stc_ref_power_kw", " ".join(result["issues"]))
+            self.assertFalse((self.root / "Projects" / "TrfTest.VC1").exists())
+            result = pvsyst_configure_transformers(
+                "TrfTest.PRJ", "VC0", "VC1", mv=MvTransformerSpec(stc_ref_power_kw=500), dry_run=False,
+            )
+            self.assertEqual(result["status"], "created")
+            self.assertEqual(result["transformers"]["mv"]["stc_ref_power_kw"], 500)
+
+    def test_public_hv_fraction_matches_generated_datasheet(self) -> None:
+        from unittest.mock import patch
+        from pvsyst_auto.api.projects import pvsyst_configure_transformers
+        from pvsyst_auto.api.schemas import HvTransformerSpec, MvTransformerSpec
+
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
+            result = pvsyst_configure_transformers(
+                "TrfTest.PRJ", "VC0", "VC1", mv=MvTransformerSpec(stc_ref_power_kw=1000),
+                hv=HvTransformerSpec(stc_ref_power_kw=1000, nominal_power_kva=2000,
+                                     iron_loss_frac=0.005, copper_loss_frac=0.01), dry_run=False,
+            )
+        self.assertEqual(result["status"], "created")
+        hv = result["transformers"]["hv"]
+        self.assertAlmostEqual(hv["ds_iron_loss"] / hv["stc_ref_power_kw"], hv["iron_loss_frac"])
+        self.assertAlmostEqual(hv["ds_copper_loss"] * hv["stc_ref_power_kw"] / hv["ds_nom_power"]**2,
+                               hv["copper_loss_frac"])
 
     def test_mv_only_then_mv_hv_cascade_then_remove(self) -> None:
         # 1. Dry-run preview writes nothing
         prev = configure_transformers(
             self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC1",
             mv={
-                "count": 2, "output_voltage_kv": 20.0,
+                "count": 2, "output_voltage_kv": 20.0, "stc_ref_power_kw": 440.0,
                 "iron_loss_frac": 0.0012, "copper_loss_frac": 0.011,
                 "night_disconnect": True,
                 "cable": {"length_m": 450.0, "metal": "Copper", "section_mm2": 150},
@@ -63,7 +102,7 @@ class TransformersTests(unittest.TestCase):
         mv_res = configure_transformers(
             self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC1",
             mv={
-                "count": 2, "output_voltage_kv": 20.0,
+                "count": 2, "output_voltage_kv": 20.0, "stc_ref_power_kw": 440.0,
                 "iron_loss_frac": 0.0012, "copper_loss_frac": 0.011,
                 "night_disconnect": True,
                 "cable": {"length_m": 450.0, "metal": "Copper", "section_mm2": 150},
@@ -84,13 +123,13 @@ class TransformersTests(unittest.TestCase):
         hv_res = configure_transformers(
             self.store, project="TrfTest.PRJ", source_variant="VC1", new_variant="VC2",
             mv={
-                "count": 2, "output_voltage_kv": 35.0,
+                "count": 2, "output_voltage_kv": 35.0, "stc_ref_power_kw": 440.0,
                 "nominal_power_kva": 1250.0, "iron_loss_kw": 1.1, "copper_loss_kw": 12.0,
                 "night_disconnect": False,
                 "cable": {"length_m": 600.0, "metal": "Copper", "section_mm2": 185},
             },
             hv={
-                "output_voltage_kv": 110.0,
+                "output_voltage_kv": 110.0, "stc_ref_power_kw": 440.0,
                 "nominal_power_kva": 3000.0, "iron_loss_kw": 2.4, "copper_loss_kw": 21.0,
                 "night_disconnect": False,
                 "cable": {"length_m": 2500.0, "metal": "Aluminium", "section_mm2": 240},
@@ -133,7 +172,7 @@ class TransformersTests(unittest.TestCase):
         self.assertEqual(r1["status"], "blocked")
         vc0 = (self.root / "Projects" / "TrfTest.VC0").read_text(encoding="utf-8-sig")
         with self.assertRaisesRegex(ValueError, "section_mm2"):
-            apply_transformers_to_variant_text(vc0, mv={"cable": {"length_m": 100, "section_mm2": 999}})
+            apply_transformers_to_variant_text(vc0, mv={"stc_ref_power_kw": 440, "cable": {"length_m": 100, "section_mm2": 999}})
 
 
 if __name__ == "__main__":
