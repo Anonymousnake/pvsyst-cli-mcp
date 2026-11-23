@@ -1537,7 +1537,9 @@ def synthesize_utility_project(
                 larg_shed = n_rows * dim_h + max(0, n_rows - 1) * sy
                 cx0 = 0.5 * (terrain_mesh.bounds["min_x"] + terrain_mesh.bounds["max_x"])
                 cy0 = 0.5 * (terrain_mesh.bounds["min_y"] + terrain_mesh.bounds["max_y"])
-                start_y = cy0 - 0.5 * (shed_count - 1) * resolved_pitch
+                azimuth_rad = math.radians(azimuth_deg)
+                step_x, step_y = math.sin(azimuth_rad), math.cos(azimuth_rad)
+                start_offset = -0.5 * (shed_count - 1) * resolved_pitch
                 tables_3d = [
                     {
                         "name": f"TerrainShed_{r + 1:02d}",
@@ -1547,7 +1549,9 @@ def synthesize_utility_project(
                         "module_count": n_rows * n_cols,
                         "long_shed_m": round(long_shed, 6),
                         "larg_shed_m": round(larg_shed, 6),
-                        "origin_m": [round(cx0, 6), round(start_y + r * resolved_pitch, 6), round(ground_clearance_m, 6)],
+                        "origin_m": [round(cx0 + (start_offset + r * resolved_pitch) * step_x, 6),
+                                     round(cy0 + (start_offset + r * resolved_pitch) * step_y, 6),
+                                     round(ground_clearance_m, 6)],
                         "tilt_deg": tilt_deg,
                         "azimuth_deg": azimuth_deg,
                         "base_slope_deg": eff_base_slope,

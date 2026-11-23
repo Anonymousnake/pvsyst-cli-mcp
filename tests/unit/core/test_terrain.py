@@ -87,6 +87,32 @@ class TerrainDemTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r"pvsyst-cli-mcp\[geo\]"):
                 build_terrain_mesh({"geotiff_name": "site.tif"}, workspace=self.root)
 
+    def test_terrain_shed_rows_follow_azimuth(self) -> None:
+        import re
+        from pvsyst_auto.api.projects import pvsyst_prepare_design_project
+        from pvsyst_auto.api.schemas import SingleDesignRequest
+        from tests.unit.core.test_bifacial_utility import _capacity_spec, _FakeUtilityCLI
+
+        request = SingleDesignRequest(
+            scope='ground_sheds', new_project='Terrain.PRJ', year=2024, target_dc_kw=100,
+            tilt=22, azimuth=90, module={'file_name': 'Lab440.PAN'}, inverter={'file_name': 'Lab50.OND'},
+            weather={'mode': 'existing', 'sit_name': 'Geneva_MN90.SIT', 'met_name': 'Geneva_MN90_SYN.MET'},
+            capacity=_capacity_spec(), ground_layout={'model_mode': '3d', 'pitch_m': 11, 'shed_count': 6,
+                'module_rows': 2, 'module_columns': 19, 'terrain': {'points': [
+                    [-100, -100, 0], [100, -100, 0], [100, 100, 0], [-100, 100, 0]]}})
+        with patch('pvsyst_auto.api.projects.cli', return_value=_FakeUtilityCLI(self.root)), \
+             patch('pvsyst_auto.api.projects.variant_store', return_value=self.store), \
+             patch('pvsyst_auto.workflows.utility.inspect_met_calendar', return_value={
+                 'issues': [], 'warnings': [], 'year': 2024, 'rows': 8784}):
+            result = pvsyst_prepare_design_project(request, dry_run=False)
+        self.assertEqual(result['status'], 'prepared', result)
+        text = (self.root / 'Projects/Terrain.VC0').read_text()
+        blocks = re.findall(r'PVObject_\d+=pvShdArrayTable.*?End of PVObject pvShdArrayTable', text, re.S)
+        origins = [tuple(map(float, re.search(r'DOrigine=([^\r\n]+)', b).group(1).split(','))) for b in blocks]
+        self.assertEqual(len(origins), 6)
+        self.assertAlmostEqual(origins[1][0] - origins[0][0], 11)
+        self.assertAlmostEqual(origins[1][1] - origins[0][1], 0)
+
     def test_synthesize_utility_sheds_and_trackers_with_terrain(self) -> None:
         pts = _sloped_hill_points()
         # 1. Fixed sheds draped on sloped DEM
