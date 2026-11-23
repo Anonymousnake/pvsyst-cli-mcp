@@ -11,7 +11,7 @@
 运行环境要求：
 - Windows 系统 + 已安装的 `PVsystCLI.exe`（8.1.6 rev49278 / 8.1.7 rev49382）；默认 `"native"` 路径不再需要打开桌面 GUI 或 96 DPI 窗口环境。
 - `PVsyst.ini` 中的 `DataPath` 已指向当前 MCP 工作区；执行前同样会通过纯 `kernel32` 进程检测确认没有从同一安装目录启动的冲突 PVsyst 进程。
-- 源工程支持北半球单子阵列/单固定朝向的纯并网工程，以及符合 `anchor0` 约束的单栋多朝向工程（双屋面条件见[工程交付双屋面章节](engineering-delivery.md#finite-two-roof-task-bounded-native-acceptance)）。源 `.PRJ` 与 `.VCx` 必须引用同一对工作区 `.SIT`/`.MET`。
+- 源工程支持北半球单子阵列/单固定朝向的纯并网工程，以及符合 `anchor0` 约束的单栋多朝向工程（双屋面条件见[工程交付双屋面章节](engineering-delivery.md#two-roof-house-workflow)）。源 `.PRJ` 与 `.VCx` 必须引用同一对工作区 `.SIT`/`.MET`。
 
 `spec` 字典字段：
 

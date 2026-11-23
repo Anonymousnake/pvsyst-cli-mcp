@@ -39,5 +39,5 @@ PVsyst 8.1.6 在读取 `.PRJ` 和 `.VCx` 时有个老毛病：如果文件开头
 1. 如果该工程正在 PVsyst 桌面 GUI 中打开，先在 GUI 中关闭它，防止稍后 GUI 把内存里的旧状态重新写盘覆盖。
 2. 调用 `pvsyst_inspect_project`，拿到最新的 `files` 哈希字典、当前 `project_name` 和 `utf8_bom` 状态。
 3. 先用 `dry_run=true` 调 `pvsyst_update_project_parameters` 看一眼 `diff` 和 `name_change`。
-4. 确认无误后，带着同一份 `expected_files` 和 `dry_run=false` 正式执行修改。工具会备份整套 `.PRJ`/`.VCx`，但只改写 `.PRJ` 文件本身，不会碰各个 `.VCx` 的修改时间和文件内容。
-5. 如需回滚到修改前的状态（包括还原最初有无 BOM 的字节状态），将返回的 `backups` 和当前 `files` 传给 `pvsyst_restore_project_sources(..., confirm=true)`。
+4. 确认无误后，带着同一份 `expected_files` 和 `dry_run=false` 正式执行修改。工具会先在 `Projects/.mcp-variant-backups/` 下备份整套 `.PRJ`/`.VCx`（并在返回值里给出 `backups` 和 `transaction_manifest`），但只改写 `.PRJ` 文件本身，不会碰各个 `.VCx` 的修改时间和文件内容。
+5. 如需回滚到修改前的状态，可从上述备份目录恢复原 `.PRJ` 快照字节（原 `pvsyst_restore_project_sources` MCP 工具已移除）。

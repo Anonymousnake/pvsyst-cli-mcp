@@ -141,7 +141,7 @@ src/pvsyst_auto/
 ├── scene/        # PVCollada (.pvc2) 3D 房屋与有限 3D 地面多边形裁剪排布及阴影构建
 ├── energy/       # 逐时负荷、AC 耦合储能、详细损失标量、功率因数与并网限发
 ├── weather/      # Open-Meteo ERA5 / PVGIS v5.3 TMY / NASA POWER 下载、亚小时 CSV 与 .SIT/.MET 转换
-├── native/       # PVsystCLI.exe 进程封装、免 GUI 3D 阴影/精细接线构建与旧版 Win32 辅助桥
+├── native/       # PVsystCLI.exe 进程封装、私有桌面启动隔离与免 GUI 原生写入器
 └── results.py    # 仿真结果 CSV 解析与逐时/亚小时指标汇总
 ```
 

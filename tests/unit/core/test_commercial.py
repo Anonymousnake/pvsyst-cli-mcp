@@ -61,8 +61,7 @@ class CommercialTests(unittest.TestCase):
                     self.assertIn("LargApp=1.2", content)
                     self.assertIn("LongApp=2.1", content)
                 self.assertEqual(self.store.inspect(kind, path.name)["commercial"]["remarks"], args["remarks"])
-                self.store.restore(kind, path.name, edited["backup_name"], True)
-                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / kind / edited["backup_name"]).read_bytes(), original)
 
     def test_noop_preserves_numeric_spelling_bom_and_mixed_whitespace(self):
         path = self.paths["PAN"]
@@ -162,5 +161,4 @@ class CommercialTests(unittest.TestCase):
         original = self.paths["GEN"].read_bytes()
         result = self.edit("GEN", updates={"PNomGen": "55"}, commercial_updates={"Model": "55 kVA"})
         self.assertIn(b"PNomGen=55", self.paths["GEN"].read_bytes())
-        self.store.restore("GEN", "test.GEN", result["backup_name"], True)
-        self.assertEqual(self.paths["GEN"].read_bytes(), original)
+        self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / "GEN" / result["backup_name"]).read_bytes(), original)

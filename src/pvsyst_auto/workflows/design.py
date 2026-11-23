@@ -94,7 +94,6 @@ LOSS_KEYS = frozenset(("LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor"))
 CAPACITY_KEYS = frozenset((*CAPACITY_NUMBERS, "min_dc_ac_ratio", "capacity_tolerance_pct", "voltage_standard", "design_basis"))
 ENVELOPE_NESTED = ("temperatures", "envelope", "coefficients", "module_limits", "mppt_limits",
                    "effective_irradiance")
-STATUSES = ("blocked", "ready_for_weather", "ready", "completed", "needs_review", "failed")
 ACQUIRE_SUCCESS = ("prepared",)
 PREPARE_SUCCESS = ("prepared", "needs_review")
 SIMULATE_SUCCESS = ("completed", "needs_review")

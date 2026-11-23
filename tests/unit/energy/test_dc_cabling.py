@@ -1,5 +1,4 @@
 """Unit tests for headless DC cabling solver and VCx variant creation."""
-import shutil
 import tempfile
 import unittest
 from decimal import Decimal

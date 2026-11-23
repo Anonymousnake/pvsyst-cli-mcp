@@ -11,9 +11,7 @@ from pvsyst_auto.project.synthesize import synthesize_utility_project
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.scene.terrain import (
     build_terrain_mesh,
-    drape_shed_tables_on_terrain,
     emit_pvshd_ground,
-    project_lonlat_to_enu,
 )
 from tests.unit.core.test_bifacial_utility import UTILITY_OND, UTILITY_PAN
 from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT

@@ -2,8 +2,6 @@
 
 `pvsyst_create_tracking_variant` 用于在已有的 PVsyst 8.1.6 跟踪器变体模板上修改跟踪轴角度、旋转限值、回溯（Backtracking）、大风保护（Wind Stow）等参数，并另存为一个新的 `.VCx` 变体。
 
-如果要直接跑“克隆 `UnlimTracking` 模板 → 改跟踪参数 → 跑全年仿真并核对报告”的完整工作流，见[跟踪模板全年仿真流程](tracking-template-flow.md)。
-
 ```json
 {
   "project": "example.PRJ",

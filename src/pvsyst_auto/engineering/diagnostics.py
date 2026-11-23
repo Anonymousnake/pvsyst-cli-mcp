@@ -54,24 +54,6 @@ _GRID_LIMIT_ENABLED_BIT = 0x01000000
 _GRID_LIMIT_APPARENT_BIT = 0x02000000
 
 
-def detect_native_refusal(text: str) -> str | None:
-    """Extract a native PVsystCLI refusal reason (e.g., 'Simulation cannot be run.')."""
-    if not isinstance(text, str) or not text:
-        return None
-    lines = [line.strip() for line in text.splitlines()]
-    for index, line in enumerate(lines):
-        if "simulation cannot be run." in line.casefold():
-            collected = [line]
-            for follow in lines[index + 1:]:
-                if not follow or follow.startswith(("PVsystCLI", "Exiting", "Exit code")):
-                    break
-                collected.append(follow)
-                if len(collected) >= 5:
-                    break
-            return " ".join(collected)
-    return None
-
-
 def _validate_thresholds(overrides: dict | None) -> dict[str, float]:
     merged = dict(DEFAULT_THRESHOLDS)
     if overrides is None:

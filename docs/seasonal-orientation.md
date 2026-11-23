@@ -32,4 +32,4 @@
 ## 适用范围与回滚
 
 - 仅适用于 PVsyst 8.1.6 单子阵列、单朝向（朝向 1）、自由地平线、无 3D 阴影场景、未开启倾角平均（`Uses*Aver=False`）及 PF/限发/负荷/储能的纯光伏并网变体。
-- 如果想把已经改成 `SeasonalTilt` 的变体切回普通固定平面，直接用修改事务返回的令牌调用 `pvsyst_restore_variant` 还原备份快照即可。关于季节朝向与远方地平线的底层字段细节，另见[季节朝向与地平线维护笔记](plane-horizon-native.md)。
+- 如需在固定倾角与季节倾角等朝向类型之间原地转换，也可使用 `pvsyst_convert_orientation`（见[工具参考](tool-reference.md)）。

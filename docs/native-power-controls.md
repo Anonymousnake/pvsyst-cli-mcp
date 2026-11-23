@@ -45,4 +45,4 @@
 
 ## 导出结果的表头小贴士
 
-在视在功率限发模式（`quantity="apparent"`）下，PVsyst 导出的 CSV 中 `PGridLim` 列的单位表头依然固定写着 `kW`（尽管它的数值和限幅逻辑实际上是 kVA），而 `EReGrid` / `EApGrid` 依然标为 `kVAh`（见[系统字段与输出单位](native-energy-management.md)）。
+在视在功率限发模式（`quantity="apparent"`）下，PVsyst 导出的 CSV 中 `PGridLim` 列的单位表头依然固定写着 `kW`（尽管它的数值和限幅逻辑实际上是 kVA），而 `EReGrid` / `EApGrid` 依然标为 `kVAh`。

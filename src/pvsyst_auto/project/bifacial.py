@@ -6,7 +6,6 @@ orientations. Verified empirically against PVsystCLI 8.1.7.
 """
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value

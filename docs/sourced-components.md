@@ -75,6 +75,6 @@
 
 ## 模板继承与注意事项
 
-- **哪些参数是继承自模板的**：`.PAN` 的单二极管模型内部参数（`RShunt`、`RSerie`、`Gamma`）、温度系数、串联电池片数、IAM 曲线，以及 `.OND` 的效率曲线（`ProfilPIO`）和温度降额参数不会随着铭牌功率或电压的修改而自动重新拟合。`inherited_fields` 和 `inherited_curves` 会把这些沿用自模板的项明确列出来。如果需要改效率曲线，创建完成后可接着调 `pvsyst_update_component`（见[OND 效率曲线编辑](ond-curve-verification.md)）。
+- **哪些参数是继承自模板的**：`.PAN` 的单二极管模型内部参数（`RShunt`、`RSerie`、`Gamma`）、温度系数、串联电池片数、IAM 曲线，以及 `.OND` 的效率曲线（`ProfilPIO`）和温度降额参数不会随着铭牌功率或电压的修改而自动重新拟合。`inherited_fields` 和 `inherited_curves` 会把这些沿用自模板的项明确列出来。如果需要改效率曲线，创建完成后可接着调 `pvsyst_update_component`（见[工具参考](tool-reference.md)）。
 - **商业标识与编码**：新组件的 `Manufacturer`、`Model`、`DataSource` 及根级 `Comment` 头部会同步更新（若包含中文等非 ASCII 字符会自动写入 UTF-8 BOM）。模板原有的 `Remarks` 备注（包括 `.PAN` 第 5 行可能携带的功能标志）会原样保留。
 - 关于 PVsyst 中组件铭牌参数与单二极管模型参数的区别，可参考官方文档：[PV modules basic data](https://www.pvsyst.com/help-pvsyst7/pvmodule_basicdata.htm) 与 [Determination of model parameters](https://www.pvsyst.com/help-pvsyst7/pvmodule_parameters.htm)。

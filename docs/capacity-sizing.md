@@ -1,6 +1,6 @@
 # 模板整数容量规划（Capacity Sizing）
 
-在调用 `pvsyst_simulate_template`、`pvsyst_simulate_design` 或 `pvsyst_prepare_design_project` 时，如果不想手动算“每串多少块组件、每路 MPPT 并几串、一共用几台逆变器”，可以传入 `capacity` 对象。工具会根据你给定的目标直流容量（`target_dc_kw`）和电压/电流/容配比边界，在模板允许的拓扑结构内自动搜索最优的整数串并联组合。
+在调用 `pvsyst_simulate_design` 或 `pvsyst_prepare_design_project` 时，如果不想手动算“每串多少块组件、每路 MPPT 并几串、一共用几台逆变器”，可以传入 `capacity` 对象。工具会根据你给定的目标直流容量（`target_dc_kw`）和电压/电流/容配比边界，在模板允许的拓扑结构内自动搜索最优的整数串并联组合。
 
 如果不传 `capacity`，模板工作流会原样保留模板工程里原有的逆变器台数和组串数。
 

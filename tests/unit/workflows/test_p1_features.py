@@ -14,7 +14,7 @@ from pvsyst_auto.api.weather import pvsyst_create_site
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.engineering.economics import evaluate_economics
 from pvsyst_auto.native.cli import PVsystCLI
-from pvsyst_auto.project.synthesize import placeholder_site_block, synthesize_utility_project
+from pvsyst_auto.project.synthesize import placeholder_site_block
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.weather import acquisition
 from pvsyst_auto.workflows.design import prepare_design_project, simulate_design

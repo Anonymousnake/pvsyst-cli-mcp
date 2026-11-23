@@ -1,6 +1,6 @@
 # Step-by-step grid simulation workflow
 
-When you want full manual control over each step instead of calling the all-in-one `pvsyst_simulate_template` or `pvsyst_simulate_design` workflows, you can chain the low-level inspection, project cloning, weather binding, `.SFI` generation, and `pvsyst_run_simulation` tools directly. This is especially useful when working with existing multi-subarray projects or projects that reference PVsyst's built-in encrypted component database.
+When you want full manual control over each step instead of calling the all-in-one `pvsyst_simulate_design` workflow, you can chain the low-level inspection, variant cloning, weather binding, `.SFI` generation, and `pvsyst_run_simulation` tools directly. This is especially useful when working with existing multi-subarray projects or projects that reference PVsyst's built-in encrypted component database.
 
 ## 1. Inspect the source project and weather
 
@@ -11,7 +11,7 @@ Start by checking the project structure, component references, and `.MET` calend
 
 ## 2. Clone, configure, and run
 
-1. **Clone an isolated copy**: Call `pvsyst_clone_project` to create a working project so you never mutate your baseline `.PRJ`/`.VCx` in place.
+1. **Create an isolated working variant**: Call `pvsyst_clone_variant` to clone a new `.VCx` inside the project so you never mutate your baseline variant in place (or use `pvsyst_create_project` / `pvsyst_prepare_design_project` to work in a separate `.PRJ`).
 2. **Bind site and weather (optional)**: If you are switching weather files, call `pvsyst_update_project_sources` with the current `files` SHA-256 map from `pvsyst_inspect_project`.
 3. **Create an `.SFI` export definition**: Call `pvsyst_build_sfi` (for example with `variables="all_common"`) to tell PVsyst which hourly columns to write into the result CSV.
 4. **Run the simulation**: Call `pvsyst_run_simulation` with explicit dot-formatted dates (`YYYY.MM.DD`) matching the `.MET` file's calendar year and fresh `csv_name` / `pdf_name` targets:

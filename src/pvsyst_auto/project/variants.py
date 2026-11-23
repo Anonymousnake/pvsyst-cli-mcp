@@ -22,9 +22,6 @@ STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvS
 MAX_ARCHIVE_MEMBERS = 128
 EMPTY_SHADING_FLAGS = ("$00", "$00020000", "$00080000")
 
-_saved_results = variant_readback.saved_results
-_economic_block = variant_readback.economic_block
-
 
 class VariantStore:
     def __init__(self, workspace: str | os.PathLike, components: ComponentStore,
@@ -612,14 +609,6 @@ class VariantStore:
             remove_orientation=remove_orientation, shared_member=shared_member,
         )
 
-    def _archive_folder(self) -> Path:
-        root = self._root()
-        folder = root / ".mcp-project-archive"
-        if folder.is_symlink() or folder.resolve().parent != root:
-            raise ValueError("Project archive resolves outside workspace")
-        folder.mkdir(exist_ok=True)
-        return folder
-
     @staticmethod
     def _embedded_reference(lines: list[str], header: str, closing: str,
                             field_name: str = "NomF") -> str | None:
@@ -987,133 +976,6 @@ class VariantStore:
                 candidates[path] = previous
             return {"project": project, **self._commit_project_files(project, originals, candidates)}
 
-    def archive_project(self, project: str, expected_files: dict[str, str] | None = None,
-                        confirm: bool = False) -> dict:
-        if not confirm:
-            raise ValueError("Archive requires confirm=true")
-        with self.lock:
-            actual = self.inspect_project(project)["files"]
-            if (expected_files is not None and actual != expected_files) or len(actual) < 2:
-                raise ValueError("Project files changed since inspection or has no variants")
-            if len(actual) > MAX_ARCHIVE_MEMBERS:
-                raise ValueError(f"Project archive exceeds {MAX_ARCHIVE_MEMBERS} members")
-            root = self._root()
-            folder = self._archive_folder() / uuid.uuid4().hex
-            folder.mkdir()
-            moved = []
-            try:
-                with (folder / "manifest.json").open("x", encoding="utf-8") as stream:
-                    json.dump({"project": project, "files": actual}, stream)
-                for name in actual:
-                    os.replace(root / name, folder / name)
-                    moved.append(name)
-            except BaseException as exc:
-                self._rollback(exc, [(name, os.replace, folder / name, root / name) for name in reversed(moved)],
-                               f"move them back from archive {folder.name}")
-                try:
-                    (folder / "manifest.json").unlink(missing_ok=True)
-                    folder.rmdir()
-                except OSError:
-                    pass
-                raise
-            return {"project": project, "archive_name": folder.name, "files": list(actual)}
-
-    def archive_variant(self, project: str, variant: str, expected_sha256: str | None = None,
-                        confirm: bool = False) -> dict:
-        if not confirm:
-            raise ValueError("Archive requires confirm=true")
-        with self.lock:
-            self._check_project(project)
-            path = self._path(project, variant)
-            data = self._read(path)
-            self._check_hash(data, expected_sha256)
-            digest = hashlib.sha256(data).hexdigest() if expected_sha256 is None else expected_sha256.lower()
-            _, lines = self._text(data)
-            self._sections(lines)
-            members = self.inspect_project(project)["files"]
-            others = [name for name in members
-                      if name.casefold() not in (project.casefold(), path.name.casefold())]
-            if not others:
-                raise ValueError("Archive the project instead of its last variant")
-            archive_name = uuid.uuid4().hex
-            target = self._archive_folder() / archive_name
-            target.mkdir()
-            try:
-                with (target / "manifest.json").open("x", encoding="utf-8") as stream:
-                    json.dump({"project": project, "files": {path.name: digest}}, stream)
-                os.replace(path, target / path.name)
-            except BaseException as exc:
-                if (target / path.name).exists():
-                    self._rollback(exc, [(path.name, os.replace, target / path.name, path)],
-                                   f"move it back from archive {archive_name}")
-                try:
-                    (target / "manifest.json").unlink(missing_ok=True)
-                    target.rmdir()
-                except OSError:
-                    pass
-                raise
-            return {"project": project, "variant": variant.upper(), "archive_name": archive_name}
-
-    def restore_archive(self, project: str, archive_name: str, confirm: bool = False) -> dict:
-        if not confirm:
-            raise ValueError("Restore requires confirm=true")
-        if not isinstance(archive_name, str) or not re.fullmatch(r"[0-9a-f]{32}", archive_name):
-            raise ValueError("Invalid archive name")
-        with self.lock:
-            folder = self._archive_folder() / archive_name
-            if folder.is_symlink() or folder.resolve().parent != self._archive_folder():
-                raise ValueError("Archive resolves outside workspace")
-            manifest_path = folder / "manifest.json"
-            if not folder.is_dir() or manifest_path.is_symlink() or not manifest_path.is_file():
-                raise ValueError(f"Archive {archive_name} was not found or has no manifest")
-            try:
-                manifest = json.loads(self._read(manifest_path).decode("utf-8"))
-            except ValueError as exc:
-                raise ValueError("Invalid archive manifest") from exc
-            if not isinstance(manifest, dict):
-                raise ValueError("Invalid archive manifest")
-            if manifest.get("project") != project or not isinstance(manifest.get("files"), dict):
-                raise ValueError("Archive belongs to another project")
-            files = manifest["files"]
-            if not files or len(files) > MAX_ARCHIVE_MEMBERS or any(not isinstance(name, str) or not isinstance(digest, str)
-                    or not re.fullmatch(r"[0-9a-f]{64}", digest) for name, digest in files.items()):
-                raise ValueError("Invalid archive manifest")
-            sources = []
-            for name, digest in files.items():
-                if name == project:
-                    path = self._path(project)
-                elif name.startswith(project[:-4] + "."):
-                    path = self._path(project, name[len(project[:-4]) + 1:])
-                else:
-                    raise ValueError("Archive filename does not match project")
-                source = folder / name
-                if source.is_symlink() or source.resolve().parent != folder or path.exists():
-                    raise ValueError("Archive has linked data or destination already exists")
-                data = self._read(source)
-                self._check_hash(data, digest)
-                if name == project:
-                    try:
-                        self._project_text(data)
-                    except ValueError as exc:
-                        raise ValueError("Archived project is malformed") from exc
-                else:
-                    _, lines = self._text(data)
-                    self._sections(lines)
-                sources.append((source, path))
-            if {p.name for p in folder.iterdir()} != {"manifest.json", *files}:
-                raise ValueError("Archive contains unexpected files")
-            moved = []
-            try:
-                for source, target in sources:
-                    os.rename(source, target)
-                    moved.append((source, target))
-            except BaseException as exc:
-                self._rollback(exc, [(target.name, os.replace, target, source) for source, target in reversed(moved)],
-                               f"those stay in Projects while archive {archive_name} keeps the rest")
-                raise
-            (folder / "manifest.json").unlink()
-            folder.rmdir()
-            return {"project": project, "restored": list(files)}
 
     def restore(self, project: str, variant: str, backup_name: str,
                 expected_sha256: str | None = None, confirm: bool = False) -> dict:

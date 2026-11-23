@@ -33,14 +33,6 @@ def _base_archive(start_iso, end_iso, unit, grid):
     return labels, times, ghi, dhi, temperature, grid, unit
 
 
-def provider_labels(start, end):
-    """Every whole UTC hour a provider would return for an inclusive date range."""
-    first = datetime(start.year, start.month, start.day)
-    last = datetime(end.year, end.month, end.day, 23, 0)
-    return [first + timedelta(hours=index)
-            for index in range(int((last - first).total_seconds() // 3600) + 1)]
-
-
 def archive_payload(params, *, missing=(), dhi_above_ghi=False, unit="W/m\u00b2",
                     grid=(40.0, 116.5, 47.0)):
     """A provider-shaped payload whose values make the time mapping checkable."""

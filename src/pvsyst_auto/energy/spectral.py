@@ -4,8 +4,6 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from pvsyst_auto.components.editor import objects, replace_value
-
 COEFF_SETS = ("SiMono", "SiPoly", "CdTe", "CIS", "aSi", "Custom")
 
 

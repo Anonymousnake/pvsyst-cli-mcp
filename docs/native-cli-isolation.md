@@ -34,4 +34,4 @@ CSV / PDF 仍由原 PVsyst 引擎产出，`pvsyst_run_simulation` 等工具的�
 
 ## 验证范围
 
-`tests/e2e/test_native_cli_launch_e2e.py` 提供了需要连接本机 `PVsystCLI.exe` 的可选端到端测试（单次 CSV 仿真，消耗一次 license，默认不随离线 CI 运行）。私有桌面隔离在纯 CSV 模式下禁止 `DESKTOP_CREATEWINDOW` 并保持父进程桌面不变；带 PDF 渲染的场景仍依赖正常桌面图形接口。
+`tests/e2e/test_mcp_full_workflows_e2e.py` 提供了需要连接本机 `PVsystCLI.exe` 的可选端到端测试（默认不随离线 CI 运行）。私有桌面隔离在纯 CSV 模式下禁止 `DESKTOP_CREATEWINDOW` 并保持父进程桌面不变；带 PDF 渲染的场景仍依赖正常桌面图形接口。

@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from pvsyst_auto.components.store import ComponentStore
-from pvsyst_auto.project.circuit import inventory, set_independent_mppt, set_power_sharing
+from pvsyst_auto.project.circuit import set_independent_mppt, set_power_sharing
 from pvsyst_auto.project.template import _declare_explicit_counts
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL

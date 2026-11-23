@@ -22,7 +22,7 @@ class PanGUIFormatTests(unittest.TestCase):
         self.store.create("PAN", "gui.PAN", "\ufeff" + GUI_PAN.replace("\n", "\r\n"))
         self.path = self.store._path("PAN", "gui.PAN")
 
-    def test_create_clone_copy_and_inspect_accept_gui_export_spelling(self):
+    def test_create_and_inspect_accept_gui_export_spelling(self):
         info = self.store.inspect("PAN", "gui.PAN")
         self.assertFalse(info["warnings"] or info["structural_errors"] or info["known_value_errors"])
         self.assertEqual(info["fields"]["Isc"], ["11.05"])
@@ -32,13 +32,8 @@ class PanGUIFormatTests(unittest.TestCase):
         for key in ("Width", "Height"):
             self.assertTrue(info["commercial"]["fields"][key]["editable"])
             self.assertFalse(info["commercial"]["fields"][key]["paired_root_present"])
-        self.store.clone("PAN", "gui.PAN", "clone.PAN", {"Manufacturer": "Other", "Model": "Copy", "ISC": "11.1"})
-        self.assertIn(b"Isc=11.1", self.store._path("PAN", "clone.PAN").read_bytes())
-        self.assertNotIn(b"LargApp", self.store._path("PAN", "clone.PAN").read_bytes())
-        self.store.copy("PAN", "gui.PAN", "copy.PAN")
-        self.assertEqual(self.path.read_bytes(), self.store._path("PAN", "copy.PAN").read_bytes())
 
-    def test_mixed_edit_previews_aliases_dimensions_and_restore_preserve_bytes(self):
+    def test_mixed_edit_previews_aliases_and_dimensions_preserve_bytes(self):
         original = self.path.read_bytes()
         args = {"updates": {"ISC": "11.2", "MuISC": "0.006"},
                 "commercial_updates": {"Width": "1.05", "Height": "2.0"},
@@ -54,8 +49,7 @@ class PanGUIFormatTests(unittest.TestCase):
         self.assertNotIn(b"LongApp", data)
         self.assertTrue(data.startswith(b"\xef\xbb\xbf"))
         self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
-        self.store.restore("PAN", "gui.PAN", edited["backup_name"], True)
-        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / "PAN" / edited["backup_name"]).read_bytes(), original)
 
     def test_both_input_spellings_preserve_target_keys_and_noop(self):
         for source in (PAN, GUI_PAN):
