@@ -242,7 +242,7 @@ class SimulationTests(unittest.TestCase):
                 self.assertFalse((self.root / "Projects/Blocked.PRJ").exists())
         self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
 
-    def test_template_preview_execution_failure_race_and_reverse_recovery(self):
+    def test_template_preview_execution_failure_race_and_non_destructive_recovery(self):
         preview = simulate_template(self.cli, self.store, **self.request)
         self.assertEqual((preview["status"], list((self.root / "Results").iterdir())), ("ready", []))
         self.assertFalse((self.root / "Projects/Work.PRJ").exists())
@@ -259,13 +259,11 @@ class SimulationTests(unittest.TestCase):
         self.assertIn("Warning: fixture sizing warning", result["warnings"])
         manifest = Path(result["artifacts"]["manifest"])
         self.assertEqual(json.loads(manifest.read_text()), result)
-
-        for step in result["recovery"]:
-            method = self.store.restore if step["action"] == "restore_variant" else self.store.restore_project_sources
-            method(**step["arguments"])
+        self.assertTrue(result["recovery"])
+        self.assertTrue({"restore_variant", "restore_project_sources"}.isdisjoint(
+            {step["action"] for step in result["recovery"]}))
         for name, data in self.originals.items():
             self.assertEqual((self.root / "Projects" / name).read_bytes(), data)
-            self.assertEqual((self.root / "Projects" / name.replace("Template", "Work")).read_bytes(), data)
 
         blocked = simulate_template(self.cli, self.store, **self.request, dry_run=False)
         self.assertEqual(blocked["status"], "blocked")
@@ -354,12 +352,11 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(len(result["capacity_plan"]["steps"]), 3)
         values = self.store.inspect_parameters("Work.PRJ", "VC0")["subarrays"][0]["values"]
         self.assertEqual((values["NModSerie"], values["NStringCh"], values["NInverter"]), ("16", "4", "1"))
-        for step in result["recovery"]:
-            method = self.store.restore if step["action"] == "restore_variant" else self.store.restore_project_sources
-            method(**step["arguments"])
+        self.assertTrue(result["recovery"])
+        self.assertTrue({"restore_variant", "restore_project_sources"}.isdisjoint(
+            {step["action"] for step in result["recovery"]}))
         for name, data in originals.items():
             self.assertEqual((projects / name).read_bytes(), data)
-            self.assertEqual((projects / name.replace("Template", "Work")).read_bytes(), data)
 
         for capacity in ({}, {**constraints, "target_dc_kw": float("nan")}):
             blocked = simulate_template(self.cli, self.store, **{**request, "new_project": "Blocked.PRJ",
@@ -407,7 +404,7 @@ class SimulationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             annual_summary(path, 1990, self.nominal)
 
-    def test_weather_bound_run_comparison_and_reverse_failure_recovery(self):
+    def test_weather_bound_run_comparison_and_non_destructive_failure_recovery(self):
         self.cli._help_cache["convert-meteo"] = "--input-csv-file"
         source = self.root / "Meteo/station_2020.csv"
         source.write_text(_station_weather_text(2020), encoding="utf-8-sig")
@@ -461,13 +458,11 @@ class SimulationTests(unittest.TestCase):
                          ("failed", "simulation", True), failed)
         self.assertIn("Native weather-bound failure", failed["error"])
         self.assertTrue(failed["recovery"])
+        self.assertTrue({"restore_variant", "restore_project_sources"}.isdisjoint(
+            {step["action"] for step in failed["recovery"]}))
         self.assertIn("Weather preparation remains needs_review", " ".join(failed["warnings"]))
-        for step in failed["recovery"]:
-            method = self.store.restore if step["action"] == "restore_variant" else self.store.restore_project_sources
-            method(**step["arguments"])
         for name, raw in self.originals.items():
             self.assertEqual((self.root / "Projects" / name).read_bytes(), raw)
-            self.assertEqual((self.root / "Projects" / name.replace("Template", "WxFail")).read_bytes(), raw)
         self.assertEqual(json.loads(Path(failed["artifacts"]["manifest"]).read_text()), failed)
 
 

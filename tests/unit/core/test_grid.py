@@ -67,6 +67,11 @@ class GridTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), data)
         return result
 
+    def revert(self, backup_name, expected):
+        snapshot = (self.root / "Projects" / ".mcp-variant-backups" / backup_name).read_bytes()
+        self.assertEqual(snapshot, expected)
+        self.path.write_bytes(snapshot)
+
     def test_uneven_groups_belonging_to_same_array_are_valid(self):
         groups = GROUP + GROUP.replace("NElements=2", "NElements=1").replace("NElements=3", "NElements=4")
         arrays = ARRAY.replace("NInverter=2", "NInverter=3").replace("NStringCh=6", "NStringCh=10")
@@ -143,8 +148,7 @@ class GridTests(unittest.TestCase):
             checked = self.store.validate_structure("Example.PRJ", "VC0")
             self.assertTrue(checked["valid"])
             self.assertEqual(checked["grid_circuit"]["totals"], {"inverters": 2, "strings": 12, "explicit_mppt_inputs": 12})
-            self.store.restore("Example.PRJ", "VC0", changed["backup_name"], changed["sha256"], True)
-            self.assertEqual(self.path.read_bytes(), original)
+            self.revert(changed["backup_name"], original)
             preview = self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NInverter": 4}, dry_run=True)
             self.assertEqual(self.path.read_bytes(), original)
             changed = self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NInverter": 4})
@@ -153,8 +157,7 @@ class GridTests(unittest.TestCase):
             self.assertEqual(changed["capacity"]["inverters_after"], 4)
             self.assertTrue(all(row["before"] == row["after"] == 3 for row in changed["capacity"]["mppt_groups"]))
             self.assertEqual(self.path.read_bytes(), original.replace(b"NInverter=2", b"NInverter=4").replace(b"NInvMPPT=6", b"NInvMPPT=12").replace(b"NStringCh=6", b"NStringCh=12").replace(b"NStrOrient1=6", b"NStrOrient1=12").replace(b"NElements=2", b"NElements=4"))
-            self.store.restore("Example.PRJ", "VC0", changed["backup_name"], changed["sha256"], True)
-            self.assertEqual(self.path.read_bytes(), original)
+            self.revert(changed["backup_name"], original)
         for updates in ({"NInvMPPT": 1}, {"NInvMPPT": 6.5}, {"NInvMPPT": 12, "NStringCh": 12},
                         {"NInverter": 4, "NStringCh": 12}, {"NInverter": 4, "NInvMPPT": 12}):
             with self.assertRaises(ValueError):
@@ -187,8 +190,7 @@ class GridTests(unittest.TestCase):
             result = self.store.validate_structure("Example.PRJ", "VC0")
             self.assertTrue(result["valid"])
             self.assertEqual(result["grid_circuit"]["totals"], {"inverters": 2, "strings": 12, "explicit_mppt_inputs": 6})
-            self.store.restore("Example.PRJ", "VC0", edited["backup_name"], edited["sha256"], True)
-            self.assertEqual(self.path.read_bytes(), original)
+            self.revert(edited["backup_name"], original)
             with self.assertRaisesRegex(ValueError, "integral"):
                 self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NStringCh": 9})
             self.assertEqual(self.path.read_bytes(), original)
@@ -240,7 +242,7 @@ class GridTests(unittest.TestCase):
             self.assertEqual([(a, b) for a, b in zip(prior.splitlines(), self.path.read_bytes().splitlines()) if a != b], [(b"  NoOrientation=1", b"  NoOrientation=2")])
             refs = self.store.inspect_parameters("Example.PRJ", "VC0")["subarrays"]
             self.assertEqual([a["values"]["NoOrientation"] for a in refs], ["1", "2", "2"])
-            self.store.restore("Example.PRJ", "VC0", linked["backup_name"], linked["sha256"], True)
+            self.revert(linked["backup_name"], prior)
             deleted = self.store.remove_subarray("Example.PRJ", "VC0", third["subarray_id"], third["sha256"])
             self.assertEqual(self.path.read_bytes(), two_planes)
             self.store.remove_subarray("Example.PRJ", "VC0", copied_plane["subarray_id"], deleted["sha256"], remove_orientation=True)
@@ -263,16 +265,14 @@ class GridTests(unittest.TestCase):
                 self.assertEqual([a["id"] for a in params["subarrays"]], [2, 3] if removed_id == 1 else [1, 3])
                 self.assertEqual([a["values"]["NoOrientation"] for a in params["subarrays"]], ["1", "2"])
                 self.assertEqual(float(params["orientations"][1]["values"]["FieldTilt"]), 60)
-                self.store.restore("Example.PRJ", "VC0", removed["backup_name"], removed["sha256"], True)
-                self.assertEqual(self.path.read_bytes(), three)
+                self.revert(removed["backup_name"], three)
                 altered = three.decode("utf-8-sig").replace("\r\n", "\n").replace("SubArrayName=Array A\n", "SubArrayName=Array A\nOrientationId=1\n", 1)
                 guard = self.inspect(altered)
                 guard_bytes = self.path.read_bytes()
                 with self.assertRaisesRegex(ValueError, "outside owned records"):
                     self.store.remove_subarray("Example.PRJ", "VC0", removed_id, guard["sha256"], remove_orientation=True)
                 self.assertEqual(self.path.read_bytes(), guard_bytes)
-                self.store.restore("Example.PRJ", "VC0", second_plane["backup_name"], guard["sha256"], True)
-                self.assertEqual(self.path.read_bytes(), baseline)
+                self.revert(second_plane["backup_name"], baseline)
         whole = text.replace("$001E0402", "$001E0002").replace("NInvMPPT=6", "NInvMPPT=1")
         for version in NATIVE_TEXT_OR_SEED:
             before = self.inspect(whole.replace("Version=8.1.0", "Version=" + version))
@@ -286,9 +286,9 @@ class GridTests(unittest.TestCase):
             noop = self.store.update_parameters("Example.PRJ", "VC0", enabled["sha256"], 1, 1, independent_mppt_enabled=True)
             self.assertFalse(noop["changed"])
             self.assertNotIn("backup_name", noop)
-            disabled = self.store.update_parameters("Example.PRJ", "VC0", enabled["sha256"], 1, 1, independent_mppt_enabled=False)
+            self.store.update_parameters("Example.PRJ", "VC0", enabled["sha256"], 1, 1, independent_mppt_enabled=False)
             self.assertEqual(self.path.read_bytes(), original)
-            self.store.restore("Example.PRJ", "VC0", enabled["backup_name"], disabled["sha256"], True)
+            self.revert(enabled["backup_name"], original)
         for options in ({"independent_mppt_enabled": 1}, {"independent_mppt_enabled": True, "power_sharing_enabled": True}):
             with self.assertRaises(ValueError):
                 self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, **options)
@@ -409,8 +409,7 @@ class GridTests(unittest.TestCase):
                 self.assertTrue(after["valid"])
                 self.assertEqual(after["grid_circuit"]["totals"], {"inverters": 2, "strings": 18, "explicit_mppt_inputs": 4})
                 self.assertEqual(after["grid_circuit"]["subarrays"][1], before["grid_circuit"]["subarrays"][1])
-                self.store.restore("Example.PRJ", "VC0", edited["backup_name"], edited["sha256"], True)
-                self.assertEqual(self.path.read_bytes(), original)
+                self.revert(edited["backup_name"], original)
                 for updates in ({"NStringCh": 7}, {"NInvMPPT": 4}, {"NInverter": 4}):
                     with self.assertRaises(ValueError):
                         self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, updates)
@@ -431,8 +430,7 @@ class GridTests(unittest.TestCase):
             removed = self.store.remove_subarray("Example.PRJ", "VC0", 2, copied["sha256"], shared_member=True)
             self.assertEqual(removed["remaining_member_id"], 1)
             self.assertEqual(self.path.read_bytes(), original)
-            self.store.restore("Example.PRJ", "VC0", removed["backup_name"], removed["sha256"], True)
-            self.assertEqual(self.path.read_bytes(), parent_bytes)
+            self.revert(removed["backup_name"], parent_bytes)
             for options in ({"shared_member": 1}, {"shared_member": True, "remove_orientation": True}):
                 with self.assertRaises(ValueError):
                     self.store.remove_subarray("Example.PRJ", "VC0", 2, copied["sha256"], **options)
@@ -445,18 +443,16 @@ class GridTests(unittest.TestCase):
             disabled_bytes = self.path.read_bytes()
             deleted = self.store.remove_subarray("Example.PRJ", "VC0", 2, disabled["sha256"], shared_member=True)
             self.assertEqual(self.path.read_bytes(), original)
-            restored = self.store.restore("Example.PRJ", "VC0", deleted["backup_name"], deleted["sha256"], True)
-            self.assertEqual(self.path.read_bytes(), disabled_bytes)
-            self.store.restore("Example.PRJ", "VC0", disabled["backup_name"], restored["sha256"], True)
-            self.assertEqual(self.path.read_bytes(), active_bytes)
-            self.store.restore("Example.PRJ", "VC0", enabled["backup_name"], enabled["sha256"], True)
+            self.revert(deleted["backup_name"], disabled_bytes)
+            self.revert(disabled["backup_name"], active_bytes)
+            self.revert(enabled["backup_name"], parent_bytes)
             first_removed = self.store.remove_subarray("Example.PRJ", "VC0", 1, copied["sha256"], shared_member=True)
             result = self.store.validate_structure("Example.PRJ", "VC0")
             self.assertTrue(result["valid"])
             self.assertEqual(result["subarray_ids"], [2])
             self.assertEqual(result["grid_circuit"]["totals"], {"inverters": 1, "strings": 3, "explicit_mppt_inputs": 1})
-            self.store.restore("Example.PRJ", "VC0", copied["backup_name"], first_removed["sha256"], True)
-            self.assertEqual(self.path.read_bytes(), original)
+            self.revert(first_removed["backup_name"], parent_bytes)
+            self.path.write_bytes(original)
             for options in ({"share_inverter": 1}, {"share_inverter": True, "clone_orientation": True}):
                 with self.assertRaises(ValueError):
                     self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"], **options)
@@ -483,8 +479,7 @@ class GridTests(unittest.TestCase):
             self.assertNotIn("backup_name", unchanged)
             self.store.update_parameters("Example.PRJ", "VC0", enabled["sha256"], 2, 1, power_sharing_enabled=False)
             self.assertEqual(self.path.read_bytes(), original)
-            self.store.restore("Example.PRJ", "VC0", enabled["backup_name"], before["sha256"], True)
-            self.assertEqual(self.path.read_bytes(), original)
+            self.revert(enabled["backup_name"], original)
             for value in (1, "false"):
                 with self.assertRaises(ValueError):
                     self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, power_sharing_enabled=value)
@@ -614,8 +609,7 @@ class GridTests(unittest.TestCase):
         noop = self.store.update_parameters("Example.PRJ", "VC0", reassigned["sha256"], 3, 1, {"NoOrientation": 2})
         self.assertFalse(noop["changed"])
         self.assertNotIn("backup_name", noop)
-        self.store.restore("Example.PRJ", "VC0", reassigned["backup_name"], reassigned["sha256"], True)
-        self.assertEqual(self.path.read_bytes(), before_assignment)
+        self.revert(reassigned["backup_name"], before_assignment)
         removed = self.store.remove_subarray("Example.PRJ", "VC0", 3, third["sha256"])
         self.assertEqual(self.path.read_bytes(), two_arrays)
         third_plane = self.store.clone_subarray("Example.PRJ", "VC0", 1, removed["sha256"], clone_orientation=True)
@@ -640,8 +634,7 @@ class GridTests(unittest.TestCase):
             parameters = self.store.inspect_parameters("Example.PRJ", "VC0")
             self.assertEqual([o["values"]["FieldTilt"] for o in parameters["orientations"]], tilts)
             self.assertEqual([a["values"]["NoOrientation"] for a in parameters["subarrays"]], ["1", "2"])
-            self.store.restore("Example.PRJ", "VC0", deleted["backup_name"], deleted["sha256"], True)
-            self.assertEqual(self.path.read_bytes(), before_delete)
+            self.revert(deleted["backup_name"], before_delete)
         deleted = self.store.remove_subarray("Example.PRJ", "VC0", 3, third_tilt["sha256"], remove_orientation=True)
         self.assertEqual(self.path.read_bytes(), two_arrays)
         self.store.remove_subarray("Example.PRJ", "VC0", 2, deleted["sha256"], remove_orientation=True)
