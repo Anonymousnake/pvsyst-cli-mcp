@@ -45,6 +45,26 @@ class StandAloneTests(unittest.TestCase):
         self.assertAlmostEqual(float(info["fields"]["PNomGen"][0]), 5.0)
         self.assertAlmostEqual(float(info["fields"]["CFuelHor"][0]), 1.6)
 
+    def test_prepare_design_project_blocks_standalone_before_simulation(self) -> None:
+        from unittest.mock import Mock, patch
+        from pvsyst_auto.api import projects
+
+        cli = Mock()
+        cli.run_simulation.side_effect = ValueError("native runner stub")
+        request = SingleDesignRequest(
+            new_project="Cabin.PRJ", scope="stand_alone", module={"file_name": "Lab440.PAN"},
+            weather={"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            standalone={"battery_file": "Generic_Solar_12V160Ah.BTR"},
+        )
+        with patch.multiple(projects, cli=lambda: cli, variant_store=lambda: self.store):
+            result = projects.pvsyst_prepare_design_project(request, dry_run=False)
+            preview = projects.pvsyst_prepare_design_project(request, dry_run=True)
+        cli.run_simulation.assert_not_called()
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(preview["status"], "blocked")
+        self.assertIn("pvsyst_simulate_design", result["issues"][0]["message"])
+        self.assertFalse((self.ws / "Projects/Cabin.PRJ").exists())
+
     def test_synthesize_standalone_with_and_without_genset(self) -> None:
         s1 = synthesize_standalone_project(
             self.store,

@@ -695,6 +695,9 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     if isinstance(spec, dict):
         spec = _prune_empty(spec)
     if isinstance(spec, dict) and spec.get("scope") == STANDALONE_SCOPE:
+        if prepare_only:
+            _issue(result, "scope", "Stand-Alone designs require pvsyst_simulate_design")
+            return result
         try:
             return run_standalone_design(
                 cli,
