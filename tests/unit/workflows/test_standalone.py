@@ -16,6 +16,34 @@ from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
 
 
 class StandAloneTests(unittest.TestCase):
+    def test_simulate_design_rejects_unsupported_standalone_inputs(self) -> None:
+        from unittest.mock import Mock, patch
+        from pvsyst_auto.api import simulation
+
+        cli = Mock()
+        cli.run_simulation.side_effect = ValueError("native runner stub")
+        weather = {"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"}
+        cases = (
+            ("Losses", weather, {"UFactor": 30}, "losses overrides"),
+            ("Weather", {**weather, "mode": "csv", "csv_name": "Measured.csv"}, None, "weather.mode='existing'"),
+            ("Cabin", weather, None, None),
+        )
+        with patch.multiple(simulation, cli=lambda: cli, variant_store=lambda: self.store):
+            for name, weather_spec, losses, issue in cases:
+                request = SingleDesignRequest(
+                    new_project=f"{name}.PRJ", scope="stand_alone", losses=losses,
+                    module={"file_name": "Lab440.PAN"}, weather=weather_spec,
+                    standalone={"battery_file": "Generic_Solar_12V160Ah.BTR"},
+                )
+                for dry_run in (True, False) if issue else (True,):
+                    with self.subTest(name=name, dry_run=dry_run):
+                        result = simulation.pvsyst_simulate_design(request, dry_run=dry_run)
+                        self.assertEqual(result["status"], "blocked" if issue else "ready")
+                        if issue:
+                            self.assertIn(issue, result["issues"][0]["message"])
+        self.assertFalse(list((self.ws / "Projects").iterdir()))
+        cli.run_simulation.assert_not_called()
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)

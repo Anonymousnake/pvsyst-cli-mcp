@@ -402,10 +402,14 @@ def run_standalone_design(
     sa = spec.get("standalone")
     if not isinstance(sa, dict):
         raise ValueError("scope='stand_alone' requires a 'standalone' specification object")
+    if spec.get("losses"):
+        raise ValueError("losses overrides are not supported for scope='stand_alone'")
 
     prj = normalize_project_name(spec["new_project"])
     stem = prj[:-4]
     weather = spec.get("weather") or {}
+    if weather.get("mode", "existing") != "existing":
+        raise ValueError("Stand-Alone design requires weather.mode='existing'")
     site_name = weather.get("sit_name")
     met_name = weather.get("met_name")
     if not site_name or not met_name:
