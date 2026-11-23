@@ -74,7 +74,7 @@
 | 无限水平轴跟踪仿真 | MCP 已封装 | `pvsyst_create_tracking_variant` + `pvsyst_run_engineering_task` 支持修改并运行 `UnlimTracking` 全年仿真 |
 | 远方地平线（Far Horizon） | MCP 可读写 | `horizon_updates` 写入 4..100 个方位角/仰角点对或清空地平线，见[地平线轮廓](horizon-profile.md) |
 | 房屋、周边遮挡与光伏 `.pvc2` 建模与回读 | MCP 已封装 | `pvsyst_create_house_pv_scene` 与 `pvsyst_read_house_pv_scene`，支持单朝向多分区、多朝向屋顶及 4 类 `obstacles`（`building`、`tree`、`wall`、`mesh`）生成与 XML 无损还原，见[住宅与光伏建模](house-pv-modeling.md) |
-| 3D 场景免 GUI 原生导入与全年任务 | MCP 已封装（默认 `native`） | `pvsyst_import_house_pv_scene`、`pvsyst_run_house_task`、`pvsyst_run_sourced_house_task`（默认 `"native"`，支持 `landscape`/`portrait` 竖装、正模块间距、3+ 独立固定朝向屋面、`PowerSharingInverterId >= 0` 共享逆变器、`pvShdGenObject` 与原生 `oeTree`），见[住宅单任务](native-house-task.md)与[双屋面说明](engineering-delivery.md#two-roof-house-workflow) |
+| 3D 场景免 GUI 原生导入与全年任务 | MCP 已封装（免 GUI 原生写入） | `pvsyst_import_house_pv_scene`、`pvsyst_run_house_task`、`pvsyst_run_sourced_house_task`（支持 `landscape`/`portrait` 竖装、正模块间距、3+ 独立固定朝向屋面、`PowerSharingInverterId >= 0` 共享逆变器、`pvShdGenObject` 与原生 `oeTree`），见[住宅单任务](native-house-task.md)与[双屋面说明](engineering-delivery.md#two-roof-house-workflow) |
 | 已保存场景的 PV 表格关联检查 | 只读状态 | `pvsyst_get_variant_parameters` 返回 `shading_scene.pv_bindings`，以及 `module_layout` 保存完整性，见[PV 区域关联读取](native-scene-bindings.md) |
 | Module Layout 精细电气阴影 | MCP 已封装（原生写入 + 显式 `string_layout`） | 导入工具及住宅任务的 `shading_mode="module_layout"` 写入原生组件布局、支持双朝向自动填串与显式逐格 `string_layout` 接线（兼容含 `obstacles`/`oeTree` 场景）；已通过 PVsyst 8.1.7 CLI `ShdElec` 仿真验证，见[原生住宅任务](native-house-task.md#module-layout-电气阴影) |
 | 既有 3D 场景阴影重算 | MCP 已封装 | `pvsyst_run_simulation(recompute_shading=True)` 调 CLI `-rs` 参数重新计算阴影表 |

@@ -16,7 +16,7 @@
 | `sources`, `declarations` | 规格书来源声明与字段数值/单位摘录（格式同 `pvsyst_prepare_sourced_design`） |
 | `goals` | 可选的 `SourcedDesignGoals`（目标容量也可直接在 `design.target_dc_kw` 中给出，两者不能矛盾） |
 | `house`, `layout`, `module_geometry`, `obstacles` | 房屋三维网格、PV 分区排布、组件几何尺寸及可选周边遮挡物 `obstacles`（`building`、`tree`、`wall`、`mesh`，格式同 [`pvsyst_run_house_task`](native-house-task.md)） |
-| `string_layout`, `shading_mode`, `report_pdf` | 可选透传字段：`string_layout` 为显式 per-cell 组串接线结构（`{tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`，见[住宅与光伏建模](house-pv-modeling.md) 第 6 节）；`shading_mode`（`linear`/`module_layout`）选择阴影模式；`report_pdf`（`StrictBool`，默认 `null`）语义同 [`pvsyst_run_house_task`](native-house-task.md)：省略、`None` 或 `True` 保留默认的 CSV+PDF 输出，`False` 则仅导出 CSV（`dry_run` 同样会先校验本机 PVsyst 许可状态）。显式 `string_layout` 仅在 `shading_mode="module_layout"` 时启用原生显式校验 |
+| `string_layout`, `shading_mode`, `report_pdf` | 可选透传字段：`string_layout` 为显式 per-cell 组串接线结构（`{tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`，见[住宅与光伏建模](house-pv-modeling.md) 第 5 节）；`shading_mode`（`linear`/`module_layout`）选择阴影模式；`report_pdf`（`StrictBool`，默认 `null`）语义同 [`pvsyst_run_house_task`](native-house-task.md)：省略、`None` 或 `True` 保留默认的 CSV+PDF 输出，`False` 则仅导出 CSV（`dry_run` 同样会先校验本机 PVsyst 许可状态）。显式 `string_layout` 仅在 `shading_mode="module_layout"` 时启用原生显式校验 |
 
 ## 状态流转与两步确认开关
 

@@ -34,7 +34,7 @@
 
 在 `spec` 中加入 `"shading_mode": "module_layout"` 即可启用精细电气阴影。默认（无 `string_layout`）支持单朝向双表双串、以及 **2 个或更多（3+ 坡屋面）**独立固定朝向子阵列（每阵一条 `1..100` 块组件组串，每阵一张横装 `landscape` 或竖装 `portrait` 组件表，支持正 `row_spacing_m`/`column_spacing_m` 间距与一致的 `PowerSharingInverterId >= 0` 共享逆变器绑定）。多串或多表分摊时提供 `string_layout` 逐 cell 指定全局组串（支持串跨表和一表多串，全局串容量等于所属源子阵的 `NModSerie`），`global_string=0` 的草稿仅用于保存与回读，导入前需补全分配；显式逐格接线仅在 `shading_mode="module_layout"` 下启用。不在 MCP 内计算或近似电气阴影。
 
-已准备好 `.pvc2` 且对应工程在 GUI 中打开时，也可直接调用导入工具：
+已准备好 `.pvc2` 场景文件时，也可直接调用导入工具：
 
 ```json
 {
@@ -45,7 +45,7 @@
 }
 ```
 
-确认预览后，同时传入 `dry_run=false` 和 `confirm=true` 执行。导入结果中的 `module_layout` 核对已保存模块、原生表格及子阵引用，`native_shading_mode_reload_verified` 表示保存后真实切离重载的 GUI 仍选中精细模式。配置、几何验证和仿真消费仍是不同阶段。
+确认预览后，同时传入 `dry_run=false` 和 `confirm=true` 执行。导入结果中的 `verification` / `stored_module_layout_verified` 核对已保存模块、原生表格及子阵引用（在随后调 `pvsyst_run_simulation` 执行仿真前，`native_module_layout_verified` 与 `imported` 仍保持 `false`）。配置、几何验证和仿真消费仍是不同阶段。
 
 全年任务会自动导出 `ShdElec` 电气阴影损失。单独运行仿真时，可通过 `pvsyst_build_sfi(variables="shading")` 生成包含 `GlobShd`、`ShdElec` 的导出定义。逐小时输出中的 `ShdElec` 单位为 `kW`，全年求和得到 `kWh`；零损失也是有效结果。线性模式可能不导出该列，比较结果时按实际列名对齐，保留缺列状态，不自动补零。
 

@@ -1,6 +1,6 @@
 """Headless native PVsyst 8.1.6 house/PV import: declaration -> native VC, no GUI.
 
-This is the `method="native"` branch of ``pvsyst_import_house_pv_scene``. It turns an
+Headless native builder backing ``pvsyst_import_house_pv_scene``. It turns an
 authored ``.pvc2`` recipe (house meshes + PV tables) plus the current source variant into
 a NEW native ``pvVCalcul`` variant that carries a real ``pvShading`` block (and, opt-in,
 a ``pvModuleLayout``) built field-by-field from the input declarations without starting

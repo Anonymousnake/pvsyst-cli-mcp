@@ -112,7 +112,7 @@ Once connected, the server exposes MCP protocol `instructions`, 6 built-in workf
 By default (when `PVSYST_TOOL_GROUPS` is unset), the server exposes only the **48 core workflow tools** (`setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`) so LLM context stays compact. Set `PVSYST_TOOL_GROUPS` in `env` to customize; an explicit list replaces the defaults:
 
 - `"PVSYST_TOOL_GROUPS": "all"` exposes all **75 tools** (the 8 default groups plus `admin` and `expert`).
-- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"` keeps the defaults and adds `expert` (73 tools).
+- `"PVSYST_TOOL_GROUPS": "setup,projects,components,weather,storage,simulation,results,engineering,expert"` keeps the defaults and adds `expert` (71 tools).
 - `"PVSYST_TOOL_GROUPS": "setup,engineering,results"` exposes only those 14 tools.
 - Valid group keys (case-sensitive): `setup`, `projects`, `components`, `weather`, `storage`, `simulation`, `results`, `engineering`, `admin`, `expert` (or `all`). Unknown, empty, or duplicate group names raise an error at startup so typos fail fast.
 

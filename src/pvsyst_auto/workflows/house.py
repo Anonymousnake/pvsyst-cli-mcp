@@ -259,7 +259,6 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
               "artifacts": {}, "native_consumption_verified": False}
     paths = None
     record = None
-    proc = None
     attempt = None
     write_enabled = False
     with store.lock:
