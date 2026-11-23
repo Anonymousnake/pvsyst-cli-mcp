@@ -14,15 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from pvsyst_auto.project.paths import workspace_file
+from pvsyst_auto.validation import finite_number as _finite
 
 _EPS = 1e-9
 _EARTH_R_M = 6371000.0
-
-
-def _finite(val: Any, name: str) -> float:
-    if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
-        raise ValueError(f"{name} must be a finite number")
-    return float(val)
 
 
 def project_lonlat_to_enu(

@@ -63,7 +63,7 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 .\.venv\Scripts\python.exe -m pvsyst_auto
 ```
 
-Dependencies (`mcp` 2.x, `pydantic` 2.x, `plotly` for interactive HTML reports, and `tzdata` for Windows IANA timezones) are declared in `pyproject.toml`. Running `pip install -r requirements.txt` installs the same editable package; use `pip install .` for a regular install.
+Dependencies (`mcp` 2.x, `pydantic` 2.x, `plotly` for interactive HTML reports, and `tzdata` for Windows IANA timezones) are declared in `pyproject.toml`. Use `pip install -e .` for an editable development install or `pip install .` for a regular install.
 
 ## MCP client configuration
 

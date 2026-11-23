@@ -30,8 +30,8 @@ Quick workflow selection:
    - Run a complete one-shot feasibility study (synthesis -> simulation/reuse -> diagnostics -> TOU/BESS sizing -> economics -> Plotly report) via `pvsyst_run_feasibility_study` (`dry_run=true` first, then `dry_run=false, confirm=true`).
    - Generate interactive Plotly HTML engineering reports (zh/en, with demand shaving, tornado, and BESS heatmap charts) via `pvsyst_generate_report`, and bundle deliverables via `pvsyst_export_engineering_delivery`.
 7. Safety & verification conventions:
-   - For mutating tools whose schema declares a `dry_run` parameter, always preview with `dry_run=true` before executing `dry_run=false`.
-   - Direct writers without a `dry_run` parameter (such as `pvsyst_build_sfi`, `pvsyst_create_site`, `pvsyst_build_monthly_weather`, `pvsyst_convert_meteo`, `pvsyst_run_simulation`, `pvsyst_generate_report`) write immediately; never overwrite existing projects/outputs and always pick fresh output filenames.
+   - For mutating tools whose schema declares a `dry_run` parameter (including `pvsyst_generate_report`), always preview with `dry_run=true` before executing `dry_run=false`.
+   - Direct writers without a `dry_run` parameter (such as `pvsyst_build_sfi` and `pvsyst_run_simulation`, plus `pvsyst_create_site`/`pvsyst_build_monthly_weather`/`pvsyst_convert_meteo` when `expert` tools are enabled) write immediately; never overwrite existing projects/outputs and always pick fresh output filenames.
    - Consult on-demand resources `pvsyst://guide/workflows`, `pvsyst://guide/variables`, `pvsyst://workspace/projects`, `pvsyst://workspace/components`, and `pvsyst://workspace/results` for live workspace state, SFI variables, and multi-step recipes.
 """
 
@@ -201,12 +201,12 @@ def register_guidance(server) -> None:
         return (
             f"Audit simulation results `{csv_name}` for `{project}/{variant}`:\n"
             "1. Read variant state with `pvsyst_get_variant_parameters` or `pvsyst_project_handoff`.\n"
-            "2. Summarize key columns with `pvsyst_read_results` (and run `pvsyst_diagnose_results` when available) "
+            "2. Summarize key columns with `pvsyst_read_results` and run `pvsyst_diagnose_results` "
             "to inspect PR, inverter limits (`IL_Vmax`, `IL_Vmin`, `IL_Pmax`, `IL_Imax`), shading (`GlobShd`, `ShdElec`), "
             "and grid/storage losses.\n"
             "3. Map each anomaly back to concrete `.VC0` parameters (e.g., `NModSerie`, DC/AC ratio, pitch/tilt, storage schedule).\n"
-            "4. Propose and verify an isolated revised variant (`pvsyst_clone_variant` / `pvsyst_update_variant_parameters` "
-            "or `pvsyst_run_batch_sweep`) and compare before/after performance."
+            "4. Propose and verify an isolated revised variant (`pvsyst_optimize_variant`, `pvsyst_clone_variant` / "
+            "`pvsyst_update_variant_parameters`, or `pvsyst_run_batch_sweep`) and compare before/after performance."
         )
 
     @server.resource(
@@ -270,7 +270,7 @@ def register_guidance(server) -> None:
         "pvsyst://workspace/components",
         name="pvsyst_workspace_components",
         title="Workspace Components Catalog",
-        description="Live read-only JSON catalog of loose PAN, OND, and BTR components with cached electrical metadata.",
+        description="Live read-only JSON catalog of loose PAN, OND, BTR, and GEN components with cached electrical metadata.",
         mime_type="application/json",
     )
     def workspace_components_resource() -> str:
@@ -281,7 +281,7 @@ def register_guidance(server) -> None:
 
         comp = ComponentStore(ws)
         catalog = {}
-        for kind in ("PAN", "OND", "BTR"):
+        for kind in ("PAN", "OND", "BTR", "GEN"):
             try:
                 catalog[kind] = comp.list(kind, "workspace", limit=100).get("items", [])
             except Exception:

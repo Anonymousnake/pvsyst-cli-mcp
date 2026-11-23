@@ -11,6 +11,7 @@ from pvsyst_auto.components.editor import objects, root_block
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
+from pvsyst_auto.validation import finite_number as _finite
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED
 
 NS = "http://www.collada.org/2008/03/COLLADASchema"
@@ -69,24 +70,6 @@ def _num(value):
         raise ValueError("Coordinate is too small to serialize at six decimals")
     text = f"{value:.6f}".rstrip("0").rstrip(".")
     return "0" if text in ("", "-0") else text
-
-
-def _finite(value, label, positive=False, minimum=None, maximum=None):
-    if type(value) is bool or not isinstance(value, (int, float)):
-        raise ValueError(f"{label} must be a strict finite number")
-    try:
-        number = float(value)
-    except OverflowError:
-        raise ValueError(f"{label} is too large to represent") from None
-    if not math.isfinite(number):
-        raise ValueError(f"{label} must be finite")
-    if positive and number <= 0:
-        raise ValueError(f"{label} must be greater than zero")
-    if minimum is not None and number < minimum:
-        raise ValueError(f"{label} must be >= {minimum}")
-    if maximum is not None and number > maximum:
-        raise ValueError(f"{label} must be <= {maximum}")
-    return number
 
 
 def _paired(fields, root, alias, label):

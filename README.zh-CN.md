@@ -63,7 +63,7 @@ $env:PVSYST_WORKSPACE = 'C:\path\to\PVsyst8.1_Data'
 .\.venv\Scripts\python.exe -m pvsyst_auto
 ```
 
-包依赖（MCP SDK 2.x、`pydantic` 2.x、交互图表库 `plotly` 与 Windows 时区库 `tzdata`）统一定义在 `pyproject.toml` 中。执行 `pip install -r requirements.txt` 同样会以可编辑模式安装本包；常规安装用 `pip install .`。
+包依赖（MCP SDK 2.x、`pydantic` 2.x、交互图表库 `plotly` 与 Windows 时区库 `tzdata`）统一定义在 `pyproject.toml` 中。开发模式请运行 `pip install -e .`，常规安装用 `pip install .`。
 
 ## 接入 MCP 客户端
 

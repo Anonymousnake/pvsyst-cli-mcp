@@ -1,9 +1,14 @@
 """Build a linear voltage/current design envelope from declared manufacturer inputs."""
 from __future__ import annotations
 
-import math
+from functools import partial
 
 from pvsyst_auto.engineering.sizing import NUMBERS as CAPACITY_NUMBERS
+from pvsyst_auto.validation import (
+    append_issue as _issue,
+    is_finite_number as _is_number,
+    is_printable_text,
+)
 
 
 VOLTAGE_UNITS = ("pct_per_degC", "V_per_degC")
@@ -41,20 +46,11 @@ FORMULAS = {
 }
 
 
-def _issue(result, field, message):
-    result["issues"].append({"field": field, "message": message})
-
-
 def _warn(result, field, message):
     result["warnings"].append({"field": field, "message": message})
 
 
-def _is_number(value):
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
-
-
-def _is_text(value):
-    return isinstance(value, str) and bool(value.strip()) and value.isprintable() and len(value) <= MAX_TEXT
+_is_text = partial(is_printable_text, limit=MAX_TEXT)
 
 
 DECLARATION_KEYS = frozenset(("value", "unit", "source"))

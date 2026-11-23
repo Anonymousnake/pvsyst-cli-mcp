@@ -28,6 +28,7 @@ from pvsyst_auto.components.pan import validation_fields as pan_validation_field
 from pvsyst_auto.project.paths import project_path
 from pvsyst_auto.project.synthesize import SYNTH_VERSION, synthesize_project_and_variant
 from pvsyst_auto.engineering.sizing import plan_capacity
+from pvsyst_auto.validation import append_issue as _issue
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 SEED_STEM = "_DEMO_Residential"
@@ -40,10 +41,6 @@ MAX_MPPT_INPUTS = 64
 INDEPENDENT_MPPT_BIT = 0x400
 RETAINED_FIELDS = ("NModSerie", "LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI",
                    "PQualityModP", "PMismUFixe", "PNomAC_InMPPT")
-
-
-def _issue(result: dict, field: str, message) -> None:
-    result["issues"].append({"field": field, "message": str(message)})
 
 
 def _workspace_entries(store) -> list:

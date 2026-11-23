@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 
 from pvsyst_auto.components.editor import root_block
-from pvsyst_auto.native.cli import iter_result_csv, result_units
+from pvsyst_auto.results import RegularResultCsv
 
 SEVERITY_ORDER = {"none": 0, "info": 1, "medium": 2, "high": 3, "critical": 4}
 
@@ -316,53 +316,8 @@ def diagnose_simulation_csv(
     path = Path(csv_path)
     cfg = _validate_thresholds(thresholds)
     vc_info, load_ctx = _variant_context(store, project, variant)
-    units = result_units(path, strict=True)
-
-    # Pre-scan timestamp cadence so interval irradiation (Wh/m2, kWh/m2) uses exact step_hours on row 0.
-    prev_stamp = None
-    step_minutes: float | None = None
-    regular = True
-    scan_rows = 0
-    scan_headers: list[str] = []
-    for scan_headers, scan_row in iter_result_csv(path, strict=True):
-        stamp = scan_row[0]
-        if prev_stamp is not None:
-            delta = (stamp - prev_stamp).total_seconds() / 60.0
-            if delta <= 0:
-                regular = False
-            elif step_minutes is None:
-                step_minutes = delta
-            elif abs(delta - step_minutes) > 1e-6:
-                regular = False
-        prev_stamp = stamp
-        scan_rows += 1
-
-    if scan_rows == 0:
-        raise ValueError("Result CSV contains no simulation rows")
-
-    if not regular:
-        return {
-            "status": "blocked",
-            "issues": [
-                "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
-                "cannot establish interval duration for diagnostics"
-            ],
-            "max_severity": "none",
-            "finding_count": 0,
-            "counts_by_severity": {"critical": 0, "high": 0, "medium": 0, "info": 0},
-            "needs_review": False,
-            "rows": scan_rows,
-            "step_minutes": None,
-            "is_bifacial": False,
-            "weighted_pr": None,
-            "analyzed_columns": [h for h in scan_headers[1:]],
-            "variant_attribution_used": vc_info is not None,
-            "grid_limit_context": None,
-            "findings": [],
-        }
-
-    eff_step_min = step_minutes if step_minutes is not None else 60.0
-    step_hours = eff_step_min / 60.0
+    reader = RegularResultCsv(path, empty_message="Result CSV contains no simulation rows")
+    units = reader.units
     has_grid_storage = bool(vc_info and vc_info.get("grid_storage") is not None)
 
     # Accumulators
@@ -392,99 +347,126 @@ def diagnose_simulation_csv(
     headers: list[str] = []
     idx: dict[str, int] = {}
     rows = 0
+    step_hours = 1.0
 
-    for headers, row in iter_result_csv(path, strict=True):
-        if rows == 0:
-            idx = {name: i for i, name in enumerate(headers) if i > 0}
-            for name in idx:
-                sums[name] = 0.0
-                counts[name] = 0
-        stamp = row[0]
-        rows += 1
+    try:
+        for stamp, row, dt_hours in reader.iter_rows():
+            if rows == 0:
+                headers = reader.headers
+                idx = reader.idx
+                step_hours = dt_hours
+                for name in idx:
+                    sums[name] = 0.0
+                    counts[name] = 0
+            rows += 1
 
-        for name, col_i in idx.items():
-            val = row[col_i]
-            if isinstance(val, (int, float)) and math.isfinite(val):
-                sums[name] += float(val)
-                counts[name] += 1
+            for name, col_i in idx.items():
+                val = row[col_i]
+                if isinstance(val, (int, float)) and math.isfinite(val):
+                    sums[name] += float(val)
+                    counts[name] += 1
 
-        gi_raw = row[idx["GlobInc"]] if "GlobInc" in idx else None
-        gi_w_m2 = (
-            _to_w_m2(float(gi_raw), units.get("GlobInc", ""), step_hours)
-            if isinstance(gi_raw, (int, float)) and math.isfinite(gi_raw) else None
-        )
-        eg_raw = row[idx["E_Grid"]] if "E_Grid" in idx else None
-        ea_raw = row[idx["EArray"]] if "EArray" in idx else None
-        eap_raw = row[idx["EApGrid"]] if "EApGrid" in idx else None
-        eg_ok = isinstance(eg_raw, (int, float)) and math.isfinite(eg_raw)
-        ea_ok = isinstance(ea_raw, (int, float)) and math.isfinite(ea_raw)
-        eap_ok = isinstance(eap_raw, (int, float)) and math.isfinite(eap_raw)
-        if eg_ok:
-            eg_val = float(eg_raw)
-            if peak_egrid_raw is None or eg_val > peak_egrid_raw:
-                peak_egrid_raw = eg_val
-            month = stamp.month
-            if month not in peak_egrid_raw_by_month or eg_val > peak_egrid_raw_by_month[month]:
-                peak_egrid_raw_by_month[month] = eg_val
-        if eap_ok and (peak_eap_raw is None or float(eap_raw) > peak_eap_raw):
-            peak_eap_raw = float(eap_raw)
-        pr_raw = row[idx["PR"]] if "PR" in idx else None
-        pr_scale = _PR_SCALE.get(units.get("PR", ""))
+            gi_raw = row[idx["GlobInc"]] if "GlobInc" in idx else None
+            gi_w_m2 = (
+                _to_w_m2(float(gi_raw), units.get("GlobInc", ""), step_hours)
+                if isinstance(gi_raw, (int, float)) and math.isfinite(gi_raw) else None
+            )
+            eg_raw = row[idx["E_Grid"]] if "E_Grid" in idx else None
+            ea_raw = row[idx["EArray"]] if "EArray" in idx else None
+            eap_raw = row[idx["EApGrid"]] if "EApGrid" in idx else None
+            eg_ok = isinstance(eg_raw, (int, float)) and math.isfinite(eg_raw)
+            ea_ok = isinstance(ea_raw, (int, float)) and math.isfinite(ea_raw)
+            eap_ok = isinstance(eap_raw, (int, float)) and math.isfinite(eap_raw)
+            if eg_ok:
+                eg_val = float(eg_raw)
+                if peak_egrid_raw is None or eg_val > peak_egrid_raw:
+                    peak_egrid_raw = eg_val
+                month = stamp.month
+                if month not in peak_egrid_raw_by_month or eg_val > peak_egrid_raw_by_month[month]:
+                    peak_egrid_raw_by_month[month] = eg_val
+            if eap_ok and (peak_eap_raw is None or float(eap_raw) > peak_eap_raw):
+                peak_eap_raw = float(eap_raw)
+            pr_raw = row[idx["PR"]] if "PR" in idx else None
+            pr_scale = _PR_SCALE.get(units.get("PR", ""))
 
-        if gi_w_m2 is not None and gi_w_m2 > 0:
-            if isinstance(pr_raw, (int, float)) and math.isfinite(pr_raw) and pr_scale is not None:
-                weighted_pr_num += gi_w_m2 * float(pr_raw) * pr_scale
-                weighted_pr_den += gi_w_m2
-            hour_of_day = stamp.hour + stamp.minute / 60.0
-            irrad_hour_num += gi_w_m2 * hour_of_day
-            irrad_hour_den += gi_w_m2
+            if gi_w_m2 is not None and gi_w_m2 > 0:
+                if isinstance(pr_raw, (int, float)) and math.isfinite(pr_raw) and pr_scale is not None:
+                    weighted_pr_num += gi_w_m2 * float(pr_raw) * pr_scale
+                    weighted_pr_den += gi_w_m2
+                hour_of_day = stamp.hour + stamp.minute / 60.0
+                irrad_hour_num += gi_w_m2 * hour_of_day
+                irrad_hour_den += gi_w_m2
 
-        # Output power for phase check (prefer EArray when present so storage discharge doesn't skew phase)
-        phase_p = float(ea_raw) if ea_ok else (float(eg_raw) if eg_ok else None)
-        if phase_p is not None and phase_p > 0:
-            hour_of_day = stamp.hour + stamp.minute / 60.0
-            power_hour_num += phase_p * hour_of_day
-            power_hour_den += phase_p
+            # Output power for phase check (prefer EArray when present so storage discharge doesn't skew phase)
+            phase_p = float(ea_raw) if ea_ok else (float(eg_raw) if eg_ok else None)
+            if phase_p is not None and phase_p > 0:
+                hour_of_day = stamp.hour + stamp.minute / 60.0
+                power_hour_num += phase_p * hour_of_day
+                power_hour_den += phase_p
 
-        # E_Grid > EArray and Nighttime export (skip if battery discharge is active or unknown on storage variants)
-        bat_dis_raw = row[idx["EBatDis"]] if "EBatDis" in idx else None
-        bat_dis_known = isinstance(bat_dis_raw, (int, float)) and math.isfinite(bat_dis_raw)
-        has_bat_dis = bat_dis_known and float(bat_dis_raw) > 1e-6
-        discharge_unknown = has_grid_storage and not bat_dis_known
-        skip_no_discharge_checks = has_bat_dis or discharge_unknown
-        if eg_ok and ea_ok and not skip_no_discharge_checks:
-            eg_u, ea_u = units.get("E_Grid", ""), units.get("EArray", "")
-            if eg_u == ea_u and float(eg_raw) > float(ea_raw) + 1e-3 and float(eg_raw) > 0.01:
-                egrid_exceeds_earray_count += 1
-                if len(egrid_exceeds_stamps) < 5:
-                    egrid_exceeds_stamps.append(str(stamp))
+            # E_Grid > EArray and Nighttime export (skip if battery discharge is active or unknown on storage variants)
+            bat_dis_raw = row[idx["EBatDis"]] if "EBatDis" in idx else None
+            bat_dis_known = isinstance(bat_dis_raw, (int, float)) and math.isfinite(bat_dis_raw)
+            has_bat_dis = bat_dis_known and float(bat_dis_raw) > 1e-6
+            discharge_unknown = has_grid_storage and not bat_dis_known
+            skip_no_discharge_checks = has_bat_dis or discharge_unknown
+            if eg_ok and ea_ok and not skip_no_discharge_checks:
+                eg_u, ea_u = units.get("E_Grid", ""), units.get("EArray", "")
+                if eg_u == ea_u and float(eg_raw) > float(ea_raw) + 1e-3 and float(eg_raw) > 0.01:
+                    egrid_exceeds_earray_count += 1
+                    if len(egrid_exceeds_stamps) < 5:
+                        egrid_exceeds_stamps.append(str(stamp))
 
-        # Nighttime positive export (without battery discharge)
-        if gi_w_m2 is not None and gi_w_m2 <= 0.1 and eg_ok and float(eg_raw) > 1e-4 and not skip_no_discharge_checks:
-            night_export_kwh_raw += float(eg_raw)
-            night_export_count += 1
-            if len(night_export_stamps) < 5:
-                night_export_stamps.append(str(stamp))
+            # Nighttime positive export (without battery discharge)
+            if gi_w_m2 is not None and gi_w_m2 <= 0.1 and eg_ok and float(eg_raw) > 1e-4 and not skip_no_discharge_checks:
+                night_export_kwh_raw += float(eg_raw)
+                night_export_count += 1
+                if len(night_export_stamps) < 5:
+                    night_export_stamps.append(str(stamp))
 
-        # High irradiance with zero/negative output
-        if gi_w_m2 is not None and gi_w_m2 >= cfg["zero_output_irrad_min_w_m2"]:
-            out_val = float(ea_raw) if ea_ok else (float(eg_raw) if eg_ok else None)
-            if out_val is not None and out_val <= 1e-6:
-                zero_out_count += 1
-                if len(zero_out_stamps) < 5:
-                    zero_out_stamps.append(str(stamp))
+            # High irradiance with zero/negative output
+            if gi_w_m2 is not None and gi_w_m2 >= cfg["zero_output_irrad_min_w_m2"]:
+                out_val = float(ea_raw) if ea_ok else (float(eg_raw) if eg_ok else None)
+                if out_val is not None and out_val <= 1e-6:
+                    zero_out_count += 1
+                    if len(zero_out_stamps) < 5:
+                        zero_out_stamps.append(str(stamp))
 
-        # Storage SOC bounds
-        soc_col = "SOC_End" if "SOC_End" in idx else ("SOC" if "SOC" in idx else None)
-        if soc_col is not None:
-            soc_val = row[idx[soc_col]]
-            if isinstance(soc_val, (int, float)) and math.isfinite(soc_val):
-                soc_norm = float(soc_val) * (0.01 if units.get(soc_col) == "%" else 1.0)
-                soc_total += 1
-                if soc_norm <= 0.05:
-                    soc_low_count += 1
-                elif soc_norm >= 0.95:
-                    soc_high_count += 1
+            # Storage SOC bounds
+            soc_col = "SOC_End" if "SOC_End" in idx else ("SOC" if "SOC" in idx else None)
+            if soc_col is not None:
+                soc_val = row[idx[soc_col]]
+                if isinstance(soc_val, (int, float)) and math.isfinite(soc_val):
+                    soc_norm = float(soc_val) * (0.01 if units.get(soc_col) == "%" else 1.0)
+                    soc_total += 1
+                    if soc_norm <= 0.05:
+                        soc_low_count += 1
+                    elif soc_norm >= 0.95:
+                        soc_high_count += 1
+    except ValueError as exc:
+        if str(exc) != reader._irregular_message:
+            raise
+        return {
+            "status": "blocked",
+            "issues": [
+                "Result CSV timestamps do not have a regular cadence (missing, duplicate, or out-of-order rows); "
+                "cannot establish interval duration for diagnostics"
+            ],
+            "max_severity": "none",
+            "finding_count": 0,
+            "counts_by_severity": {"critical": 0, "high": 0, "medium": 0, "info": 0},
+            "needs_review": False,
+            "rows": reader.rows_count,
+            "step_minutes": None,
+            "is_bifacial": False,
+            "weighted_pr": None,
+            "analyzed_columns": [h for h in reader.headers[1:]],
+            "variant_attribution_used": vc_info is not None,
+            "grid_limit_context": None,
+            "findings": [],
+        }
+
+    eff_step_min = reader.step_minutes if reader.step_minutes is not None else 60.0
 
     # Detect bifacial presence from CSV columns or .VC0
     vc_bifacial = False
@@ -935,7 +917,7 @@ def diagnose_simulation_csv(
         "counts_by_severity": counts_by_sev,
         "needs_review": needs_review,
         "rows": rows,
-        "step_minutes": eff_step_min if regular else None,
+        "step_minutes": eff_step_min,
         "is_bifacial": is_bifacial,
         "weighted_pr": round(weighted_pr, 4) if weighted_pr is not None else None,
         "analyzed_columns": [h for h in headers[1:]],

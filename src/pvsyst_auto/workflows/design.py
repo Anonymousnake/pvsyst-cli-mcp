@@ -19,10 +19,15 @@ Reused building blocks (no new job framework, no hashing or fingerprinting here)
 """
 from __future__ import annotations
 
-import math
 import re
 import subprocess
 from pathlib import Path
+
+from pvsyst_auto.validation import (
+    append_issue as _issue,
+    is_finite_number as _is_number,
+    is_printable_text as _is_text,
+)
 
 from pvsyst_auto.native.cli import PVsystError, validate_report_pages
 from pvsyst_auto.engineering.envelope import REQUEST_KEYS, prepare_design_envelope
@@ -102,16 +107,8 @@ RETAINED_NOTE = ("Produced provider JSON, CSV, preparation artifacts, the workin
                  "performed and a documented recovery is never reported as success")
 
 
-def _is_number(value) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
-
-
 def _is_int(value) -> bool:
     return type(value) is int
-
-
-def _is_text(value) -> bool:
-    return isinstance(value, str) and bool(value.strip()) and value.isprintable()
 
 
 def _prune_empty(value):
@@ -132,10 +129,6 @@ def _prune_empty(value):
     if isinstance(value, list):
         return [_prune_empty(item) for item in value]
     return value
-
-
-def _issue(result: dict, field: str, message) -> None:
-    result["issues"].append({"field": field, "message": str(message)})
 
 
 def _inherit(result: dict, source: dict, field: str) -> None:
