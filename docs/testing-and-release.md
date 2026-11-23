@@ -24,7 +24,7 @@ Use a clean Python 3.10+ virtual environment, build and install the wheel, and r
 ```sh
 python -m pip install build
 python -m build
-python -m pip install dist/pvsyst_cli_mcp-0.6.0-py3-none-any.whl
+python -m pip install dist/pvsyst_cli_mcp-0.7.0-py3-none-any.whl
 python scripts/ci_checks.py --report dist/ci-report.json
 python scripts/run_tests.py --suite workflows -v
 ```
