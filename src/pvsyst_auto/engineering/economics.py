@@ -564,7 +564,7 @@ def _settle_multi_csv_year1(csv_paths: list[Path], weights: list[float], tariff:
             has_load = any(m["has_load"] for m in per_meta)
             has_storage = any(m["has_storage"] for m in per_meta)
 
-        raw_eg_sum = 0.0
+        self_cons = inferred_self_cons = 0.0
         e_exp_sum = 0.0
         e_user_sum = 0.0
         e_imp_sum = 0.0
@@ -588,7 +588,6 @@ def _settle_multi_csv_year1(csv_paths: list[Path], weights: list[float], tariff:
                 return val * factor * (dt_k if needs_dt else 1.0)
 
             raw_eg = kwh(meta["export_col"])
-            raw_eg_sum += w * raw_eg
             e_exp_sum += w * max(0.0, raw_eg)
             e_user_k = max(0.0, kwh("E_User")) if meta["has_load"] else 0.0
             e_user_sum += w * e_user_k
@@ -600,6 +599,13 @@ def _settle_multi_csv_year1(csv_paths: list[Path], weights: list[float], tariff:
                 e_imp_k = -raw_eg
             else:
                 e_imp_k = 0.0
+            if meta["has_load"]:
+                self_cons += w * max(0.0, e_user_k - e_imp_k)
+            elif tariff["mode"] != "feed_in" and tariff["self_consumption_ratio"]:
+                inferred = w * max(0.0, raw_eg) * tariff["self_consumption_ratio"]
+                inferred_self_cons += inferred
+                self_cons += inferred
+                e_exp_sum -= inferred
             e_imp_sum += w * e_imp_k
             if "EBatCh" in idx:
                 e_bat_ch_sum += w * max(0.0, kwh("EBatCh"))
@@ -613,25 +619,10 @@ def _settle_multi_csv_year1(csv_paths: list[Path], weights: list[float], tariff:
         e_bat_ch = e_bat_ch_sum
         e_bat_dis = e_bat_dis_sum
 
-        if has_load:
-            self_cons = max(0.0, e_user - e_imp)
-            baseline_bill = e_user * imp_rate
-            import_cost = e_imp * imp_rate
-            export_rev = e_exp * exp_rate
-            avoided = baseline_bill - import_cost
-        else:
-            sc_ratio = (
-                tariff["self_consumption_ratio"]
-                if (tariff["mode"] != "feed_in" and tariff["self_consumption_ratio"] is not None)
-                else 0.0
-            )
-            self_cons = e_exp * sc_ratio
-            net_exp = e_exp - self_cons
-            baseline_bill = self_cons * imp_rate
-            import_cost = e_imp * imp_rate
-            export_rev = net_exp * exp_rate
-            avoided = baseline_bill - import_cost
-            e_exp = net_exp
+        baseline_bill = (e_user + inferred_self_cons) * imp_rate
+        import_cost = e_imp * imp_rate
+        export_rev = e_exp * exp_rate
+        avoided = baseline_bill - import_cost
 
         totals["pv_export_kwh"] += e_exp
         totals["grid_import_kwh"] += e_imp
@@ -1099,7 +1090,9 @@ def _compute_cashflow_metrics(
         # Debt service layer
         if has_financing and year <= loan_tenor and debt_balance > 1e-9:
             interest_y = debt_balance * loan_r
-            if year <= loan_grace:
+            if year == life:
+                principal_y = debt_balance
+            elif year <= loan_grace:
                 principal_y = 0.0
             elif repay_method == "equal_principal":
                 principal_y = min(debt_balance, debt_principal_init / repay_years)

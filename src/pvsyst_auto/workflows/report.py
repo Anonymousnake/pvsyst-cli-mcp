@@ -14,7 +14,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from pvsyst_auto.engineering.diagnostics import diagnose_simulation_csv
+from pvsyst_auto.engineering.diagnostics import _IRRAD_SCALE, diagnose_simulation_csv
 from pvsyst_auto.engineering.economics import evaluate_economics
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.results import RegularResultCsv, energy_unit_scale
@@ -286,8 +286,12 @@ def _summarize_multi_csv_for_report(csv_paths: list[Path], weights: list[float])
                 pr = row_data[idx["PR"]]
                 if (isinstance(gi, (int, float)) and math.isfinite(gi) and gi > 0
                         and isinstance(pr, (int, float)) and math.isfinite(pr)):
-                    monthly_pr_num[stamp.month] += w * float(gi) * float(pr) * meta["pr_scale"]
-                    monthly_pr_den[stamp.month] += w * float(gi)
+                    unit = reader_k.units.get("GlobInc", "")
+                    if unit not in _IRRAD_SCALE:
+                        raise ValueError(f"GlobInc requires an irradiance or irradiation unit, got {unit!r}")
+                    weight = w * gi * _IRRAD_SCALE[unit] * (1.0 if "Wh" in unit else dt_k)
+                    monthly_pr_num[stamp.month] += weight * float(pr) * meta["pr_scale"]
+                    monthly_pr_den[stamp.month] += weight
 
     rows = readers[0].rows_count
     step_hours = (readers[0].step_minutes if readers[0].step_minutes else 60.0) / 60.0

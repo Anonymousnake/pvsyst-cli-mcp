@@ -351,6 +351,23 @@ class ComposableProjectFinanceAndMultiCsvTests(unittest.TestCase):
         self.assertEqual(rep["status"], "generated")
         self.assertTrue(Path(rep["report_path"]).is_file())
 
+    def test_mixed_site_units_and_load_at_project_exit(self):
+        from pvsyst_auto.workflows.report import _summarize_multi_csv_for_report
+        stamp = "01/06/24 12:00"
+        base = self.root / "Results"
+        a = _write_sfi_csv(base / "a.csv", [("GlobInc", "W/m2"), ("PR", "%"), ("E_Grid", "kWh"),
+                                             ("E_User", "kWh")], [[stamp, 1000, 80, 0, 10]])
+        b = _write_sfi_csv(base / "b.csv", [("GlobInc", "kW/m2"), ("PR", "%"), ("E_Grid", "kWh")],
+                           [[stamp, 1, 60, -5]])
+        self.assertEqual(_summarize_multi_csv_for_report([a, b], [1, 1])["overall_weighted_pr"], 0.7)
+        result = evaluate_economics(workspace=self.root, scenarios=[{"csv_names": [a.name, b.name],
+                                    "csv_weights": [1, 1], "capex_total": 100}],
+                                    financial={"project_life_years": 1, "financing": {"equity_ratio_pct": 20,
+                                               "loan_tenor_years": 10}}, include_cashflow_schedule=True)
+        scenario = result["scenarios"][0]
+        self.assertEqual(scenario["year1_energy_kwh"], 10)
+        self.assertEqual(scenario["financials"]["cashflow_schedule"][0]["debt_principal"], 80)
+
     def test_composable_vat_cit_financing_and_staged_opex(self):
         # 100 MW utility plant: 150,000,000 kWh/yr, CAPEX = 350,000,000 CNY, FIT = 0.35 CNY/kWh (VAT-inclusive)
         base_scenario = [{
