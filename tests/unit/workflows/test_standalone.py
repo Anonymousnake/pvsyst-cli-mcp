@@ -29,6 +29,41 @@ class StandAloneTests(unittest.TestCase):
         self.comp = ComponentStore(self.ws)
         self.store = VariantStore(self.ws, self.comp)
 
+    def test_simulate_design_validates_inline_genset_without_overwriting(self) -> None:
+        from unittest.mock import Mock, patch
+        from pvsyst_auto.api import simulation
+
+        filename = "Shared.GEN"
+        original = generate_genset_text(model="Existing", nominal_power_kw=5, fuel_consumption_l_per_h=1.6)
+        self.comp.create("GEN", filename, original)
+        target = self.ws / "ComposPV/Gensets" / filename
+        cli = Mock()
+        cli.run_simulation.side_effect = ValueError("native runner stub")
+        cases = (
+            (0.005, True, "blocked", "fuel_consumption_l_per_h"),
+            (2.5, True, "ready", None),
+            (2.5, False, "blocked", "Generated GEN already exists"),
+        )
+        with patch.multiple(simulation, cli=lambda: cli, variant_store=lambda: self.store):
+            for fuel, dry_run, status, issue in cases:
+                with self.subTest(fuel=fuel, dry_run=dry_run):
+                    request = SingleDesignRequest(
+                        new_project="Cabin.PRJ", scope="stand_alone", module={"file_name": "Lab440.PAN"},
+                        weather={"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+                        standalone={"battery_file": "Generic_Solar_12V160Ah.BTR", "genset_spec": {
+                            "file_name": "New.GEN" if status == "ready" else filename,
+                            "nominal_power_kw": 10, "fuel_consumption_l_per_h": fuel,
+                        }},
+                    )
+                    result = simulation.pvsyst_simulate_design(request, dry_run=dry_run)
+                    self.assertEqual(target.read_bytes(), original.encode("utf-8"))
+                    self.assertEqual(result["status"], status)
+                    if issue:
+                        self.assertIn(issue, result["issues"][0]["message"])
+        self.assertFalse((self.ws / "ComposPV/Gensets/New.GEN").exists())
+        self.assertFalse((self.ws / "Projects/Cabin.PRJ").exists())
+        cli.run_simulation.assert_not_called()
+
     def test_generate_genset_passes_component_store_validation(self) -> None:
         txt = generate_genset_text(
             model="Diesel_5kW",

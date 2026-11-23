@@ -423,12 +423,21 @@ def run_standalone_design(
     genset_spec = sa.get("genset_spec")
     backup_kw = sa.get("backup_operating_power_kw")
     generated_gen_path: Path | None = None
+    gen_text: str | None = None
     if genset_spec is not None:
         gen_fname = genset_spec.get("file_name") or f"{stem}_BackupGen.GEN"
         safe_filename(gen_fname, ".GEN")
         genset_file = gen_fname
         if backup_kw is None:
             backup_kw = float(genset_spec["nominal_power_kw"]) * 0.8
+
+        gen_text = generate_genset_text(
+            model=genset_spec.get("model") or Path(genset_file).stem,
+            nominal_power_kw=genset_spec["nominal_power_kw"],
+            fuel_consumption_l_per_h=genset_spec["fuel_consumption_l_per_h"],
+            manufacturer=genset_spec.get("manufacturer", "Generic"),
+            fuel_type=genset_spec.get("fuel_type", "Diesel"),
+        )
 
     synth = synthesize_standalone_project(
         store,
@@ -477,18 +486,12 @@ def run_standalone_design(
         }
 
     # Write optional synthetic .GEN file before creating project
-    if genset_spec is not None and genset_file is not None:
-        gen_dir = store.workspace / "ComposPV" / "Gensets"
-        gen_dir.mkdir(parents=True, exist_ok=True)
-        generated_gen_path = gen_dir / genset_file
-        gen_text = generate_genset_text(
-            model=genset_spec.get("model") or Path(genset_file).stem,
-            nominal_power_kw=genset_spec["nominal_power_kw"],
-            fuel_consumption_l_per_h=genset_spec["fuel_consumption_l_per_h"],
-            manufacturer=genset_spec.get("manufacturer", "Generic"),
-            fuel_type=genset_spec.get("fuel_type", "Diesel"),
-        )
-        generated_gen_path.write_text(gen_text, encoding="utf-8")
+    if gen_text is not None and genset_file is not None:
+        try:
+            components.create("GEN", genset_file, gen_text)
+        except FileExistsError as exc:
+            raise FileExistsError(f"Generated GEN already exists: {genset_file}") from exc
+        generated_gen_path = store.workspace / "ComposPV" / "Gensets" / genset_file
 
     store.create_project(prj, synth["prj_text"], {"VC0": synth["vc0_text"]})
 
