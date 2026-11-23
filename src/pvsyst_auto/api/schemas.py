@@ -1210,7 +1210,7 @@ class BessVerifyConfig(BaseModel):
     cycle_sow: StrictNum = 0.8
     static_sow: StrictNum = 0.8
     load_manifest_name: StrictStr | None = None
-    variant_prefix: StrictStr = "VB"
+    variant_prefix: StrictStr | None = None
 
 
 class FeasibilityInlineComponent(BaseModel):

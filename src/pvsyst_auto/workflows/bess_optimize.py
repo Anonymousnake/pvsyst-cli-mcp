@@ -27,6 +27,7 @@ from pvsyst_auto.engineering.economics import (
     evaluate_economics,
 )
 from pvsyst_auto.native.cli import build_sfi
+from pvsyst_auto.project.paths import variant_id
 from pvsyst_auto.results import RegularResultCsv, energy_unit_scale
 from pvsyst_auto.validation import finite_number as _finite
 
@@ -371,6 +372,7 @@ def _run_stage2_verify(
     cli,
     store,
     top_candidates: list[dict[str, Any]],
+    planned_variants: list[dict[str, Any]],
     verify_config: dict[str, Any],
     tariff: dict,
     financial: dict,
@@ -402,7 +404,7 @@ def _run_stage2_verify(
 
     comparisons: list[dict[str, Any]] = []
     for idx, cand in enumerate(top_candidates, start=1):
-        new_var = f"{prefix}{idx}"
+        new_var = planned_variants[idx - 1]["new_variant"]
         parallel = max(1, int(round(cand["bess_kwh"] / (bat_unit_kwh * series_count))))
         actual_kwh = round(parallel * series_count * bat_unit_kwh, 2)
         pcs_kw = max(0.1, float(cand["pcs_kw"]))
@@ -758,12 +760,24 @@ def optimize_bess_sizing(
         for req_k in ("project", "source_variant", "battery_file_name", "battery_unit_kwh"):
             if not verify_config.get(req_k):
                 raise ValueError(f"verify_config.{req_k} is required when verify_top_k > 0")
-        prefix = str(verify_config.get("variant_prefix") or "VB").strip()
+        prefix = verify_config.get("variant_prefix")
+        reserved: list[str] = []
         for idx, c in enumerate(top_nonzero, start=1):
+            if prefix is None:
+                if store is None:
+                    raise ValueError("store is required to allocate Stage 2 variant identifiers")
+                from pvsyst_auto.native.headless import _next_variant_id, _VARIANT_IDS
+                new_variant = _next_variant_id(store, verify_config["project"],
+                                               reserved=reserved, candidates=_VARIANT_IDS[1:36])
+                reserved.append(new_variant)
+            else:
+                new_variant = variant_id(f"{prefix.strip()}{idx}")
+                if len(new_variant) != 3:
+                    raise ValueError("Stage 2 variant identifiers must be three characters, e.g. VC1")
             stage2_plan.append({
                 "rank": idx,
                 "label": c["label"],
-                "new_variant": f"{prefix}{idx}",
+                "new_variant": new_variant,
                 "bess_kwh": c["bess_kwh"],
                 "pcs_kw": c["pcs_kw"],
                 "strategy": c["strategy"],
@@ -779,6 +793,7 @@ def optimize_bess_sizing(
                 cli=cli,
                 store=store,
                 top_candidates=top_nonzero,
+                planned_variants=stage2_plan,
                 verify_config=verify_config,
                 tariff=tariff,
                 financial=financial,

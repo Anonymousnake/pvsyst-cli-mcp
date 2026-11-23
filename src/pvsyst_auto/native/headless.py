@@ -877,7 +877,7 @@ _VARIANT_IDS = tuple(
 )
 
 
-def _next_variant_id(store, project):
+def _next_variant_id(store, project, *, reserved=(), candidates=_VARIANT_IDS):
     root = store._path(project).parent
     stem = Path(project).stem
     used = {
@@ -885,10 +885,11 @@ def _next_variant_id(store, project):
         for path in root.iterdir()
         if path.stem.casefold() == stem.casefold() and len(path.suffix) >= 2
     }
-    for candidate in _VARIANT_IDS:
+    used.update(reserved)
+    for candidate in candidates:
         if candidate not in used:
             return candidate
-    raise ValueError("All native 3-character variant identifiers (VC0..VZZ) are exhausted")
+    raise ValueError("All requested native 3-character variant identifiers are exhausted")
 
 
 def _circuit_counts_valid(source_text, subs):
