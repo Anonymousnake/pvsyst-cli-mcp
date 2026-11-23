@@ -78,6 +78,13 @@ class SpecialLoadsAndOutagesTests(unittest.TestCase):
         self.assertIn("+0", txt1)
         self.assertIn("+G8", txt1)
 
+    def test_generated_availability_preserves_declared_standard_offset(self) -> None:
+        from pvsyst_auto.energy.profiles import TIME_BASIS
+        decl = {'mode': 'generated', 'year': 2023, 'outage_count': 4, 'utc_offset_hours': 8}
+        _, metadata = native_availability(None, decl, '\n')
+        self.assertEqual(metadata['utc_offset_hours'], 8)
+        self.assertEqual(metadata['time_basis'], TIME_BASIS)
+
     def test_random_system_unavailability_roundtrip(self) -> None:
         lines = [
             "PVObject_System=pvSystem\r\n",

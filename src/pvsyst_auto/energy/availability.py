@@ -89,6 +89,8 @@ def generate_outage_availability(declaration: dict, newline: str) -> tuple[str, 
     metadata = {
         "mode": "generated",
         "year": year,
+        "utc_offset_hours": declaration.get("utc_offset_hours"),
+        "time_basis": TIME_BASIS,
         "rows": total_hours,
         "outage_count": outage_count,
         "unavailable_hours": unavailable,
