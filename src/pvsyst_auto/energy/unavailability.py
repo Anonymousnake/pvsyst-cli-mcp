@@ -160,7 +160,9 @@ def _materialize_random_periods(cfg: dict) -> list[tuple[str, float]]:
     n = cfg["period_count"]
     min_d = cfg["min_duration_hours"]
     max_d = cfg["max_duration_hours"]
-    target_total = max(float(n * min_d), min(float(n * max_d), cfg["time_fraction"] * 8760.0))
+    target_total = cfg["time_fraction"] * 8760.0
+    if not n * min_d <= target_total <= n * max_d:
+        raise ValueError("time_fraction_pct is incompatible with period_count and duration bounds")
     # Allocate durations within [min_d, max_d] whose sum closely matches target_total
     durs = [float(min_d)] * n
     rem = max(0.0, target_total - sum(durs))
