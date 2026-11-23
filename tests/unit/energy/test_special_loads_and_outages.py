@@ -149,6 +149,37 @@ class SpecialLoadsAndOutagesTests(unittest.TestCase):
             })
         self.assertEqual(lines, original)
 
+    def test_unavailability_exact_boundary_and_availability_guards(self) -> None:
+        # 1. Exact feasible boundary (5 * 5h = 25h) survives IEEE-754 float rounding
+        lines = ['PVObject_System=pvSystem\n', '  Flags=$00\n', '  SystemType=Grid\n',
+                 'End of PVObject pvSystem\n']
+        res = replace_system_unavailability(lines, (0, 3), {
+            'mode': 'random',
+            'time_fraction_pct': 100.0 * 25.0 / 8760.0,
+            'period_count': 5,
+            'min_duration_hours': 5,
+            'max_duration_hours': 10,
+            'random_seed': 7,
+        })
+        self.assertEqual(res['after']['period_count'], 5)
+
+        # 2. Generated availability rejects out-of-range utc_offset_hours and unsupported time_basis
+        with self.assertRaisesRegex(ValueError, 'utc_offset_hours'):
+            native_availability(None, {'mode': 'generated', 'year': 2024, 'outage_count': 2, 'utc_offset_hours': 999}, '\n')
+        with self.assertRaisesRegex(ValueError, 'time_basis'):
+            native_availability(None, {'mode': 'generated', 'year': 2024, 'outage_count': 2, 'time_basis': 'dst_local'}, '\n')
+
+        # 3. Explicit mode='csv' must not fall back to generated mode or raise KeyError when csv_name is missing
+        with self.assertRaisesRegex(ValueError, 'csv_name'):
+            native_availability(
+                None,
+                {
+                    'mode': 'csv', 'year': 2024, 'utc_offset_hours': 0,
+                    'time_basis': 'local_standard_interval_start', 'outage_count': 4,
+                },
+                '\n',
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

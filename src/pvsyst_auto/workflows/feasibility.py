@@ -362,10 +362,15 @@ def run_feasibility_study(
         "installed_dc_kw": installed_dc_kw,
         "estimated_cli_calls": est_cli_calls,
     }
+    sim_needs_review = bool(sim_result and sim_result.get("status") == "needs_review")
+    diag_needs_review = bool(diag_result and diag_result.get("needs_review"))
+    combined_needs_review = sim_needs_review or diag_needs_review
     if diag_result:
         exec_summary["weighted_pr"] = diag_result.get("weighted_pr")
-        exec_summary["needs_review"] = diag_result.get("needs_review")
+        exec_summary["needs_review"] = combined_needs_review
         exec_summary["finding_count"] = diag_result.get("finding_count")
+    elif sim_needs_review:
+        exec_summary["needs_review"] = True
     if econ_result and econ_result.get("scenarios"):
         sc0 = econ_result["scenarios"][0]
         f0 = sc0["financials"]

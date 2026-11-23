@@ -133,6 +133,23 @@ class Phase5OrientationSpectralEcoTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertFalse((self.ws / "Projects" / "Phase5Test.VC1").exists())
 
+    def test_public_conversion_blocks_pvDomeOrient_and_schema_omits_dome(self) -> None:
+        from typing import get_args, get_type_hints
+        from unittest.mock import patch
+        from pvsyst_auto.api.projects import pvsyst_convert_orientation
+
+        hints = get_type_hints(pvsyst_convert_orientation)
+        self.assertNotIn("dome", get_args(hints["target_type"]))
+
+        source = self.ws / "Projects" / "Phase5Test.VC0"
+        text = source.read_text(encoding="utf-8-sig")
+        text = text.replace("FieldType=FixedPlane", "FieldType=Dome\n  PVObject_Dome=pvDomeOrient")
+        source.write_text(text, encoding="utf-8")
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
+            result = pvsyst_convert_orientation(self.project, "VC0", "VC1", target_type="fixed", dry_run=False)
+        self.assertEqual(result["status"], "blocked")
+        self.assertFalse((self.ws / "Projects" / "Phase5Test.VC1").exists())
+
     def test_native_economics_write_and_remove(self) -> None:
         res = self.store.update_parameters(
             self.project,

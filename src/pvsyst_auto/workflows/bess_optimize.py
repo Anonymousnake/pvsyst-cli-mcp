@@ -395,7 +395,7 @@ def _run_stage2_verify(
     cycle_sow = float(verify_config.get("cycle_sow", 0.8))
     static_sow = float(verify_config.get("static_sow", 0.8))
     load_manifest = verify_config.get("load_manifest_name")
-    prefix = str(verify_config.get("variant_prefix") or "VB").strip()
+    prefix = str(verify_config.get("variant_prefix") or "VC").strip()
 
     ws = cli.workspace
     sfi_path = ws / "Models" / f"{prefix}_bess_verify.SFI"
@@ -471,7 +471,7 @@ def _run_stage2_verify(
             raise ValueError(f"Storage variant {new_var} creation {creation.get('status')}: "
                              + "; ".join(str(issue) for issue in creation.get("issues", [])))
 
-        out_csv = ws / "Results" / f"{prefix}_{idx}_{int(round(actual_kwh))}kWh_{int(round(pcs_kw))}kW.csv"
+        out_csv = ws / "Results" / f"{new_var}_{int(round(actual_kwh))}kWh_{int(round(pcs_kw))}kW.csv"
         sim_res = cli.run_simulation(project, new_var, sfi=sfi_path, out_csv=out_csv, log_level=3)
         stage2_sc: dict[str, Any] = {
             "label": cand["label"],
@@ -608,8 +608,9 @@ def optimize_bess_sizing(
     uses_tou_windows = "tou_arbitrage" in strat_list or (
         "peak_shaving" in strat_list and bp["allow_grid_charging"]
     )
+    all_months = frozenset(range(1, 13))
     if tar_cfg["mode"] == "tou" and uses_tou_windows and any(
-        period["months"] is not None or period["day_type"] != "all"
+        period["months"] not in (None, all_months) or period["day_type"] != "all"
         for period in tar_cfg["tou_schedule"]
     ):
         raise ValueError("BESS TOU dispatch does not support month- or day-specific tariff windows")
@@ -765,6 +766,24 @@ def optimize_bess_sizing(
                 raise ValueError(f"verify_config.{req_k} is required when verify_top_k > 0")
         prefix = verify_config.get("variant_prefix")
         reserved: list[str] = []
+        existing_vars: set[str] = set()
+        proj_path: Path | None = None
+        if store is not None:
+            try:
+                cand_path = store._path(verify_config["project"])
+                if isinstance(cand_path, Path):
+                    proj_path = cand_path
+            except (TypeError, AttributeError, ValueError, OSError):
+                proj_path = None
+        if proj_path is None:
+            proj_path = Path(workspace) / "Projects" / str(verify_config["project"])
+        if proj_path.parent.is_dir():
+            stem = proj_path.stem.casefold()
+            existing_vars = {
+                p.suffix[1:].upper()
+                for p in proj_path.parent.iterdir()
+                if p.stem.casefold() == stem and len(p.suffix) >= 2
+            }
         for idx, c in enumerate(top_nonzero, start=1):
             if prefix is None:
                 if store is None:
@@ -777,6 +796,11 @@ def optimize_bess_sizing(
                 new_variant = variant_id(f"{prefix.strip()}{idx}")
                 if len(new_variant) != 3:
                     raise ValueError("Stage 2 variant identifiers must be three characters, e.g. VC1")
+                if new_variant in existing_vars or new_variant in reserved:
+                    raise FileExistsError(
+                        f"Stage 2 variant {new_variant} already exists for {verify_config['project']}"
+                    )
+                reserved.append(new_variant)
             stage2_plan.append({
                 "rank": idx,
                 "label": c["label"],

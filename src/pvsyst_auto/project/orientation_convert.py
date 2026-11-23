@@ -1,4 +1,4 @@
-"""In-place cross-orientation conversion for existing Grid variants (Fixed <-> Seasonal <-> Sheds <-> Tracker <-> Dome)."""
+"""In-place cross-orientation conversion for existing Grid variants (Fixed <-> Seasonal <-> Sheds <-> Tracker)."""
 from __future__ import annotations
 
 import math
@@ -15,7 +15,6 @@ TARGET_TYPES = {
     "sheds": "Sheds",
     "tracker_ns": "UnlimTracking",
     "tracker_2axis": "TrackTwoAxis",
-    "dome": "Dome",
 }
 
 
@@ -183,49 +182,6 @@ def _build_orientation_block(
         meta = {"field_type": ft, "axis_azimuth_deg": axis_az, "min_tilt_deg": min_tilt, "max_tilt_deg": max_tilt,
                 "min_phi_deg": min_phi, "max_phi_deg": max_phi}
 
-    else:  # dome (East-West dual-tilt dome -> 2 opposite FixedPlane orientations)
-        tilt = _finite(params.get("tilt_deg", 10.0), "tilt_deg", 1.0, 45.0)
-        azim = _finite(params.get("azimuth_deg", -90.0), "azimuth_deg", -180.0, 180.0)
-        azim2 = azim + 180.0 if azim <= 0.0 else azim - 180.0
-        comment = f"Dome {tilt:.1f}° ({azim:.0f}° / {azim2:.0f}°)"
-        orient1 = [
-            f"    PVObject_=pvOrient{eol}",
-            f"      Comment={comment} Face 1{eol}",
-            f"      Version={version}{eol}",
-            f"      Flags=$00{eol}",
-            f"    NoOrient=1{eol}",
-            f"    FieldType=FixedPlane{eol}",
-            f"    FieldTilt={tilt:.1f}{eol}",
-            f"    FieldAzim={azim:.1f}{eol}",
-            f"    BaseSlope=0.0{eol}",
-            f"    UsesTiltAver=False{eol}",
-            f"    UsesAzimAver=False{eol}",
-            f"    UsesSlopeAver=False{eol}",
-            f"    BTNoTrackers=-1,-1,{eol}",
-            f"    End of TOrientGroup{eol}",
-        ]
-        orient2 = [
-            f"    PVObject_=pvOrient{eol}",
-            f"      Comment={comment} Face 2{eol}",
-            f"      Version={version}{eol}",
-            f"      Flags=$00{eol}",
-            f"    NoOrient=2{eol}",
-            f"    FieldType=FixedPlane{eol}",
-            f"    FieldTilt={tilt:.1f}{eol}",
-            f"    FieldAzim={azim2:.1f}{eol}",
-            f"    BaseSlope=0.0{eol}",
-            f"    UsesTiltAver=False{eol}",
-            f"    UsesAzimAver=False{eol}",
-            f"    UsesSlopeAver=False{eol}",
-            f"    BTNoTrackers=-1,-1,{eol}",
-            f"    End of TOrientGroup{eol}",
-        ]
-        header = [f"  Orientations, list of=2 TOrientGroup{eol}", eol]
-        footer = [f"  End of Orientations{eol}"]
-        return header + orient1 + [eol] + orient2 + footer, {
-            "field_type": "Dome", "tilt_deg": tilt, "azimuth_face1_deg": azim, "azimuth_face2_deg": azim2,
-        }
-
     block = [
         f"  Orientations, list of=1 TOrientGroup{eol}",
         eol,
@@ -248,10 +204,24 @@ def convert_orientation_lines(
     params: dict[str, Any] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """Replace the Orientations list of a variant with a new orientation type, stripping incompatible 3D caches."""
+    if target_type == "dome":
+        raise ValueError("Conversions to or from paired dome orientations are not supported; dome faces need native pvDomeOrient pairing and string allocation")
     if target_type not in TARGET_TYPES:
         raise ValueError(f"target_type must be one of {sorted(TARGET_TYPES)}")
-    subarrays = [block for block in objects("".join(lines)) if block.object_type == "pvSubArray"]
-    if target_type == "dome" or any("NoOrientation2" in block.fields for block in subarrays):
+    parsed_blocks = objects("".join(lines))
+    subarrays = [block for block in parsed_blocks if block.object_type == "pvSubArray"]
+    has_dome_source = (
+        any(block.object_type == "pvDomeOrient" for block in parsed_blocks)
+        or any("NoOrientation2" in block.fields or "NStrOrient2" in block.fields for block in subarrays)
+        or any(
+            block.object_type == "pvOrient" and (
+                "NoPairOrient" in block.fields
+                or any(val in ("Dome", "DomeBackfaces") for _, val in block.fields.get("FieldType", ()))
+            )
+            for block in parsed_blocks
+        )
+    )
+    if has_dome_source:
         raise ValueError("Conversions to or from paired dome orientations are not supported; dome faces need native pvDomeOrient pairing and string allocation")
     eol = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
 
@@ -288,11 +258,10 @@ def convert_orientation_lines(
                 cand[idx] = f"{m.group(1)}${val:08X}{m.group(3)}"
                 break
 
-    # Ensure all subarrays point to NoOrientation=1 (unless Dome with 2+ subarrays)
-    if target_type != "dome":
-        for idx, ln in enumerate(cand):
-            if ln.strip().startswith("NoOrientation="):
-                cand[idx] = replace_value(ln, "1")
+    # Ensure all subarrays point to NoOrientation=1
+    for idx, ln in enumerate(cand):
+        if ln.strip().startswith("NoOrientation="):
+            cand[idx] = replace_value(ln, "1")
 
     return cand, {
         "previous_field_types": prior_types,

@@ -515,6 +515,71 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
         self.assertGreater(cand["battery_discharge_kwh"], 0.0)
         self.assertLessEqual(cand["self_consumption_pct"], 100.0)
 
+    def test_full_year_months_allowed_and_stage2_unique_csv_and_prefix_preflight(self) -> None:
+        from pvsyst_auto.api.schemas import BessVerifyConfig, EconomicsFinancialConfig, EconomicsTariffConfig
+        from pvsyst_auto.api.simulation import pvsyst_optimize_bess_sizing
+
+        # 1. Explicit full-year months=[1..12] is accepted by BESS TOU dispatch
+        csv_path = _write_pv_load_csv(self.root / "Results" / "full_months.csv", days=2)
+        full_year_tou = [dict(p, months=list(range(1, 13))) for p in _china_ci_tou()]
+        res_full = optimize_bess_sizing(
+            workspace=self.root,
+            baseline_csv=csv_path.name,
+            installed_dc_kw=100.0,
+            bess_kwh_values=[100.0],
+            pcs_kw_values=[50.0],
+            strategies=["tou_arbitrage"],
+            tariff={"mode": "tou", "import_tariff": 0.7, "feed_in_tariff": 0.3, "tou_schedule": full_year_tou},
+            financial={"fixed_capex": 1000.0, "battery_capex_per_kwh": 900.0},
+        )
+        self.assertEqual(len(res_full["candidates"]), 1)
+
+        # 2. Explicit variant_prefix detects occupied variant on disk during dry_run=True
+        proj_dir = self.root / "Projects"
+        proj_dir.mkdir(exist_ok=True)
+        (proj_dir / "Demo.VC1").write_text("existing\n", encoding="utf-8")
+        fake_cli = MagicMock(workspace=self.root)
+        with patch("pvsyst_auto.api.simulation.cli", return_value=fake_cli), \
+             patch("pvsyst_auto.api.simulation.variant_store"):
+            with self.assertRaisesRegex(FileExistsError, "already exists"):
+                pvsyst_optimize_bess_sizing(
+                    baseline_csv=csv_path.name, installed_dc_kw=100, bess_kwh_values=[100], pcs_kw_values=[50],
+                    tariff=EconomicsTariffConfig(mode="self_consumption_flat", import_tariff=1),
+                    financial=EconomicsFinancialConfig(fixed_capex=1000), verify_top_k=1,
+                    verify_config=BessVerifyConfig(project="Demo.PRJ", source_variant="VC0",
+                        battery_file_name="Cell.BTR", battery_unit_kwh=100, variant_prefix="VC"),
+                    dry_run=True,
+                )
+
+        # 3. Auto-allocated Stage 2 variant names output CSV with new_var so reruns never collide
+        from pvsyst_auto.components.store import ComponentStore
+        from pvsyst_auto.project.variants import VariantStore
+        (proj_dir / "Demo2.PRJ").write_text("PVObject_=pvProject\n", encoding="utf-8")
+        (proj_dir / "Demo2.VC0").write_text("PVObject_=pvVariant\n", encoding="utf-8")
+        (proj_dir / "Demo2.VC1").write_text("PVObject_=pvVariant\n", encoding="utf-8")
+        recorded_csvs: list[str] = []
+
+        def fake_run(project, variant, *, out_csv, **kwargs):
+            recorded_csvs.append(Path(out_csv).name)
+            _write_pv_load_csv(Path(out_csv), days=2)
+            return {}
+
+        fake_cli2 = MagicMock(workspace=self.root)
+        fake_cli2.run_simulation.side_effect = fake_run
+        with patch("pvsyst_auto.api.simulation.cli", return_value=fake_cli2), \
+             patch("pvsyst_auto.api.simulation.variant_store", return_value=VariantStore(self.root, ComponentStore(self.root))), \
+             patch("pvsyst_auto.energy.system.create_grid_storage_system", return_value={"status": "created"}):
+            res2 = pvsyst_optimize_bess_sizing(
+                baseline_csv=csv_path.name, installed_dc_kw=100, bess_kwh_values=[100], pcs_kw_values=[50],
+                tariff=EconomicsTariffConfig(mode="self_consumption_flat", import_tariff=1),
+                financial=EconomicsFinancialConfig(fixed_capex=1000), verify_top_k=1,
+                verify_config=BessVerifyConfig(project="Demo2.PRJ", source_variant="VC0",
+                    battery_file_name="Cell.BTR", battery_unit_kwh=100),
+                dry_run=False, confirm=True,
+            )
+        self.assertEqual(res2["stage2_verification"]["verified_comparisons"][0]["variant"], "VC2")
+        self.assertEqual(recorded_csvs, ["VC2_100kWh_50kW.csv"])
+
 
 if __name__ == "__main__":
     unittest.main()
