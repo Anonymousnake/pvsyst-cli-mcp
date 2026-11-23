@@ -242,9 +242,11 @@ class ToolGroupsTests(unittest.TestCase):
                                       "\n".join(i.text for i in reply.content if hasattr(i, "text")))
                     return dump_tools((await session.list_tools()).tools)
 
-            full = await capture_stdio("all", module=True)
+            full, selected = await asyncio.gather(
+                capture_stdio("all", module=True),
+                capture_stdio("setup, engineering,results", module=True),
+            )
             default_tools = await capture_session(None)
-            selected = await capture_session("setup, engineering,results")
             expert_only = await capture_session("expert")
             admin_only = await capture_session("admin")
             default_names = {item["name"] for item in default_tools}

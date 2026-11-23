@@ -60,12 +60,47 @@ class SpecialLoadsAndOutagesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sum to 100.0%"):
             native_load_block({"mode": "probability", "power_step_kw": 2.0, "probabilities_pct": [30.0, 30.0]}, "\n")
 
-    def test_generated_defaults_pass_through_native_availability(self) -> None:
-        from pvsyst_auto.api.schemas import GridAvailabilityProfile
+    def test_generated_defaults_pass_through_storage_api(self) -> None:
+        import os
+        from pathlib import Path
+        import tempfile
+        from unittest.mock import patch
+        from pvsyst_auto.api import context as api_context
+        from pvsyst_auto.api.schemas import GridAvailabilityProfile, GridStorageUpdates
+        from pvsyst_auto.api.storage import pvsyst_create_grid_storage_variant
+        from tests.unit.energy.test_energy import (
+            ARRAY, BTR, CLOSE, GRID_STORAGE, OLD_UNAVAIL, ROOT, SNAPSHOT_LOAD, STORAGE_SYSTEM,
+        )
 
-        declaration = GridAvailabilityProfile(mode="generated", year=2023, outage_count=4)
-        _, result = native_availability(None, declaration.model_dump(exclude_none=True), "\n")
-        self.assertEqual((result["outage_count"], result["seed"]), (4, 42))
+        with tempfile.TemporaryDirectory() as td:
+            ws = Path(td) / "ws"
+            (ws / "Projects").mkdir(parents=True)
+            (ws / "ComposPV" / "Batteries").mkdir(parents=True)
+            (ws / "Projects" / "Fixture.PRJ").write_text(
+                "PVObject_=pvProject\n  Comment=Fixture\nEnd of PVObject pvProject\n", encoding="utf-8",
+            )
+            (ws / "Projects" / "Fixture.VC0").write_bytes(
+                (ROOT.format(root_flags="$00080000") + ARRAY + STORAGE_SYSTEM + SNAPSHOT_LOAD
+                 + GRID_STORAGE.format(strategy="WeakGrid", unavail=OLD_UNAVAIL) + CLOSE)
+                .replace("\n", "\r\n").encode("utf-8")
+            )
+            (ws / "ComposPV" / "Batteries" / "Fixture.BTR").write_text(BTR, encoding="utf-8", newline="")
+            stub_cli = Path(td) / "PVsystCLI.exe"
+            stub_cli.write_bytes(b"stub")
+            declaration = GridAvailabilityProfile(mode="generated", year=2023, outage_count=4)
+            api_context._cli = None
+            try:
+                with patch.dict(os.environ, {"PVSYST_WORKSPACE": str(ws), "PVSYST_CLI": str(stub_cli)}):
+                    result = pvsyst_create_grid_storage_variant(
+                        "Fixture.PRJ", "VC0", "VC1", GridStorageUpdates(strategy="weak_grid"),
+                        dry_run=False, availability=declaration,
+                    )
+            finally:
+                api_context._cli = None
+        self.assertEqual(
+            (result["status"], result["grid_availability"]["outage_count"], result["grid_availability"]["seed"]),
+            ("created", 4, 42),
+        )
 
     def test_generated_weak_grid_outage_availability_is_deterministic(self) -> None:
         decl = {

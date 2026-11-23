@@ -200,7 +200,7 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
         self.assertEqual(sum(plan["discharging_schedule_48"]), 0.0)
         self.assertTrue(plan["warnings"])
 
-    def test_stage1_hybrid_bess_grid_pareto_heatmap_and_report(self) -> None:
+    def test_stage1_hybrid_bess_grid_pareto_and_heatmap(self) -> None:
         csv_path = _write_pv_load_csv(self.root / "Results" / "base_pv.csv", days=36)
         tariff = {
             "mode": "tou",
