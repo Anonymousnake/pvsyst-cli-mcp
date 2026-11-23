@@ -259,7 +259,8 @@ class SimulationTests(unittest.TestCase):
         self.assertIn("Warning: fixture sizing warning", result["warnings"])
         manifest = Path(result["artifacts"]["manifest"])
         self.assertEqual(json.loads(manifest.read_text()), result)
-        self.assertTrue(result["recovery"])
+        self.assertEqual([step["action"] for step in result["recovery"]], ["retain_isolated_project_for_review"])
+        self.assertEqual(result["recovery"][0]["project"], "Work.PRJ")
         self.assertTrue({"restore_variant", "restore_project_sources"}.isdisjoint(
             {step["action"] for step in result["recovery"]}))
         for name, data in self.originals.items():
@@ -352,7 +353,8 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(len(result["capacity_plan"]["steps"]), 3)
         values = self.store.inspect_parameters("Work.PRJ", "VC0")["subarrays"][0]["values"]
         self.assertEqual((values["NModSerie"], values["NStringCh"], values["NInverter"]), ("16", "4", "1"))
-        self.assertTrue(result["recovery"])
+        self.assertEqual([step["action"] for step in result["recovery"]], ["retain_isolated_project_for_review"])
+        self.assertEqual(result["recovery"][0]["project"], "Work.PRJ")
         self.assertTrue({"restore_variant", "restore_project_sources"}.isdisjoint(
             {step["action"] for step in result["recovery"]}))
         for name, data in originals.items():
@@ -457,7 +459,8 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual((failed["status"], failed["stage"], failed["template_preserved"]),
                          ("failed", "simulation", True), failed)
         self.assertIn("Native weather-bound failure", failed["error"])
-        self.assertTrue(failed["recovery"])
+        self.assertEqual([step["action"] for step in failed["recovery"]], ["retain_isolated_project_for_review"])
+        self.assertEqual(failed["recovery"][0]["project"], "WxFail.PRJ")
         self.assertTrue({"restore_variant", "restore_project_sources"}.isdisjoint(
             {step["action"] for step in failed["recovery"]}))
         self.assertIn("Weather preparation remains needs_review", " ".join(failed["warnings"]))
