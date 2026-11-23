@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from pvsyst_auto.components.editor import objects, replace_value
+from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import circuit_nodes, transformer_state
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 
@@ -281,23 +282,6 @@ def _render_transformer_node(
     return out
 
 
-def _strip_varlist_and_clear_sim_flag(lines: list[str]) -> list[str]:
-    """Drop stale saved simulation cache (pvVarList) so PVsystCLI recomputes fresh losses."""
-    out: list[str] = []
-    in_varlist = False
-    for line in lines:
-        stripped = line.strip()
-        if not in_varlist and stripped == "PVObject_VarList=pvVarList":
-            in_varlist = True
-            continue
-        if in_varlist:
-            if stripped == "End of PVObject pvVarList":
-                in_varlist = False
-            continue
-        out.append(line)
-    return out
-
-
 def apply_transformers_to_variant_lines(
     lines: list[str],
     *,
@@ -458,7 +442,7 @@ def apply_transformers_to_variant_lines(
 
     final_header = kept_header[:insert_pos] + trf_header + kept_header[insert_pos:]
     cand = cand[:main_start] + final_header + cand[circ_start:]
-    cand = _strip_varlist_and_clear_sim_flag(cand)
+    cand, _ = strip_result_cache(cand)
 
     # Verify structural integrity immediately
     state = transformer_state(cand)
