@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from functools import partial
 import os
 from pathlib import Path
 import tempfile
@@ -9,21 +10,16 @@ import unittest
 from unittest.mock import patch
 
 from pvsyst_auto.engineering.economics import evaluate_economics
+from tests._fixtures import write_sfi_csv
 
 
-def _write_sfi_csv(path: Path, columns: list[tuple[str, str]], rows: list[list]) -> Path:
-    lines = [
-        "Project;EconTest.PRJ",
-        "Geographical Site;EconSite.SIT",
-        "Weather data;EconMet.MET",
-        "Simulation variant;EconTest.VC0",
-        "date;" + ";".join(c for c, _ in columns),
-        ";" + ";".join(u for _, u in columns),
-    ]
-    for row in rows:
-        lines.append(";".join(str(v) for v in row))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+_write_sfi_csv = partial(
+    write_sfi_csv,
+    project="EconTest.PRJ",
+    site="EconSite.SIT",
+    met="EconMet.MET",
+    variant="EconTest.VC0",
+)
 
 
 def _make_ci_tou_csv(path: Path, *, days: int = 10, step_minutes: int = 60, with_battery: bool = False) -> Path:

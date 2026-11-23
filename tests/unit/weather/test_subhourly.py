@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,7 +13,8 @@ from pvsyst_auto.weather.csv import inspect_weather_csv
 from pvsyst_auto.weather.preparation import check_generated_met, compare_native_weather, render_mef
 
 
-def _write_subhourly_weather_csv(path: Path, *, year: int = 2023, step_minutes: int = 15, unit: str = "W/m2"):
+@lru_cache(maxsize=8)
+def _subhourly_weather_text(year: int, step_minutes: int, unit: str) -> str:
     lines = [
         "#Weather data sub-hourly data",
         "#Site;TestSite",
@@ -44,10 +46,15 @@ def _write_subhourly_weather_csv(path: Path, *, year: int = 2023, step_minutes: 
             dhi_val = f"{dhi_w:.1f}"
         lines.append(f"{cur.year};{cur.month};{cur.day};{cur.hour};{cur.minute};{ghi_val};{dhi_val};20.0")
         cur += step
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n"
 
 
-def _write_subhourly_result_csv(path: Path, *, year: int = 2023, step_minutes: int = 15, dc_kw: float = 10.0):
+def _write_subhourly_weather_csv(path: Path, *, year: int = 2023, step_minutes: int = 15, unit: str = "W/m2"):
+    path.write_text(_subhourly_weather_text(year, step_minutes, unit), encoding="utf-8")
+
+
+@lru_cache(maxsize=8)
+def _subhourly_result_text(year: int, step_minutes: int, dc_kw: float) -> str:
     lines = [
         "PVSYST 8.1.7",
         "date;GlobHor;DiffHor;T_Amb;GlobInc;EArray;E_Grid;IL_Pmax;PR",
@@ -64,7 +71,11 @@ def _write_subhourly_result_csv(path: Path, *, year: int = 2023, step_minutes: i
         else:
             lines.append(f"{cur:%d/%m/%y %H:%M};0.0;0.0;20.0;0.0;0.0;0.0;0.0;0.0")
         cur += step
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n"
+
+
+def _write_subhourly_result_csv(path: Path, *, year: int = 2023, step_minutes: int = 15, dc_kw: float = 10.0):
+    path.write_text(_subhourly_result_text(year, step_minutes, dc_kw), encoding="utf-8")
 
 
 class SubHourlyPipelineUnitTests(unittest.TestCase):

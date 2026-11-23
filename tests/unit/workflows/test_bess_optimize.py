@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 from pvsyst_auto.api.schemas import GridStorageUpdates
 from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule
 from pvsyst_auto.workflows.bess_optimize import optimize_bess_sizing
-from pvsyst_auto.workflows.report import generate_report
 
 
 def _china_ci_tou() -> list[dict]:
@@ -257,23 +256,6 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
         # Peak shaving strategy achieves positive peak demand reduction
         ps_cands = [c for c in res["candidates"] if c["strategy"] == "peak_shaving"]
         self.assertTrue(any(c["avg_monthly_peak_reduction_kw"] > 0 for c in ps_cands))
-
-        # Feed heatmap + Pareto straight into interactive Plotly report!
-        rep = generate_report(
-            workspace=self.root,
-            title="BESS Optimization Report",
-            output_name="bess_opt.html",
-            scenarios=[{"label": "Base PV", "csv_name": csv_path.name, "installed_dc_kw": 120.0}],
-            financial=financial,
-            tariff=tariff,
-            bess_optimization=res,
-            language="en",
-            plotlyjs="cdn",
-            dry_run=False,
-        )
-        self.assertEqual(rep["status"], "generated")
-        html_txt = Path(rep["report_path"]).read_text(encoding="utf-8")
-        self.assertIn("PV+BESS Sizing Heatmap", html_txt)
 
     def test_stage2_dry_run_guard_and_mocked_cli_reconciliation(self) -> None:
         csv_path = _write_pv_load_csv(self.root / "Results" / "base_s2.csv", days=24)

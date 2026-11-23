@@ -337,3 +337,28 @@ def build_grid_vc0(
         "End of PVObject pvVCalcul",
     ])
     return "\n".join(lines) + "\n"
+
+
+def write_sfi_csv(
+    path: Path,
+    columns: list[tuple[str, str]],
+    rows: list[list],
+    *,
+    project: str = "P.PRJ",
+    site: str = "TestSite.SIT",
+    met: str = "TestMet.MET",
+    variant: str = "P.VC0",
+) -> Path:
+    """Write a minimal semicolon-delimited PVsyst regular simulation CSV fixture."""
+    lines = [
+        f"Project;{project}",
+        f"Geographical Site;{site}",
+        f"Weather data;{met}",
+        f"Simulation variant;{variant}",
+        "date;" + ";".join(c for c, _ in columns),
+        ";" + ";".join(u for _, u in columns),
+    ]
+    for row in rows:
+        lines.append(";".join(str(v) for v in row))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path

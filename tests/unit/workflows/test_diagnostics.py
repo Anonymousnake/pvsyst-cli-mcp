@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from functools import partial
 import os
 from pathlib import Path
 import tempfile
@@ -15,21 +16,16 @@ from pvsyst_auto.engineering.diagnostics import (
 )
 from pvsyst_auto.project.synthesize import synthesize_project_and_variant
 from pvsyst_auto.project.variants import VariantStore
+from tests._fixtures import write_sfi_csv
 
 
-def _write_csv(path: Path, columns: list[tuple[str, str]], rows: list[list]) -> Path:
-    lines = [
-        "Project;DiagTest.PRJ",
-        "Geographical Site;DiagSite.SIT",
-        "Weather data;DiagMet.MET",
-        "Simulation variant;DiagTest.VC0",
-        "date;" + ";".join(c for c, _ in columns),
-        ";" + ";".join(u for _, u in columns),
-    ]
-    for r in rows:
-        lines.append(";".join(str(v) for v in r))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+_write_csv = partial(
+    write_sfi_csv,
+    project="DiagTest.PRJ",
+    site="DiagSite.SIT",
+    met="DiagMet.MET",
+    variant="DiagTest.VC0",
+)
 
 
 def _solar_rows(
@@ -269,18 +265,15 @@ class DiagnosticsEngineTests(unittest.TestCase):
             pnom_ac_in_mppt=25.0,
         )
         self.store.create_project("Outage.PRJ", synth["prj_text"], {"VC0": synth["vc0_text"]})
-        # Inject an active SystemUnavail via inspect_parameters mock or real update
-        with patch.object(
-            self.store, "inspect_parameters",
-            return_value={
-                "subarrays": [{"values": {"NModSerie": "18"}}],
-                "orientations": [{"values": {}, "bifacial": {"enabled": False}}],
-                "detailed_losses": {"system_unavailability": {"enabled": True}},
-            },
-        ):
-            cols, rows = _solar_rows(days=4, pr=0.82, zero_day_hours=30)
-            csv_path = _write_csv(self.root / "Results" / "outage.csv", cols, rows)
-            diag = diagnose_simulation_csv(csv_path, store=self.store, project="Outage.PRJ", variant="VC0")
+        vc0_info = self.store.inspect("Outage.PRJ", "VC0")
+        self.store.update_parameters(
+            "Outage.PRJ", "VC0", vc0_info["sha256"],
+            system_unavailability_updates={"mode": "random", "time_fraction_pct": 1.5, "period_count": 6},
+            dry_run=False,
+        )
+        cols, rows = _solar_rows(days=4, pr=0.82, zero_day_hours=30)
+        csv_path = _write_csv(self.root / "Results" / "outage.csv", cols, rows)
+        diag = diagnose_simulation_csv(csv_path, store=self.store, project="Outage.PRJ", variant="VC0")
         zero_f = next(f for f in diag["findings"] if f["code"] == "HIGH_IRRADIANCE_ZERO_OUTPUT")
         self.assertEqual(zero_f["severity"], "info")
         self.assertFalse(diag["needs_review"])

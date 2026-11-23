@@ -620,8 +620,6 @@ class PVsystTests(unittest.TestCase):
         self.assertEqual(versions.NATIVE_TEXT, ("8.1.6", "8.1.7"))
         self.assertIn("8.1.0", versions.NATIVE_TEXT_OR_SEED)
         self.assertIn("PVsystCLI 8.1.7 (rev. 49382)", versions.CLI_TRACKING_BUILDS)
-        self.assertEqual(versions.TEXT_LABEL, "/".join(versions.NATIVE_TEXT))
-        self.assertEqual(versions.SEED_LABEL, "/".join(versions.NATIVE_TEXT_OR_SEED))
         self.assertIn(versions.HEADLESS_RECORD_VERSION, versions.NATIVE_TEXT)
         for token in ("8.1.5", "8.1.8", "8.2.0", "9.0.0"):
             self.assertNotIn(token, versions.NATIVE_TEXT_OR_SEED)

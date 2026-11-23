@@ -1,5 +1,6 @@
 """Tests for weather evidence review, provider correlation, and generated MET guards."""
 import calendar
+from functools import lru_cache
 import json
 import tempfile
 import unittest
@@ -17,23 +18,37 @@ def year_hours(year):
     return (366 if calendar.isleap(year) else 365) * 24
 
 
-def provider_labels(first_day, last_day):
+@lru_cache(maxsize=8)
+def _cached_provider_labels(first_day, last_day):
     first = datetime(first_day.year, first_day.month, first_day.day)
     last = datetime(last_day.year, last_day.month, last_day.day, 23, 0)
-    return [first + timedelta(hours=index)
-            for index in range(int((last - first).total_seconds() // 3600) + 1)]
+    return tuple(first + timedelta(hours=index)
+                 for index in range(int((last - first).total_seconds() // 3600) + 1))
 
 
-def provider_values(labels, *, null_labels=(), tam_offset=0.0):
+def provider_labels(first_day, last_day):
+    return list(_cached_provider_labels(first_day, last_day))
+
+
+@lru_cache(maxsize=8)
+def _cached_provider_values(labels, tam_offset):
     ghi, dhi, tamb = [], [], []
     for stamp in labels:
         day = 100.0 if 8 <= stamp.hour < 16 else 0.0
-        if stamp in null_labels:
-            ghi.append(None), dhi.append(None), tamb.append(None)
-            continue
         ghi.append(day)
         dhi.append(day / 2.0)
         tamb.append(round(-5.0 + stamp.hour * 0.5 + tam_offset, 1))
+    return tuple(ghi), tuple(dhi), tuple(tamb)
+
+
+def provider_values(labels, *, null_labels=(), tam_offset=0.0):
+    base_ghi, base_dhi, base_tamb = _cached_provider_values(tuple(labels), tam_offset)
+    ghi, dhi, tamb = list(base_ghi), list(base_dhi), list(base_tamb)
+    if null_labels:
+        nulls = set(null_labels)
+        for index, stamp in enumerate(labels):
+            if stamp in nulls:
+                ghi[index] = dhi[index] = tamb[index] = None
     return ghi, dhi, tamb
 
 

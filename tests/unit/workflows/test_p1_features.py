@@ -20,6 +20,7 @@ from pvsyst_auto.weather import acquisition
 from pvsyst_auto.workflows.design import prepare_design_project, simulate_design
 from pvsyst_auto.workflows.report import generate_report
 from pvsyst_auto.workflows.utility import validate_utility_spec
+from tests._fixtures import write_sfi_csv as _write_sfi_csv
 from tests.unit.core.test_bifacial_utility import UTILITY_OND, UTILITY_PAN
 
 
@@ -45,23 +46,6 @@ def _write_workspace_scaffold(root: Path) -> Path:
     site_text = "\ufeffPVObject_=pvSite\r\n" + "\r\n".join(f"  {ln}" for ln in site_body) + "\r\nEnd of PVObject pvSite\r\n"
     (ws / "Sites" / "TestSite.SIT").write_text(site_text, encoding="utf-8")
     return ws
-
-
-def _write_sfi_csv(path: Path, columns: list[tuple[str, str]], rows: list[list], *,
-                   project: str = "P.PRJ", site: str = "TestSite.SIT",
-                   met: str = "TestMet.MET", variant: str = "P.VC0") -> Path:
-    lines = [
-        f"Project;{project}",
-        f"Geographical Site;{site}",
-        f"Weather data;{met}",
-        f"Simulation variant;{variant}",
-        "date;" + ";".join(c for c, _ in columns),
-        ";" + ";".join(u for _, u in columns),
-    ]
-    for row in rows:
-        lines.append(";".join(str(v) for v in row))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
 
 
 class _FakeCLI:
