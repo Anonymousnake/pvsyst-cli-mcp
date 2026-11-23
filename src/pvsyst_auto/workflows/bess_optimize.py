@@ -600,6 +600,15 @@ def optimize_bess_sizing(
     if bp["soc_min"] >= bp["soc_max"]:
         raise ValueError("bess_params.soc_min must be < bess_params.soc_max")
 
+    uses_tou_windows = "tou_arbitrage" in strat_list or (
+        "peak_shaving" in strat_list and bp["allow_grid_charging"]
+    )
+    if tar_cfg["mode"] == "tou" and uses_tou_windows and any(
+        period["months"] is not None or period["day_type"] != "all"
+        for period in tar_cfg["tou_schedule"]
+    ):
+        raise ValueError("BESS TOU dispatch does not support month- or day-specific tariff windows")
+
     csv_path = _resolve_result_csv(workspace, baseline_csv)
     series = _load_baseline_series(csv_path, tariff=tar_cfg, load_profile=load_profile)
 
