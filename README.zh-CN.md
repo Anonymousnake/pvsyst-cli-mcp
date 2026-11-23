@@ -15,7 +15,7 @@ Windows 下配合本地 PVsyst 8 使用的 **100% 纯无头化（Headless）** M
 | 要做的事 | 入口工具 | 详细文档 |
 |---|---|---|
 | 零模板执行固定倾角、地面光伏棚架/跟踪器（单/双面、多朝向 `sub_orientations`、有限 3D 地块/障碍物/坡度/**3D DEM 地形 `terrain`**、MV/HV 变压器、多语种 PDF `report_language`、精简预检）或 **Stand-Alone 离网光储柴微网（`scope="stand_alone"`）** | `pvsyst_simulate_design`、`pvsyst_suggest_sizing` | [单方案设计输入](docs/single-design-inputs.md) |
-| 配置多级 MV/HV 变压器与 ISO 60228 集电线缆（内置 PVsyst 8.1.7 `PNomInvAC` 损耗基准、80%–200% 容量区间、≤1% 铁损 / ≤5% 铜损与 HV ≥ MV 电压校验）、原地跨朝向转换（固定/季节/棚架/单轴/双轴/东西坡），或写入光谱修正、随机故障与原生 `TEcoEvaluation` PDF 财务页 | `pvsyst_configure_transformers`、`pvsyst_convert_orientation`、`pvsyst_update_variant_parameters` | [工具参考](docs/tool-reference.md) |
+| 配置多级 MV/HV 变压器与 ISO 60228 集电线缆（内置 PVsyst 8.1.7 `PNomInvAC` 损耗基准、80%–200% 容量区间、≤1% 铁损 / ≤5% 铜损与 HV ≥ MV 电压校验）、原地跨朝向转换（固定/季节/棚架/单轴/双轴），或写入光谱修正、随机故障与原生 `TEcoEvaluation` PDF 财务页 | `pvsyst_configure_transformers`、`pvsyst_convert_orientation`、`pvsyst_update_variant_parameters` | [工具参考](docs/tool-reference.md) |
 | 按电气参数筛选工作区/内置组件，或按规格书无模板合成自定义 `.PAN`/`.OND`（单/三电压）/ 锂电 `.BTR`（附带选型来源提示，支持已有 `.PAN` 改参可选单二极管重拟合） | `pvsyst_list_components`、`pvsyst_build_sourced_component`、`pvsyst_update_component` | [规格书组件构建](docs/sourced-components.md) |
 | 拉取权威气象数据（`Open-Meteo ERA5`、`PVGIS v5.3 TMY`、`NASA POWER`）并支持单次调用一键制备 `.SIT`/`.MET`（`prepare=true`） | `pvsyst_resolve_location`、`pvsyst_acquire_weather`、`pvsyst_prepare_weather` | [气象文件制备](docs/weather-preparation.md) |
 | 单次 CLI 批量参数扫描（倾角、间距、反照率、积灰、限发、MPPT）并输出曲线数据与自动排序 | `pvsyst_run_batch_sweep` | [工具参考](docs/tool-reference.md) |

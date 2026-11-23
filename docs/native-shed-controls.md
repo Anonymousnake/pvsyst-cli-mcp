@@ -36,8 +36,8 @@
 
 ## 源模板前提条件
 
-- 源变体必须已经是 PVsyst 8.1.6 的 `FieldType=Sheds` 或 `FieldType=SunShields`（不支持把普通 `FixedPlane` 转成 `Sheds`，也不支持在 `Sheds` 和 `SunShields` 之间互转）。
+- 源变体必须已经是 PVsyst 8.1.6/8.1.7 的 `FieldType=Sheds` 或 `FieldType=SunShields`（如需把已有 `FixedPlane` 原地转换为 `Sheds`，请先调用 `pvsyst_convert_orientation`；不支持在 `Sheds` 与 `SunShields` 之间互转）。
 - 单子阵列、单朝向（`NoOrient=1`，`TOrientGroup` 下包含唯一一个完整的 20 字段直属 `pvOrient` 记录，且 `Flags=$00`、`Uses*Aver=False`、`BTNoTrackers=-1,-1,`）。
-- 系统为纯并网模式（`pvSystem.Flags=$06000000`，主阵列 `Flags=$01900400`、`Flags2=$082A`，子阵列 `Flags=$019E1002`、`Flags2=$20`），无 3D 场景、Module Layout、远方地平线、P50、负荷或储能。
+- 系统为纯并网模式（兼容标准棚架模板以及零模板合成的双面 `pvBiFacial` / 变压器棚架变体），无 3D 阴影场景、Module Layout、远方地平线、P50、负荷或储能。
 
 生成新 `.VCx` 后（可选同时设置 `variant_name` 与 `add_utf8_bom`），可通过 `pvsyst_get_variant_parameters` 读取全部 11 项棚架几何参数，或直接调用 `pvsyst_run_simulation` 进行仿真。

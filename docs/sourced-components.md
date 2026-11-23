@@ -1,10 +1,13 @@
-# 基于规格书引用创建自定义 PAN / OND 组件
+# 基于规格书引用创建自定义 PAN / OND / BTR 组件
 
-当手头只有组件或逆变器的 PDF 规格书参数，还没有现成的 `.PAN` / `.OND` 文件时，可以用 `pvsyst_build_sourced_component` 创建自定义 `.PAN` 或 `.OND` 文件：
+当手头只有组件、逆变器或锂电池的 PDF 规格书参数，还没有现成的 `.PAN` / `.OND` / `.BTR` 文件时，可以用 `pvsyst_build_sourced_component` 创建自定义组件文件（离网柴油发电机 `.GEN` 则由 `pvsyst_simulate_design(scope="stand_alone")` 内联零模板合成）：
 - **模板派生模式（传入 `template_name`）**：基于工作区里已有的同类型明文模板覆盖规格书参数，并将继承自模板的底层参数和曲线记录在 `.sources.json` 中（状态为 `needs_review`）。
-- **零模板综合模式（v0.4.0 新增，省略 `template_name` / 设为 `null`）**：无需现成模板，直接根据规格书电气参数合成完整明文 `.PAN` / `.OND`——`.PAN` 使用 5 参数单二极管求解器（`RShunt`、`Rp_0`、`RSerie`、`Gamma`）拟合 STC 曲线，`.OND` 自动生成 Mode-1 8 点 `ProfilPIO` 效率曲线并写入 `VNomEff`、`NbMPPT`、`IDCMax`、`IMaxDC` 等关键电气字段。
+- **零模板综合模式（省略 `template_name` / 设为 `null`）**：无需现成模板，直接根据规格书电气参数合成完整明文文件：
+  - **`.PAN`**：调用 5 参数单二极管求解器（`RShunt`、`Rp_0`、`RSerie`、`Gamma`）拟合 STC 曲线，并自动写入双面标志位（`$00800000`）。
+  - **`.OND`**：自动生成 Mode-1 8 点单电压 `ProfilPIO` 或三电压 `ProfilPIOV1..3`（`$1560` + `VNomEff`）效率曲线，并写入 `NbMPPT`、`IDCMax`、`IMaxDC` 等关键电气字段。
+  - **`.BTR`**：零模板合成 `LFP` / `NMC` 锂电池模型，自动校核单电芯内阻 ESR（`<= 40 mV@I10`）与 `AlphaSOC` 约束，并在返回结果中附带选型来源提示（sourcing hints）。
 
-工具会严格核对每个修改字段的数值、单位和原文摘录（`excerpt`），并把“本次按规格书改了哪些字段”与“从模板直接继承（或自动综合拟合）了哪些底层模型参数和曲线”一五一十地列在返回结果和 `.sources.json` 清单里，方便工程师审核确认。
+工具会严格核对每个修改字段的数值、单位和原文摘录（`excerpt`），并把“本次按规格书改了哪些字段”与“从模板直接继承（或自动综合拟合）了哪些底层模型参数和曲线”一五一十地列在返回结果和 `.sources.json` 清单里，方便工程师审核确认。对于已有 `.PAN` 组件，调用 `pvsyst_update_component` 修改 STC 电气参数时还可传入 `refit_single_diode=true` 自动重拟合五参数单二极管模型。
 
 ## 操作步骤
 
@@ -75,6 +78,6 @@
 
 ## 模板继承与注意事项
 
-- **哪些参数是继承自模板的**：`.PAN` 的单二极管模型内部参数（`RShunt`、`RSerie`、`Gamma`）、温度系数、串联电池片数、IAM 曲线，以及 `.OND` 的效率曲线（`ProfilPIO`）和温度降额参数不会随着铭牌功率或电压的修改而自动重新拟合。`inherited_fields` 和 `inherited_curves` 会把这些沿用自模板的项明确列出来。如果需要改效率曲线，创建完成后可接着调 `pvsyst_update_component`（见[工具参考](tool-reference.md)）。
+- **哪些参数是继承自模板的**：模板派生模式下，`.PAN` 的单二极管模型内部参数（`RShunt`、`RSerie`、`Gamma`）、温度系数、串联电池片数、IAM 曲线，以及 `.OND` 的效率曲线（`ProfilPIO`）和温度降额参数不会随着铭牌功率或电压的修改而自动重新拟合。`inherited_fields` 和 `inherited_curves` 会把这些沿用自模板的项明确列出来。如果需要改单/三电压效率曲线，或在修改已有 `.PAN` 的 STC 铭牌时重拟合单二极管模型（`refit_single_diode=true`），可接着调 `pvsyst_update_component`（见[工具参考](tool-reference.md)）。
 - **商业标识与编码**：新组件的 `Manufacturer`、`Model`、`DataSource` 及根级 `Comment` 头部会同步更新（若包含中文等非 ASCII 字符会自动写入 UTF-8 BOM）。模板原有的 `Remarks` 备注（包括 `.PAN` 第 5 行可能携带的功能标志）会原样保留。
 - 关于 PVsyst 中组件铭牌参数与单二极管模型参数的区别，可参考官方文档：[PV modules basic data](https://www.pvsyst.com/help-pvsyst7/pvmodule_basicdata.htm) 与 [Determination of model parameters](https://www.pvsyst.com/help-pvsyst7/pvmodule_parameters.htm)。
