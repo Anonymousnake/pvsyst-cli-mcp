@@ -121,6 +121,37 @@ class StandAloneTests(unittest.TestCase):
         self.assertIn("PEffBackUp=2.500", s2["vc0_text"])
         self.assertIn("LoadType=HouseHold", s2["vc0_text"])
 
+    def test_simulate_design_checks_annual_result_coverage(self) -> None:
+        from datetime import datetime, timedelta
+        from unittest.mock import Mock, patch
+        from pvsyst_auto.api import simulation
+
+        cli = Mock()
+        start = datetime(2024, 1, 1)
+        for name, hours, blank_at in (("Short", 24, None), ("Blank", 8784, 0), ("Leap", 8784, None)):
+            with self.subTest(name=name):
+                def simulate(project, variant, *, out_csv, **kwargs):
+                    rows = (f"{start + timedelta(hours=i):%d/%m/%y %H:%M};"
+                            f"{'' if i == blank_at else 1};{int(i < 4392)}\n" for i in range(hours))
+                    out_csv.write_text("date;E_User;T_LOL\n;kWh;h\n" + "".join(rows), encoding="utf-8")
+                    return {}
+
+                cli.run_simulation.side_effect = simulate
+                request = SingleDesignRequest(
+                    new_project=f"{name}.PRJ", scope="stand_alone", module={"file_name": "Lab440.PAN"},
+                    weather={"sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+                    standalone={"battery_file": "Generic_Solar_12V160Ah.BTR", "economics": {"capex_total": 1000}},
+                )
+                with patch.multiple(simulation, cli=lambda: cli, variant_store=lambda: self.store):
+                    result = simulation.pvsyst_simulate_design(request, dry_run=False)
+                if name == "Leap":
+                    self.assertEqual(result["energy_balance"]["lol_pct"], 50.0)
+                else:
+                    self.assertEqual(result["status"], "blocked")
+                    reason = "complete hourly calendar year" if name == "Short" else "complete E_User column"
+                    self.assertIn(reason, result["issues"][0]["message"])
+                    self.assertNotIn("economics", result)
+
     def test_standalone_diagnostics_and_diesel_economics(self) -> None:
         bal = {
             "e_avail_kwh": 10000.0,

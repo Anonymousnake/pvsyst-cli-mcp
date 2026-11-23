@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -520,7 +521,15 @@ def run_standalone_design(
     raw_lines = out_csv.read_text(encoding="latin-1", errors="replace").splitlines()
     header_line = next((ln for ln in raw_lines if ln.lower().startswith("date;")), "")
     available_cols = [c.strip() for c in header_line.split(";")[1:] if c.strip()]
-    parsed = summarize_results(out_csv, available_cols)["summary"]
+    results = summarize_results(out_csv, available_cols)
+    parsed = results["summary"]
+    first = datetime.fromisoformat(results["first"])
+    last = datetime.fromisoformat(results["last"])
+    if (results["step_minutes"] != 60 or first != datetime(first.year, 1, 1)
+            or last != datetime(first.year, 12, 31, 23)):
+        raise ValueError("Stand-Alone results require a complete hourly calendar year")
+    if not parsed.get("E_User", {}).get("complete"):
+        raise ValueError("Stand-Alone results require a complete E_User column")
 
     def _sum(col: str) -> float:
         entry = parsed.get(col)
@@ -545,7 +554,7 @@ def run_standalone_design(
     soc_mean = _mean("SOCmean")
     e_load_total = e_user + e_miss
     solar_frac = (e_solar / e_load_total) if e_load_total > 0 else 0.0
-    lol_pct_actual = (t_lol / 8760.0) * 100.0
+    lol_pct_actual = (t_lol / results["rows"]) * 100.0
 
     energy_balance = {
         "e_array_kwh": round(e_array, 2),
