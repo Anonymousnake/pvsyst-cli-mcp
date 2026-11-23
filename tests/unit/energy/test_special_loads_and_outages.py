@@ -59,6 +59,23 @@ class SpecialLoadsAndOutagesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sum to 100.0%"):
             native_load_block({"mode": "probability", "power_step_kw": 2.0, "probabilities_pct": [30.0, 30.0]}, "\n")
 
+    def test_generated_defaults_pass_through_storage_api(self) -> None:
+        from unittest.mock import patch
+        from pvsyst_auto.api.schemas import GridAvailabilityProfile, GridStorageUpdates
+        from pvsyst_auto.api.storage import pvsyst_create_grid_storage_variant
+
+        declaration = GridAvailabilityProfile(mode='generated', year=2023, outage_count=4)
+        def build(_store, **kwargs):
+            return native_availability(None, kwargs['availability'], '\n')[1]
+        with patch('pvsyst_auto.api.storage.variant_store'), patch(
+            'pvsyst_auto.api.storage.create_grid_storage_variant', side_effect=build
+        ):
+            result = pvsyst_create_grid_storage_variant(
+                'Fixture.PRJ', 'VC0', 'VC1', GridStorageUpdates(strategy='weak_grid'), availability=declaration
+            )
+        self.assertEqual(result['outage_count'], 4)
+        self.assertEqual(result['seed'], 42)
+
     def test_generated_weak_grid_outage_availability_is_deterministic(self) -> None:
         decl = {
             "mode": "generated",

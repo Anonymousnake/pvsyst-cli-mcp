@@ -59,7 +59,7 @@ def pvsyst_create_grid_storage_variant(project: StrictStr, source_variant: Stric
     return create_grid_storage_variant(variant_store(), project=project, source_variant=source_variant,
                                        new_variant=new_variant,
                                        updates=updates.model_dump(exclude_none=True), dry_run=dry_run,
-                                       availability=availability.model_dump() if availability else None,
+                                       availability=availability.model_dump(exclude_none=True) if availability else None,
                                        allow_grid_export=allow_grid_export)
 
 @categorized_tool()
@@ -78,7 +78,7 @@ def pvsyst_create_grid_storage_system(project: StrictStr, source_variant: Strict
                                       storage=storage.model_dump(exclude_none=True),
                                       load_manifest_name=load_manifest_name,
                                       dry_run=dry_run,
-                                      availability=availability.model_dump() if availability else None,
+                                      availability=availability.model_dump(exclude_none=True) if availability else None,
                                       allow_grid_export=allow_grid_export)
 
 
