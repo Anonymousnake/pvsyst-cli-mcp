@@ -3,7 +3,7 @@
 `pvsyst_run_house_task(spec, dry_run=True, confirm=False, resume=False, retry_simulation=False)` 把住宅光伏建模的各个环节——克隆工作工程、生成 `.pvc2` 三维场景（含屋顶与可选周边遮挡物 `obstacles`）、免 GUI 原生写入含 3D 阴影/组件布局的 `.VCx` 变体、再启动 `PVsystCLI.exe` 重新加载该变体跑完全年逐时仿真——整合成一条带断点续跑检查点（Checkpoint）的完整流水线。
 
 - 全流程完全免去桌面 GUI 启动与窗口自动化（`native/scene` GUI 桥接已在 `v0.6.0` 移除）。
-- 如果还没准备源工程，可以先调 `pvsyst_prepare_design_project`（[`single-design-inputs.md`](single-design-inputs.md)）生成源工程，或者直接用把规格书绑定也包进去的 `pvsyst_run_sourced_house_task`（见[工具参考](tool-reference.md)）。
+- 如果还没准备源工程，可以先调 `pvsyst_prepare_design_project`（[`single-design-inputs.md`](single-design-inputs.md)）生成源工程，或者直接用把规格书绑定也包进去的 `pvsyst_run_sourced_house_task`（正式执行时需在审核完规格书绑定后显式传入 `accept_source_review=true`，见[工具参考](tool-reference.md)）。
 - 如果不需要 3D 房屋阴影、只跑常规无阴影固定平面，直接用 [`pvsyst_simulate_design`](single-design-inputs.md) 即可。
 
 ## 环境前提与输入参数

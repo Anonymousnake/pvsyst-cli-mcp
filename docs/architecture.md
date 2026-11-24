@@ -25,7 +25,7 @@
 - 想看某个 PVsyst 字段在文件里叫什么、改值时要联动改哪些 `Flags` 位掩码，去 `project/`、`components/`、`energy/`、`weather/` 或 `scene/`。
 - 想看怎么调 `PVsystCLI.exe`、私有桌面隔离或免 GUI 原生场景/参数构建，看 `native/`。
 
-Windows 上所有原始 CLI 调用统一经 `native/cli.PVsystCLI._run` 启动：在 Windows 上将子进程隔离到私有非输入桌面（仅对普通纯 CSV 数值仿真拒绝 `DESKTOP_CREATEWINDOW`，PDF/批处理/`-rst:1` 阴影重算允许建窗），读取当前进程窗口站而不再硬编码 `WinSta0`，并按用户配置文件串行恢复 `DataPath`/`WorkspaceN`；非 Windows 保持原生 `subprocess.run`。
+Windows 上所有原始 CLI 调用统一经 `native/cli.PVsystCLI._run` 启动：在 Windows 上将子进程隔离到私有非输入桌面（仅对普通纯 CSV 数值仿真拒绝 `DESKTOP_CREATEWINDOW`，PDF/批处理/`-rst:1` 阴影重算允许建窗），读取当前进程窗口站而不再硬编码 `WinSta0`，并按用户配置文件串行恢复 `DataPath`/`WorkspaceN`（该恢复机制不协调独立启动的 `PVsystCLI` 进程，且 MCP 宿主被强制终止时无法恢复设置）；非 Windows 保持原生 `subprocess.run`。
 
 ## MCP 上下文与参数校验
 

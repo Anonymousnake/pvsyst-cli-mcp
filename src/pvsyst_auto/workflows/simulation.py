@@ -123,7 +123,7 @@ def verify_and_read_simulation_results(
 
 def record_workflow_failure(result: dict, cli, exc: BaseException, save) -> bool:
     """Record a workflow failure onto ``result``; return True when the exception must propagate."""
-    if isinstance(exc, (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired)):
+    if issubclass(type(exc), (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired)):
         result.update(status="failed", error=cli._redact(str(exc))[-12000:])
         return False
     # An unanticipated error still leaves a terminal manifest, never "running"; it then propagates.

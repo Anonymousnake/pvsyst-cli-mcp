@@ -19,7 +19,7 @@
 |---|---|---|
 | 工程与变体生命周期 | `inspect`、`create`、`clone_variant`、标题更新、气象源切换（部分位于 `expert` 组） | 标题更新支持单行 UTF-8 校验及 BOM 保留，见[工具参考](tool-reference.md) |
 | 站点与气象准备 | `create_site`、`convert_meteo`、`prepare_weather`、`acquire_weather`、`review_weather` | 见[天气准备](weather-preparation.md)；支持 Open-Meteo ERA5 / PVGIS / NASA POWER 下载、当地标准时（`LegalTime`）对齐与逐时/亚小时（`5/10/15/30/60 min`）`.SIT`/`.MET` 转换 |
-| 单方案设计与源工程准备 | `simulate_design`、`prepare_design_project`、`suggest_sizing`、`prepare_sourced_design` | 见[单方案设计输入](single-design-inputs.md)；支持零模板 `fixed_unshaded_grid` / `ground_sheds`（含多朝向 `sub_orientations`、有限 3D 地块/障碍物/坡度/3D DEM `terrain`） / `ground_tracker` + `pvBiFacial`、MV/HV `transformers`、`auto_from_components` 自动选型及 **Stand-Alone 离网光储柴微网（`scope="stand_alone"`）** |
+| 单方案设计与源工程准备 | `simulate_design`、`prepare_design_project`、`suggest_sizing`、`prepare_sourced_design` | 见[单方案设计输入](single-design-inputs.md)；支持零模板 `fixed_unshaded_grid` / `ground_sheds`（含多朝向 `sub_orientations`、有限 3D 地块/障碍物/坡度/3D DEM `terrain`） / `ground_tracker` + `pvBiFacial`、MV/HV `transformers` 与 `auto_from_components` 自动选型；**Stand-Alone 离网光储柴微网（`scope="stand_alone"`）仅由 `pvsyst_simulate_design` 支持，`pvsyst_prepare_design_project` 会直接 `blocked` 拦截** |
 | 参数化批量扫描（Batch Sweep） | `pvsyst_run_batch_sweep`、`pvsyst_read_batch_results` | 自动生成 UTF-8 BOM + CRLF `UserBatch/<name>_BatchParams.CSV` 与 `_BatchVariables.RVT`，支持倾角/间距/反照率/积灰/限发/MPPT 扫描，单次 CLI 跑完最多 100 组参数并返回曲线提取、按目标指标排序与基线差值 |
 | 物理结果诊断与归因 | `pvsyst_diagnose_results` | 纯 Python 对 SFI 逐时/亚小时结果执行损失链、剪峰、电压限幅、阴影、双面增益与储能循环异常诊断（可选 `.VC0` 根因归因）；`simulate_design` 与 `run_house_task` 自动附带轻量摘要 |
 | 亚小时仿真与结果积分 | `pvsyst_prepare_weather(step_minutes=...)`、`pvsyst_build_sfi(time_step="subhour")`、`pvsyst_run_simulation(time_step="subhour")` | 支持 `5/10/15/30 min` 气象 CSV -> `.MEF`（`MeasureStep`）-> `.MET`（`VarMeteoVarAcc=SubHour`）-> `TypeValW=SubHour` SFI 与 `-ts:subhour` 仿真及步长精确能量积分；原生 `pvLoad` 嵌入式快照仍为逐时（60 min）并在仿真步长内保持恒定功率 |
@@ -59,7 +59,7 @@
 | 逆变器工作温度 | MCP 可读写 | `inverter_temperature_updates` 支持 `ambient`、`offset`、`fixed` 三种模式，管理 `TempShift`/`TempFixed` 与系统标志位 `$4000`/`$8000` |
 | 功率因数（PF）与 PNom 基准 | MCP 可读写 | `power_factor_updates` 直接读写带符号正切值 `TanPhi` / 月度 `TanPhiM`，并可同步设置逆变器 `pnom_limit`（`native`/`active`/`apparent`） |
 | 并网点有功限发 | MCP 可读写 | `grid_limit_updates`（无 PF 场景下的 `PLimGrid` 有功上限） |
-| PF + 功率上限组合控制 | MCP 可读写 | `power_controls_updates` 统一管理常数/月度 PF、有功/视在限值、逆变器端/注入点位置及 `LimGrSeparLoss` 单独损失记账 |
+| PF + 功率上限组合控制 | MCP 可读写 | `power_controls_updates` 统一管理常数/月度 PF、有功/视在限值、逆变器端/注入点位置及 `LimGrSeparLoss` 单独损失记账；注意视在功率限发模式下 `PGridLim` 列头仍标为 `kW` 但实际输出为 kVA 数值，且启用 `LimGrSeparLoss=True` 时 `E_Grid` 已经是扣减限发损失后的上网电量 |
 | P50 / P90 概率参数 | MCP 可读写 | `p50_p90_updates` 编辑已有结果模板中的 14 个 `TP50_P90` 字段并输出概率报告页 |
 
 ## 阵列朝向、跟踪与 3D 住宅场景
@@ -99,9 +99,9 @@
 
 | 功能项 | 当前支持状态 | 底层字段与注意事项 |
 |---|---|---|
-| 全年逐时负荷 CSV 准备与绑定 | MCP 已封装 | `pvsyst_prepare_load_profile` 校验 8760/8784 小时负荷；`pvsyst_create_native_load_variant(load={"mode":"hourly","load_manifest_name":...})` 将逐时数据编码写入 `pvLoad` 的 `Energy/MJ` base62 缓存，见[AC 光储评估](engineering-storage.md) |
+| 全年逐时负荷 CSV 准备与绑定 | MCP 已封装 | `pvsyst_prepare_load_profile` 校验 8760/8784 小时负荷；`pvsyst_create_native_load_variant(load={"mode":"hourly","load_manifest_name":...})` 将逐时数据编码写入 `pvLoad` 的 `Energy/MJ` base62 缓存（PVsyst 仿真直接消费该内嵌缓存——仅修改外部 CSV 或 `HourlyFile` 仍会继续沿用旧负荷，改完 CSV 须重跑准备与重绑定工具），见[AC 光储评估](engineering-storage.md) |
 | 常数 / 月度 / 日曲线 / 家用电器 / 概率分布负荷 | MCP 已封装 | `pvsyst_create_native_load_variant` 在纯光伏变体上配置常数（`kW`）、月度（12 个月 `kWh`）、日曲线（24 小时 `kW`）、家用电器（`mode="household"`，全年或分季）与概率分布（`mode="probability"`）自发自用负荷 |
-| 集中式 AC 耦合光储系统构建 | MCP 已封装 | `pvsyst_create_grid_storage_system` 在纯光伏变体（兼容 3D 阴影/多朝向）上挂载工作区或内置 `.BTR` 锂电/铅酸电池，支持 `SelfConsumption`、`WeakGrid`（支持外部 CSV 与确定性 `mode="generated"` 停电生成器）、`PeakShaving`（无需手动负荷，写入 `PLimGrid`）与 `PowerShift`（`PVProdFraction` / `SpecChargPower` / `PVToGridMin` + `SpecifiedHours` / `Night` / `MinMaxHour` 的 48 槽 `TParSimulSeries`），见[AC 光储评估](engineering-storage.md) |
+| 集中式 AC 耦合光储系统构建 | MCP 已封装 | `pvsyst_create_grid_storage_system` 在纯光伏变体（兼容 3D 阴影/多朝向）上挂载工作区或内置 `.BTR` 锂电/铅酸电池，支持 `SelfConsumption`、`WeakGrid`（支持外部 CSV 与确定性 `mode="generated"` 停电生成器）、`PeakShaving`（无需手动负荷，写入 `PLimGrid`）与 `PowerShift`（`PVProdFraction` / `SpecChargPower` / `PVToGridMin` + `SpecifiedHours` / `Night` / `MinMaxHour` 的 48 槽 `TParSimulSeries`；注意 PVsyst 8.1.7 中 `PowerShift` 仅使用可用光伏发电充电，含 `SpecChargPower` 模式，不支持电网充电），见[AC 光储评估](engineering-storage.md) |
 | 既有光储系统参数修改 | MCP 已封装 | `pvsyst_create_grid_storage_variant` 修改 SOC、充放电功率、效率、`PowerShift` 48 槽充放电曲线、`PeakShaving` limits/discharge timing 及 `allow_grid_export`（系统 bit 27 防逆流位），保留 `pvShading`/`pvModuleLayout` 并自动清理 `VarList` |
 | 削峰（Peak Shaving）放电窗口 | MCP 已封装 | 由 `pvsyst_create_grid_storage_variant` 统一设置 `strategy="peak_shaving"` 与 `discharging_strategy`（`after_sunset` / `hour_window`） |
 | 完整 AC 光储能量流导出 | MCP 已封装 | `pvsyst_build_sfi(variables="grid_storage")` 自动包含 `CL_Over`（变流器限幅损失）等完整能量平衡列 |
