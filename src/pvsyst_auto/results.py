@@ -1,6 +1,7 @@
 """Streaming comparisons of aligned native SFI results, without rerunning PVsyst."""
 from __future__ import annotations
 
+import csv
 import hashlib
 import math
 from contextlib import closing
@@ -17,6 +18,37 @@ def fingerprint(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def verify_native_csv_context(
+    csv_path: Path,
+    expected: dict[str, str],
+    *,
+    mismatch_message: str | None = None,
+) -> dict[str, str]:
+    """Verify that the native result CSV lead-in rows match the expected project/variant/site/weather."""
+    context: dict[str, str] = {}
+    with Path(csv_path).open(encoding="utf-8-sig", errors="replace", newline="") as stream:
+        for row in csv.reader(stream, delimiter=";"):
+            if row and row[0].strip().lower() == "date":
+                break
+            if len(row) >= 2 and row[0].strip() in expected:
+                key = row[0].strip()
+                if key in context:
+                    raise ValueError("Duplicate native result context: " + key)
+                context[key] = row[1].strip()
+    if any(context.get(key, "").casefold() != value.casefold() for key, value in expected.items()):
+        if mismatch_message is not None:
+            raise ValueError(mismatch_message)
+        raise ValueError("Native CSV did not consume the requested project/variant/site/weather: " + str(context))
+    return context
+
+
+def verify_pdf_header(pdf_path: Path, *, message: str = "Native report is not a PDF") -> None:
+    """Ensure a generated native PDF report begins with the %PDF- magic header."""
+    with Path(pdf_path).open("rb") as stream:
+        if stream.read(5) != b"%PDF-":
+            raise ValueError(message)
 
 
 SUPPORTED_ANNUAL_STEPS = (5, 10, 15, 30, 60)

@@ -1,7 +1,6 @@
 """One bounded template-to-annual-results workflow, reusing guarded file editors."""
 from __future__ import annotations
 
-import csv
 import math
 import subprocess
 from pathlib import Path
@@ -13,9 +12,56 @@ from pvsyst_auto.engineering.sizing import plan_capacity
 from pvsyst_auto.project.paths import project_path, variant_id, workspace_file, write_json
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
 from pvsyst_auto.weather.preparation import load_weather_manifest, compare_native_weather, inspect_met_calendar
-from pvsyst_auto.results import annual_summary, fingerprint
+from pvsyst_auto.results import annual_summary, fingerprint, verify_native_csv_context, verify_pdf_header
 from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.versions import CLI_TRACKING_BUILDS
+
+
+def collect_simulation_weather_assets(
+    workspace: Path,
+    *,
+    site_name: str,
+    met_name: str,
+    year: int,
+    synthetic_weather: bool,
+    weather_manifest_name: str,
+    assets: dict,
+    result: dict,
+    issue,
+    inspect_calendar=None,
+) -> tuple[dict | None, list]:
+    """Resolve and fingerprint workspace SIT/MET inputs and optional weather manifest."""
+    calendar_fn = inspect_met_calendar if inspect_calendar is None else inspect_calendar
+    weather_targets = (
+        (("site_name", "Sites", site_name, ".SIT"),)
+        if synthetic_weather
+        else (("site_name", "Sites", site_name, ".SIT"), ("met_name", "Meteo", met_name, ".MET"))
+    )
+    for field, folder, name, extension in weather_targets:
+        try:
+            path = workspace_file(workspace, folder, name, extension)
+            if not path.is_file():
+                raise FileNotFoundError(f"Required {folder} file is missing: {name}")
+            assets[field] = {"path": str(path), "sha256": fingerprint(path)}
+            if field == "met_name":
+                calendar = calendar_fn(path, year)
+                result["meteo_calendar"] = calendar
+                for message in calendar["issues"]:
+                    issue(field, message)
+                result["warnings"].extend(calendar["warnings"])
+        except (ValueError, OSError) as exc:
+            issue(field, exc)
+    weather_report = None
+    weather_warnings: list = []
+    if weather_manifest_name:
+        try:
+            weather_assets, weather_report, weather_warnings = load_weather_manifest(
+                workspace, weather_manifest_name, year, site_name, met_name)
+            assets.update(weather_assets)
+            result["warnings"].extend(weather_warnings)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            issue("weather_manifest_name", exc)
+    return weather_report, weather_warnings
 
 
 def simulate_template(cli, store, *, template_project="", variant="", new_project="",
@@ -219,35 +265,17 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             assets[kind] = {"path": str(path), "sha256": info["sha256"], "library": library}
         except (ValueError, OSError) as exc:
             issue("pan_name" if kind == "PAN" else "ond_name", exc)
-    weather_targets = (
-        (("site_name", "Sites", site_name, ".SIT"),)
-        if synthetic_weather
-        else (("site_name", "Sites", site_name, ".SIT"), ("met_name", "Meteo", met_name, ".MET"))
+    weather_report, weather_warnings = collect_simulation_weather_assets(
+        cli.workspace,
+        site_name=site_name,
+        met_name=met_name,
+        year=year,
+        synthetic_weather=synthetic_weather,
+        weather_manifest_name=weather_manifest_name,
+        assets=assets,
+        result=result,
+        issue=issue,
     )
-    for field, folder, name, extension in weather_targets:
-        try:
-            path = workspace_file(cli.workspace, folder, name, extension)
-            if not path.is_file():
-                raise FileNotFoundError(f"Required {folder} file is missing: {name}")
-            assets[field] = {"path": str(path), "sha256": fingerprint(path)}
-            if field == "met_name":
-                calendar = inspect_met_calendar(path, year)
-                result["meteo_calendar"] = calendar
-                for message in calendar["issues"]:
-                    issue(field, message)
-                result["warnings"].extend(calendar["warnings"])
-        except (ValueError, OSError) as exc:
-            issue(field, exc)
-    weather_report = None
-    weather_warnings = []
-    if weather_manifest_name:
-        try:
-            weather_assets, weather_report, weather_warnings = load_weather_manifest(
-                cli.workspace, weather_manifest_name, year, site_name, met_name)
-            assets.update(weather_assets)
-            result["warnings"].extend(weather_warnings)
-        except (ValueError, OSError, KeyError, TypeError) as exc:
-            issue("weather_manifest_name", exc)
     try:
         prefix = f"{Path(new_project).stem}_{'prepare' if prepare_only else 'annual'}_{year}"
         paths = {"manifest": workspace_file(cli.workspace, "Results", prefix + ".json", ".json")}
@@ -429,19 +457,7 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                                 "Simulation variant": f"{Path(new_project).stem}.{variant}"}
             if not synthetic_weather:
                 expected_context["Weather data"] = met_name
-            context = {}
-            with paths["csv"].open(encoding="utf-8-sig", errors="replace", newline="") as stream:
-                for row in csv.reader(stream, delimiter=";"):
-                    if row and row[0].strip().lower() == "date":
-                        break
-                    if len(row) >= 2 and row[0].strip() in expected_context:
-                        key = row[0].strip()
-                        if key in context:
-                            raise ValueError("Duplicate native result context: " + key)
-                        context[key] = row[1].strip()
-            if any(context.get(key, "").casefold() != value.casefold() for key, value in expected_context.items()):
-                raise ValueError("Native CSV did not consume the requested project/variant/site/weather: " + str(context))
-            result["native_context"] = context
+            result["native_context"] = verify_native_csv_context(paths["csv"], expected_context)
             result["metrics"] = annual_summary(paths["csv"], year, nominal)
             if tracking_mode:
                 rows = 0
@@ -458,9 +474,7 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             if weather_report is not None:
                 result["weather_comparison"] = compare_native_weather(
                     paths["csv"], Path(assets["weather_source"]["path"]), weather_report)
-            with paths["pdf"].open("rb") as stream:
-                if stream.read(5) != b"%PDF-":
-                    raise ValueError("Native report is not a PDF")
+            verify_pdf_header(paths["pdf"])
             if fingerprint(paths["csv"]) != output_snapshot:
                 raise ValueError("Native output changed across result validation stages")
             flags = result["metrics"]["diagnostic_flags"]

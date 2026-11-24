@@ -1,7 +1,6 @@
 """Zero-template utility ground sheds and single-axis tracker design workflow (mono or bifacial)."""
 from __future__ import annotations
 
-import csv
 import math
 import subprocess
 from pathlib import Path
@@ -21,9 +20,17 @@ from pvsyst_auto.project.bifacial import normalize_bifacial_spec
 from pvsyst_auto.project.paths import project_path, workspace_file, write_json
 from pvsyst_auto.project.synthesize import synthesize_project_and_variant, synthesize_utility_project
 from pvsyst_auto.project.template import _mppt_inputs
-from pvsyst_auto.results import IRRAD_UNIT_KIND, POWER_UNIT_KIND, annual_summary, fingerprint
-from pvsyst_auto.validation import is_finite_number as _is_number
-from pvsyst_auto.weather.preparation import compare_native_weather, inspect_met_calendar, load_weather_manifest
+from pvsyst_auto.results import (
+    IRRAD_UNIT_KIND,
+    POWER_UNIT_KIND,
+    annual_summary,
+    fingerprint,
+    verify_native_csv_context,
+    verify_pdf_header,
+)
+from pvsyst_auto.validation import is_finite_number as _is_number, is_strict_int as _is_int
+from pvsyst_auto.weather.preparation import compare_native_weather, inspect_met_calendar
+from pvsyst_auto.workflows.simulation import collect_simulation_weather_assets
 
 UTILITY_SCOPES = ("ground_sheds", "ground_tracker")
 GROUND_LAYOUT_KEYS = frozenset((
@@ -53,10 +60,6 @@ BIFACIAL_EXTRA_VARS = (
     "viGlobGnd", "viDiffGnd", "viGlobBak",
     "viBeamBak", "viDifSBak", "viBmSFBak", "viMismBak", "viPRBifi",
 )
-
-
-def _is_int(value) -> bool:
-    return type(value) is int
 
 
 def resolve_utility_field_type(scope: str, ground_layout: dict | None) -> tuple[str, bool]:
@@ -620,36 +623,18 @@ def run_utility_design(
             assets[kind] = {"path": str(info["path"]), "sha256": fingerprint(info["path"]),
                             "library": info.get("library", "workspace")}
 
-    weather_targets = (
-        (("site_name", "Sites", sit_name, ".SIT"),)
-        if synthetic_weather
-        else (("site_name", "Sites", sit_name, ".SIT"), ("met_name", "Meteo", met_name, ".MET"))
+    weather_report, weather_warnings = collect_simulation_weather_assets(
+        cli.workspace,
+        site_name=sit_name,
+        met_name=met_name,
+        year=year,
+        synthetic_weather=synthetic_weather,
+        weather_manifest_name=weather_manifest_name,
+        assets=assets,
+        result=result,
+        issue=issue,
+        inspect_calendar=inspect_met_calendar,
     )
-    for field, folder, name, ext in weather_targets:
-        try:
-            path = workspace_file(cli.workspace, folder, name, ext)
-            if not path.is_file():
-                raise FileNotFoundError(f"Required {folder} file is missing: {name}")
-            assets[field] = {"path": str(path), "sha256": fingerprint(path)}
-            if field == "met_name":
-                cal = inspect_met_calendar(path, year)
-                result["meteo_calendar"] = cal
-                for msg in cal["issues"]:
-                    issue(field, msg)
-                result["warnings"].extend(cal["warnings"])
-        except (ValueError, OSError) as exc:
-            issue(field, exc)
-
-    weather_report = None
-    weather_warnings: list = []
-    if weather_manifest_name:
-        try:
-            weather_assets, weather_report, weather_warnings = load_weather_manifest(
-                cli.workspace, weather_manifest_name, year, sit_name, met_name)
-            assets.update(weather_assets)
-            result["warnings"].extend(weather_warnings)
-        except (ValueError, OSError, KeyError, TypeError) as exc:
-            issue("weather_manifest_name", exc)
 
     paths: dict[str, Path] = {}
     try:
@@ -795,19 +780,7 @@ def run_utility_design(
             }
             if not synthetic_weather:
                 expected_context["Weather data"] = met_name
-            context: dict[str, str] = {}
-            with paths["csv"].open(encoding="utf-8-sig", errors="replace", newline="") as stream:
-                for row in csv.reader(stream, delimiter=";"):
-                    if row and row[0].strip().lower() == "date":
-                        break
-                    if len(row) >= 2 and row[0].strip() in expected_context:
-                        key = row[0].strip()
-                        if key in context:
-                            raise ValueError("Duplicate native result context: " + key)
-                        context[key] = row[1].strip()
-            if any(context.get(key, "").casefold() != value.casefold() for key, value in expected_context.items()):
-                raise ValueError("Native CSV did not consume the requested project/variant/site/weather: " + str(context))
-            result["native_context"] = context
+            result["native_context"] = verify_native_csv_context(paths["csv"], expected_context)
             result["metrics"] = annual_summary(paths["csv"], year, nominal_dc_kw)
             units = result_units(paths["csv"], strict=True)
             if not units.get("GlobShd"):
@@ -840,9 +813,7 @@ def run_utility_design(
             if weather_report is not None:
                 result["weather_comparison"] = compare_native_weather(
                     paths["csv"], Path(assets["weather_source"]["path"]), weather_report)
-            with paths["pdf"].open("rb") as stream:
-                if stream.read(5) != b"%PDF-":
-                    raise ValueError("Native report is not a PDF")
+            verify_pdf_header(paths["pdf"])
             if fingerprint(paths["csv"]) != output_snapshot:
                 raise ValueError("Native output changed across result validation stages")
             flags = result["metrics"]["diagnostic_flags"]

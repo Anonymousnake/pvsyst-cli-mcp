@@ -1,7 +1,6 @@
 """A bounded house delivery task, composing existing serializers and native entry points."""
 from __future__ import annotations
 
-import csv
 import json
 import math
 from pathlib import Path
@@ -12,7 +11,7 @@ from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi, iter_result_csv, resul
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.engineering.diagnostics import compact_diagnostics_summary, diagnose_simulation_csv
 from pvsyst_auto.project.paths import safe_filename, variant_id, workspace_file, write_json as _save
-from pvsyst_auto.results import annual_summary, fingerprint
+from pvsyst_auto.results import annual_summary, fingerprint, verify_native_csv_context, verify_pdf_header
 from pvsyst_auto.scene.author import create_house_pv_scene, house_profile, obstacle_profiles, table_profiles, check_tables
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.native._prep import _source_snapshot, _source_snapshot_bytes, _verify_new
@@ -32,18 +31,11 @@ def _public(record):
 def _annual(csv_path, pdf_path, request, plan, variant, *, require_pdf=True):
     expected = {"Project": request["new_project"], "Simulation variant": Path(request["new_project"]).stem + "." + variant,
                 "Geographical Site": plan["site"], "Weather data": plan["met"]}
-    context = {}
-    with csv_path.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
-        for row in csv.reader(stream, delimiter=";"):
-            if row and row[0].strip().lower() == "date":
-                break
-            if len(row) > 1 and row[0].strip() in expected:
-                key = row[0].strip()
-                if key in context:
-                    raise ValueError("Duplicate native result context: " + key)
-                context[key] = row[1].strip()
-    if any(context.get(key, "").casefold() != value.casefold() for key, value in expected.items()):
-        raise ValueError("Native output does not identify the requested house project/variant/site/weather")
+    context = verify_native_csv_context(
+        csv_path,
+        expected,
+        mismatch_message="Native output does not identify the requested house project/variant/site/weather",
+    )
     metrics = annual_summary(csv_path, request["year"], plan["nominal_dc_kw"])
     units = result_units(csv_path, strict=True)
     if not units.get("GlobShd"):
@@ -54,9 +46,7 @@ def _annual(csv_path, pdf_path, request, plan, variant, *, require_pdf=True):
             raise ValueError("Native house output contains missing/nonfinite numeric data")
         rows += 1
     if require_pdf:
-        with pdf_path.open("rb") as stream:
-            if stream.read(5) != b"%PDF-":
-                raise ValueError("Native house report is not a PDF")
+        verify_pdf_header(pdf_path, message="Native house report is not a PDF")
     electrical = {}
     if request.get("shading_mode") == "module_layout":
         if units.get("ShdElec") != "kW":

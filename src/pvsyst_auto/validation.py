@@ -52,6 +52,11 @@ def bounded_number(value: Any, name: str, lo: float = -math.inf, hi: float = mat
     return number
 
 
+def is_strict_int(value: Any) -> bool:
+    """Return True when value is a strict int (excluding bool)."""
+    return type(value) is int
+
+
 def is_finite_number(value: Any) -> bool:
     """Return True for non-boolean int/float values that are finite."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):

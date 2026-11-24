@@ -268,6 +268,35 @@ def plan_ground_polygon_layout(
     }
 
 
+def pv_shading_header(comment: str, total_objs: int) -> list[str]:
+    """Return the standard 3D pvShading header and ListeObjets opening lines."""
+    return [
+        "  PVObject_Ombrage=pvShading",
+        f"    Comment={comment}",
+        "    Flags=$000A0300",
+        "    Precision=1",
+        "    FracOmbreMod=1.000",
+        "    FracOmbreThin=0.400",
+        "    GCROffset=1.0",
+        "    DisplayedRef=refGeographical",
+        "",
+        f"    ListeObjets, list of={total_objs} TShdObject",
+        "",
+    ]
+
+
+def emit_shading_obstacles(parsed_obstacles: list[dict[str, Any]], *, start_index: int) -> list[str]:
+    """Serialize parsed 3D obstacle profiles (trees and meshes) starting at PVObject_<start_index>."""
+    out: list[str] = []
+    for obj_idx, obs in enumerate(parsed_obstacles, start=start_index):
+        if obs["kind"] == "tree":
+            out.extend(_shd_tree(obj_idx, obj_idx, obs, 0.0, 0.0))
+        else:
+            world_verts = [tuple(v) for v in obs["vertices"]]
+            out.extend(_shd_object(obj_idx, obj_idx, world_verts, _faces(obs)))
+    return out
+
+
 def build_ground_3d_shading(
     tables: list[dict[str, Any]],
     *,
@@ -288,19 +317,7 @@ def build_ground_3d_shading(
     parsed_obstacles = obstacle_profiles(obstacles) if obstacles else []
     total_objs = len(tables) + len(parsed_obstacles) + (1 if terrain_mesh is not None else 0)
 
-    lines = [
-        "  PVObject_Ombrage=pvShading",
-        "    Comment=Finite 3D ground polygon shading scene",
-        "    Flags=$000A0300",
-        "    Precision=1",
-        "    FracOmbreMod=1.000",
-        "    FracOmbreThin=0.400",
-        "    GCROffset=1.0",
-        "    DisplayedRef=refGeographical",
-        "",
-        f"    ListeObjets, list of={total_objs} TShdObject",
-        "",
-    ]
+    lines = pv_shading_header("Finite 3D ground polygon shading scene", total_objs)
 
     obj_idx = 0
     for tbl in tables:
@@ -341,13 +358,7 @@ def build_ground_3d_shading(
         obj_idx += 1
         lines.extend(emit_pvshd_ground(terrain_mesh, object_index=obj_idx, version=SEED_RECORD_VERSION))
 
-    for obs in parsed_obstacles:
-        obj_idx += 1
-        if obs["kind"] == "tree":
-            lines.extend(_shd_tree(obj_idx, obj_idx, obs, 0.0, 0.0))
-        else:
-            world_verts = [tuple(v) for v in obs["vertices"]]
-            lines.extend(_shd_object(obj_idx, obj_idx, world_verts, _faces(obs)))
+    lines.extend(emit_shading_obstacles(parsed_obstacles, start_index=obj_idx + 1))
 
     lines.extend([
         "    End of ListeObjets",

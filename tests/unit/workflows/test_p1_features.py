@@ -4,6 +4,7 @@ and composable region-neutral project finance & tax engine."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from functools import lru_cache
 import json
 from pathlib import Path
 import tempfile
@@ -20,22 +21,12 @@ from pvsyst_auto.weather import acquisition
 from pvsyst_auto.workflows.design import prepare_design_project, simulate_design
 from pvsyst_auto.workflows.report import generate_report
 from pvsyst_auto.workflows.utility import validate_utility_spec
-from tests._fixtures import write_sfi_csv as _write_sfi_csv
+from tests._fixtures import FakeCliBase, init_full_workspace, write_sfi_csv as _write_sfi_csv
 from tests.unit.core.test_bifacial_utility import UTILITY_OND, UTILITY_PAN
 
 
 def _write_workspace_scaffold(root: Path) -> Path:
-    ws = root / "PVsyst8.1_Data"
-    for folder in (
-        "ComposPV/PVmodules", "ComposPV/Inverters", "ComposPV/Batteries",
-        "ComposPV/Clients", "ComposPV/Gensets", "ComposPV/Pumps",
-        "ComposPV/Regulators", "ComposPV/RegulPmp", "ComposPV/Sellers",
-        "DataMeas", "Meteo", "Models", "Other", "Projects", "Results",
-        "Shadings", "Sites", "Templates", "UserBatch", "UserData",
-        "UserHourly", "UserHourlyParams", "UserImages", "UserOptimization",
-        "UserRecycleBin",
-    ):
-        (ws / folder).mkdir(parents=True, exist_ok=True)
+    ws = init_full_workspace(root)
     (ws / "ComposPV" / "PVmodules" / "TestSolar_TS600.PAN").write_bytes(
         b"\xef\xbb\xbf" + UTILITY_PAN.replace("\n", "\r\n").encode("utf-8")
     )
@@ -48,48 +39,41 @@ def _write_workspace_scaffold(root: Path) -> Path:
     return ws
 
 
-class _FakeCLI:
-    def __init__(self, workspace: Path):
-        self.workspace = workspace
-        self.run_calls: list[dict] = []
+@lru_cache(maxsize=2)
+def _synthetic_2024_rows() -> tuple[list, ...]:
+    start = datetime(2024, 1, 1, 0, 0)
+    rows: list[list] = []
+    for h in range(8784):
+        dt = start + timedelta(hours=h)
+        is_day = 8 <= dt.hour < 16
+        rows.append([
+            dt.strftime("%d/%m/%y %H:%M"),
+            500.0 if is_day else 0.0,
+            480.0 if is_day else 0.0,
+            160.0 if is_day else 0.0,
+            147.2064 if is_day else 0.0,
+            0.82 if is_day else 0.0,
+            0.0,
+        ])
+    return tuple(rows)
 
-    def _require(self, command: str, option: str, allow_window_creation=None) -> None:
-        return None
+
+class _FakeCLI(FakeCliBase):
+    def __init__(self, workspace: Path):
+        super().__init__(workspace, version="8.1.7", license_status="ACTIVATED")
+        self.run_calls: list[dict] = []
 
     def command_help(self, command: str, allow_window_creation=None) -> str:
         return "Available language: [en, zh]"
-
-    def version(self, allow_window_creation=None) -> str:
-        return "8.1.7"
-
-    def license_info(self, allow_window_creation=None) -> dict:
-        return {"status": "ACTIVATED", "remaining_executions": None}
-
-    def _redact(self, text: str) -> str:
-        return text
 
     def run_simulation(self, project: str, variant: str, **kwargs) -> dict:
         self.run_calls.append({"project": project, "variant": variant, **kwargs})
         out_csv = Path(kwargs["out_csv"])
         pdf = Path(kwargs["report_pdf"])
-        rows = []
-        start = datetime(2024, 1, 1, 0, 0)
-        for h in range(8784):
-            dt = start + timedelta(hours=h)
-            is_day = 8 <= dt.hour < 16
-            rows.append([
-                dt.strftime("%d/%m/%y %H:%M"),
-                500.0 if is_day else 0.0,
-                480.0 if is_day else 0.0,
-                160.0 if is_day else 0.0,
-                147.2064 if is_day else 0.0,
-                0.82 if is_day else 0.0,
-                0.0,
-            ])
         _write_sfi_csv(
             out_csv,
             [("GlobInc", "W/m²"), ("GlobShd", "W/m²"), ("EArray", "kW"), ("E_Grid", "kW"), ("PR", "ratio"), ("IL_Pmax", "kW")],
-            rows,
+            _synthetic_2024_rows(),
             project=project,
             site=Path(kwargs["site"]).name if kwargs.get("site") else "TestSite.SIT",
             met="Synthetic_TestSite.MET",
