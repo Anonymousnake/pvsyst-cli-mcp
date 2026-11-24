@@ -626,6 +626,78 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
         saved2 = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual([r["status"] for r in saved2["runs"]], ["failed", "failed"])
 
+    def test_house_task_rechecks_protected_inputs_after_native_save(self):
+        import json
+        from datetime import datetime, timedelta
+        from unittest.mock import patch
+
+        from pvsyst_auto.native.cli import PVsystError
+        from pvsyst_auto.workflows import house as house_flow
+        from tests._fixtures import write_sfi_csv
+
+        house, layout = _south_roof_house_and_layout()
+        request = HouseTaskRequest(
+            site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            pan_name="Lab440.PAN", ond_name="Lab50.OND", new_project="GuardHouse.PRJ",
+            variant_name="Guard", year=1990, house=house, layout=layout,
+            report_pdf=False, shading_mode="linear",
+        ).model_dump(exclude_none=True)
+        cli = FakeCLI(self.root / "PVsystCLI.exe", self.root)
+        save = house_flow._save
+        snapshot = None
+
+        def edit_sfi_after_save(path, record, **kwargs):
+            nonlocal snapshot
+            save(path, record, **kwargs)
+            if record["phase"] == "native_saved" and snapshot is None:
+                sfi = Path(record["artifacts"]["sfi"])
+                original = sfi.read_bytes()
+                snapshot = (sfi, original, dict(record["guards"]))
+                sfi.write_bytes(original.replace(b"House native hourly results", b"Edited SFI"))
+
+        with patch.object(house_flow, "_save", side_effect=edit_sfi_after_save), \
+                patch.object(cli, "run_simulation", create=True, side_effect=PVsystError("Unexpected simulation attempt")) as simulate:
+            result = run_house_task(self.store, self.components, cli, request=request, dry_run=False, confirm=True)
+        simulate.assert_not_called()
+        self.assertEqual((result["status"], result["phase"], result["runs"]), ("needs_attention", "native_saved", []), result)
+        self.assertIn("A protected source or prepared artifact changed", result["issues"][0])
+        sfi, original, guards = snapshot
+        manifest = Path(result["artifacts"]["manifest"])
+        saved = manifest.read_bytes()
+        saved_record = json.loads(saved)
+        self.assertEqual((saved_record["phase"], saved_record["guards"], saved_record["runs"]), ("native_saved", guards, []))
+
+        sfi.write_bytes(original.replace(b"House native hourly results", b"Edited while stopped"))
+        with patch.object(cli, "run_simulation", create=True) as simulate:
+            resumed = run_house_task(self.store, self.components, cli, request=request,
+                                     dry_run=False, confirm=True, resume=True)
+        simulate.assert_not_called()
+        self.assertEqual((resumed["status"], resumed["phase"], resumed["runs"]), ("blocked", "native_saved", []), resumed)
+        self.assertIn("A protected source or prepared artifact changed", resumed["issues"][-1])
+        self.assertEqual(manifest.read_bytes(), saved)
+
+        def simulate_annual(project, variant, *, out_csv, site, met, **kwargs):
+            start = datetime(1990, 1, 1)
+            columns = [("GlobInc", "W/m2"), ("GlobShd", "W/m2"), ("E_Grid", "kW"),
+                       ("EArray", "kW"), ("IL_Pmax", "kW"), ("PR", "ratio")]
+            rows = []
+            for offset in range(8760):
+                stamp = start + timedelta(hours=offset)
+                values = (500, 450, 2.112, 2.2, 0, 0.8) if 8 <= stamp.hour <= 16 else (0, 0, 0, 0, 0, 0)
+                rows.append([stamp.strftime("%d/%m/%y %H:%M"), *values])
+            write_sfi_csv(out_csv, columns, rows, project=project, site=site.name, met=met.name,
+                          variant=f"{Path(project).stem}.{variant}")
+            return {"warnings": []}
+
+        sfi.write_bytes(original)
+        with patch.object(cli, "run_simulation", create=True, side_effect=simulate_annual) as simulate:
+            completed = run_house_task(self.store, self.components, cli, request=request,
+                                       dry_run=False, confirm=True, resume=True)
+        simulate.assert_called_once()
+        self.assertIn(completed["status"], ("completed", "needs_review"), completed)
+        self.assertEqual(completed["phase"], "completed")
+        self.assertTrue(completed["native_consumption_verified"])
+
 
 if __name__ == "__main__":
     unittest.main()
