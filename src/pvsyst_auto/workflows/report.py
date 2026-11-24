@@ -14,11 +14,11 @@ import math
 from pathlib import Path
 from typing import Any
 
-from pvsyst_auto.engineering.diagnostics import _IRRAD_SCALE, diagnose_simulation_csv
+from pvsyst_auto.engineering.diagnostics import diagnose_simulation_csv
 from pvsyst_auto.engineering.economics import evaluate_economics
 from pvsyst_auto.native.cli import parse_batch_results
 from pvsyst_auto.project.paths import safe_filename, workspace_file
-from pvsyst_auto.results import RegularResultCsv, energy_unit_scale
+from pvsyst_auto.results import IRRAD_UNIT_KIND, RegularResultCsv, energy_unit_scale
 from pvsyst_auto.validation import finite_number as _finite
 
 _PR_SCALE = {"ratio": 1.0, "%": 0.01}
@@ -292,9 +292,11 @@ def _summarize_multi_csv_for_report(csv_paths: list[Path], weights: list[float])
                 if (isinstance(gi, (int, float)) and math.isfinite(gi) and gi > 0
                         and isinstance(pr, (int, float)) and math.isfinite(pr)):
                     unit = reader_k.units.get("GlobInc", "")
-                    if unit not in _IRRAD_SCALE:
+                    info = IRRAD_UNIT_KIND.get(unit)
+                    if info is None:
                         raise ValueError(f"GlobInc requires an irradiance or irradiation unit, got {unit!r}")
-                    weight = w * gi * _IRRAD_SCALE[unit] * (1.0 if "Wh" in unit else dt_k)
+                    scale, is_power = info
+                    weight = w * gi * scale * (dt_k if is_power else 1.0)
                     monthly_pr_num[stamp.month] += weight * float(pr) * meta["pr_scale"]
                     monthly_pr_den[stamp.month] += weight
 

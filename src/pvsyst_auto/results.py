@@ -23,6 +23,7 @@ SUPPORTED_ANNUAL_STEPS = (5, 10, 15, 30, 60)
 
 POWER_TO_KW = {"W": 0.001, "kW": 1.0}
 ENERGY_TO_KWH = {"Wh": 0.001, "kWh": 1.0}
+BATCH_ENERGY_TO_KWH = {**ENERGY_TO_KWH, "MWh": 1000.0, "GWh": 1_000_000.0}
 POWER_UNIT_KIND = {
     "W": (0.001, True), "kW": (1.0, True),
     "Wh": (0.001, False), "kWh": (1.0, False),

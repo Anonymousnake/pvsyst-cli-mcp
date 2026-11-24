@@ -9,13 +9,14 @@ import math
 from datetime import datetime, timedelta
 
 from pvsyst_auto.project.paths import workspace_file
+from pvsyst_auto.results import POWER_TO_KW
 from pvsyst_auto.weather.csv import number
 
 MAX_BYTES = 8 * 1024 * 1024
 TIME_BASIS = "local_standard_interval_start"
 DATE_FORMATS = {"iso": "%Y-%m-%d %H:%M", "pvsyst_dot": "%d.%m.%Y %H:%M",
                 "pvsyst_slash": "%d/%m/%Y %H:%M"}
-UNITS = {"W": 0.001, "[W]": 0.001, "kW": 1.0, "[kW]": 1.0}
+UNITS = {key: scale for unit, scale in POWER_TO_KW.items() for key in (unit, f"[{unit}]")}
 
 
 def _read(path):

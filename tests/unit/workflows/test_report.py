@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from functools import lru_cache
 import os
 from pathlib import Path
 import tempfile
@@ -11,7 +12,8 @@ from unittest.mock import patch
 from pvsyst_auto.workflows.report import generate_report
 
 
-def _write_report_csv(path: Path, *, scale: float = 1.0, pr: float = 0.84, with_load_bess: bool = False) -> Path:
+@lru_cache(maxsize=8)
+def _report_csv_text(scale: float, pr: float, with_load_bess: bool) -> str:
     cols = [
         ("GlobInc", "W/m2"), ("EArray", "kW"), ("E_Grid", "kW"),
         ("PR", "ratio"), ("IL_Pmax", "kW"), ("ShdElec", "kW"), ("EGrdLim", "kW"),
@@ -48,7 +50,11 @@ def _write_report_csv(path: Path, *, scale: float = 1.0, pr: float = 0.84, with_
             imp = max(0.0, load - eg - dis + ch)
             row.extend([f"{load:.2f}", f"{imp:.2f}", f"{ch:.2f}", f"{dis:.2f}"])
         lines.append(";".join(row))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n"
+
+
+def _write_report_csv(path: Path, *, scale: float = 1.0, pr: float = 0.84, with_load_bess: bool = False) -> Path:
+    path.write_text(_report_csv_text(scale, pr, with_load_bess), encoding="utf-8")
     return path
 
 

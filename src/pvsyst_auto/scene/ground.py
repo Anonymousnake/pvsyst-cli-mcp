@@ -17,6 +17,7 @@ _EPS = 1e-9
 
 
 from pvsyst_auto.validation import finite_number as _finite
+from pvsyst_auto.versions import SEED_RECORD_VERSION, SYNTH_VERSION
 
 
 def validate_site_polygon(vertices: Any) -> list[tuple[float, float]]:
@@ -279,7 +280,7 @@ def build_ground_3d_shading(
     obstacles: list[dict[str, Any]] | None = None,
     terrain_mesh: Any = None,
     orientation_id: int = 1,
-    version: str = "8.1.7",
+    version: str = SYNTH_VERSION,
 ) -> list[str]:
     """Emit a complete PVObject_Ombrage=pvShading block for finite ground tables + optional terrain + 3D obstacles."""
     if not tables:
@@ -338,7 +339,7 @@ def build_ground_3d_shading(
     if terrain_mesh is not None:
         from pvsyst_auto.scene.terrain import emit_pvshd_ground
         obj_idx += 1
-        lines.extend(emit_pvshd_ground(terrain_mesh, object_index=obj_idx, version="8.1.0"))
+        lines.extend(emit_pvshd_ground(terrain_mesh, object_index=obj_idx, version=SEED_RECORD_VERSION))
 
     for obs in parsed_obstacles:
         obj_idx += 1

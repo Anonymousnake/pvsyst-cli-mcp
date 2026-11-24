@@ -9,6 +9,7 @@ from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import circuit_nodes, transformer_state
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
+from pvsyst_auto.validation import finite_number
 
 # TMainArray.Flags (+0x84) bit definitions (PVsyst 8.1.7 verified)
 MV_DS_FLAG = 0x00040000         # bit 18: IsMVTrfFromDataSheets
@@ -62,13 +63,7 @@ _MAIN_TRF_KEYS = {
 
 
 def _finite_pos(val: Any, name: str, *, allow_zero: bool = False) -> float:
-    if isinstance(val, bool) or not isinstance(val, (int, float)):
-        raise ValueError(f"{name} must be a finite number")
-    out = float(val)
-    if not math.isfinite(out) or (out < 0.0 if allow_zero else out <= 0.0):
-        op = ">= 0" if allow_zero else "> 0"
-        raise ValueError(f"{name} must be {op}")
-    return out
+    return finite_number(val, name, minimum=0, strict_min=not allow_zero)
 
 
 def _normalize_cable(raw: dict[str, Any] | None, label: str, *, default_section: int, default_metal: str) -> dict[str, Any] | None:
