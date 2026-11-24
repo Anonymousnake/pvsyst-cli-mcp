@@ -1056,6 +1056,98 @@ class WorkspaceTests(unittest.TestCase):
         self.assertFalse(target.exists())
         self.assertEqual(source_path.read_bytes(), before_bytes)
 
+    def test_storage_grid_limit_preservation_precision_and_kva_guards(self):
+        target = self.root / "Projects/Fixture.VC1"
+
+        def setup_limit(flags, limit, *, existing=True):
+            target.unlink(missing_ok=True)
+            system = STORAGE_SYSTEM.replace("$10010040", flags) if existing else PV_SYSTEM.replace("$00", flags)
+            system = system.replace("    SystemType=Grid\n", "    SystemType=Grid\n" + limit)
+            peak = GRID_STORAGE.format(strategy="PeakShaving", unavail="").replace("PVAvailable", "PVToGridMin")
+            self.source(ROOT.format(root_flags="$00") + ARRAY + system + (peak if existing else "") + CLOSE)
+            return system
+
+        def edit_limit(**updates):
+            return create_grid_storage_variant(
+                self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                updates=updates, dry_run=False,
+            )
+
+        def build_limit(**updates):
+            return create_grid_storage_system(
+                self.store, project="Fixture.PRJ", source_variant="VC0", new_variant="VC1",
+                battery={**BATTERY, "library": "builtin"},
+                storage={**STORAGE, "strategy": "peak_shaving", **updates}, dry_run=False,
+            )
+
+        # 1. Unrelated storage edits preserve exact PLimGrid text and unit (kW vs kVA)
+        for flags, key, value in (
+            ("$11100040", "grid_limit_kw", "6000.000"),
+            ("$15100040", "grid_limit_kw", "6000.000"),
+            ("$17158040", "grid_limit_kva", "330.000"),
+        ):
+            for updates in ({"initial_soc": 0.55}, {"discharging_strategy": "after_sunset"}):
+                with self.subTest(case="unrelated", flags=flags, updates=updates):
+                    system = setup_limit(flags, f"    PLimGrid={value}\n    LimGrSeparLoss=True\n")
+                    result = edit_limit(**updates)
+                    self.assertEqual(result["status"], "created", result)
+                    self.assertIn(system.replace("\n", "\r\n").encode(), target.read_bytes())
+                    for state in (result["before"], result["after"]):
+                        self.assertEqual({k: v for k, v in state.items() if k.startswith("grid_limit_")},
+                                         {key: float(value)})
+
+        # 2. Explicit kW edits preserve active limit or start at injection
+        for flags, expected_flags, separate_loss in (
+            ("$11100040", "$11100040", "True"),
+            ("$15100040", "$15100040", "True"),
+            ("$12100040", "$15100040", "False"),
+        ):
+            with self.subTest(case="explicit_kw", flags=flags):
+                setup_limit(flags, "    PLimGrid=330.000\n    LimGrSeparLoss=True\n")
+                result = edit_limit(grid_limit_kw=331)
+                self.assertEqual(result["status"], "created", result)
+                self.assertEqual(result["after"]["system_flags"], expected_flags)
+                self.assertEqual(result["after"]["grid_limit_kw"], 331)
+                self.assertIn(f"    PLimGrid=331.0\n    LimGrSeparLoss={separate_loss}\n",
+                              target.read_text(encoding="utf-8"))
+
+        # 3. Native 0.1 kW increment precision guard
+        for existing, flags in ((True, "$11100040"), (False, "$01100000")):
+            with self.subTest(case="precision", existing=existing):
+                setup_limit(flags, "    PLimGrid=6000.0\n    LimGrSeparLoss=False\n", existing=existing)
+                save = edit_limit if existing else build_limit
+                blocked = save(grid_limit_kw=330.05)
+                self.assertEqual(blocked["status"], "blocked", blocked)
+                self.assertIn("Use 0.1 kW increments", blocked["issues"][0])
+                self.assertFalse(target.exists())
+
+                created = save(grid_limit_kw=330.1)
+                self.assertEqual(created["status"], "created", created)
+                self.assertIn("    PLimGrid=330.1\n", target.read_text(encoding="utf-8"))
+
+        # 4. Active kVA rejects explicit kW on both storage paths
+        for flags, existing in (("$17158040", True), ("$07158000", False)):
+            with self.subTest(case="kva_rejects_kw", existing=existing):
+                setup_limit(flags, "    PLimGrid=330.0\n    LimGrSeparLoss=True\n", existing=existing)
+                result = (edit_limit if existing else build_limit)(grid_limit_kw=331)
+                self.assertEqual(result["status"], "blocked", result)
+                self.assertRegex(result["issues"][0], r"apparent.*kVA.*grid_limit_kw")
+                self.assertFalse(target.exists())
+
+        # 5. New PeakShaving inherits active kW limit, but blocks inheriting kVA limit as kW
+        setup_limit("$05100000", "    PLimGrid=6000.000\n    LimGrSeparLoss=True\n", existing=False)
+        res_kw = build_limit()
+        self.assertEqual(res_kw["status"], "created", res_kw)
+        self.assertEqual(res_kw["configuration"]["system_flags"], "$15100040")
+        self.assertEqual(res_kw["configuration"]["grid_limit_kw"], 6000)
+        self.assertIn("    PLimGrid=6000.000\n    LimGrSeparLoss=True\n", target.read_text(encoding="utf-8"))
+
+        setup_limit("$07158000", "    PLimGrid=330.0\n    LimGrSeparLoss=True\n", existing=False)
+        res_kva = build_limit()
+        self.assertEqual(res_kva["status"], "blocked", res_kva)
+        self.assertRegex(res_kva["issues"][0], r"apparent.*kVA.*grid_limit_kw")
+        self.assertFalse(target.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

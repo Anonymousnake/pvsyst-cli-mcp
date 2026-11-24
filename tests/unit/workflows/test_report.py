@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from pvsyst_auto.workflows.report import generate_report
+from tests._fixtures import write_sfi_csv
 
 
 @lru_cache(maxsize=8)
@@ -67,6 +68,7 @@ class InteractiveReportTests(unittest.TestCase):
         (self.root / "Projects").mkdir(parents=True, exist_ok=True)
         (self.root / "ComposPV" / "PVmodules").mkdir(parents=True, exist_ok=True)
         (self.root / "ComposPV" / "Inverters").mkdir(parents=True, exist_ok=True)
+        (self.root / "UserBatch").mkdir(parents=True, exist_ok=True)
 
     def test_single_and_multi_scenario_plotly_html_reports_zh_and_en(self):
         csv_pv = _write_report_csv(self.root / "Results" / "pv_base.csv", scale=1.0, pr=0.84, with_load_bess=True)
@@ -337,6 +339,95 @@ class InteractiveReportTests(unittest.TestCase):
         )
         self.assertEqual(res["status"], "ready")
         self.assertTrue(res["has_economics"])
+
+    def test_three_dimensional_sweep_preserves_groups_and_pr_units(self):
+        from pvsyst_auto.workflows.report import _build_batch_sweep_figure
+        rows = [{"parameters": {"tilt": t, "pitch": p, "count": c}, "values": {"E_Grid": 10, "PR": 1.2}}
+                for t in (10, 20) for p in (3, 4) for c in (1, 2)]
+        fig = _build_batch_sweep_figure({"units": {"PR": "%"}, "scenarios": rows}, palette=["blue"], opt_label="Best")
+        curves = [trace for trace in fig.data if trace.name.endswith("PR (%)")]
+        self.assertEqual(len(curves), 4)
+        self.assertTrue(all(list(trace.y) == [1.2, 1.2] for trace in curves))
+
+    def test_report_renders_1d_and_2d_batch_sweep_curves(self):
+        start = datetime(2024, 6, 1, 0, 0)
+        rows = []
+        for h in range(72):
+            dt = start + timedelta(hours=h)
+            day = 8 <= dt.hour < 16
+            rows.append([
+                dt.strftime("%d/%m/%y %H:%M"),
+                600.0 if day else 0.0,
+                110.0 if day else 0.0,
+                100.0 if day else 0.0,
+                0.83 if day else 0.0,
+            ])
+        write_sfi_csv(
+            self.root / "Results" / "base.csv",
+            [("GlobInc", "W/m²"), ("EArray", "kW"), ("E_Grid", "kW"), ("PR", "ratio")],
+            rows,
+        )
+
+        batch_1d = "\n".join([
+            "PVsyst Batch simulation results",
+            "Ident;Create hourly;Plane tilt;Error;E_Grid;PR",
+            ";;[deg];;[MWh];[ratio]",
+            "SIM_1;;15;;180.5;0.825",
+            "SIM_2;;20;;184.2;0.828",
+            "SIM_3;;25;;186.1;0.830",
+            "SIM_4;;30;;185.0;0.829",
+        ]) + "\n"
+        (self.root / "UserBatch" / "TiltSweep_BatchResults.CSV").write_text(batch_1d, encoding="utf-8")
+
+        dry = generate_report(
+            workspace=self.root,
+            title="Tilt Optimization Report",
+            output_name="tilt_report.html",
+            scenarios=[{"label": "Base", "csv_name": "base.csv", "installed_dc_kw": 200.0}],
+            batch_summary_csv="TiltSweep_BatchResults.CSV",
+            language="zh",
+            dry_run=True,
+        )
+        self.assertEqual(dry["status"], "ready")
+        self.assertTrue(dry["has_batch_sweep"])
+
+        gen = generate_report(
+            workspace=self.root,
+            title="Tilt Optimization Report",
+            output_name="tilt_report.html",
+            scenarios=[{"label": "Base", "csv_name": "base.csv", "installed_dc_kw": 200.0}],
+            batch_summary_csv="TiltSweep_BatchResults.CSV",
+            language="zh",
+            dry_run=False,
+        )
+        self.assertEqual(gen["status"], "generated")
+        self.assertTrue(gen["has_batch_sweep"])
+        self.assertGreaterEqual(gen["chart_count"], 3)
+        html_text = Path(gen["report_path"]).read_text(encoding="utf-8")
+        self.assertIn("参数扫描寻优曲线", html_text)
+        self.assertIn("Plane tilt", html_text)
+
+        batch_2d = "\n".join([
+            "PVsyst Batch simulation results",
+            "Ident;Create hourly;Plane tilt;Sheds pitch;Error;E_Grid;PR",
+            ";;[deg];[m];;[MWh];[ratio]",
+            "SIM_1;;20;9;;181.0;0.820",
+            "SIM_2;;25;9;;182.5;0.822",
+            "SIM_3;;20;11;;184.0;0.829",
+            "SIM_4;;25;11;;186.2;0.833",
+        ]) + "\n"
+        (self.root / "UserBatch" / "Grid2D_BatchResults.CSV").write_text(batch_2d, encoding="utf-8")
+        gen2 = generate_report(
+            workspace=self.root,
+            title="2D Sweep Report",
+            output_name="grid2d_report.html",
+            scenarios=[{"label": "Base", "csv_name": "base.csv", "installed_dc_kw": 200.0}],
+            batch_summary_csv="Grid2D_BatchResults.CSV",
+            language="en",
+            dry_run=False,
+        )
+        self.assertEqual(gen2["status"], "generated")
+        self.assertIn("Parametric Batch Sweep Curves", Path(gen2["report_path"]).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
