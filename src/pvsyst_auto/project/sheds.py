@@ -12,8 +12,8 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 import re
 
-from pvsyst_auto.components.editor import objects, replace_value, root_block
-from pvsyst_auto.project.tracking import _check_single_orient_subarray_strings, _decimal
+from pvsyst_auto.components.editor import replace_value, root_block
+from pvsyst_auto.project.tracking import _check_single_orient_subarray_strings, _decimal, _single_orient_record
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
@@ -72,13 +72,7 @@ def _require_shed_scope(store, lines, arrays, system):
 
 def orient_block(lines):
     """Return the one directly owned shed/sun-shield record after checking its shape."""
-    blocks = objects("".join(lines))
-    records = [block for block in blocks if block.object_type == "pvOrient"]
-    if len(records) != 1:
-        raise ValueError("Requires exactly one pvOrient record")
-    block = records[0]
-    if block.path != "PVObject_" or not block.end_line:
-        raise ValueError("pvOrient must be the complete directly owned record")
+    blocks, block = _single_orient_record(lines)
     fieldtype = block.one("FieldType")[1]
     if fieldtype not in TYPES:
         raise ValueError(f"Only a Sheds or SunShields record is supported, not {fieldtype}")

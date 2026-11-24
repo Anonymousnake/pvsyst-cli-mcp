@@ -994,6 +994,13 @@ def iter_result_csv(path: str | os.PathLike, *, strict: bool = False) -> Iterato
         yield headers, row
 
 
+def _validate_result_columns(headers: list[str], columns) -> None:
+    if len(set(headers)) != len(headers):
+        raise ValueError("Duplicate column names in SFI result header")
+    if not columns or any(name not in headers[1:] for name in columns):
+        raise ValueError(f"Choose columns from {headers[1:]}")
+
+
 def read_result_page(path, columns, offset, limit):
     """Count all timestamped rows; convert only the requested page's columns."""
     indices = None
@@ -1001,10 +1008,7 @@ def read_result_page(path, columns, offset, limit):
     page = []
     for headers, stamp, values in _iter_result_cells(path):
         if indices is None:
-            if len(set(headers)) != len(headers):
-                raise ValueError("Duplicate column names in SFI result header")
-            if not columns or any(name not in headers[1:] for name in columns):
-                raise ValueError(f"Choose columns from {headers[1:]}")
+            _validate_result_columns(headers, columns)
             indices = [headers.index(name, 1) - 1 for name in columns]
         if offset <= total < offset + limit:
             selected = [_result_number(values[index]) for index in indices]
@@ -1025,10 +1029,7 @@ def summarize_results(path: str | os.PathLike, columns: tuple[str, ...]) -> dict
     regular = True
     for headers, stamp, values in _iter_result_cells(path):
         if indices is None:
-            if len(set(headers)) != len(headers):
-                raise ValueError("Duplicate column names in SFI result header")
-            if not columns or any(name not in headers[1:] for name in columns):
-                raise ValueError(f"Choose columns from {headers[1:]}")
+            _validate_result_columns(headers, columns)
             indices = {name: headers.index(name, 1) - 1 for name in columns}
             first = str(stamp)
         if previous is not None:

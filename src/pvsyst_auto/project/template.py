@@ -187,6 +187,33 @@ def _component_path(store, kind: str, name: str) -> Path:
     return path
 
 
+def _verify_and_plan_seed_variant(
+    store,
+    final_lines: list[str],
+    *,
+    pan_name: str,
+    pan_fields: dict | None,
+    ond_electrical: dict,
+    capacity: dict | None,
+    orientation_id: int,
+    count_error_prefix: str,
+):
+    store._require_no_geometry(final_lines, require_shading_section=True)
+    final_arrays, _ = store._sections(final_lines)
+    rechecked = grid_inventory(final_lines, final_arrays)
+    if rechecked["counts_valid"] is not True:
+        raise ValueError(count_error_prefix + "; ".join(rechecked["issues"] + rechecked["unchecked_checks"]))
+    store._ordinary_fixed_plane(final_lines, store._orientation(final_lines, orientation_id))
+    block = root_block(final_lines, final_arrays[SEED_SUBARRAY])
+    plan = None
+    if capacity is not None:
+        if pan_fields is None:
+            pan_fields = pan_validation_fields(
+                store.components._read(_component_path(store, "PAN", pan_name)).decode("utf-8-sig"))
+        plan = plan_capacity(store, final_lines, SEED_SUBARRAY, pan_fields, ond_electrical, capacity)
+    return block, plan
+
+
 def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
                         capacity=None, pan_fields=None, allow_window_creation=None) -> dict:
     """Build the derived PRJ/VC0 text in memory; nothing is written and the seed is untouched.
@@ -263,7 +290,6 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
         raise ValueError("The derived seed does not declare the target OND input count exactly")
     flags_after = _field_value(store, lines, arrays[SEED_SUBARRAY], "Flags")
     strings_after = _field_value(store, lines, arrays[SEED_SUBARRAY], "NStringCh")
-    block = root_block(lines, arrays[SEED_SUBARRAY])
     port = (scaled["mppt_groups"] or [{}])[0]
 
     # The derived VC is read as Windows-1252 when BOM-less, so a non-ASCII body forces the BOM too.
@@ -272,19 +298,16 @@ def standard_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
     store._require_no_geometry(store._text(data)[1], require_shading_section=True)
     final = store._replace(data, {"PAN": pan_name, "OND": ond_name}, SEED_SUBARRAY)
     _, final_lines = store._text(final)
-    final_arrays, _ = store._sections(final_lines)
-    rechecked = grid_inventory(final_lines, final_arrays)
-    if rechecked["counts_valid"] is not True:
-        raise ValueError("The derived seed lost complete counts after the component references: "
-                         + "; ".join(rechecked["issues"] + rechecked["unchecked_checks"]))
-    store._ordinary_fixed_plane(final_lines, store._orientation(final_lines, orientation))
-
-    plan = None
-    if capacity is not None:
-        if pan_fields is None:
-            pan_fields = pan_validation_fields(
-                store.components._read(_component_path(store, "PAN", pan_name)).decode("utf-8-sig"))
-        plan = plan_capacity(store, final_lines, SEED_SUBARRAY, pan_fields, ond_electrical, capacity)
+    block, plan = _verify_and_plan_seed_variant(
+        store,
+        final_lines,
+        pan_name=pan_name,
+        pan_fields=pan_fields,
+        ond_electrical=ond_electrical,
+        capacity=capacity,
+        orientation_id=orientation,
+        count_error_prefix="The derived seed lost complete counts after the component references: ",
+    )
 
     changes.extend([
         {"object": "pvSubArray", "field": "Flags", "before": flags_before, "after": flags_after,
@@ -383,21 +406,16 @@ def synthesized_seed_texts(cli, store, *, ond_electrical, pan_name, ond_name,
     vc0_bytes = synth["vc0_text"].encode("utf-8")
     store._project_text(prj_bytes)
     _, final_lines = store._text(vc0_bytes)
-    store._require_no_geometry(final_lines, require_shading_section=True)
-    final_arrays, _ = store._sections(final_lines)
-    rechecked = grid_inventory(final_lines, final_arrays)
-    if rechecked["counts_valid"] is not True:
-        raise ValueError("The synthesized template has incomplete or inconsistent grid counts: "
-                         + "; ".join(rechecked["issues"] + rechecked["unchecked_checks"]))
-    store._ordinary_fixed_plane(final_lines, store._orientation(final_lines, 1))
-    block = root_block(final_lines, final_arrays[SEED_SUBARRAY])
-
-    plan = None
-    if capacity is not None:
-        if pan_fields is None:
-            pan_fields = pan_validation_fields(
-                store.components._read(_component_path(store, "PAN", pan_name)).decode("utf-8-sig"))
-        plan = plan_capacity(store, final_lines, SEED_SUBARRAY, pan_fields, ond_electrical, capacity)
+    block, plan = _verify_and_plan_seed_variant(
+        store,
+        final_lines,
+        pan_name=pan_name,
+        pan_fields=pan_fields,
+        ond_electrical=ond_electrical,
+        capacity=capacity,
+        orientation_id=1,
+        count_error_prefix="The synthesized template has incomplete or inconsistent grid counts: ",
+    )
 
     changes = [
         {"object": "pvProject/pvVCalcul", "field": "synthesis", "before": None, "after": SYNTH_VERSION,

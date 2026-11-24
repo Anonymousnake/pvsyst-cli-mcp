@@ -225,14 +225,14 @@ def read_flat_grid_system(
         raise ValueError(unknown_field_error)
     for key in fields:
         one(fields, key)
-    for key in exclusive_system_fields:
-        total = sum(m is not None and m[2] == key
-                    for line in lines for m in [ASSIGNMENT.fullmatch(line.rstrip("\r\n"))])
-        if total != len(fields.get(key, [])):
-            raise ValueError(f"Require {key} only in the owning system")
     if one(fields, "SystemType")[1] != "Grid":
         raise ValueError(f"{feature_label} requires SystemType=Grid")
     index, raw = one(fields, "Flags")
     if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw):
         raise ValueError(hex_flag_error)
+    for key in exclusive_system_fields:
+        total = sum(m is not None and m[2] == key
+                    for line in lines for m in [ASSIGNMENT.fullmatch(line.rstrip("\r\n"))])
+        if total != len(fields.get(key, [])):
+            raise ValueError(f"Require {key} only in the owning system")
     return fields, index, int(raw[1:], 16)

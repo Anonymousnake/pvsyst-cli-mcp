@@ -350,6 +350,26 @@ def _normalize_orientation(item: dict) -> dict:
     return spec
 
 
+def _orient_shelf_lines(spec: dict) -> list[str]:
+    return [
+        f"    Pitch={spec['pitch_m']:.3f}",
+        f"    CollectorWidth={spec['collector_width_m']:.3f}",
+        f"    InactiveBandWidth1={spec['inactive_band_width_1_m']:.3f}",
+        f"    InactiveBandWidth2={spec['inactive_band_width_2_m']:.3f}",
+    ]
+
+
+def _orient_shed_geometry_lines(spec: dict) -> list[str]:
+    return [
+        *_orient_shelf_lines(spec),
+        f"    NSheds={spec['shed_count']}",
+        f"    UsesElectricalEffect={'True' if spec['electrical_effect'] else 'False'}",
+        f"    FracShadingFactor={spec['shading_factor']:.3f}",
+        f"    NModInWidth={spec['module_columns']}",
+        f"    CellWidth={spec['cell_width_m']:.3f}",
+    ]
+
+
 def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) -> list[str]:
     """Serialize one TOrientGroup / pvOrient record (including optional pvBiFacial)."""
     spec = _normalize_orientation(orient)
@@ -372,15 +392,7 @@ def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) 
         lines.extend([
             f"    FieldTilt={_fmt_angle(spec['tilt_deg'])}",
             f"    FieldAzim={_fmt_angle(spec['azimuth_deg'])}",
-            f"    Pitch={spec['pitch_m']:.3f}",
-            f"    CollectorWidth={spec['collector_width_m']:.3f}",
-            f"    InactiveBandWidth1={spec['inactive_band_width_1_m']:.3f}",
-            f"    InactiveBandWidth2={spec['inactive_band_width_2_m']:.3f}",
-            f"    NSheds={spec['shed_count']}",
-            f"    UsesElectricalEffect={'True' if spec['electrical_effect'] else 'False'}",
-            f"    FracShadingFactor={spec['shading_factor']:.3f}",
-            f"    NModInWidth={spec['module_columns']}",
-            f"    CellWidth={spec['cell_width_m']:.3f}",
+            *_orient_shed_geometry_lines(spec),
         ])
     elif ft == "UnlimTracking":
         lines.extend([
@@ -389,15 +401,7 @@ def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) 
             f"    MaxPhi={_fmt_angle(spec['max_phi_deg'])}",
             f"    UsesBacktracking={'True' if spec['backtracking'] else 'False'}",
             f"    UsesIrradOptimiz={'True' if spec['irrad_optimiz'] else 'False'}",
-            f"    Pitch={spec['pitch_m']:.3f}",
-            f"    CollectorWidth={spec['collector_width_m']:.3f}",
-            f"    InactiveBandWidth1={spec['inactive_band_width_1_m']:.3f}",
-            f"    InactiveBandWidth2={spec['inactive_band_width_2_m']:.3f}",
-            f"    NSheds={spec['shed_count']}",
-            f"    UsesElectricalEffect={'True' if spec['electrical_effect'] else 'False'}",
-            f"    FracShadingFactor={spec['shading_factor']:.3f}",
-            f"    NModInWidth={spec['module_columns']}",
-            f"    CellWidth={spec['cell_width_m']:.3f}",
+            *_orient_shed_geometry_lines(spec),
         ])
     elif ft == "TrackHorizNSAxis":
         lines.extend([
@@ -415,10 +419,7 @@ def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) 
             f"    UsesWindStow={'True' if spec['wind_stow'] else 'False'}",
             f"    WindStowSpeed={spec['wind_stow_speed_ms']:.3f}",
             f"    WindStowPosition={spec['wind_stow_position_deg']:.3f}",
-            f"    Pitch={spec['pitch_m']:.3f}",
-            f"    CollectorWidth={spec['collector_width_m']:.3f}",
-            f"    InactiveBandWidth1={spec['inactive_band_width_1_m']:.3f}",
-            f"    InactiveBandWidth2={spec['inactive_band_width_2_m']:.3f}",
+            *_orient_shelf_lines(spec),
         ])
 
     lines.extend([
@@ -1677,6 +1678,26 @@ def synthesize_utility_project(
                     shading_lines[end_pos:end_pos] = extra_lines
 
     sub_orient_summaries: list[dict] | None = None
+    def _utility_subarray_entry(sub_id: int, comment: str, n_mod: int, n_str: int, n_inv: int, n_mppt: int) -> dict:
+        return {
+            "subarray_id": sub_id,
+            "orientation_id": sub_id,
+            "comment": comment,
+            "pan_name": pan_name,
+            "ond_name": ond_name,
+            "n_mod_serie": n_mod,
+            "n_string_ch": n_str,
+            "n_inverter": n_inv,
+            "n_inv_mppt": n_mppt,
+            "independent_mppt": independent_mppt,
+            "pnom_ac_in_mppt": pnom_ac_in_mppt,
+            "lid_loss": lid_loss,
+            **({"pmism_mpp": pmism_mpp} if pmism_mpp is not None else {}),
+            **({"module_quality_loss": module_quality_loss} if module_quality_loss is not None else {}),
+            "dc_wiring_loss_pct": dc_wiring_loss_pct,
+            "dc_wiring_resistance_mohm": dc_wiring_resistance_mohm,
+        }
+
     if sub_orientations:
         if need_3d or field_type not in ("Sheds", "UnlimSheds"):
             raise ValueError("sub_orientations is only supported for unlimited ground_sheds (FieldType='Sheds')")
@@ -1740,24 +1761,7 @@ def synthesize_utility_project(
             sub_n_str = _pos_int(item["n_string_ch"], f"sub_orientations[{idx_o - 1}].n_string_ch")
             sub_n_inv = _pos_int(item["n_inverter"], f"sub_orientations[{idx_o - 1}].n_inverter")
             sub_n_mppt = _pos_int(item["n_inv_mppt"], f"sub_orientations[{idx_o - 1}].n_inv_mppt")
-            subarrays.append({
-                "subarray_id": idx_o,
-                "orientation_id": idx_o,
-                "comment": sub_label,
-                "pan_name": pan_name,
-                "ond_name": ond_name,
-                "n_mod_serie": sub_n_mod,
-                "n_string_ch": sub_n_str,
-                "n_inverter": sub_n_inv,
-                "n_inv_mppt": sub_n_mppt,
-                "independent_mppt": independent_mppt,
-                "pnom_ac_in_mppt": pnom_ac_in_mppt,
-                "lid_loss": lid_loss,
-                **({"pmism_mpp": pmism_mpp} if pmism_mpp is not None else {}),
-                **({"module_quality_loss": module_quality_loss} if module_quality_loss is not None else {}),
-                "dc_wiring_loss_pct": dc_wiring_loss_pct,
-                "dc_wiring_resistance_mohm": dc_wiring_resistance_mohm,
-            })
+            subarrays.append(_utility_subarray_entry(idx_o, sub_label, sub_n_mod, sub_n_str, sub_n_inv, sub_n_mppt))
             sub_mods = sub_n_mod * sub_n_str
             sub_orient_summaries.append({
                 "orientation_id": idx_o,
@@ -1778,24 +1782,7 @@ def synthesize_utility_project(
     else:
         orientations_list = [orient_spec]
         sub_mppt = n_inv_mppt if n_inv_mppt is not None else (n_string_ch if independent_mppt else 1)
-        subarrays = [{
-            "subarray_id": 1,
-            "orientation_id": 1,
-            "comment": "PV Array",
-            "pan_name": pan_name,
-            "ond_name": ond_name,
-            "n_mod_serie": n_mod_serie,
-            "n_string_ch": n_string_ch,
-            "n_inverter": n_inverter,
-            "n_inv_mppt": sub_mppt,
-            "independent_mppt": independent_mppt,
-            "pnom_ac_in_mppt": pnom_ac_in_mppt,
-            "lid_loss": lid_loss,
-            **({"pmism_mpp": pmism_mpp} if pmism_mpp is not None else {}),
-            **({"module_quality_loss": module_quality_loss} if module_quality_loss is not None else {}),
-            "dc_wiring_loss_pct": dc_wiring_loss_pct,
-            "dc_wiring_resistance_mohm": dc_wiring_resistance_mohm,
-        }]
+        subarrays = [_utility_subarray_entry(1, "PV Array", n_mod_serie, n_string_ch, n_inverter, sub_mppt)]
 
     result = synthesize_project_and_variant(
         store,
