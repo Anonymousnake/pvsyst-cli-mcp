@@ -28,7 +28,7 @@ from pvsyst_auto.engineering.economics import (
 )
 from pvsyst_auto.native.cli import build_sfi
 from pvsyst_auto.project.paths import variant_id
-from pvsyst_auto.results import RegularResultCsv, energy_unit_scale
+from pvsyst_auto.results import RegularResultCsv
 from pvsyst_auto.validation import finite_number as _finite
 
 _VALID_STRATEGIES = ("self_consumption", "tou_arbitrage", "peak_shaving")
@@ -77,7 +77,6 @@ def _load_baseline_series(
     has_etogrid = False
     has_esolar = False
     has_efrgrid = False
-    col_scale: dict[str, tuple[float, bool]] = {}
 
     months: list[int] = []
     hours: list[int] = []
@@ -87,41 +86,29 @@ def _load_baseline_series(
     exp_rates: list[float] = []
 
     for stamp, row, dt_hours in reader.iter_rows():
-        if not col_scale:
+        if not idx:
             idx = reader.idx
             pv_col = "E_Grid" if "E_Grid" in idx else "EToGrid"
             has_load_col = "E_User" in idx
             has_etogrid = "EToGrid" in idx
             has_esolar = "E_Solar" in idx
             has_efrgrid = "EFrGrid" in idx
-            col_scale = {col: energy_unit_scale(reader.units.get(col, "")) for col in idx}
 
-        def kw(col_name: str) -> float:
-            col_i = idx.get(col_name)
-            if col_i is None:
-                return 0.0
-            factor, is_power = col_scale[col_name]
-            if factor == 0.0:
-                raise ValueError(f"{col_name} requires a power or energy unit, got {reader.units.get(col_name, '')!r}")
-            raw = row[col_i]
-            val = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0.0
-            return val * factor if is_power else (val * factor / dt_hours)
-
-        csv_l_kw = max(0.0, kw("E_User")) if has_load_col else 0.0
+        csv_l_kw = max(0.0, reader.cell_kw(row, "E_User", dt_hours)) if has_load_col else 0.0
         if has_etogrid and (has_esolar or has_load_col):
             # True PVsyst self-consumption/storage export: reconstruct total AC PV = export + self-consumed PV
-            exp_kw = max(0.0, kw("EToGrid"))
+            exp_kw = max(0.0, reader.cell_kw(row, "EToGrid", dt_hours))
             if has_esolar:
-                sc_kw = max(0.0, kw("E_Solar"))
+                sc_kw = max(0.0, reader.cell_kw(row, "E_Solar", dt_hours))
             elif has_efrgrid:
-                sc_kw = max(0.0, csv_l_kw - max(0.0, kw("EFrGrid")))
+                sc_kw = max(0.0, csv_l_kw - max(0.0, reader.cell_kw(row, "EFrGrid", dt_hours)))
             else:
                 sc_kw = 0.0
             p_kw = exp_kw + sc_kw
         elif has_esolar:
-            p_kw = max(0.0, kw(pv_col)) + max(0.0, kw("E_Solar"))
+            p_kw = max(0.0, reader.cell_kw(row, pv_col, dt_hours)) + max(0.0, reader.cell_kw(row, "E_Solar", dt_hours))
         else:
-            p_kw = max(0.0, kw(pv_col))
+            p_kw = max(0.0, reader.cell_kw(row, pv_col, dt_hours))
 
         if ext_mode == "constant":
             l_kw = max(0.0, ext_const_kw)

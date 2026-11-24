@@ -318,19 +318,25 @@ def _normalize_hv(
     }
 
 
-def _read_pan_pnom_wp(components, pan_name: str) -> float | None:
-    if components is None or not pan_name:
+def _read_component_positive_float(
+    components,
+    kind: str,
+    name: str,
+    object_types: tuple[str, ...],
+    field: str,
+) -> float | None:
+    if components is None or not name:
         return None
     for library in ("workspace", "builtin"):
         try:
-            pan_path = components._path("PAN", pan_name, library)
-            if not pan_path.is_file():
+            comp_path = components._path(kind, name, library)
+            if not comp_path.is_file():
                 continue
-            raw = components._read(pan_path)
+            raw = components._read(comp_path)
             text = raw.decode("utf-8-sig", errors="replace")
             for blk in objects(text):
-                if blk.object_type == "pvModule" and "PNom" in blk.fields:
-                    val = float(blk.one("PNom")[1])
+                if blk.object_type in object_types and field in blk.fields:
+                    val = float(blk.one(field)[1])
                     if math.isfinite(val) and val > 0:
                         return val
         except (ValueError, OSError, KeyError, AttributeError):
@@ -338,24 +344,11 @@ def _read_pan_pnom_wp(components, pan_name: str) -> float | None:
     return None
 
 
-def _read_ond_pnom_kw(components, ond_name: str) -> float | None:
-    if components is None or not ond_name:
-        return None
-    for library in ("workspace", "builtin"):
-        try:
-            ond_path = components._path("OND", ond_name, library)
-            if not ond_path.is_file():
-                continue
-            raw = components._read(ond_path)
-            text = raw.decode("utf-8-sig", errors="replace")
-            for blk in objects(text):
-                if blk.object_type in ("TConverter", "pvGInverter") and "PNomConv" in blk.fields:
-                    val = float(blk.one("PNomConv")[1])
-                    if math.isfinite(val) and val > 0:
-                        return val
-        except (ValueError, OSError, KeyError, AttributeError):
-            continue
-    return None
+def _subarray_int_field(sa, key: str) -> int:
+    try:
+        return int(sa.one(key)[1].strip()) if key in sa.fields else 0
+    except ValueError:
+        return 0
 
 
 def _infer_inverter_ac_power_kw(
@@ -385,34 +378,22 @@ def _infer_inverter_ac_power_kw(
             except (ValueError, TypeError):
                 pass
         ond_name = sa.one("GInverter")[1].strip() if "GInverter" in sa.fields else ""
-        ond_pnom = _read_ond_pnom_kw(components, ond_name)
+        ond_pnom = _read_component_positive_float(
+            components, "OND", ond_name, ("TConverter", "pvGInverter"), "PNomConv"
+        )
 
         sub_ac: float | None = None
         if is_independent:
-            try:
-                n_mppt = int(sa.one("NInvMPPT")[1].strip()) if "NInvMPPT" in sa.fields else 0
-            except ValueError:
-                n_mppt = 0
+            n_mppt = _subarray_int_field(sa, "NInvMPPT")
             if n_mppt > 0 and pnom_mppt is not None:
                 sub_ac = n_mppt * pnom_mppt
                 sources.add("subarray_independent_mppt")
-            else:
-                try:
-                    n_inv = int(sa.one("NInverter")[1].strip()) if "NInverter" in sa.fields else 0
-                except ValueError:
-                    n_inv = 0
-                if n_inv > 0 and ond_pnom is not None:
-                    sub_ac = n_inv * ond_pnom
-                    sources.add("ond_subarray_ac")
-        else:
-            try:
-                n_inv = int(sa.one("NInverter")[1].strip()) if "NInverter" in sa.fields else 0
-            except ValueError:
-                n_inv = 0
+        if sub_ac is None:
+            n_inv = _subarray_int_field(sa, "NInverter")
             if n_inv > 0 and ond_pnom is not None:
                 sub_ac = n_inv * ond_pnom
                 sources.add("ond_subarray_ac")
-            elif n_inv > 0 and pnom_mppt is not None:
+            elif not is_independent and n_inv > 0 and pnom_mppt is not None:
                 # Native PVsyst saves write PNomAC_InMPPT = PNomConv in ordinary mode
                 # (essential when the OND lives in PVsyst's encrypted InverterDB.csv).
                 sub_ac = n_inv * pnom_mppt
@@ -486,7 +467,7 @@ def _infer_ref_power_kw(
                 except (ValueError, KeyError):
                     all_resolved = False
                     break
-                pnom_wp = _read_pan_pnom_wp(components, pan_name)
+                pnom_wp = _read_component_positive_float(components, "PAN", pan_name, ("pvModule",), "PNom")
                 if pnom_wp is None or n_serie <= 0 or n_str <= 0:
                     all_resolved = False
                     break

@@ -754,6 +754,34 @@ def _write_manifest_checkpoint(manifest_path: Path | None, result: dict, *, dry_
                 result.update(status="failed", stage="manifest")
 
 
+def _apply_provider_elevation_echo(
+    site: dict, elev_echo, *, evidence_label: str, missing_error: str
+) -> None:
+    if site["elevation_m"] is not None:
+        return
+    if isinstance(elev_echo, (int, float)) and not isinstance(elev_echo, bool) and math.isfinite(float(elev_echo)):
+        site["elevation_m"] = float(elev_echo)
+        site["evidence"]["elevation"] = evidence_label
+    else:
+        raise WeatherAcquisitionError(missing_error)
+
+
+def _record_weather_exception(result: dict, error: Exception) -> None:
+    if isinstance(error, WeatherAcquisitionError):
+        result.update(status="failed" if result["stage"] == "request" else "blocked")
+    else:
+        result.update(status="failed")
+    result["issues"].append(str(error))
+
+
+def _blocked_preflight_result(provider, *, dry_run, year, issue_msg: str) -> dict:
+    return {
+        "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
+        "provider": {"name": provider if provider in PROVIDERS else str(provider)},
+        "issues": [issue_msg], "warnings": [], "artifacts": {}, "created_files": {},
+    }
+
+
 def _download_pvgis_tmy(
     workspace_path: Path,
     *,
@@ -816,13 +844,12 @@ def _download_pvgis_tmy(
             "elevation_m": loc_echo.get("elevation"),
             "meteo_data": inputs.get("meteo_data"),
         }
-        if site["elevation_m"] is None:
-            elev = loc_echo.get("elevation")
-            if isinstance(elev, (int, float)) and not isinstance(elev, bool) and math.isfinite(float(elev)):
-                site["elevation_m"] = float(elev)
-                site["evidence"]["elevation"] = "PVGIS v5.3 location elevation echo"
-            else:
-                raise WeatherAcquisitionError("no altitude supplied and PVGIS echoed none")
+        _apply_provider_elevation_echo(
+            site,
+            loc_echo.get("elevation"),
+            evidence_label="PVGIS v5.3 location elevation echo",
+            missing_error="no altitude supplied and PVGIS echoed none",
+        )
 
         result["stage"] = "validation"
         hourly = (payload.get("outputs") or {}).get("tmy_hourly")
@@ -865,12 +892,8 @@ def _download_pvgis_tmy(
         _finalize_weather_csv(
             csv_path, rows, site=site, year=tmy_year, offset_hours=offset_hours, label=label, result=result,
         )
-    except WeatherAcquisitionError as error:
-        result.update(status="failed" if result["stage"] == "request" else "blocked")
-        result["issues"].append(str(error))
-    except (OSError, ValueError) as error:
-        result.update(status="failed")
-        result["issues"].append(str(error))
+    except (WeatherAcquisitionError, OSError, ValueError) as error:
+        _record_weather_exception(result, error)
     finally:
         _write_manifest_checkpoint(manifest_path, result, dry_run=dry_run)
     return result
@@ -946,12 +969,12 @@ def _download_nasa_power(
             "latitude": coords[1] if len(coords) >= 2 else None,
             "elevation_m": elev_echo,
         }
-        if site["elevation_m"] is None:
-            if isinstance(elev_echo, (int, float)) and not isinstance(elev_echo, bool) and math.isfinite(float(elev_echo)):
-                site["elevation_m"] = float(elev_echo)
-                site["evidence"]["elevation"] = "NASA POWER geometry elevation echo"
-            else:
-                raise WeatherAcquisitionError("no altitude supplied and NASA POWER echoed none")
+        _apply_provider_elevation_echo(
+            site,
+            elev_echo,
+            evidence_label="NASA POWER geometry elevation echo",
+            missing_error="no altitude supplied and NASA POWER echoed none",
+        )
 
         result["stage"] = "validation"
         param_map = ((payload.get("properties") or {}).get("parameter") or {})
@@ -986,12 +1009,8 @@ def _download_nasa_power(
         _finalize_weather_csv(
             csv_path, rows, site=site, year=year, offset_hours=offset_hours, label=label, result=result,
         )
-    except WeatherAcquisitionError as error:
-        result.update(status="failed" if result["stage"] == "request" else "blocked")
-        result["issues"].append(str(error))
-    except (OSError, ValueError) as error:
-        result.update(status="failed")
-        result["issues"].append(str(error))
+    except (WeatherAcquisitionError, OSError, ValueError) as error:
+        _record_weather_exception(result, error)
     finally:
         _write_manifest_checkpoint(manifest_path, result, dry_run=dry_run)
     return result
@@ -1007,24 +1026,18 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
     and ``"nasa_power"`` (NASA POWER hourly RE).
     """
     if provider not in PROVIDERS:
-        return {
-            "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
-            "provider": {"name": str(provider)}, "issues": [f"provider must be one of {list(PROVIDERS)}"],
-            "warnings": [], "artifacts": {}, "created_files": {},
-        }
+        return _blocked_preflight_result(
+            provider, dry_run=dry_run, year=year, issue_msg=f"provider must be one of {list(PROVIDERS)}",
+        )
     if type(strict_dhi) is not bool:
-        return {
-            "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
-            "provider": {"name": provider}, "issues": ["strict_dhi must be a strict boolean"],
-            "warnings": [], "artifacts": {}, "created_files": {},
-        }
+        return _blocked_preflight_result(
+            provider, dry_run=dry_run, year=year, issue_msg="strict_dhi must be a strict boolean",
+        )
     if provider in ("pvgis_tmy", "nasa_power"):
         if type(dry_run) is not bool:
-            return {
-                "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
-                "provider": {"name": provider}, "issues": ["dry_run must be a strict boolean"],
-                "warnings": [], "artifacts": {}, "created_files": {},
-            }
+            return _blocked_preflight_result(
+                provider, dry_run=dry_run, year=year, issue_msg="dry_run must be a strict boolean",
+            )
         try:
             site, notes = _resolve_location(
                 location_id=location_id, latitude=latitude, longitude=longitude,
@@ -1041,11 +1054,9 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
                 dry_run=dry_run, strict_dhi=strict_dhi,
             )
         except WeatherAcquisitionError as error:
-            return {
-                "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
-                "provider": {"name": provider}, "issues": [str(error)],
-                "warnings": [], "artifacts": {}, "created_files": {},
-            }
+            return _blocked_preflight_result(
+                provider, dry_run=dry_run, year=year, issue_msg=str(error),
+            )
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
               "provider": {"name": "open-meteo", "model": PROVIDER_MODEL,
                            "endpoints": {"geocoding_search": GEOCODING_SEARCH_URL,
@@ -1173,12 +1184,8 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
             result=result,
             verified_extra={"provider_labels": len(labels), "labels_match_local_year": True},
         )
-    except WeatherAcquisitionError as error:
-        result.update(status="failed" if result["stage"] == "request" else "blocked")
-        result["issues"].append(str(error))
-    except (OSError, ValueError) as error:
-        result.update(status="failed")
-        result["issues"].append(str(error))
+    except (WeatherAcquisitionError, OSError, ValueError) as error:
+        _record_weather_exception(result, error)
     finally:
         _write_manifest_checkpoint(manifest_path, result, dry_run=dry_run)
     return result

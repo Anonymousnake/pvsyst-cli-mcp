@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import html
-import itertools
 import math
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,7 @@ from pvsyst_auto.engineering.diagnostics import diagnose_simulation_csv
 from pvsyst_auto.engineering.economics import evaluate_economics
 from pvsyst_auto.native.cli import parse_batch_results
 from pvsyst_auto.project.paths import safe_filename, workspace_file
-from pvsyst_auto.results import IRRAD_UNIT_KIND, RegularResultCsv, energy_unit_scale
+from pvsyst_auto.results import IRRAD_UNIT_KIND, RegularResultCsv, iter_aligned_result_rows
 from pvsyst_auto.validation import finite_number as _finite
 
 _PR_SCALE = {"ratio": 1.0, "%": 0.01}
@@ -221,16 +220,7 @@ def _summarize_multi_csv_for_report(csv_paths: list[Path], weights: list[float])
     loss_kwh_sums: dict[str, float] = {}
     loss_seen: set[str] = set()
 
-    sentinel = object()
-    for row_idx, items in enumerate(itertools.zip_longest(*(r.iter_rows() for r in readers), fillvalue=sentinel)):
-        if any(item is sentinel for item in items):
-            raise ValueError("Merged result CSVs have different row counts; all portfolio CSVs must align")
-        stamp, _, dt_hours = items[0]
-        for k, (st_k, _, dt_k) in enumerate(items[1:], start=1):
-            if st_k != stamp or abs(dt_k - dt_hours) > 1e-6:
-                raise ValueError(
-                    f"Merged result CSV {csv_paths[k].name} timestamp mismatch at row {row_idx + 1}"
-                )
+    for stamp, _, items in iter_aligned_result_rows(readers):
         if not per_meta:
             for r in readers:
                 idx = r.idx
@@ -240,7 +230,6 @@ def _summarize_multi_csv_for_report(csv_paths: list[Path], weights: list[float])
                     "export_col": "EToGrid" if "EToGrid" in idx else "E_Grid",
                     "has_load": "E_User" in idx,
                     "has_import": "EFrGrid" in idx,
-                    "col_scale": {col: energy_unit_scale(r.units.get(col, "")) for col in idx},
                     "pr_scale": _PR_SCALE.get(r.units.get("PR", ""), 1.0),
                 })
                 for lc in loss_cols:
@@ -251,32 +240,20 @@ def _summarize_multi_csv_for_report(csv_paths: list[Path], weights: list[float])
 
         for meta, w, (_, row_data, dt_k) in zip(per_meta, weights, items):
             idx = meta["idx"]
-            col_scale = meta["col_scale"]
             reader_k = meta["reader"]
-
-            def kwh(col: str) -> float:
-                col_i = idx.get(col)
-                if col_i is None:
-                    return 0.0
-                factor, needs_dt = col_scale[col]
-                if factor == 0.0:
-                    raise ValueError(f"{col} requires a power or energy unit, got {reader_k.units.get(col, '')!r}")
-                v = row_data[col_i]
-                val = float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
-                return val * factor * (dt_k if needs_dt else 1.0)
 
             for lc in loss_cols:
                 if lc in idx:
-                    loss_kwh_sums[lc] += w * kwh(lc)
+                    loss_kwh_sums[lc] += w * reader_k.cell_kwh(row_data, lc, dt_k)
 
-            raw_eg = kwh(meta["export_col"])
+            raw_eg = reader_k.cell_kwh(row_data, meta["export_col"], dt_k)
             e_exp = max(0.0, raw_eg)
             if meta["has_load"]:
-                e_user = max(0.0, kwh("E_User"))
+                e_user = max(0.0, reader_k.cell_kwh(row_data, "E_User", dt_k))
                 if meta["has_import"]:
-                    e_imp = max(0.0, kwh("EFrGrid"))
+                    e_imp = max(0.0, reader_k.cell_kwh(row_data, "EFrGrid", dt_k))
                 elif "E_Solar" in idx:
-                    e_imp = max(0.0, e_user - max(0.0, kwh("E_Solar")))
+                    e_imp = max(0.0, e_user - max(0.0, reader_k.cell_kwh(row_data, "E_Solar", dt_k)))
                 elif raw_eg < 0:
                     e_imp = -raw_eg
                 else:
@@ -595,16 +572,7 @@ def generate_report(
                 "findings": merged_findings,
                 "weighted_pr": csv_stats.get("overall_weighted_pr"),
             }
-            parsed_scenarios.append({
-                "label": label,
-                "csv_name": ", ".join(p.name for p in csv_paths),
-                "project": proj,
-                "variant": var,
-                "installed_dc_kw": sc.get("installed_dc_kw"),
-                "battery_kwh": sc.get("battery_kwh"),
-                "stats": csv_stats,
-                "diagnostics": diag,
-            })
+            csv_label = ", ".join(p.name for p in csv_paths)
             econ_entry: dict[str, Any] = {"label": label, "csv_paths": csv_paths, "csv_weights": weights}
         else:
             if not csv_name:
@@ -620,17 +588,18 @@ def generate_report(
                 thresholds=thresholds,
             )
             csv_stats = _summarize_csv_for_report(csv_path)
-            parsed_scenarios.append({
-                "label": label,
-                "csv_name": csv_path.name,
-                "project": proj,
-                "variant": var,
-                "installed_dc_kw": sc.get("installed_dc_kw"),
-                "battery_kwh": sc.get("battery_kwh"),
-                "stats": csv_stats,
-                "diagnostics": diag,
-            })
+            csv_label = csv_path.name
             econ_entry = {"label": label, "csv_path": csv_path}
+        parsed_scenarios.append({
+            "label": label,
+            "csv_name": csv_label,
+            "project": proj,
+            "variant": var,
+            "installed_dc_kw": sc.get("installed_dc_kw"),
+            "battery_kwh": sc.get("battery_kwh"),
+            "stats": csv_stats,
+            "diagnostics": diag,
+        })
         for k in ("installed_dc_kw", "battery_kwh", "capex_total", "annual_opex", "replacement_events"):
             if sc.get(k) is not None:
                 econ_entry[k] = sc[k]

@@ -3,7 +3,17 @@ from __future__ import annotations
 
 import math
 
-from pvsyst_auto.components.editor import ObjectBlock, Profile, checked_points, objects, replace_key, write_points, point_count_errors, MAX_POINTS
+from pvsyst_auto.components.editor import (
+    MAX_POINTS,
+    ObjectBlock,
+    Profile,
+    checked_points,
+    inspect_profile_points,
+    objects,
+    point_count_errors,
+    replace_key,
+    write_points,
+)
 from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 
@@ -85,14 +95,7 @@ def battery_curve_inventory(text: str) -> dict:
     found = [b for b in blocks if isinstance(b, Profile)]
     items = []
     for profile in found[:16]:
-        errors = list(profile.problems)
-        points = []
-        try:
-            points = profile.points()
-        except ValueError as exc:
-            errors.append(str(exc))
-        if sum(b.path == profile.path for b in blocks) != 1:
-            errors.append("Ambiguous duplicate curve path")
+        points, errors = inspect_profile_points(profile, blocks)
         capacity = profile.path in CAPACITY_PATHS
         edit_errors = errors + control["errors"] + _profile_errors(profile, points) if capacity else [
             "Only CapaCourant / Capa_DischRate capacity curves are editable"]

@@ -357,6 +357,19 @@ def _edit_errors(profile: Profile, points: list[list[float]], *, three_voltage: 
     return errors
 
 
+def inspect_profile_points(profile: Profile, blocks: list) -> tuple[list[list[float]], list[str]]:
+    """Extract profile points and structural/duplication errors for one curve block."""
+    errors = list(profile.problems)
+    points: list[list[float]] = []
+    try:
+        points = profile.points()
+    except ValueError as exc:
+        errors.append(str(exc))
+    if sum(other.path == profile.path for other in blocks) != 1:
+        errors.append("Ambiguous duplicate curve path")
+    return points, errors
+
+
 def curve_inventory(kind: str, text: str) -> dict:
     if kind != "OND":
         return {"items": [], "truncated": False}
@@ -369,14 +382,7 @@ def curve_inventory(kind: str, text: str) -> dict:
     is_3v = bool(control["three_voltage"]) and not control["errors"]
     items = []
     for profile in found[:16]:
-        errors = list(profile.problems)
-        points = []
-        try:
-            points = profile.points()
-        except ValueError as exc:
-            errors.append(str(exc))
-        if sum(other.path == profile.path for other in blocks) != 1:
-            errors.append("Ambiguous duplicate curve path")
+        points, errors = inspect_profile_points(profile, blocks)
         supported = profile.path in CURVE_PATHS
         edit_errors = errors + control["errors"] + _edit_errors(profile, points, three_voltage=is_3v)
         items.append({"path": profile.path, "line": profile.line,
