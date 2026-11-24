@@ -203,8 +203,8 @@ def tracking_values(tracking, fieldtype, source=None):
     return values
 
 
-def orient_block(lines):
-    """Return the one directly owned tracking record after checking every owned field."""
+def _single_orient_record(lines):
+    """Parse and return (all_blocks, single_owned_pvOrient_block)."""
     blocks = objects("".join(lines))
     records = [block for block in blocks if block.object_type == "pvOrient"]
     if len(records) != 1:
@@ -212,6 +212,12 @@ def orient_block(lines):
     block = records[0]
     if block.path != "PVObject_" or not block.end_line:
         raise ValueError("pvOrient must be the complete directly owned record")
+    return blocks, block
+
+
+def orient_block(lines):
+    """Return the one directly owned tracking record after checking every owned field."""
+    blocks, block = _single_orient_record(lines)
     if block.one("Version")[1] not in NATIVE_TEXT or block.one("Flags")[1] != "$00":
         raise ValueError(f"pvOrient requires Version={TEXT_LABEL} and Flags=$00")
     if block.one("NoOrient")[1] != "1":

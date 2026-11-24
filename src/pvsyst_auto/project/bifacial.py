@@ -96,6 +96,54 @@ def _default_model_and_origin(field_type: str | None) -> tuple[str, str]:
     return "Sheds2D", "UnlimSheds"
 
 
+_BIFACIAL_TARGETS = {
+    "model": ("root", "BifacialModel", str),
+    "param_origin": ("root", "ParamOrigin", str),
+    "ground_albedo": ("root", "GroundAlbedo", lambda v: f"{v:.3f}"),
+    "bifaciality_factor": ("root", "BiFacialityFactor", lambda v: f"{v:.3f}"),
+    "rear_shading_factor": ("root", "RearShdFactor", lambda v: f"{v:.3f}"),
+    "mismatch_loss_factor": ("root", "MismatchLossFactor", lambda v: f"{v:.3f}"),
+    "height_above_ground_m": ("sub", "HeightGr", lambda v: f"{v:.3f}"),
+    "pitch_user_m": ("sub", "PitchUser", lambda v: f"{v:.3f}"),
+    "n_sheds_user": ("sub", "NShedsUser", str),
+    "shed_pitch_from_user": ("sub", "ShedPitchComesFromUser", lambda v: "True" if v else "False"),
+}
+
+
+def _validate_bifacial_field(key: str, raw_val, *, field_type: str | None):
+    if key == "model":
+        if raw_val not in BIFACIAL_MODELS:
+            raise ValueError(f"bifacial.model must be one of {BIFACIAL_MODELS}")
+        if field_type in TRACKING_FIELD_TYPES and raw_val != "Trackers2D":
+            raise ValueError(f"Orientation FieldType={field_type} requires bifacial.model='Trackers2D'")
+        if field_type in SHED_FIELD_TYPES and raw_val != "Sheds2D":
+            raise ValueError(f"Orientation FieldType={field_type} requires bifacial.model='Sheds2D'")
+        return raw_val
+    if key == "param_origin":
+        if raw_val not in PARAM_ORIGINS:
+            raise ValueError(f"bifacial.param_origin must be one of {PARAM_ORIGINS}")
+        return raw_val
+    if key in ("ground_albedo", "bifaciality_factor"):
+        return _finite(raw_val, f"bifacial.{key}", minimum=0.0, maximum=1.0, strict_min=True)
+    if key in ("rear_shading_factor", "mismatch_loss_factor"):
+        return _finite(raw_val, f"bifacial.{key}", minimum=0.0, maximum=1.0)
+    if key == "height_above_ground_m":
+        return _finite(raw_val, "bifacial.height_above_ground_m", minimum=0.0, maximum=50.0, strict_min=True)
+    if key == "pitch_user_m":
+        val = _finite(raw_val, "bifacial.pitch_user_m")
+        if val != -1.0 and val <= 0.0:
+            raise ValueError("bifacial.pitch_user_m must be -1.0 (from geometry) or > 0")
+        return val
+    if key == "n_sheds_user":
+        val = _strict_int(raw_val, "bifacial.n_sheds_user", minimum=-1)
+        if val == 0:
+            raise ValueError("bifacial.n_sheds_user must be -1 (unlimited/from geometry) or >= 1")
+        return val
+    if key == "shed_pitch_from_user":
+        return _strict_bool(raw_val, "bifacial.shed_pitch_from_user")
+    raise ValueError(f"Unknown bifacial field: {key}")
+
+
 def normalize_bifacial_spec(spec: dict, *, field_type: str | None = None,
                             existing: dict | None = None) -> dict:
     """Validate and normalize a bifacial configuration dict."""
@@ -131,53 +179,11 @@ def normalize_bifacial_spec(spec: dict, *, field_type: str | None = None,
         "shed_pitch_from_user": _ex("shed_pitch_from_user", False),
     }
 
-    model = spec.get("model", base["model"])
-    if model not in BIFACIAL_MODELS:
-        raise ValueError(f"bifacial.model must be one of {BIFACIAL_MODELS}")
-    if field_type in TRACKING_FIELD_TYPES and model != "Trackers2D":
-        raise ValueError(f"Orientation FieldType={field_type} requires bifacial.model='Trackers2D'")
-    if field_type in SHED_FIELD_TYPES and model != "Sheds2D":
-        raise ValueError(f"Orientation FieldType={field_type} requires bifacial.model='Sheds2D'")
-
-    param_origin = spec.get("param_origin", base["param_origin"])
-    if param_origin not in PARAM_ORIGINS:
-        raise ValueError(f"bifacial.param_origin must be one of {PARAM_ORIGINS}")
-
-    ground_albedo = _finite(spec.get("ground_albedo", base["ground_albedo"]),
-                            "bifacial.ground_albedo", minimum=0.0, maximum=1.0, strict_min=True)
-    bifaciality = _finite(spec.get("bifaciality_factor", base["bifaciality_factor"]),
-                          "bifacial.bifaciality_factor", minimum=0.0, maximum=1.0, strict_min=True)
-    rear_shading = _finite(spec.get("rear_shading_factor", base["rear_shading_factor"]),
-                           "bifacial.rear_shading_factor", minimum=0.0, maximum=1.0)
-    mismatch = _finite(spec.get("mismatch_loss_factor", base["mismatch_loss_factor"]),
-                       "bifacial.mismatch_loss_factor", minimum=0.0, maximum=1.0)
-    height_gr = _finite(spec.get("height_above_ground_m", base["height_above_ground_m"]),
-                        "bifacial.height_above_ground_m", minimum=0.0, maximum=50.0, strict_min=True)
-
-    pitch_user = _finite(spec.get("pitch_user_m", base["pitch_user_m"]), "bifacial.pitch_user_m")
-    if pitch_user != -1.0 and pitch_user <= 0.0:
-        raise ValueError("bifacial.pitch_user_m must be -1.0 (from geometry) or > 0")
-    n_sheds_user = _strict_int(spec.get("n_sheds_user", base["n_sheds_user"]), "bifacial.n_sheds_user", minimum=-1)
-    if n_sheds_user == 0:
-        raise ValueError("bifacial.n_sheds_user must be -1 (unlimited/from geometry) or >= 1")
-    shed_pitch_from_user = _strict_bool(
-        spec.get("shed_pitch_from_user", base["shed_pitch_from_user"]),
-        "bifacial.shed_pitch_from_user",
-    )
-
-    return {
-        "enabled": True,
-        "model": model,
-        "param_origin": param_origin,
-        "ground_albedo": ground_albedo,
-        "bifaciality_factor": bifaciality,
-        "rear_shading_factor": rear_shading,
-        "mismatch_loss_factor": mismatch,
-        "height_above_ground_m": height_gr,
-        "pitch_user_m": pitch_user,
-        "n_sheds_user": n_sheds_user,
-        "shed_pitch_from_user": shed_pitch_from_user,
+    normalized = {
+        key: _validate_bifacial_field(key, spec.get(key, base[key]), field_type=field_type)
+        for key in _BIFACIAL_TARGETS
     }
+    return {"enabled": True, **normalized}
 
 
 def render_bifacial_block(spec: dict, *, field_type: str | None = None,
@@ -291,48 +297,14 @@ def _validate_partial_bifacial_updates(updates: dict, *, field_type: str | None)
 
     root_edits: dict[str, str] = {}
     sub_edits: dict[str, str] = {}
-    if "model" in updates:
-        model = updates["model"]
-        if model not in BIFACIAL_MODELS:
-            raise ValueError(f"bifacial.model must be one of {BIFACIAL_MODELS}")
-        if field_type in TRACKING_FIELD_TYPES and model != "Trackers2D":
-            raise ValueError(f"Orientation FieldType={field_type} requires bifacial.model='Trackers2D'")
-        if field_type in SHED_FIELD_TYPES and model != "Sheds2D":
-            raise ValueError(f"Orientation FieldType={field_type} requires bifacial.model='Sheds2D'")
-        root_edits["BifacialModel"] = model
-    if "param_origin" in updates:
-        param_origin = updates["param_origin"]
-        if param_origin not in PARAM_ORIGINS:
-            raise ValueError(f"bifacial.param_origin must be one of {PARAM_ORIGINS}")
-        root_edits["ParamOrigin"] = param_origin
-    if "ground_albedo" in updates:
-        val = _finite(updates["ground_albedo"], "bifacial.ground_albedo", minimum=0.0, maximum=1.0, strict_min=True)
-        root_edits["GroundAlbedo"] = f"{val:.3f}"
-    if "bifaciality_factor" in updates:
-        val = _finite(updates["bifaciality_factor"], "bifacial.bifaciality_factor", minimum=0.0, maximum=1.0, strict_min=True)
-        root_edits["BiFacialityFactor"] = f"{val:.3f}"
-    if "rear_shading_factor" in updates:
-        val = _finite(updates["rear_shading_factor"], "bifacial.rear_shading_factor", minimum=0.0, maximum=1.0)
-        root_edits["RearShdFactor"] = f"{val:.3f}"
-    if "mismatch_loss_factor" in updates:
-        val = _finite(updates["mismatch_loss_factor"], "bifacial.mismatch_loss_factor", minimum=0.0, maximum=1.0)
-        root_edits["MismatchLossFactor"] = f"{val:.3f}"
-    if "height_above_ground_m" in updates:
-        val = _finite(updates["height_above_ground_m"], "bifacial.height_above_ground_m", minimum=0.0, maximum=50.0, strict_min=True)
-        sub_edits["HeightGr"] = f"{val:.3f}"
-    if "pitch_user_m" in updates:
-        val = _finite(updates["pitch_user_m"], "bifacial.pitch_user_m")
-        if val != -1.0 and val <= 0.0:
-            raise ValueError("bifacial.pitch_user_m must be -1.0 (from geometry) or > 0")
-        sub_edits["PitchUser"] = f"{val:.3f}"
-    if "n_sheds_user" in updates:
-        val = _strict_int(updates["n_sheds_user"], "bifacial.n_sheds_user", minimum=-1)
-        if val == 0:
-            raise ValueError("bifacial.n_sheds_user must be -1 (unlimited/from geometry) or >= 1")
-        sub_edits["NShedsUser"] = str(val)
-    if "shed_pitch_from_user" in updates:
-        val = _strict_bool(updates["shed_pitch_from_user"], "bifacial.shed_pitch_from_user")
-        sub_edits["ShedPitchComesFromUser"] = "True" if val else "False"
+    for key, (target, native_key, fmt) in _BIFACIAL_TARGETS.items():
+        if key in updates:
+            val = _validate_bifacial_field(key, updates[key], field_type=field_type)
+            rendered = fmt(val)
+            if target == "root":
+                root_edits[native_key] = rendered
+            else:
+                sub_edits[native_key] = rendered
     return root_edits, sub_edits
 
 

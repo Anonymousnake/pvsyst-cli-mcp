@@ -161,15 +161,19 @@ def validate_structure(store, project: str, variant: str) -> dict:
         }
 
 
-def clone_subarray_data(store, data, source_subarray_id, *, clone_orientation=False,
-                        share_inverter=False, reserved_ids=()):
-    """Build one cloned subarray in memory without reading or writing workspace files."""
+def _validate_clone_subarray_args(source_subarray_id: int, clone_orientation: bool, share_inverter: bool) -> None:
     if not isinstance(source_subarray_id, int) or isinstance(source_subarray_id, bool):
         raise ValueError("source_subarray_id must be an integer")
     if not isinstance(clone_orientation, bool) or not isinstance(share_inverter, bool):
         raise ValueError("clone_orientation and share_inverter must be booleans")
     if share_inverter and clone_orientation:
         raise ValueError("Shared-parent cloning requires the existing common orientation")
+
+
+def clone_subarray_data(store, data, source_subarray_id, *, clone_orientation=False,
+                        share_inverter=False, reserved_ids=()):
+    """Build one cloned subarray in memory without reading or writing workspace files."""
+    _validate_clone_subarray_args(source_subarray_id, clone_orientation, share_inverter)
     _, lines = store._text(data)
     arrays, system = store._sections(lines)
     if source_subarray_id not in arrays or system is None:
@@ -285,12 +289,7 @@ def clone_subarray(store, project: str, variant: str, source_subarray_id: int,
                    expected_sha256: str | None = None, clone_orientation: bool = False,
                    share_inverter: bool = False) -> dict:
     """Duplicate a grid subarray with all its exclusively owned inverter groups."""
-    if not isinstance(source_subarray_id, int) or isinstance(source_subarray_id, bool):
-        raise ValueError("source_subarray_id must be an integer")
-    if not isinstance(clone_orientation, bool) or not isinstance(share_inverter, bool):
-        raise ValueError("clone_orientation and share_inverter must be booleans")
-    if share_inverter and clone_orientation:
-        raise ValueError("Shared-parent cloning requires the existing common orientation")
+    _validate_clone_subarray_args(source_subarray_id, clone_orientation, share_inverter)
     with store.lock:
         store._check_project(project)
         path = store._path(project, variant)

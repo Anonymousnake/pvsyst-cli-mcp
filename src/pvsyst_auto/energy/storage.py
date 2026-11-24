@@ -457,6 +457,47 @@ def validate_storage(state, *, allow_weak=False, preserved=None):
                 raise ValueError("SpecifiedHours discharging_schedule_48 must contain 48 non-negative slots with at least one > 0")
 
 
+def _apply_hour_window_bounds(spec: dict, base: dict | None, *, allow_inherit: bool, dis: str, resolved: dict) -> None:
+    if dis == "MinMaxHour":
+        sh = spec.get("discharge_start_hour", base.get("HourBegDisch") if allow_inherit and base else None)
+        eh = spec.get("discharge_end_hour", base.get("HourEndDisch") if allow_inherit and base else None)
+        if type(sh) is not int or type(eh) is not int or not (0 <= sh <= 23 and 0 <= eh <= 23) or sh == eh:
+            raise ValueError("hour_window requires distinct integer discharge_start_hour and discharge_end_hour in 0..23")
+        resolved.update(HourBegDisch=sh, HourEndDisch=eh)
+    elif "discharge_start_hour" in spec or "discharge_end_hour" in spec:
+        raise ValueError("discharge_start_hour/discharge_end_hour apply only to discharging_strategy='hour_window'")
+
+
+def _resolve_48_slot_schedule(
+    spec: dict,
+    base: dict | None,
+    *,
+    same_mode: bool,
+    schedule_key: str,
+    scalar_key: str,
+    maximum: float,
+    require_positive: bool,
+    mode_label: str,
+) -> tuple[float, list[float]]:
+    sched = spec.get(schedule_key, base.get(schedule_key) if same_mode and base else None)
+    scalar = spec.get(scalar_key, base.get(scalar_key) if same_mode and base else None)
+    if sched is not None:
+        if not isinstance(sched, list) or len(sched) != 48:
+            raise ValueError(f"{schedule_key} must contain 48 values")
+        sched = [finite(v, f"{schedule_key} slot", 0, maximum) for v in sched]
+        if require_positive and max(sched) <= 0:
+            raise ValueError(f"{mode_label} {schedule_key} requires at least one slot > 0")
+        if scalar is None:
+            scalar = max(sched)
+    elif scalar is not None:
+        scalar = finite(scalar, scalar_key, 0, maximum, positive=require_positive)
+        sched = [scalar] * 48
+    else:
+        raise ValueError(f"PowerShift {mode_label} requires {scalar_key} and/or {schedule_key}")
+    scalar = finite(scalar, scalar_key, 0, maximum, positive=require_positive)
+    return scalar, sched
+
+
 def resolve_storage_controls(spec: dict, *, base: dict | None = None, inherited_limit: dict | None = None) -> dict:
     """Resolve and strictly validate strategy, charging/discharging modes, schedules, and limits."""
     strat_key = spec.get("strategy")
@@ -518,14 +559,7 @@ def resolve_storage_controls(spec: dict, *, base: dict | None = None, inherited_
                 resolved["grid_limit_kva"] = limits["grid_limit_kva"]
             else:
                 raise ValueError("PeakShaving requires grid_limit_kw (or an existing PLimGrid on pvSystem)")
-        if dis == "MinMaxHour":
-            sh = spec.get("discharge_start_hour", base.get("HourBegDisch") if same_strategy and base else None)
-            eh = spec.get("discharge_end_hour", base.get("HourEndDisch") if same_strategy and base else None)
-            if type(sh) is not int or type(eh) is not int or not (0 <= sh <= 23 and 0 <= eh <= 23) or sh == eh:
-                raise ValueError("hour_window requires distinct integer discharge_start_hour and discharge_end_hour in 0..23")
-            resolved.update(HourBegDisch=sh, HourEndDisch=eh)
-        elif "discharge_start_hour" in spec or "discharge_end_hour" in spec:
-            raise ValueError("discharge_start_hour/discharge_end_hour apply only to discharging_strategy='hour_window'")
+        _apply_hour_window_bounds(spec, base, allow_inherit=same_strategy, dis=dis, resolved=resolved)
         return resolved
 
     # PowerShift
@@ -543,65 +577,29 @@ def resolve_storage_controls(spec: dict, *, base: dict | None = None, inherited_
     if chg == "PVProdFraction":
         if "charging_power_kw" in spec:
             raise ValueError("PVProdFraction uses charging_pv_fraction, not charging_power_kw")
-        sched = spec.get("charging_schedule_48", base.get("charging_schedule_48") if same_chg else None)
-        frac = spec.get("charging_pv_fraction", base.get("charging_pv_fraction") if same_chg else None)
-        if sched is not None:
-            if not isinstance(sched, list) or len(sched) != 48:
-                raise ValueError("charging_schedule_48 must contain 48 values")
-            sched = [finite(v, "charging_schedule_48 slot", 0, 1) for v in sched]
-            if max(sched) <= 0:
-                raise ValueError("PVProdFraction charging_schedule_48 requires at least one slot > 0")
-            if frac is None:
-                frac = max(sched)
-        elif frac is not None:
-            frac = finite(frac, "charging_pv_fraction", 0, 1, positive=True)
-            sched = [frac] * 48
-        else:
-            raise ValueError("PowerShift PVProdFraction requires charging_pv_fraction and/or charging_schedule_48")
-        frac = finite(frac, "charging_pv_fraction", 0, 1, positive=True)
+        frac, sched = _resolve_48_slot_schedule(
+            spec, base, same_mode=same_chg, schedule_key="charging_schedule_48",
+            scalar_key="charging_pv_fraction", maximum=1, require_positive=True, mode_label="PVProdFraction",
+        )
         resolved.update(charging_pv_fraction=frac, charging_schedule_48=sched)
     else:
         if "charging_pv_fraction" in spec:
             raise ValueError(f"{chg} uses charging_power_kw, not charging_pv_fraction")
-        positive = chg == "SpecChargPower"
-        sched = spec.get("charging_schedule_48", base.get("charging_schedule_48") if same_chg else None)
-        pwr = spec.get("charging_power_kw", base.get("charging_power_kw") if same_chg else None)
-        if sched is not None:
-            if not isinstance(sched, list) or len(sched) != 48:
-                raise ValueError("charging_schedule_48 must contain 48 values")
-            sched = [finite(v, "charging_schedule_48 slot", 0, math.inf) for v in sched]
-            if positive and max(sched) <= 0:
-                raise ValueError("SpecChargPower charging_schedule_48 requires at least one slot > 0")
-            if pwr is None:
-                pwr = max(sched)
-        elif pwr is not None:
-            pwr = finite(pwr, "charging_power_kw", 0, math.inf, positive=positive)
-            sched = [pwr] * 48
-        else:
-            raise ValueError(f"PowerShift {chg} requires charging_power_kw and/or charging_schedule_48")
-        pwr = finite(pwr, "charging_power_kw", 0, math.inf, positive=positive)
+        pwr, sched = _resolve_48_slot_schedule(
+            spec, base, same_mode=same_chg, schedule_key="charging_schedule_48",
+            scalar_key="charging_power_kw", maximum=math.inf,
+            require_positive=(chg == "SpecChargPower"), mode_label=chg,
+        )
         resolved.update(charging_power_kw=pwr, charging_schedule_48=sched)
 
     same_dis = same_strategy and dis == base["discharging_strategy"]
     if dis == "SpecifiedHours":
         if "discharge_start_hour" in spec or "discharge_end_hour" in spec:
             raise ValueError("discharge_start_hour/discharge_end_hour apply only to hour_window")
-        dsched = spec.get("discharging_schedule_48", base.get("discharging_schedule_48") if same_dis else None)
-        dpwr = spec.get("discharging_power_kw", base.get("discharging_power_kw") if same_dis else None)
-        if dsched is not None:
-            if not isinstance(dsched, list) or len(dsched) != 48:
-                raise ValueError("discharging_schedule_48 must contain 48 values")
-            dsched = [finite(v, "discharging_schedule_48 slot", 0, math.inf) for v in dsched]
-            if max(dsched) <= 0:
-                raise ValueError("SpecifiedHours discharging_schedule_48 requires at least one slot > 0")
-            if dpwr is None:
-                dpwr = max(dsched)
-        elif dpwr is not None:
-            dpwr = finite(dpwr, "discharging_power_kw", 0, math.inf, positive=True)
-            dsched = [dpwr] * 48
-        else:
-            raise ValueError("PowerShift SpecifiedHours requires discharging_power_kw and/or discharging_schedule_48")
-        dpwr = finite(dpwr, "discharging_power_kw", 0, math.inf, positive=True)
+        dpwr, dsched = _resolve_48_slot_schedule(
+            spec, base, same_mode=same_dis, schedule_key="discharging_schedule_48",
+            scalar_key="discharging_power_kw", maximum=math.inf, require_positive=True, mode_label="SpecifiedHours",
+        )
         resolved.update(discharging_power_kw=dpwr, discharging_schedule_48=dsched)
     else:
         if "discharging_schedule_48" in spec:
@@ -611,14 +609,7 @@ def resolve_storage_controls(spec: dict, *, base: dict | None = None, inherited_
             raise ValueError(f"PowerShift {dis} requires discharging_power_kw")
         dpwr = finite(dpwr, "discharging_power_kw", 0, math.inf, positive=True)
         resolved["discharging_power_kw"] = dpwr
-        if dis == "MinMaxHour":
-            sh = spec.get("discharge_start_hour", base.get("HourBegDisch") if same_dis and base else None)
-            eh = spec.get("discharge_end_hour", base.get("HourEndDisch") if same_dis and base else None)
-            if type(sh) is not int or type(eh) is not int or not (0 <= sh <= 23 and 0 <= eh <= 23) or sh == eh:
-                raise ValueError("hour_window requires distinct integer discharge_start_hour and discharge_end_hour in 0..23")
-            resolved.update(HourBegDisch=sh, HourEndDisch=eh)
-        elif "discharge_start_hour" in spec or "discharge_end_hour" in spec:
-            raise ValueError("discharge_start_hour/discharge_end_hour apply only to discharging_strategy='hour_window'")
+        _apply_hour_window_bounds(spec, base, allow_inherit=same_dis, dis=dis, resolved=resolved)
     return resolved
 
 

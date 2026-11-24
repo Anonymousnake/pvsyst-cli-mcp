@@ -220,6 +220,65 @@ def _build_zero_template_candidate(component_type, *, manufacturer, model, value
     return text, meta, conversions, {k: str(v[0]) for k, v in parsed.items()}
 
 
+def _validate_candidate_bytes(store, component_type: str, candidate: str, *, bom: bool) -> tuple[bytes, dict, dict]:
+    data = (b"\xef\xbb\xbf" if bom else b"") + candidate.encode("utf-8")
+    validation = store._inspect(component_type, data)
+    store._require_valid(validation, complete=True)
+    electrical = electrical_inventory(component_type, candidate)
+    if electrical["status"] != "readable":
+        # A flattened-complete template can still lack its owning electrical object.
+        raise ValueError("Candidate electrical fields are unreadable: " + "; ".join(electrical["issues"]))
+    return data, validation, electrical
+
+
+def _ensure_template_unchanged(store, original_path, original: bytes) -> None:
+    if store._read(original_path) != original:
+        raise ValueError("Template changed while preparing the component")
+
+
+def _commit_sourced_component(
+    store,
+    component_type: str,
+    new_name: str,
+    data: bytes,
+    manifest,
+    result: dict,
+    *,
+    acknowledge_inherited_model: bool,
+    ack_message: str,
+    dry_run: bool,
+    issue,
+    before_commit=None,
+) -> dict:
+    if dry_run:
+        return result
+    if not acknowledge_inherited_model:
+        issue("acknowledge_inherited_model", ack_message)
+        result["status"] = "blocked"
+        return result
+    if before_commit is not None:
+        before_commit()
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    record = {key: value for key, value in result.items()
+              if key not in ("diff", "stage", "component_created", "dry_run")}
+    encoded_record = json.dumps(record, ensure_ascii=False, indent=2, allow_nan=False)
+    result["stage"] = "creation"
+    created = False
+    try:
+        with manifest.open("x", encoding="utf-8") as stream:
+            created = True
+            stream.write(encoded_record)
+        store._new(component_type, new_name, data)
+    except BaseException:
+        # The record describes this attempt only; a failed create must not block a retry.
+        # Only remove a record this call opened, never a pre-existing one.
+        if created:
+            manifest.unlink(missing_ok=True)
+        raise
+    result.update(stage="created", component_created=True)
+    return result
+
+
 def build_sourced_component(store, *, component_type, new_name,
                            manufacturer, model, sources, declarations,
                            template_name=None,
@@ -276,12 +335,7 @@ def build_sourced_component(store, *, component_type, new_name,
                     chemistry=chemistry,
                 )
                 bom = not candidate.isascii()
-                data = (b"\xef\xbb\xbf" if bom else b"") + candidate.encode("utf-8")
-                validation = store._inspect(component_type, data)
-                store._require_valid(validation, complete=True)
-                electrical = electrical_inventory(component_type, candidate)
-                if electrical["status"] != "readable":
-                    raise ValueError("Candidate electrical fields are unreadable: " + "; ".join(electrical["issues"]))
+                data, validation, electrical = _validate_candidate_bytes(store, component_type, candidate, bom=bom)
                 diff = "".join(difflib.unified_diff([], candidate.splitlines(keepends=True),
                                                     fromfile="<zero-template>", tofile=new_name))
                 result.update(
@@ -304,29 +358,18 @@ def build_sourced_component(store, *, component_type, new_name,
                     diff=diff[:32000],
                     diff_truncated=len(diff) > 32000,
                 )
-                if dry_run:
-                    return result
-                if not acknowledge_inherited_model:
-                    issue("acknowledge_inherited_model", "Preview the synthesized model and set acknowledge_inherited_model=true before creation")
-                    result["status"] = "blocked"
-                    return result
-                manifest.parent.mkdir(parents=True, exist_ok=True)
-                record = {key: value for key, value in result.items()
-                          if key not in ("diff", "stage", "component_created", "dry_run")}
-                encoded_record = json.dumps(record, ensure_ascii=False, indent=2, allow_nan=False)
-                result["stage"] = "creation"
-                created = False
-                try:
-                    with manifest.open("x", encoding="utf-8") as stream:
-                        created = True
-                        stream.write(encoded_record)
-                    store._new(component_type, new_name, data)
-                except BaseException:
-                    if created:
-                        manifest.unlink(missing_ok=True)
-                    raise
-                result.update(stage="created", component_created=True)
-                return result
+                return _commit_sourced_component(
+                    store,
+                    component_type,
+                    new_name,
+                    data,
+                    manifest,
+                    result,
+                    acknowledge_inherited_model=acknowledge_inherited_model,
+                    ack_message="Preview the synthesized model and set acknowledge_inherited_model=true before creation",
+                    dry_run=dry_run,
+                    issue=issue,
+                )
 
             original_path = store._path(component_type, template_name, source_library)
             original = store._read(original_path)
@@ -395,13 +438,7 @@ def build_sourced_component(store, *, component_type, new_name,
                         lines[index] = replace_value(lines[index], manufacturer + "\t" + model + "\tUser-defined template model")
                 candidate = "".join(lines)
             bom = original.startswith(b"\xef\xbb\xbf") or not candidate.isascii()
-            data = (b"\xef\xbb\xbf" if bom else b"") + candidate.encode("utf-8")
-            validation = store._inspect(component_type, data)
-            store._require_valid(validation, complete=True)
-            electrical = electrical_inventory(component_type, candidate)
-            if electrical["status"] != "readable":
-                # A flattened-complete template can still lack its owning electrical object.
-                raise ValueError("Candidate electrical fields are unreadable: " + "; ".join(electrical["issues"]))
+            data, validation, electrical = _validate_candidate_bytes(store, component_type, candidate, bom=bom)
             declared = electrical["fields"]
             if component_type == "PAN":
                 for key in ("ISC", "Voc", "Imp", "Vmp"):
@@ -444,33 +481,19 @@ def build_sourced_component(store, *, component_type, new_name,
                                               fromfile=template_name, tofile=new_name))
             result["diff"] = diff[:32000]
             result["diff_truncated"] = len(diff) > 32000
-            if dry_run:
-                return result
-            if not acknowledge_inherited_model:
-                issue("acknowledge_inherited_model", "Preview the inherited model and explicitly acknowledge it before creation")
-                result["status"] = "blocked"
-                return result
-            if store._read(original_path) != original:
-                raise ValueError("Template changed while preparing the component")
-            # Acquire the single store lock for this source record.
-            manifest.parent.mkdir(parents=True, exist_ok=True)
-            record = {key: value for key, value in result.items()
-                      if key not in ("diff", "stage", "component_created", "dry_run")}
-            encoded_record = json.dumps(record, ensure_ascii=False, indent=2, allow_nan=False)
-            result["stage"] = "creation"
-            created = False
-            try:
-                with manifest.open("x", encoding="utf-8") as stream:
-                    created = True
-                    stream.write(encoded_record)
-                store._new(component_type, new_name, data)
-            except BaseException:
-                # The record describes this attempt only; a failed create must not block a retry.
-                # Only remove a record this call opened, never a pre-existing one.
-                if created:
-                    manifest.unlink(missing_ok=True)
-                raise
-            result.update(stage="created", component_created=True)
+            return _commit_sourced_component(
+                store,
+                component_type,
+                new_name,
+                data,
+                manifest,
+                result,
+                acknowledge_inherited_model=acknowledge_inherited_model,
+                ack_message="Preview the inherited model and explicitly acknowledge it before creation",
+                dry_run=dry_run,
+                issue=issue,
+                before_commit=lambda: _ensure_template_unchanged(store, original_path, original),
+            )
         except (ValueError, OSError, TypeError) as exc:
             issue("component", exc)
             result["status"] = "failed" if result["stage"] == "creation" else "blocked"
