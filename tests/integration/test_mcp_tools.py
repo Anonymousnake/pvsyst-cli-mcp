@@ -19,6 +19,7 @@ from pvsyst_auto.api.schemas import (
     SoilingUpdates,
     SourcedHouseTaskRequest,
 )
+from tests._fixtures import init_workspace, write_utf8_crlf
 from tests.integration._session import decode_reply, mcp_session
 
 
@@ -315,20 +316,13 @@ class McpToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
         from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
 
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "PVsyst8.1_Data"
-            for folder in ("Projects", "Results", "Models", "Meteo", "Sites", "UserData",
-                           "ComposPV/PVmodules", "ComposPV/Inverters"):
-                (root / folder).mkdir(parents=True)
+            root = init_workspace(Path(tmp) / "PVsyst8.1_Data")
             cli_exe = Path(tmp) / "PVsystCLI.exe"
             cli_exe.write_bytes(b"fake")
-            (root / "Sites" / "Geneva_MN90.SIT").write_bytes(
-                b"\xef\xbb\xbf" + SITE_TEXT.replace("\n", "\r\n").encode("utf-8"))
-            (root / "Meteo" / "Geneva_MN90_SYN.MET").write_bytes(
-                b"\xef\xbb\xbf" + MET_TEXT.replace("\n", "\r\n").encode("utf-8"))
-            (root / "ComposPV/PVmodules/Lab440.PAN").write_bytes(
-                b"\xef\xbb\xbf" + UTILITY_PAN.replace("\n", "\r\n").encode("utf-8"))
-            (root / "ComposPV/Inverters/Lab50.OND").write_bytes(
-                b"\xef\xbb\xbf" + UTILITY_OND.replace("\n", "\r\n").encode("utf-8"))
+            write_utf8_crlf(root / "Sites" / "Geneva_MN90.SIT", SITE_TEXT)
+            write_utf8_crlf(root / "Meteo" / "Geneva_MN90_SYN.MET", MET_TEXT)
+            write_utf8_crlf(root / "ComposPV/PVmodules/Lab440.PAN", UTILITY_PAN)
+            write_utf8_crlf(root / "ComposPV/Inverters/Lab50.OND", UTILITY_OND)
 
             async with mcp_session(root, cli_exe) as session:
                 # 1) Build bifacial SFI via default tool set

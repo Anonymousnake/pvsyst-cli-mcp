@@ -70,14 +70,44 @@ class PVsystTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.client.list_variants("../Example.PRJ")
 
-    def test_license_info_redacts_host(self):
-        output = ("Status: TRIAL\nRemaining days: 60\nRemaining executions: 248\n"
-                  "Host ID: HARDDISK=fixture-secret\n")
-        with patch.object(self.client, "_run", return_value=subprocess.CompletedProcess([], 0, output, "")):
-            info = self.client.license_info()
-        self.assertEqual(info, {"status": "TRIAL", "remaining_days": 60,
-                                "remaining_executions": 248})
-        self.assertNotIn("fixture-secret", str(info))
+    def test_license_status_confirmation_and_key_redaction(self):
+        with self.subTest(case="info_redacts_host"):
+            output = ("Status: TRIAL\nRemaining days: 60\nRemaining executions: 248\n"
+                      "Host ID: HARDDISK=fixture-secret\n")
+            with patch.object(self.client, "_run", return_value=subprocess.CompletedProcess([], 0, output, "")):
+                info = self.client.license_info()
+            self.assertEqual(info, {"status": "TRIAL", "remaining_days": 60,
+                                    "remaining_executions": 248})
+            self.assertNotIn("fixture-secret", str(info))
+
+        with self.subTest(case="unknown_status"):
+            result = subprocess.CompletedProcess([], 0, "License file: present\nExpiration date: \n", "")
+            with patch.object(self.client, "_run", return_value=result):
+                self.assertEqual(self.client.license_info(),
+                                 {"status": "UNSPECIFIED", "expiration_date": None})
+
+        with self.subTest(case="timeout_redacts_key"):
+            with patch.object(self.client, "_run", side_effect=subprocess.TimeoutExpired(
+                    ["PVsystCLI", "lic-activate", "-k:private-key"], 5)):
+                with self.assertRaises(PVsystError) as raised:
+                    self.client.license_activate("private-key", confirm=True)
+            self.assertNotIn("private-key", str(raised.exception))
+
+        with self.subTest(case="mutation_confirmation_and_redaction"):
+            with patch.object(self.client, "_run") as command:
+                with self.assertRaises(ValueError):
+                    self.client.license_activate("private-key")
+                command.assert_not_called()
+
+            def run(*args):
+                if args[0] == "lic-info":
+                    return subprocess.CompletedProcess([], 0, "Status: TRIAL\nRemaining days: 5", "")
+                return subprocess.CompletedProcess([], 0, "License key: private-key", "")
+
+            with patch.object(self.client, "_run", side_effect=run):
+                info = self.client.license_activate("private-key", confirm=True)
+            self.assertNotIn("private-key", str(info))
+            self.assertEqual(info["command"], "lic-activate")
 
     def test_simulation_requires_actual_csv_not_just_success_message(self):
         target = self.workspace / "Results" / "new.csv"
@@ -197,13 +227,6 @@ class PVsystTests(unittest.TestCase):
                         "csv_name": "new.csv", **updates}))
                 self.assertFalse(target.exists())
             command.assert_not_called()
-
-    def test_license_timeout_does_not_expose_secret(self):
-        with patch.object(self.client, "_run", side_effect=subprocess.TimeoutExpired(
-                ["PVsystCLI", "lic-activate", "-k:private-key"], 5)):
-            with self.assertRaises(PVsystError) as raised:
-                self.client.license_activate("private-key", confirm=True)
-        self.assertNotIn("private-key", str(raised.exception))
 
     def test_new_cli_optional_simulation_flags(self):
         self.client._help_cache["run-simulation"] += (
@@ -331,26 +354,26 @@ class PVsystTests(unittest.TestCase):
             self.assertIn("existing output", outcomes)
             command.assert_called_once()
 
-    def test_batch_rejects_output_traversal_before_running(self):
+    def test_batch_rejects_output_traversal_and_missing_success(self):
         self.client._help_cache["run-simulation"] += "\n --batch-params-file|-bpf:"
-        batch = self.workspace / "Models" / "bad_params.CSV"
-        batch.write_text("SIM_1;../outside.csv\n", encoding="utf-8")
-        with patch.object(self.client, "_run") as command:
-            with self.assertRaisesRegex(ValueError, "unique CSV filename"):
-                self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
-            batch.write_text("SIM_1;One.CSV\nSIM_2;one.csv\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "unique CSV filename"):
-                self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
-            command.assert_not_called()
+        with self.subTest(case="output_traversal_and_duplicate"):
+            batch = self.workspace / "Models" / "bad_params.CSV"
+            batch.write_text("SIM_1;../outside.csv\n", encoding="utf-8")
+            with patch.object(self.client, "_run") as command:
+                with self.assertRaisesRegex(ValueError, "unique CSV filename"):
+                    self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
+                batch.write_text("SIM_1;One.CSV\nSIM_2;one.csv\n", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "unique CSV filename"):
+                    self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
+                command.assert_not_called()
 
-    def test_batch_rejects_zero_exit_without_success(self):
-        self.client._help_cache["run-simulation"] += "\n --batch-params-file|-bpf:"
-        batch = self.workspace / "Models" / "empty_params.CSV"
-        batch.write_text("SIM_1;hourly.csv\n", encoding="utf-8")
-        with patch.object(self.client, "_run", return_value=subprocess.CompletedProcess(
-                [], 0, "Loading workspace failed", "")):
-            with self.assertRaises(PVsystError):
-                self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
+        with self.subTest(case="zero_exit_without_success"):
+            batch = self.workspace / "Models" / "empty_params.CSV"
+            batch.write_text("SIM_1;hourly.csv\n", encoding="utf-8")
+            with patch.object(self.client, "_run", return_value=subprocess.CompletedProcess(
+                    [], 0, "Loading workspace failed", "")):
+                with self.assertRaises(PVsystError):
+                    self.client.run_simulation("Example.PRJ", "VC0", batch_params=batch)
 
     def test_comma_batch_hourly_and_minute_energy(self):
         batch_file = self.workspace / "Results" / "batch_hourly.csv"
@@ -408,28 +431,6 @@ class PVsystTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.client.create_site("Bad", 100.0, 0, monthly,
                                     self.workspace / "Sites" / "bad.sit")
-
-    def test_license_unknown_is_not_misreported_as_licensed(self):
-        result = subprocess.CompletedProcess([], 0, "License file: present\nExpiration date: \n", "")
-        with patch.object(self.client, "_run", return_value=result):
-            self.assertEqual(self.client.license_info(),
-                             {"status": "UNSPECIFIED", "expiration_date": None})
-
-    def test_license_mutations_require_confirmation_and_redact_key(self):
-        with patch.object(self.client, "_run") as command:
-            with self.assertRaises(ValueError):
-                self.client.license_activate("private-key")
-            command.assert_not_called()
-
-        def run(*args):
-            if args[0] == "lic-info":
-                return subprocess.CompletedProcess([], 0, "Status: TRIAL\nRemaining days: 5", "")
-            return subprocess.CompletedProcess([], 0, "License key: private-key", "")
-
-        with patch.object(self.client, "_run", side_effect=run):
-            info = self.client.license_activate("private-key", confirm=True)
-        self.assertNotIn("private-key", str(info))
-        self.assertEqual(info["command"], "lic-activate")
 
     def test_export_logs_and_bounded_rows(self):
         folder = self.workspace / "Results"

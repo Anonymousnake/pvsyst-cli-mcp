@@ -12,6 +12,7 @@ from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.engineering.suggest import suggest_sizing
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import EXPECTED_WORKSPACE_BASENAME, prepare_design_project, simulate_design
+from tests._fixtures import init_workspace, write_utf8_crlf
 from tests.unit.core.test_bifacial_utility import UTILITY_OND, UTILITY_PAN, _FakeUtilityCLI
 from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
 
@@ -20,19 +21,11 @@ class SuggestSizingTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name).resolve() / EXPECTED_WORKSPACE_BASENAME
-        self.root.mkdir(parents=True, exist_ok=True)
-        for sub in ("Projects", "Sites", "Meteo", "Models", "Results",
-                    "ComposPV/PVmodules", "ComposPV/Inverters"):
-            (self.root / sub).mkdir(parents=True, exist_ok=True)
-        (self.root / "Sites" / "Geneva_MN90.SIT").write_bytes(
-            b"\xef\xbb\xbf" + SITE_TEXT.replace("\n", "\r\n").encode("utf-8"))
-        (self.root / "Meteo" / "Geneva_MN90_SYN.MET").write_bytes(
-            b"\xef\xbb\xbf" + MET_TEXT.replace("\n", "\r\n").encode("utf-8"))
-        (self.root / "ComposPV/PVmodules/Lab440.PAN").write_bytes(
-            b"\xef\xbb\xbf" + UTILITY_PAN.replace("\n", "\r\n").encode("utf-8"))
-        (self.root / "ComposPV/Inverters/Lab50.OND").write_bytes(
-            b"\xef\xbb\xbf" + UTILITY_OND.replace("\n", "\r\n").encode("utf-8"))
+        self.root = init_workspace(Path(tmp.name).resolve() / EXPECTED_WORKSPACE_BASENAME)
+        write_utf8_crlf(self.root / "Sites" / "Geneva_MN90.SIT", SITE_TEXT)
+        write_utf8_crlf(self.root / "Meteo" / "Geneva_MN90_SYN.MET", MET_TEXT)
+        write_utf8_crlf(self.root / "ComposPV/PVmodules/Lab440.PAN", UTILITY_PAN)
+        write_utf8_crlf(self.root / "ComposPV/Inverters/Lab50.OND", UTILITY_OND)
         self.components = ComponentStore(self.root)
         self.store = VariantStore(self.root, self.components)
 
@@ -122,9 +115,7 @@ class SuggestSizingTests(unittest.TestCase):
             "  NbMPPT=2\n",
             "  NbMPPT=2\n  NbInputsMain=1\n  NbInputsSec=1\n  IscMaxMain=20.0\n  IscMaxSec=10.0\n",
         )
-        (self.root / "ComposPV/Inverters/Unbalanced.OND").write_bytes(
-            b"\xef\xbb\xbf" + unbalanced_ond.replace("\n", "\r\n").encode("utf-8")
-        )
+        write_utf8_crlf(self.root / "ComposPV/Inverters/Unbalanced.OND", unbalanced_ond)
         blocked = suggest_sizing(
             self.store, pan_name="Lab440.PAN", ond_name="Unbalanced.OND", target_dc_kw=8.8
         )
@@ -140,9 +131,7 @@ class SuggestSizingTests(unittest.TestCase):
             "  NbMPPT=2\n",
             "  NbMPPT=2\n  IscMaxMain=10.0\n  IscMaxSec=10.0\n",
         )
-        (self.root / "ComposPV/Inverters/LowIsc.OND").write_bytes(
-            b"\xef\xbb\xbf" + low_isc_ond.replace("\n", "\r\n").encode("utf-8")
-        )
+        write_utf8_crlf(self.root / "ComposPV/Inverters/LowIsc.OND", low_isc_ond)
         capped = suggest_sizing(
             self.store, pan_name="Lab440.PAN", ond_name="LowIsc.OND", target_dc_kw=100.0
         )

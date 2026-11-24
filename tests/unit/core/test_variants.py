@@ -14,6 +14,7 @@ from pvsyst_auto.project.orientation_convert import convert_orientation
 from pvsyst_auto.project.synthesize import synthesize_project_and_variant
 from pvsyst_auto.project.tracking import tracking_values
 from pvsyst_auto.project.variants import VariantStore
+from tests._fixtures import write_utf8_crlf
 from tests.unit.core.test_bifacial_utility import UTILITY_OND, UTILITY_PAN
 from tests.unit.core.test_components import PAN, OND, BTR, GEN
 from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
@@ -67,8 +68,7 @@ class VariantTests(unittest.TestCase):
         (seed / "Projects").mkdir(parents=True)
         (seed / "Projects" / "Example.PRJ").write_text(
             "PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
-        (seed / "Projects" / "Example.VC0").write_bytes(
-            b"\xef\xbb\xbf" + VARIANT.replace("\n", "\r\n").encode("utf-8"))
+        write_utf8_crlf(seed / "Projects" / "Example.VC0", VARIANT)
         for kind, folder, text in (("PAN", "PVmodules", PAN), ("OND", "Inverters", OND),
                                    ("BTR", "Batteries", BTR), ("GEN", "Gensets", GEN)):
             directory = seed / "ComposPV" / folder
@@ -239,56 +239,61 @@ class VariantTests(unittest.TestCase):
                 self.store.update("Example.PRJ", "VC0", {"GEN": "new.GEN"}, initial["sha256"])
         self.assertEqual(self.original.read_bytes(), external)
 
-    def test_missing_and_ambiguous_reference_rejected_without_write(self):
+    def test_clone_and_inspect_rejection_guards(self):
         before = self.original.read_bytes()
-        with self.assertRaisesRegex(FileNotFoundError, "loose file"):
-            self.store.clone("Example.PRJ", "VC0", "VC2", {"PAN": "missing.PAN"})
-        with self.assertRaisesRegex(ValueError, "No section"):
-            self.store.clone("Example.PRJ", "VC0", "VC2", {"PAN": "new.PAN"}, 99)
-        with self.assertRaisesRegex(ValueError, "Choose one or more"):
-            self.store.clone("Example.PRJ", "VC0", "VC2", {"Controller": "new.RLT"})
-        for value in ("../new.PAN", "new.OND"):
+        with self.subTest(case="missing_or_ambiguous_reference"):
+            with self.assertRaisesRegex(FileNotFoundError, "loose file"):
+                self.store.clone("Example.PRJ", "VC0", "VC2", {"PAN": "missing.PAN"})
+            with self.assertRaisesRegex(ValueError, "No section"):
+                self.store.clone("Example.PRJ", "VC0", "VC2", {"PAN": "new.PAN"}, 99)
+            with self.assertRaisesRegex(ValueError, "Choose one or more"):
+                self.store.clone("Example.PRJ", "VC0", "VC2", {"Controller": "new.RLT"})
+            for value in ("../new.PAN", "new.OND"):
+                with self.assertRaises(ValueError):
+                    self.store.clone("Example.PRJ", "VC0", "VC2", {"PAN": value})
             with self.assertRaises(ValueError):
-                self.store.clone("Example.PRJ", "VC0", "VC2", {"PAN": value})
-        with self.assertRaises(ValueError):
-            self.store.inspect("../Example.PRJ", "VC0")
-        with self.assertRaises(ValueError):
-            self.store.clone("Example.PRJ", "VC0", "../VC2")
-        duplicate = self.original.read_bytes().replace(b"PVModule=original.PAN\r\n",
-                                                        b"PVModule=original.PAN\r\n        PVModule=original.PAN\r\n", 1)
-        self.original.write_bytes(duplicate)
-        with self.assertRaisesRegex(ValueError, "exactly once"):
-            self.store.clone("Example.PRJ", "VC0", "VC2", {"PAN": "new.PAN"})
-        self.assertFalse((self.workspace / "Projects" / "Example.VC2").exists())
-        self.assertEqual(before.count(b"PVModule=original.PAN"), 2)
+                self.store.inspect("../Example.PRJ", "VC0")
+            with self.assertRaises(ValueError):
+                self.store.clone("Example.PRJ", "VC0", "../VC2")
+            duplicate = before.replace(b"PVModule=original.PAN\r\n",
+                                       b"PVModule=original.PAN\r\n        PVModule=original.PAN\r\n", 1)
+            self.original.write_bytes(duplicate)
+            with self.assertRaisesRegex(ValueError, "exactly once"):
+                self.store.clone("Example.PRJ", "VC0", "VC2", {"PAN": "new.PAN"})
+            self.assertFalse((self.workspace / "Projects" / "Example.VC2").exists())
+            self.assertEqual(before.count(b"PVModule=original.PAN"), 2)
 
-    def test_rejects_malformed_component_before_writing_variant(self):
-        unsafe = self.workspace / "ComposPV" / "Gensets" / "unsafe.GEN"
-        unsafe.write_text(GEN.replace("CFuelHor=0.25", "CFuelHor=0"), encoding="utf-8")
-        before = self.original.read_bytes()
-        with self.assertRaisesRegex(ValueError, "CFuelHor must be greater than zero"):
-            self.store.clone("Example.PRJ", "VC0", "VC4", {"GEN": "unsafe.GEN"})
-        self.assertFalse((self.workspace / "Projects" / "Example.VC4").exists())
-        self.assertEqual(self.original.read_bytes(), before)
+        with self.subTest(case="malformed_component"):
+            self.original.write_bytes(before)
+            unsafe = self.workspace / "ComposPV" / "Gensets" / "unsafe.GEN"
+            unsafe.write_text(GEN.replace("CFuelHor=0.25", "CFuelHor=0"), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "CFuelHor must be greater than zero"):
+                self.store.clone("Example.PRJ", "VC0", "VC4", {"GEN": "unsafe.GEN"})
+            self.assertFalse((self.workspace / "Projects" / "Example.VC4").exists())
+            self.assertEqual(self.original.read_bytes(), before)
 
-    def test_rejects_invalid_project_file(self):
-        project = self.workspace / "Projects" / "Example.PRJ"
-        project.write_text("unrecognized project", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "pvProject"):
-            self.store.clone("Example.PRJ", "VC0", "VC4")
-        self.assertFalse((self.workspace / "Projects" / "Example.VC4").exists())
+        with self.subTest(case="invalid_project_file"):
+            project = self.workspace / "Projects" / "Example.PRJ"
+            orig_prj = project.read_text(encoding="utf-8")
+            project.write_text("unrecognized project", encoding="utf-8")
+            try:
+                with self.assertRaisesRegex(ValueError, "pvProject"):
+                    self.store.clone("Example.PRJ", "VC0", "VC4")
+                self.assertFalse((self.workspace / "Projects" / "Example.VC4").exists())
+            finally:
+                project.write_text(orig_prj, encoding="utf-8")
 
-    def test_rejects_linked_variant_paths(self):
-        outside = self.workspace.parent / "outside.VC0"
-        outside.write_text(VARIANT, encoding="utf-8")
-        link = self.workspace / "Projects" / "Example.VC5"
-        try:
-            link.symlink_to(outside)
-        except OSError:
-            self.skipTest("Symlink creation is unavailable on this Windows host")
-        with self.assertRaisesRegex(ValueError, "Symlink"):
-            self.store.inspect("Example.PRJ", "VC5")
-        self.assertEqual(outside.read_text(encoding="utf-8"), VARIANT)
+        with self.subTest(case="linked_variant_symlink"):
+            outside = self.workspace.parent / "outside.VC0"
+            outside.write_text(VARIANT, encoding="utf-8")
+            link = self.workspace / "Projects" / "Example.VC5"
+            try:
+                link.symlink_to(outside)
+            except OSError:
+                self.skipTest("Symlink creation is unavailable on this Windows host")
+            with self.assertRaisesRegex(ValueError, "Symlink"):
+                self.store.inspect("Example.PRJ", "VC5")
+            self.assertEqual(outside.read_text(encoding="utf-8"), VARIANT)
 
     def _prepare_grid_variant(self):
         branch = """  PVObject_SystemCircuit=pvCircuit
@@ -598,36 +603,38 @@ class VariantTests(unittest.TestCase):
         inspected = self.store.inspect_parameters("Example.PRJ", "VC0")
         self.assertEqual([item["id"] for item in inspected["orientations"]], [1])
 
-    def test_orientation_edit_rejects_active_scene_without_table(self):
-        data = self.original.read_bytes().replace(
-            b"End of PVObject pvVCalcul\r\n",
-            b"PVObject_Ombrage=pvShading\r\n    Flags=$20\r\n"
-            b"End of PVObject pvShading\r\nEnd of PVObject pvVCalcul\r\n")
-        self.original.write_bytes(data)
-        digest = self.store.inspect_parameters("Example.PRJ", "VC0")["sha256"]
-        for options in ({"orientation_updates": {"FieldTilt": 25}}, {"subarray_updates": {"NModSerie": 15}}):
-            for preview in (False, True):
-                with self.assertRaisesRegex(ValueError, "active shading scene"):
-                    self.store.update_parameters("Example.PRJ", "VC0", digest, 1, 1, dry_run=preview, **options)
-                self.assertEqual(self.original.read_bytes(), data)
-        layout = VARIANT.replace("End of PVObject pvVCalcul", "PVObject_ModuleLayout=pvModuleLayout\nFlags=$0B10\nModLayoutGlobState=mlDefInverters\nEnd of PVObject pvModuleLayout\nEnd of PVObject pvVCalcul").encode()
-        self.original.write_bytes(layout)
-        digest = self.store.inspect_parameters("Example.PRJ", "VC0")["sha256"]
-        for options in ({"orientation_updates": {"FieldTilt": 25}}, {"subarray_updates": {"NModSerie": 15}}):
-            with self.assertRaisesRegex(ValueError, "module layout"):
-                self.store.update_parameters("Example.PRJ", "VC0", digest, 1, 1, **options)
-            self.assertEqual(self.original.read_bytes(), layout)
-        self.assertFalse((self.workspace / "Projects" / ".mcp-variant-backups").exists())
+    def test_orientation_edit_rejects_active_scene_layout_and_shading_table(self):
+        with self.subTest(case="active_scene_and_module_layout"):
+            data = self.original.read_bytes().replace(
+                b"End of PVObject pvVCalcul\r\n",
+                b"PVObject_Ombrage=pvShading\r\n    Flags=$20\r\n"
+                b"End of PVObject pvShading\r\nEnd of PVObject pvVCalcul\r\n")
+            self.original.write_bytes(data)
+            digest = self.store.inspect_parameters("Example.PRJ", "VC0")["sha256"]
+            for options in ({"orientation_updates": {"FieldTilt": 25}}, {"subarray_updates": {"NModSerie": 15}}):
+                for preview in (False, True):
+                    with self.assertRaisesRegex(ValueError, "active shading scene"):
+                        self.store.update_parameters("Example.PRJ", "VC0", digest, 1, 1, dry_run=preview, **options)
+                    self.assertEqual(self.original.read_bytes(), data)
+            layout = VARIANT.replace("End of PVObject pvVCalcul", "PVObject_ModuleLayout=pvModuleLayout\nFlags=$0B10\nModLayoutGlobState=mlDefInverters\nEnd of PVObject pvModuleLayout\nEnd of PVObject pvVCalcul").encode()
+            self.original.write_bytes(layout)
+            digest = self.store.inspect_parameters("Example.PRJ", "VC0")["sha256"]
+            for options in ({"orientation_updates": {"FieldTilt": 25}}, {"subarray_updates": {"NModSerie": 15}}):
+                with self.assertRaisesRegex(ValueError, "module layout"):
+                    self.store.update_parameters("Example.PRJ", "VC0", digest, 1, 1, **options)
+                self.assertEqual(self.original.read_bytes(), layout)
+            self.assertFalse((self.workspace / "Projects" / ".mcp-variant-backups").exists())
 
-    def test_orientation_with_shading_table_rejected(self):
-        data = self.original.read_bytes().replace(b"    FieldAzim=0.0\r\n",
-                        b"    FieldAzim=0.0\r\n    PVObject_ShdTableLin=pvShdFTable\r\n", 1)
-        self.original.write_bytes(data)
-        digest = self.store.inspect_parameters("Example.PRJ", "VC0")["sha256"]
-        for options in ({"orientation_updates": {"FieldTilt": 30}}, {"subarray_updates": {"NModSerie": 15}}):
-            with self.assertRaisesRegex(ValueError, "dependent shading table"):
-                self.store.update_parameters("Example.PRJ", "VC0", digest, 1, 1, **options)
-            self.assertEqual(self.original.read_bytes(), data)
+        with self.subTest(case="dependent_shading_table"):
+            write_utf8_crlf(self.original, VARIANT)
+            data = self.original.read_bytes().replace(b"    FieldAzim=0.0\r\n",
+                            b"    FieldAzim=0.0\r\n    PVObject_ShdTableLin=pvShdFTable\r\n", 1)
+            self.original.write_bytes(data)
+            digest = self.store.inspect_parameters("Example.PRJ", "VC0")["sha256"]
+            for options in ({"orientation_updates": {"FieldTilt": 30}}, {"subarray_updates": {"NModSerie": 15}}):
+                with self.assertRaisesRegex(ValueError, "dependent shading table"):
+                    self.store.update_parameters("Example.PRJ", "VC0", digest, 1, 1, **options)
+                self.assertEqual(self.original.read_bytes(), data)
 
     def test_inspect_project_reports_site_meteo_links_without_nested_false_match(self):
         (self.workspace / "Sites").mkdir()
@@ -670,7 +677,7 @@ class VariantTests(unittest.TestCase):
             "    PVObject_SiteMet=pvSite\n      NomF=Old.SIT\n"
             "    End of PVObject pvSite\n  End of PVObject pvMeteo\n"
             "  PVObject_=pvOrient\n")
-        self.original.write_bytes(b"\xef\xbb\xbf" + variant.replace("\n", "\r\n").encode("utf-8"))
+        write_utf8_crlf(self.original, variant)
         second = self.workspace / "Projects" / "Example.VC1"
         second.write_bytes(self.original.read_bytes())
         before = self.store.inspect_project("Example.PRJ")
@@ -967,7 +974,7 @@ class VariantTests(unittest.TestCase):
             "  End of PVObject pvSite\r\n"
             "End of PVObject pvMeteo\r\n"
         )
-        (self.workspace / "Meteo" / "Distinct_2022.MET").write_bytes(b"\xef\xbb\xbf" + met_text.encode("utf-8"))
+        write_utf8_crlf(self.workspace / "Meteo" / "Distinct_2022.MET", met_text)
         self.store.update_project_sources("Example.PRJ", "New.SIT", "Distinct_2022.MET", before["files"])
         vc0 = (self.workspace / "Projects" / "Example.VC0").read_text(encoding="utf-8-sig")
         site_simul = vc0[vc0.index("PVObject_SiteSimul=pvSite"):vc0.index("PVObject_MeteoSimul=pvMeteo")]

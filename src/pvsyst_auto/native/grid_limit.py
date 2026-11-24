@@ -1,42 +1,25 @@
 """Bounded native 8.1.6 injection-point limit fields; no power calculation."""
 from __future__ import annotations
 
-import re
 from decimal import Decimal
 
-from pvsyst_auto.components.editor import ASSIGNMENT, has_object, replace_value
-from pvsyst_auto.components.generator import direct_fields, finite, one
-from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
+from pvsyst_auto.components.editor import replace_value
+from pvsyst_auto.components.generator import finite, one, read_flat_grid_system
 
 
 def _read(lines, system):
-    if system is None:
-        raise ValueError("Require one native pvSystem")
-    first = next((i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_")), len(lines) - 1)
-    if one(direct_fields(lines, (0, first)), "Version")[1] not in NATIVE_TEXT:
-        raise ValueError(f"Grid-limit fields require variant Version={TEXT_LABEL}")
-    if has_object(lines, "pvLoad", "pvGridStorage"):
-        raise ValueError("Load/storage grid limiting is outside the verified PV-only scope")
-    if any(line.strip().startswith("PVObject_") or line.strip() == "EndTags" for line in lines[system[0] + 1:system[1]]):
-        raise ValueError("Require a flat native grid system")
-    fields = direct_fields(lines, system)
-    if set(fields) - {"Comment", "Flags", "SystemType", "PLimGrid", "LimGrSeparLoss"}:
-        raise ValueError("PF or unverified native system fields require separate review")
-    for key in fields:
-        one(fields, key)
-    if one(fields, "SystemType")[1] != "Grid":
-        raise ValueError("Grid limiting requires SystemType=Grid")
-    index, raw = one(fields, "Flags")
-    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw):
-        raise ValueError("Require one hexadecimal owning system Flags")
-    flags = int(raw[1:], 16)
+    fields, index, flags = read_flat_grid_system(
+        lines,
+        system,
+        feature_label="Grid limiting",
+        owned_fields=("PLimGrid", "LimGrSeparLoss"),
+        load_storage_error="Load/storage grid limiting is outside the verified PV-only scope",
+        unknown_field_error="PF or unverified native system fields require separate review",
+        hex_flag_error="Require one hexadecimal owning system Flags",
+        exclusive_system_fields=("PLimGrid", "LimGrSeparLoss"),
+    )
     if flags & ~0x05000000:
         raise ValueError("PF, export permission or other native system modes are not verified here")
-    for key in ("PLimGrid", "LimGrSeparLoss"):
-        total = sum(m is not None and m[2] == key for line in lines
-                    for m in [ASSIGNMENT.fullmatch(line.rstrip("\r\n"))])
-        if total != len(fields.get(key, [])):
-            raise ValueError(f"Require {key} only in the owning system")
     limit = one(fields, "PLimGrid", False)
     try:
         value = finite(float(limit[1]), "PLimGrid", positive=True) if limit else None

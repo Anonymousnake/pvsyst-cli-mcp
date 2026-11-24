@@ -537,11 +537,9 @@ NativeLoadRequest = Annotated[
     Field(discriminator="mode"),
 ]
 
-class GridStorageUpdates(BaseModel):
-    """Native existing AC-coupled storage controls and schedules; unknown fields stop at the boundary."""
+class _GridStorageScheduleBase(BaseModel):
     model_config = _STRICT_CONFIG
     coupling: Literal["ac_coupled"] = "ac_coupled"
-    strategy: Literal["self_consumption", "weak_grid", "peak_shaving", "power_shift"] | None = None
     charging_strategy: Literal[
         "pv_available", "pv_above_thresh", "pv_to_grid_min", "pv_prod_fraction", "spec_charg_power"
     ] | None = None
@@ -556,6 +554,11 @@ class GridStorageUpdates(BaseModel):
     discharging_schedule_48: Annotated[list[StrictNum], Field(min_length=48, max_length=48)] | None = None
     discharge_start_hour: StrictInt | None = None
     discharge_end_hour: StrictInt | None = None
+
+
+class GridStorageUpdates(_GridStorageScheduleBase):
+    """Native existing AC-coupled storage controls and schedules; unknown fields stop at the boundary."""
+    strategy: Literal["self_consumption", "weak_grid", "peak_shaving", "power_shift"] | None = None
     soc_min: StrictNum | None = None
     soc_max: StrictNum | None = None
     initial_soc: StrictNum | None = None
@@ -591,24 +594,8 @@ class BatteryPackDesign(BaseModel):
     cycle_sow: StrictNum
     static_sow: StrictNum
 
-class GridStorageDesign(BaseModel):
-    model_config = _STRICT_CONFIG
-    coupling: Literal["ac_coupled"] = "ac_coupled"
+class GridStorageDesign(_GridStorageScheduleBase):
     strategy: Literal["self_consumption", "weak_grid", "peak_shaving", "power_shift"]
-    charging_strategy: Literal[
-        "pv_available", "pv_above_thresh", "pv_to_grid_min", "pv_prod_fraction", "spec_charg_power"
-    ] | None = None
-    discharging_strategy: Literal[
-        "immediate", "after_sunset", "night", "hour_window", "specified_hours"
-    ] | None = None
-    grid_limit_kw: StrictNum | None = None
-    charging_pv_fraction: StrictNum | None = None
-    charging_power_kw: StrictNum | None = None
-    charging_schedule_48: Annotated[list[StrictNum], Field(min_length=48, max_length=48)] | None = None
-    discharging_power_kw: StrictNum | None = None
-    discharging_schedule_48: Annotated[list[StrictNum], Field(min_length=48, max_length=48)] | None = None
-    discharge_start_hour: StrictInt | None = None
-    discharge_end_hour: StrictInt | None = None
     soc_min: StrictNum
     soc_max: StrictNum
     initial_soc: StrictNum

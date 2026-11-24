@@ -25,6 +25,36 @@ _VALID_TECHNOLS = (
 )
 
 
+def _component_commercial_header(
+    obj_type: str,
+    *,
+    manufacturer: str,
+    model: str,
+    source_note: str,
+    flags: str,
+    width_m: float,
+    height_m: float,
+    depth_m: float,
+    weight_kg: float,
+) -> list[str]:
+    return [
+        f"PVObject_={obj_type}",
+        f"  Comment={manufacturer}\t{model}\t{source_note}",
+        f"  Version={SYNTH_VERSION}",
+        f"  Flags={flags}",
+        "  PVObject_Commercial=pvCommercial",
+        "    Flags=$0041",
+        f"    Manufacturer={manufacturer}",
+        f"    Model={model}",
+        f"    DataSource={source_note}",
+        f"    Width={width_m:.3f}",
+        f"    Height={height_m:.3f}",
+        f"    Depth={depth_m:.3f}",
+        f"    Weight={weight_kg:.2f}",
+        "  End of PVObject pvCommercial",
+    ]
+
+
 def _solve_rs_for_gamma(
     *, voc: float, isc: float, vmp: float, imp: float, r_sh: float, a_mod: float
 ) -> tuple[float, float, float] | None:
@@ -236,20 +266,17 @@ def synthesize_pan_from_datasheet(
     layout = "slTwinHalfCells" if n_cells_p >= 2 else "slInLength"
 
     lines = [
-        "PVObject_=pvModule",
-        f"  Comment={manufacturer}\t{model}\t{source_note}",
-        f"  Version={SYNTH_VERSION}",
-        f"  Flags={flags}",
-        "  PVObject_Commercial=pvCommercial",
-        "    Flags=$0041",
-        f"    Manufacturer={manufacturer}",
-        f"    Model={model}",
-        f"    DataSource={source_note}",
-        f"    Width={width_m:.3f}",
-        f"    Height={height_m:.3f}",
-        f"    Depth={depth_m:.3f}",
-        f"    Weight={weight_kg:.2f}",
-        "  End of PVObject pvCommercial",
+        *_component_commercial_header(
+            "pvModule",
+            manufacturer=manufacturer,
+            model=model,
+            source_note=source_note,
+            flags=flags,
+            width_m=width_m,
+            height_m=height_m,
+            depth_m=depth_m,
+            weight_kg=weight_kg,
+        ),
         f"  Technol={technol}",
         f"  NCelS={n_cells_s}",
         f"  NCelP={n_cells_p}",
@@ -484,20 +511,17 @@ def synthesize_ond_from_datasheet(
     flags_str = "$1560" if is_3v else "$0570"
 
     lines = [
-        "PVObject_=pvGInverter",
-        f"  Comment={manufacturer}\t{model}\t{source_note}",
-        f"  Version={SYNTH_VERSION}",
-        f"  Flags={flags_str}",
-        "  PVObject_Commercial=pvCommercial",
-        "    Flags=$0041",
-        f"    Manufacturer={manufacturer}",
-        f"    Model={model}",
-        f"    DataSource={source_note}",
-        f"    Width={width_m:.3f}",
-        f"    Height={height_m:.3f}",
-        f"    Depth={depth_m:.3f}",
-        f"    Weight={weight_kg:.2f}",
-        "  End of PVObject pvCommercial",
+        *_component_commercial_header(
+            "pvGInverter",
+            manufacturer=manufacturer,
+            model=model,
+            source_note=source_note,
+            flags=flags_str,
+            width_m=width_m,
+            height_m=height_m,
+            depth_m=depth_m,
+            weight_kg=weight_kg,
+        ),
         "  Transfo=Without",
         "  Converter=TConverter",
         f"    PNomConv={pnom_ac_kw:.3f}",
@@ -719,20 +743,17 @@ def synthesize_btr_from_datasheet(
     alpha_soc = round(chem["alpha_soc"], 3)
 
     lines = [
-        "PVObject_=pvBattery",
-        f"  Comment={manufacturer}\t{model}\t{source_note}",
-        f"  Version={SYNTH_VERSION}",
-        "  Flags=$0000",
-        "  PVObject_Commercial=pvCommercial",
-        "    Flags=$0041",
-        f"    Manufacturer={manufacturer}",
-        f"    Model={model}",
-        f"    DataSource={source_note}",
-        f"    Width={width_m:.3f}",
-        f"    Height={height_m:.3f}",
-        f"    Depth={depth_m:.3f}",
-        f"    Weight={weight_kg:.2f}",
-        "  End of PVObject pvCommercial",
+        *_component_commercial_header(
+            "pvBattery",
+            manufacturer=manufacturer,
+            model=model,
+            source_note=source_note,
+            flags="$0000",
+            width_m=width_m,
+            height_m=height_m,
+            depth_m=depth_m,
+            weight_kg=weight_kg,
+        ),
         "  BattModeAff=PackBatt",
         f"  BattTechnol={chem['batt_technol']}",
         "  Category=BatteryModule",

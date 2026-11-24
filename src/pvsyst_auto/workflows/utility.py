@@ -6,7 +6,6 @@ import subprocess
 from pathlib import Path
 
 from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
-from pvsyst_auto.engineering.diagnostics import compact_diagnostics_summary, diagnose_simulation_csv
 from pvsyst_auto.engineering.sizing import plan_capacity
 from pvsyst_auto.native.cli import (
     PVsystError,
@@ -20,17 +19,14 @@ from pvsyst_auto.project.bifacial import normalize_bifacial_spec
 from pvsyst_auto.project.paths import project_path, workspace_file, write_json
 from pvsyst_auto.project.synthesize import synthesize_project_and_variant, synthesize_utility_project
 from pvsyst_auto.project.template import _mppt_inputs
-from pvsyst_auto.results import (
-    IRRAD_UNIT_KIND,
-    POWER_UNIT_KIND,
-    annual_summary,
-    fingerprint,
-    verify_native_csv_context,
-    verify_pdf_header,
-)
+from pvsyst_auto.results import IRRAD_UNIT_KIND, POWER_UNIT_KIND, fingerprint
 from pvsyst_auto.validation import is_finite_number as _is_number, is_strict_int as _is_int
-from pvsyst_auto.weather.preparation import compare_native_weather, inspect_met_calendar
-from pvsyst_auto.workflows.simulation import collect_simulation_weather_assets
+from pvsyst_auto.weather.preparation import inspect_met_calendar
+from pvsyst_auto.workflows.simulation import (
+    collect_simulation_weather_assets,
+    native_cli_weather_inputs,
+    verify_and_read_simulation_results,
+)
 
 UTILITY_SCOPES = ("ground_sheds", "ground_tracker")
 GROUND_LAYOUT_KEYS = frozenset((
@@ -749,12 +745,9 @@ def run_utility_design(
             if weather_report is not None:
                 variables.extend(["viGlobHor", "viDiffHor", "viT_Amb"])
             build_sfi(paths["sfi"], variables)
-            if synthetic_weather:
-                native_inputs = {"site": Path(assets["site_name"]["path"]), "synthetic_weather": True}
-            elif weather_report is not None:
-                native_inputs = {"site": Path(assets["site_name"]["path"]), "met": Path(assets["met_name"]["path"])}
-            else:
-                native_inputs = {}
+            native_inputs = native_cli_weather_inputs(
+                assets, synthetic_weather=synthetic_weather, weather_report=weather_report,
+            )
             run = cli.run_simulation(
                 new_project, variant,
                 sfi=paths["sfi"],
@@ -772,60 +765,56 @@ def run_utility_design(
             result["run"] = run
             result["warnings"].extend(run.get("warnings", []))
             stage("results")
-            output_snapshot = fingerprint(paths["csv"])
-            expected_context = {
-                "Project": new_project,
-                "Geographical Site": sit_name,
-                "Simulation variant": f"{Path(new_project).stem}.{variant}",
-            }
-            if not synthetic_weather:
-                expected_context["Weather data"] = met_name
-            result["native_context"] = verify_native_csv_context(paths["csv"], expected_context)
-            result["metrics"] = annual_summary(paths["csv"], year, nominal_dc_kw)
-            units = result_units(paths["csv"], strict=True)
-            if not units.get("GlobShd"):
-                raise ValueError("Native utility output lacks GlobShd column/unit")
-            rows = 0
-            headers = []
-            ratio_indices: set[int] = set()
-            globinc_idx: int | None = None
-            for headers, row in iter_result_csv(paths["csv"], strict=True):
-                if rows == 0:
-                    ratio_indices = {
-                        idx for idx, name in enumerate(headers[1:], start=1)
-                        if units.get(name) in ("ratio", "%")
-                    }
-                    if "GlobInc" in headers:
-                        globinc_idx = headers.index("GlobInc")
-                for idx, value in enumerate(row[1:], start=1):
-                    if idx in ratio_indices:
-                        if (globinc_idx is not None and row[globinc_idx] > 0
-                                and (not isinstance(value, (int, float)) or not math.isfinite(value))):
-                            raise ValueError(f"Native utility output has missing/nonfinite ratio {headers[idx]} during irradiation")
-                    elif not isinstance(value, (int, float)) or not math.isfinite(value):
-                        raise ValueError("Native utility output contains missing/nonfinite numeric data")
-                rows += 1
-            if bifacial_enabled:
-                result["bifacial_metrics"] = _extract_bifacial_metrics(paths["csv"], units)
-            result["utility_output"] = {"hourly_rows": rows, "numeric_columns": headers[1:], "units": units}
-            if result["metrics"]["sha256"] != output_snapshot:
-                raise ValueError("Native output changed between context and annual validation")
-            if weather_report is not None:
-                result["weather_comparison"] = compare_native_weather(
-                    paths["csv"], Path(assets["weather_source"]["path"]), weather_report)
-            verify_pdf_header(paths["pdf"])
-            if fingerprint(paths["csv"]) != output_snapshot:
-                raise ValueError("Native output changed across result validation stages")
-            flags = result["metrics"]["diagnostic_flags"]
-            result["warnings"].extend(flags)
-            diag_full = diagnose_simulation_csv(
-                paths["csv"], store=store, project=new_project, variant=variant,
+
+            def _validate_utility():
+                units = result_units(paths["csv"], strict=True)
+                if not units.get("GlobShd"):
+                    raise ValueError("Native utility output lacks GlobShd column/unit")
+                rows = 0
+                headers = []
+                ratio_indices: set[int] = set()
+                globinc_idx: int | None = None
+                for headers, row in iter_result_csv(paths["csv"], strict=True):
+                    if rows == 0:
+                        ratio_indices = {
+                            idx for idx, name in enumerate(headers[1:], start=1)
+                            if units.get(name) in ("ratio", "%")
+                        }
+                        if "GlobInc" in headers:
+                            globinc_idx = headers.index("GlobInc")
+                    for idx, value in enumerate(row[1:], start=1):
+                        if idx in ratio_indices:
+                            if (globinc_idx is not None and row[globinc_idx] > 0
+                                    and (not isinstance(value, (int, float)) or not math.isfinite(value))):
+                                raise ValueError(f"Native utility output has missing/nonfinite ratio {headers[idx]} during irradiation")
+                        elif not isinstance(value, (int, float)) or not math.isfinite(value):
+                            raise ValueError("Native utility output contains missing/nonfinite numeric data")
+                    rows += 1
+                if bifacial_enabled:
+                    result["bifacial_metrics"] = _extract_bifacial_metrics(paths["csv"], units)
+                result["utility_output"] = {"hourly_rows": rows, "numeric_columns": headers[1:], "units": units}
+
+            diag_needs_review = verify_and_read_simulation_results(
+                result,
+                store=store,
+                project=new_project,
+                variant=variant,
+                site_name=sit_name,
+                met_name=met_name,
+                year=year,
+                nominal_dc_kw=nominal_dc_kw,
+                csv_path=paths["csv"],
+                pdf_path=paths["pdf"],
+                assets=assets,
+                synthetic_weather=synthetic_weather,
+                weather_report=weather_report,
+                validate_output=_validate_utility,
             )
-            result["diagnostics"] = compact_diagnostics_summary(diag_full)
+            flags = result["metrics"]["diagnostic_flags"]
             review = bool(
                 run.get("warnings") or flags or weather_warnings
                 or result.get("weather_comparison", {}).get("needs_review", False)
-                or diag_full["needs_review"]
+                or diag_needs_review
             )
             result.update(
                 status="needs_review" if review else "completed",

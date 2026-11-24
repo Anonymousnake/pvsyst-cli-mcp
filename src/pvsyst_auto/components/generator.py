@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterable
 
-from pvsyst_auto.components.editor import ASSIGNMENT, OBJECT_CLOSE_ALIAS, replace_value
-from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
+from pvsyst_auto.components.editor import ASSIGNMENT, OBJECT_CLOSE_ALIAS, has_object, replace_value
+from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
 
 THRESHOLDS = ("VBkUpEncl_syst", "VBkUpDecl_syst")
 GENERATOR_MASK = 0x20
@@ -195,3 +196,43 @@ def replace_generator(lines, arrays, system, updates, components):
     for position, added in sorted(insertions, reverse=True):
         lines[position:position] = added
     return {"before": before, "warnings": warnings, "component": dependency}
+
+
+def read_flat_grid_system(
+    lines: list[str],
+    system: tuple[int, int] | None,
+    *,
+    feature_label: str,
+    owned_fields: Iterable[str],
+    load_storage_error: str,
+    unknown_field_error: str,
+    hex_flag_error: str,
+    exclusive_system_fields: Iterable[str] = (),
+) -> tuple[dict[str, list[tuple[int, str]]], int, int]:
+    """Validate and parse a flat native 8.1.6 Grid pvSystem block for whole-system editors."""
+    if system is None:
+        raise ValueError("Require one owning native pvSystem")
+    first = next((i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_")), len(lines) - 1)
+    if one(direct_fields(lines, (0, first)), "Version")[1] not in NATIVE_TEXT:
+        raise ValueError(f"{feature_label} requires variant Version={TEXT_LABEL}")
+    if has_object(lines, "pvLoad", "pvGridStorage"):
+        raise ValueError(load_storage_error)
+    if any(line.strip().startswith("PVObject_") or line.strip() == "EndTags"
+           for line in lines[system[0] + 1:system[1]]):
+        raise ValueError("Require a flat native grid system")
+    fields = direct_fields(lines, system)
+    if set(fields) - {"Comment", "Flags", "SystemType", *owned_fields}:
+        raise ValueError(unknown_field_error)
+    for key in fields:
+        one(fields, key)
+    for key in exclusive_system_fields:
+        total = sum(m is not None and m[2] == key
+                    for line in lines for m in [ASSIGNMENT.fullmatch(line.rstrip("\r\n"))])
+        if total != len(fields.get(key, [])):
+            raise ValueError(f"Require {key} only in the owning system")
+    if one(fields, "SystemType")[1] != "Grid":
+        raise ValueError(f"{feature_label} requires SystemType=Grid")
+    index, raw = one(fields, "Flags")
+    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw):
+        raise ValueError(hex_flag_error)
+    return fields, index, int(raw[1:], 16)

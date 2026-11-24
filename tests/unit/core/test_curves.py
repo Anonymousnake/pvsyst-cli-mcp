@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pvsyst_auto.components.curves import HEADERS, MAX_CSV_BYTES, import_curve_csv
 from pvsyst_auto.components.store import ComponentStore
+from tests._fixtures import write_utf8_crlf
 from tests.unit.core.test_battery_editor import CAPACITY_POINTS, CURVED_BTR
 from tests.unit.core.test_component_editor import CURVED_OND, POINTS
 
@@ -109,9 +110,10 @@ class CurveTests(unittest.TestCase):
         b_end = text.index("    End of TCubicProfile", b_start) + len("    End of TCubicProfile\n")
         sibling = text[b_start:b_end].replace("ProfilPIO=", "ProfilPIOV1=")
         text = (text[:b_end] + sibling + text[b_end:]).replace("      Mode=1", "      UnknownMetadata=preserve me\n      Mode=1", 1)
-        self.store._path("OND", "curve.OND").write_bytes(b"\xef\xbb\xbf" + text.replace("Point_1=100,80", "Point_1=100,80,0,0,0.9", 1).replace("\n", "\r\n").encode())
+        ond_path = self.store._path("OND", "curve.OND")
+        write_utf8_crlf(ond_path, text.replace("Point_1=100,80", "Point_1=100,80,0,0,0.9", 1))
         self.update("OND", curve_updates={"Converter/ProfilPIO": POINTS + [[1500, 1425]]})
-        updated = self.store._path("OND", "curve.OND").read_bytes().decode("utf-8-sig").replace("\r\n", "\n")
+        updated = ond_path.read_bytes().decode("utf-8-sig").replace("\r\n", "\n")
         self.assertIn(sibling, updated)
         self.assertIn("UnknownMetadata=preserve me", updated)
         self.assertNotIn("80,0,0,0.9", updated)
@@ -119,19 +121,19 @@ class CurveTests(unittest.TestCase):
 
         for val in (None, "$0", "$008d"):
             txt = CURVED_OND.replace("      LastCompile=$008D\n", "" if val is None else f"      LastCompile={val}\n")
-            self.store._path("OND", "curve.OND").write_bytes(b"\xef\xbb\xbf" + txt.replace("\n", "\r\n").encode())
+            write_utf8_crlf(ond_path, txt)
             self.update("OND", curve_updates={"Converter/ProfilPIO": POINTS + [[1500, 1425]]})
-            raw = self.store._path("OND", "curve.OND").read_bytes()
+            raw = ond_path.read_bytes()
             self.assertEqual(b"LastCompile" in raw, val is not None)
 
         for bad in (CURVED_OND.replace("$008D", "$204D"),
                     CURVED_OND.replace("Point_2=200,180", "Unknown=retain\n      Point_2=200,180"),
                     CURVED_OND.replace("Point_1=100,80\n      Point_2=200,180", "Point_2=200,180\n      Point_1=100,80")):
-            self.store._path("OND", "curve.OND").write_bytes(b"\xef\xbb\xbf" + bad.replace("\n", "\r\n").encode())
+            write_utf8_crlf(ond_path, bad)
             with self.assertRaises(ValueError):
                 self.update("OND", curve_updates={"Converter/ProfilPIO": POINTS + [[1500, 1425]]})
 
-        self.store._path("OND", "curve.OND").write_bytes(b"\xef\xbb\xbf" + CURVED_OND.replace("\n", "\r\n").encode())
+        write_utf8_crlf(ond_path, CURVED_OND)
         for bad_pts in ([[0, 0]] + POINTS, [POINTS[0], [100 + 1e-9, 90]] + POINTS[1:], [[i + 1, i] for i in range(257)]):
             with self.assertRaises(ValueError):
                 self.update("OND", curve_updates={"Converter/ProfilPIO": bad_pts})
