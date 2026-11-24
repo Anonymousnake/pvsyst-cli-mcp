@@ -119,6 +119,7 @@ STORAGE = {"strategy": "self_consumption", "soc_min": 0.2, "soc_max": 0.9, "init
            "battery_inverter_euro_efficiency_pct": 95}
 
 
+@functools.lru_cache(maxsize=8)
 def hourly(header, unit, value, year=2023, first=None):
     start = datetime(year, 1, 1)
     hours = 24 * (366 if calendar.isleap(year) else 365)

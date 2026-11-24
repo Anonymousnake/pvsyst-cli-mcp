@@ -1124,6 +1124,7 @@ class WorkspaceIniTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), external)
 
 
+@unittest.skipUnless(os.name == "nt", "Windows profile coordination")
 class WorkspaceIniWindowsTests(unittest.TestCase):
     def test_native_version_gate_and_profile_lock(self):
         with tempfile.TemporaryDirectory() as directory:
