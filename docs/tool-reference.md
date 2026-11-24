@@ -49,7 +49,7 @@ Two CLI flags are intentionally omitted from the MCP surface: `-cof` (options fi
 | `pvsyst_export_engineering_delivery` | Bundle a completed engineering run (and optional scenario comparison) with its `.PRJ`/`.VCx`, result CSV/PDF, and Markdown handoff summary into a ZIP archive under `Results` |
 | `pvsyst_run_feasibility_study` | One-shot end-to-end PV/PV+BESS feasibility study orchestrator chaining optional zero-template component synthesis, simulation (or `existing_csv` reuse), diagnostics, TOU 48-slot planning, two-stage BESS sizing, economics/sensitivity, and interactive Plotly HTML report generation (`dry_run=true` default; requires `confirm=true`) |
 
-Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comparison](engineering-scenarios.md), [AC storage engineering](engineering-storage.md), [block project preparation](block-project-preparation.md), and [brief review](engineering-brief.md).
+Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comparison](engineering-scenarios.md), [AC storage engineering](engineering-storage.md), and [brief review](engineering-brief.md).
 
 ### Projects & Variants (`projects`, default: 12)
 
@@ -66,7 +66,7 @@ Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comp
 | `pvsyst_create_ac_cabling_variant` | Configure uniform per-inverter AC cable length (`0.1 m` precision) and section in a new variant |
 | `pvsyst_create_shed_geometry_variant` | Create a new variant with updated pitch, tilt, count, width, or electrical shading flag on an existing `Sheds` or `SunShields` template |
 
-Detailed guides: [project titles](project-title.md), [stored state inspection](native-state-inspection.md), and [PV scene bindings](native-scene-bindings.md).
+Detailed matrix: [feature entry map](native-entry-map.md).
 
 ### Components (`components`, default: 5)
 
@@ -88,7 +88,7 @@ Detailed guide: [sourced components](sourced-components.md).
 | `pvsyst_prepare_weather` | Convert a validated hourly or sub-hourly (`5/10/15/30/60 min`) CSV into new `.SIT`/`.MET` files and record a provenance manifest |
 | `pvsyst_review_weather` | Compare an acquired/prepared weather CSV against simulation output and `.MET`/`.SIT` headers |
 
-Detailed guides: [weather preparation](weather-preparation.md) and [weather engineering review](weather-engineering-review.md).
+Detailed guide: [weather preparation](weather-preparation.md).
 
 ### Loads & Storage (`storage`, default: 5)
 
@@ -100,7 +100,7 @@ Detailed guides: [weather preparation](weather-preparation.md) and [weather engi
 | `pvsyst_create_grid_storage_system` | Add workspace or built-in battery hardware and centralized AC-coupled `SelfConsumption`, `WeakGrid` (with explicit or deterministic `mode="generated"` outage schedules), `PeakShaving`, or `PowerShift` storage (plus optional hourly load and grid-availability bindings) to a PV-only grid variant |
 | `pvsyst_plan_tou_storage_schedule` | Deterministically convert a TOU tariff schedule into PVsyst `PowerShift` 48-slot half-hourly charge/discharge schedules (1 or 2 cycles/day) and a drop-in `storage_updates` payload |
 
-Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parameters](grid-storage-parameters.md), and [peak shaving](native-peak-shaving.md).
+Detailed guide: [AC storage engineering](engineering-storage.md) and [feature entry map](native-entry-map.md).
 
 ### Simulation (`simulation`, default: 8)
 
@@ -115,7 +115,7 @@ Detailed guides: [hourly & native loads](storage-loads.md), [grid storage parame
 | `pvsyst_optimize_variant` | Bounded Diagnose -> Clone -> Patch -> Re-simulate loop (`dry_run=true` default previews deterministic fixes and diffs; `confirm=true` iterates up to `max_iterations` 1..5 on cloned variants without mutating baseline) |
 | `pvsyst_optimize_bess_sizing` | Two-stage hybrid PV+BESS capacity optimizer: Stage 1 fast pure-Python grid sweep (`bess_kwh × pcs_kw × strategy`) with Pareto frontier & 2D heatmap; optional Stage 2 (`verify_top_k` 1..5, `dry_run=false`, `confirm=true`) runs `PVsystCLI` to reconcile exact KPIs |
 
-Detailed guides: [single-design inputs](single-design-inputs.md), [capacity sizing](capacity-sizing.md), [tutorial grid workflow](tutorial-grid-cycle.md), [house PV modeling](house-pv-modeling.md), [native house task](native-house-task.md), and [sourced house task](sourced-house-task.md).
+Detailed guides: [single-design inputs](single-design-inputs.md) and [native house task](native-house-task.md).
 
 ### Results (`results`, default: 4)
 
@@ -137,14 +137,12 @@ Enable with `PVSYST_TOOL_GROUPS=expert` or `PVSYST_TOOL_GROUPS=all`:
 
 ## Parameter & variant guides
 
-`pvsyst_update_variant_parameters` applies one domain update per transaction (optionally paired with `variant_name`) so flag mutations stay isolated:
-- Detailed losses: [string mismatch, auxiliary profiles & PV-system outage periods & removal](native-detailed-losses.md), [constant auxiliary power](native-auxiliary-power.md), [IAM & ageing](native-model-inputs.md)
-- Orientation & horizon: [seasonal tilt](seasonal-orientation.md), [far horizon profile](horizon-profile.md)
-- Energy management: [inverter temperature](inverter-temperature.md), [power factor & PNom](power-factor.md), [grid injection limit](grid-power-limit.md), [combined PF + power controls](native-power-controls.md), [P50/P90 parameters](p50-native-parameters.md)
+`pvsyst_update_variant_parameters` applies one domain update per transaction (optionally paired with `variant_name`) so flag mutations stay isolated (see [feature entry map](native-entry-map.md) for underlying field mappings):
+- Detailed losses: string mismatch, constant/profile auxiliary power, IAM & ageing, PV-system outage periods & removal, spectral correction
+- Orientation & horizon: seasonal tilt, far horizon profile
+- Energy management: inverter temperature, power factor & PNom, grid injection limit, combined PF + power controls, P50/P90 parameters
 
-Dedicated variant-creation tools handle structural or multi-object changes:
-- Cabling & transformers: [AC cabling](native-ac-cabling.md), [headless DC cabling](native-dc-cabling.md), `pvsyst_configure_transformers`
-- Complex orientations & 3D scenes: [tracking controls](native-tracking-controls.md), [sheds & sun-shields](native-shed-controls.md), `pvsyst_convert_orientation`, [engineering delivery](engineering-delivery.md)
+Dedicated variant-creation tools handle structural or multi-object changes (AC/headless DC cabling, `pvsyst_configure_transformers`, tracking controls, sheds & sun-shields, `pvsyst_convert_orientation`, and [engineering delivery](engineering-delivery.md)).
 
 ## Workspace directories and conventions
 

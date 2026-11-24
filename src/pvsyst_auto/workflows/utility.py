@@ -25,6 +25,7 @@ from pvsyst_auto.weather.preparation import inspect_met_calendar
 from pvsyst_auto.workflows.simulation import (
     collect_simulation_weather_assets,
     native_cli_weather_inputs,
+    record_workflow_failure,
     verify_and_read_simulation_results,
 )
 
@@ -823,15 +824,9 @@ def run_utility_design(
                 working_project=new_project,
                 working_variant=variant,
             )
-    except (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired) as exc:
-        result.update(status="failed", error=cli._redact(str(exc))[-12000:])
     except BaseException as exc:
-        result.update(status="failed", error=cli._redact(f"{type(exc).__name__}: {exc}")[-12000:])
-        try:
-            save()
-        except Exception:
-            pass
-        raise
+        if record_workflow_failure(result, cli, exc, save):
+            raise
     if prepare_only and result["status"] == "failed":
         result["prepared"] = False
     save()

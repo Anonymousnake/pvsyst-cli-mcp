@@ -145,47 +145,28 @@ class CommercialComponentTests(unittest.TestCase):
             decl("VMaxIEC", 1500, "V", "VMaxIEC 1500 V"),
             decl("NCelS", 72, "cells", "NCelS 72 cells"),
         ]
-        preview = build_sourced_component(
-            self.store,
-            component_type="PAN",
-            template_name=None,
-            new_name="Apex_620W_Bifi.PAN",
-            manufacturer="ApexSolar",
-            model="HiTOP-620B",
-            sources=sources,
-            declarations=declarations,
-            dry_run=True,
-        )
+        pan_common = {
+            "component_type": "PAN",
+            "template_name": None,
+            "new_name": "Apex_620W_Bifi.PAN",
+            "manufacturer": "ApexSolar",
+            "model": "HiTOP-620B",
+            "sources": sources,
+            "declarations": declarations,
+        }
+        preview = build_sourced_component(self.store, **pan_common, dry_run=True)
         self.assertEqual(preview["status"], "needs_review", preview["issues"])
         self.assertTrue(preview["synthesized"])
         self.assertTrue(preview["model_refitted"])
         self.assertFalse((self.root / "ComposPV" / "PVmodules" / "Apex_620W_Bifi.PAN").exists())
 
         blocked = build_sourced_component(
-            self.store,
-            component_type="PAN",
-            template_name=None,
-            new_name="Apex_620W_Bifi.PAN",
-            manufacturer="ApexSolar",
-            model="HiTOP-620B",
-            sources=sources,
-            declarations=declarations,
-            dry_run=False,
-            acknowledge_inherited_model=False,
+            self.store, **pan_common, dry_run=False, acknowledge_inherited_model=False,
         )
         self.assertEqual(blocked["status"], "blocked")
 
         created = build_sourced_component(
-            self.store,
-            component_type="PAN",
-            template_name=None,
-            new_name="Apex_620W_Bifi.PAN",
-            manufacturer="ApexSolar",
-            model="HiTOP-620B",
-            sources=sources,
-            declarations=declarations,
-            dry_run=False,
-            acknowledge_inherited_model=True,
+            self.store, **pan_common, dry_run=False, acknowledge_inherited_model=True,
         )
         self.assertTrue(created["component_created"])
         self.assertTrue((self.root / "ComposPV" / "PVmodules" / "Apex_620W_Bifi.PAN").is_file())

@@ -269,38 +269,26 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
             "variant_prefix": "VC",
         }
 
+        base_opt = {
+            "workspace": self.root,
+            "baseline_csv": csv_path.name,
+            "installed_dc_kw": 120.0,
+            "bess_kwh_values": [100.0, 200.0],
+            "pcs_kw_values": [50.0],
+            "tariff": tariff,
+            "financial": financial,
+            "verify_config": v_cfg,
+        }
+
         # dry_run=True plans Stage 2 without launching CLI
-        plan = optimize_bess_sizing(
-            workspace=self.root,
-            baseline_csv=csv_path.name,
-            installed_dc_kw=120.0,
-            bess_kwh_values=[100.0, 200.0],
-            pcs_kw_values=[50.0],
-            tariff=tariff,
-            financial=financial,
-            verify_top_k=2,
-            verify_config=v_cfg,
-            dry_run=True,
-        )
+        plan = optimize_bess_sizing(**base_opt, verify_top_k=2, dry_run=True)
         self.assertEqual(plan["status"], "ready")
         self.assertEqual(plan["stage2_verification"]["status"], "ready_for_cli_verification")
         self.assertEqual(len(plan["stage2_verification"]["planned_variants"]), 2)
 
         # dry_run=False without confirm=True must fail closed
         with self.assertRaisesRegex(ValueError, "confirm=True"):
-            optimize_bess_sizing(
-                workspace=self.root,
-                baseline_csv=csv_path.name,
-                installed_dc_kw=120.0,
-                bess_kwh_values=[100.0, 200.0],
-                pcs_kw_values=[50.0],
-                tariff=tariff,
-                financial=financial,
-                verify_top_k=1,
-                verify_config=v_cfg,
-                dry_run=False,
-                confirm=False,
-            )
+            optimize_bess_sizing(**base_opt, verify_top_k=1, dry_run=False, confirm=False)
 
         # Mocked Stage 2 execution reconciles fast model vs PVsyst exact CSV
         fake_cli = MagicMock()
@@ -315,19 +303,7 @@ class TouPlannerAndBessOptimizeTests(unittest.TestCase):
 
         with patch("pvsyst_auto.energy.system.create_grid_storage_system", return_value={"status": "created"}) as mock_create:
             verified = optimize_bess_sizing(
-                workspace=self.root,
-                cli=fake_cli,
-                store=fake_store,
-                baseline_csv=csv_path.name,
-                installed_dc_kw=120.0,
-                bess_kwh_values=[100.0, 200.0],
-                pcs_kw_values=[50.0],
-                tariff=tariff,
-                financial=financial,
-                verify_top_k=1,
-                verify_config=v_cfg,
-                dry_run=False,
-                confirm=True,
+                **base_opt, cli=fake_cli, store=fake_store, verify_top_k=1, dry_run=False, confirm=True,
             )
         self.assertEqual(verified["status"], "verified")
         self.assertEqual(verified["stage2_verification"]["status"], "verified")

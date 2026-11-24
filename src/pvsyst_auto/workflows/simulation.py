@@ -121,6 +121,20 @@ def verify_and_read_simulation_results(
     return bool(diag_full["needs_review"])
 
 
+def record_workflow_failure(result: dict, cli, exc: BaseException, save) -> bool:
+    """Record a workflow failure onto ``result``; return True when the exception must propagate."""
+    if issubclass(type(exc), (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired)):
+        result.update(status="failed", error=cli._redact(str(exc))[-12000:])
+        return False
+    # An unanticipated error still leaves a terminal manifest, never "running"; it then propagates.
+    result.update(status="failed", error=cli._redact(f"{type(exc).__name__}: {exc}")[-12000:])
+    try:
+        save()
+    except Exception:
+        pass  # a failed save must not replace the original error
+    return True
+
+
 def simulate_template(cli, store, *, template_project="", variant="", new_project="",
                       pan_name="", ond_name="", site_name="", met_name="",
                       tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
@@ -542,16 +556,9 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                       or result.get("weather_comparison", {}).get("needs_review", False)
                       or diag_needs_review)
             result.update(status="needs_review" if review else "completed", stage="completed")
-    except (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired) as exc:
-        result.update(status="failed", error=cli._redact(str(exc))[-12000:])
     except BaseException as exc:
-        # An unanticipated error still leaves a terminal manifest, never "running"; it then propagates.
-        result.update(status="failed", error=cli._redact(f"{type(exc).__name__}: {exc}")[-12000:])
-        try:
-            save()
-        except Exception:
-            pass  # a failed save must not replace the original error
-        raise
+        if record_workflow_failure(result, cli, exc, save):
+            raise
     try:
         result["template_preserved"] = store.inspect_project(template_project)["files"] == original["files"]
         if not result["template_preserved"]:
