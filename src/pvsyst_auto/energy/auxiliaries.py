@@ -5,12 +5,10 @@ verified auxiliary threshold and proportional families, with no load calculation
 """
 from __future__ import annotations
 
-import re
 from decimal import Decimal
 
-from pvsyst_auto.components.editor import ASSIGNMENT, has_object, replace_value
-from pvsyst_auto.components.generator import direct_fields, finite, one
-from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
+from pvsyst_auto.components.editor import replace_value
+from pvsyst_auto.components.generator import finite, one, read_flat_grid_system
 
 POWER_FIELDS = ("AuxPower_Const", "AuxPower_Night")
 # L/M-verified native fields; a written file's absence is the serializer's own default
@@ -42,32 +40,20 @@ def _profile_family(values):
 
 
 def _read(lines, system):
-    if system is None:
-        raise ValueError("Require one owning native pvSystem")
-    first = next((i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_")), len(lines) - 1)
-    if one(direct_fields(lines, (0, first)), "Version")[1] not in NATIVE_TEXT:
-        raise ValueError(f"Auxiliary editing requires variant Version={TEXT_LABEL}")
-    if has_object(lines, "pvLoad", "pvGridStorage"):
-        raise ValueError("Auxiliary editing currently verifies PV-only variants")
-    if any(line.strip().startswith("PVObject_") or line.strip() == "EndTags" for line in lines[system[0] + 1:system[1]]):
-        raise ValueError("Require a flat native grid system")
-    fields = direct_fields(lines, system)
-    if set(fields) - {"Comment", "Flags", "SystemType", *OWNED_FIELDS}:
-        raise ValueError("PF, grid limits, coupled auxiliary or other system fields require separate review")
-    for key in fields:
-        one(fields, key)
-    if one(fields, "SystemType")[1] != "Grid":
-        raise ValueError("Auxiliary editing requires SystemType=Grid")
-    index, raw = one(fields, "Flags")
-    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw) or int(raw[1:], 16) & ~0x00040000:
+    fields, index, flags = read_flat_grid_system(
+        lines,
+        system,
+        feature_label="Auxiliary editing",
+        owned_fields=OWNED_FIELDS,
+        load_storage_error="Auxiliary editing currently verifies PV-only variants",
+        unknown_field_error="PF, grid limits, coupled auxiliary or other system fields require separate review",
+        hex_flag_error="Require verified auxiliary-only native system Flags",
+        exclusive_system_fields=OWNED_FIELDS,
+    )
+    if flags & ~0x00040000:
         raise ValueError("Require verified auxiliary-only native system Flags")
-    flags = int(raw[1:], 16)
     native = {}
     for key in OWNED_FIELDS:
-        total = sum(m is not None and m[2] == key for line in lines
-                    for m in [ASSIGNMENT.fullmatch(line.rstrip("\r\n"))])
-        if total != len(fields.get(key, [])):
-            raise ValueError(f"Require {key} only in the owning system")
         entry = one(fields, key, False)
         try:
             native[key] = finite(float(entry[1]), key) if entry else 0.0

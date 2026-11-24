@@ -186,26 +186,27 @@ class ComponentTests(unittest.TestCase):
             self.store.update("PAN", source.name, {"Model": "Other"})
         self.assertNotIn("diff", self.store.compare("PAN", source.name, "legacy_copy.PAN"))
 
-    def test_update_backup_compare_and_no_overwrite(self):
-        for kind in self.files:
-            with self.subTest(kind=kind):
-                original = self.files[kind].read_bytes()
-                target = f"fresh.{kind}"
-                self.store.create(kind, target, original.decode("utf-8").replace("Manufacturer=Lab", "Manufacturer=New"))
-                with self.assertRaises(FileExistsError):
-                    self.store.create(kind, target, original.decode("utf-8"))
-                changed = self.store.update(kind, f"sample.{kind}", {"Model": "Updated"})
-                self.assertEqual(self.store.validate(kind, f"sample.{kind}")["model"], "Updated")
-                backup = self.workspace / "ComposPV" / ".mcp-backups" / kind / changed["backup_name"]
-                self.assertEqual(backup.read_bytes(), original)
-        self.assertFalse(self.store.compare("GEN", "sample.GEN", "fresh.GEN")["same_bytes"])
-        self.assertIn("-    Manufacturer=Lab", self.store.compare("GEN", "sample.GEN", "fresh.GEN")["diff"])
+    def test_update_backup_compare_bom_and_no_overwrite(self):
+        with self.subTest(case="update_backup_compare"):
+            for kind in self.files:
+                with self.subTest(kind=kind):
+                    original = self.files[kind].read_bytes()
+                    target = f"fresh.{kind}"
+                    self.store.create(kind, target, original.decode("utf-8").replace("Manufacturer=Lab", "Manufacturer=New"))
+                    with self.assertRaises(FileExistsError):
+                        self.store.create(kind, target, original.decode("utf-8"))
+                    changed = self.store.update(kind, f"sample.{kind}", {"Model": "Updated"})
+                    self.assertEqual(self.store.validate(kind, f"sample.{kind}")["model"], "Updated")
+                    backup = self.workspace / "ComposPV" / ".mcp-backups" / kind / changed["backup_name"]
+                    self.assertEqual(backup.read_bytes(), original)
+            self.assertFalse(self.store.compare("GEN", "sample.GEN", "fresh.GEN")["same_bytes"])
+            self.assertIn("-    Manufacturer=Lab", self.store.compare("GEN", "sample.GEN", "fresh.GEN")["diff"])
 
-    def test_update_preserves_utf8_bom(self):
-        source = self.files["OND"]
-        source.write_bytes(b"\xef\xbb\xbf" + OND.encode("utf-8"))
-        self.store.update("OND", source.name, {"Model": "Updated"})
-        self.assertTrue(source.read_bytes().startswith(b"\xef\xbb\xbf"))
+        with self.subTest(case="preserve_bom"):
+            source = self.files["OND"]
+            source.write_bytes(b"\xef\xbb\xbf" + OND.encode("utf-8"))
+            self.store.update("OND", source.name, {"Model": "Updated"})
+            self.assertTrue(source.read_bytes().startswith(b"\xef\xbb\xbf"))
 
     def test_known_value_checks_and_unsupported_fields(self):
         original = self.files["GEN"].read_bytes()

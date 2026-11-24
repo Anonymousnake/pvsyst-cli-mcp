@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 import re
 
 from pvsyst_auto.components.editor import objects, replace_value, root_block
-from pvsyst_auto.project.tracking import _decimal
+from pvsyst_auto.project.tracking import _check_single_orient_subarray_strings, _decimal
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
@@ -67,17 +67,7 @@ def _require_shed_scope(store, lines, arrays, system):
     sub_root = root_block(lines, next(iter(arrays.values())))
     if sub_root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or not _HEX_FLAG.fullmatch(sub_root.one("Flags")[1]):
         raise ValueError(f"Subarray requires native {SEED_LABEL} and hexadecimal Flags")
-    strings = sub_root.one("NStringCh")[1]
-    if (sub_root.one("NoOrientation")[1] != "1" or not strings.isdigit() or int(strings) < 1
-            or sub_root.one("NStrOrient1")[1] != strings):
-        raise ValueError("Requires all strings on orientation 1 with NStrOrient1 equal to NStringCh")
-    if any(key.startswith("NStrOrient") and key != "NStrOrient1" and sub_root.one(key)[1] != "0"
-           for key in sub_root.fields):
-        raise ValueError("Every other NStrOrient* must be zero")
-    store._orientation_list(lines)
-    store._require_no_geometry(lines)
-    if any(block.object_type in ("pvLoad", "pvGridStorage") for block in objects("".join(lines))):
-        raise ValueError("Load and storage objects are outside this batch")
+    _check_single_orient_subarray_strings(store, lines, sub_root)
 
 
 def orient_block(lines):

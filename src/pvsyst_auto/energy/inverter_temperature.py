@@ -1,12 +1,10 @@
 """Native 8.1.6 inverter temperature offset/fixed control; no thermal or power model."""
 from __future__ import annotations
 
-import re
 from decimal import Decimal
 
-from pvsyst_auto.components.editor import has_object, replace_value
-from pvsyst_auto.components.generator import direct_fields, finite, one
-from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
+from pvsyst_auto.components.editor import replace_value
+from pvsyst_auto.components.generator import finite, one, read_flat_grid_system
 
 FIELDS = ("TempShift", "TempFixed")
 KNOWN = {"Comment", "Flags", "SystemType", *FIELDS}
@@ -31,26 +29,15 @@ def _native(raw, label):
 
 
 def _read(lines, system):
-    if system is None:
-        raise ValueError("Require one owning native pvSystem")
-    first = next((i for i, line in enumerate(lines[1:], 1) if line.strip().startswith("PVObject_")), len(lines) - 1)
-    if one(direct_fields(lines, (0, first)), "Version")[1] not in NATIVE_TEXT:
-        raise ValueError(f"Inverter temperature editing requires variant Version={TEXT_LABEL}")
-    if has_object(lines, "pvLoad", "pvGridStorage"):
-        raise ValueError("Inverter temperature editing currently verifies PV-only variants")
-    if any(line.strip().startswith("PVObject_") or line.strip() == "EndTags" for line in lines[system[0] + 1:system[1]]):
-        raise ValueError("Require a flat native grid system")
-    fields = direct_fields(lines, system)
-    if set(fields) - KNOWN:
-        raise ValueError("PF, grid limits or other system fields require separate review")
-    for key in fields:
-        one(fields, key)
-    if one(fields, "SystemType")[1] != "Grid":
-        raise ValueError("Inverter temperature editing requires SystemType=Grid")
-    index, raw = one(fields, "Flags")
-    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw):
-        raise ValueError("Require native hexadecimal system Flags")
-    flags = int(raw[1:], 16)
+    fields, index, flags = read_flat_grid_system(
+        lines,
+        system,
+        feature_label="Inverter temperature editing",
+        owned_fields=KNOWN,
+        load_storage_error="Inverter temperature editing currently verifies PV-only variants",
+        unknown_field_error="PF, grid limits or other system fields require separate review",
+        hex_flag_error="Require native hexadecimal system Flags",
+    )
     if flags & ~FLAG_MASK or flags == FLAG_MASK:
         raise ValueError("Require ambient, offset-only or fixed-only native system Flags")
     present = [one(fields, key, False) for key in FIELDS]

@@ -64,6 +64,63 @@ def collect_simulation_weather_assets(
     return weather_report, weather_warnings
 
 
+def native_cli_weather_inputs(assets: dict, *, synthetic_weather: bool, weather_report: object) -> dict:
+    """Build native CLI site/meteo kwargs matching the prepared simulation assets."""
+    if synthetic_weather:
+        return {"site": Path(assets["site_name"]["path"]), "synthetic_weather": True}
+    if weather_report is not None:
+        return {"site": Path(assets["site_name"]["path"]), "met": Path(assets["met_name"]["path"])}
+    return {}
+
+
+def verify_and_read_simulation_results(
+    result: dict,
+    *,
+    store,
+    project: str,
+    variant: str,
+    site_name: str,
+    met_name: str,
+    year: int,
+    nominal_dc_kw: float,
+    csv_path: Path,
+    pdf_path: Path,
+    assets: dict,
+    synthetic_weather: bool,
+    weather_report: object,
+    validate_output=None,
+) -> bool:
+    """Run context, annual, optional output-shape, weather, PDF, and diagnostic verification."""
+    output_snapshot = fingerprint(csv_path)
+    expected_context = {
+        "Project": project,
+        "Geographical Site": site_name,
+        "Simulation variant": f"{Path(project).stem}.{variant}",
+    }
+    if not synthetic_weather:
+        expected_context["Weather data"] = met_name
+    result["native_context"] = verify_native_csv_context(csv_path, expected_context)
+    result["metrics"] = annual_summary(csv_path, year, nominal_dc_kw)
+    if validate_output is not None:
+        validate_output()
+    if result["metrics"]["sha256"] != output_snapshot:
+        raise ValueError("Native output changed between context and annual validation")
+    if weather_report is not None:
+        result["weather_comparison"] = compare_native_weather(
+            csv_path, Path(assets["weather_source"]["path"]), weather_report,
+        )
+    verify_pdf_header(pdf_path)
+    if fingerprint(csv_path) != output_snapshot:
+        raise ValueError("Native output changed across result validation stages")
+    flags = result["metrics"]["diagnostic_flags"]
+    result["warnings"].extend(flags)
+    diag_full = diagnose_simulation_csv(
+        csv_path, store=store, project=project, variant=variant,
+    )
+    result["diagnostics"] = compact_diagnostics_summary(diag_full)
+    return bool(diag_full["needs_review"])
+
+
 def simulate_template(cli, store, *, template_project="", variant="", new_project="",
                       pan_name="", ond_name="", site_name="", met_name="",
                       tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
@@ -439,12 +496,9 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             if weather_report is not None:
                 variables.extend(["viGlobHor", "viDiffHor", "viT_Amb"])
             build_sfi(paths["sfi"], variables)
-            if synthetic_weather:
-                native_inputs = {"site": Path(assets["site_name"]["path"]), "synthetic_weather": True}
-            elif weather_report is not None:
-                native_inputs = {"site": Path(assets["site_name"]["path"]), "met": Path(assets["met_name"]["path"])}
-            else:
-                native_inputs = {}
+            native_inputs = native_cli_weather_inputs(
+                assets, synthetic_weather=synthetic_weather, weather_report=weather_report,
+            )
             run = cli.run_simulation(new_project, variant, sfi=paths["sfi"], out_csv=paths["csv"],
                                      report_pdf=paths["pdf"], time_step="hour", start_date=f"{year}.01.01",
                                      end_date=f"{year}.12.31", report_language=report_language, log_level=3,
@@ -452,15 +506,12 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             result["run"] = run
             result["warnings"].extend(run.get("warnings", []))
             stage("results")
-            output_snapshot = fingerprint(paths["csv"])
-            expected_context = {"Project": new_project, "Geographical Site": site_name,
-                                "Simulation variant": f"{Path(new_project).stem}.{variant}"}
-            if not synthetic_weather:
-                expected_context["Weather data"] = met_name
-            result["native_context"] = verify_native_csv_context(paths["csv"], expected_context)
-            result["metrics"] = annual_summary(paths["csv"], year, nominal)
-            if tracking_mode:
+
+            def _validate_tracking():
+                if not tracking_mode:
+                    return
                 rows = 0
+                headers = []
                 for headers, row in iter_result_csv(paths["csv"], strict=True):
                     if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in row[1:]):
                         raise ValueError("Native tracking output contains missing/nonfinite numeric data")
@@ -469,23 +520,27 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                 if units.get("GlobShd") != "W/m\u00b2":
                     raise ValueError("Native UnlimTracking output lacks GlobShd in W/m2")
                 result["tracking_output"] = {"hourly_rows": rows, "numeric_columns": headers[1:], "units": units}
-            if result["metrics"]["sha256"] != output_snapshot:
-                raise ValueError("Native output changed between context and annual validation")
-            if weather_report is not None:
-                result["weather_comparison"] = compare_native_weather(
-                    paths["csv"], Path(assets["weather_source"]["path"]), weather_report)
-            verify_pdf_header(paths["pdf"])
-            if fingerprint(paths["csv"]) != output_snapshot:
-                raise ValueError("Native output changed across result validation stages")
-            flags = result["metrics"]["diagnostic_flags"]
-            result["warnings"].extend(flags)
-            diag_full = diagnose_simulation_csv(
-                paths["csv"], store=store, project=new_project, variant=variant,
+
+            diag_needs_review = verify_and_read_simulation_results(
+                result,
+                store=store,
+                project=new_project,
+                variant=variant,
+                site_name=site_name,
+                met_name=met_name,
+                year=year,
+                nominal_dc_kw=nominal,
+                csv_path=paths["csv"],
+                pdf_path=paths["pdf"],
+                assets=assets,
+                synthetic_weather=synthetic_weather,
+                weather_report=weather_report,
+                validate_output=_validate_tracking,
             )
-            result["diagnostics"] = compact_diagnostics_summary(diag_full)
+            flags = result["metrics"]["diagnostic_flags"]
             review = (tracking_mode or run.get("warnings") or flags or weather_warnings
                       or result.get("weather_comparison", {}).get("needs_review", False)
-                      or diag_full["needs_review"])
+                      or diag_needs_review)
             result.update(status="needs_review" if review else "completed", stage="completed")
     except (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired) as exc:
         result.update(status="failed", error=cli._redact(str(exc))[-12000:])

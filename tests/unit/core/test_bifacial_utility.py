@@ -2,6 +2,7 @@
 auto PAN dimensions, bifacial SFI, and simulate_design / prepare_design_project utility scopes."""
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -17,7 +18,7 @@ from pvsyst_auto.project.synthesize import placeholder_site_block, synthesize_ut
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import EXPECTED_WORKSPACE_BASENAME, prepare_design_project, simulate_design
 from pvsyst_auto.workflows.utility import validate_utility_spec
-from tests._fixtures import FakeCliBase, init_full_workspace, write_sfi_csv
+from tests._fixtures import FakeCliBase, init_full_workspace, init_workspace, write_sfi_csv, write_utf8_crlf
 from tests.unit.core.test_components import OND, PAN
 from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
 
@@ -51,6 +52,27 @@ def _capacity_spec(**overrides):
     }
     data.update(overrides)
     return data
+
+
+@lru_cache(maxsize=4)
+def _synthetic_sfi_rows(year: int) -> tuple[list, ...]:
+    start = datetime(year, 1, 1, 0, 0)
+    end = datetime(year + 1, 1, 1, 0, 0)
+    rows: list[list] = []
+    cur = start
+    while cur < end:
+        is_day = 8 <= cur.hour < 16
+        rows.append([
+            cur.strftime("%d/%m/%y %H:%M"),
+            500.0 if is_day else 0.0,
+            480.0 if is_day else 0.0,
+            160.0 if is_day else 0.0,
+            147.2064 if is_day else 0.0,
+            0.82 if is_day else 0.0,
+            0.0,
+        ])
+        cur += timedelta(hours=1)
+    return tuple(rows)
 
 
 def _write_fake_annual_csv(csv_path: Path, *, project: str, variant: str, site: str, met: str,
@@ -93,27 +115,60 @@ def _write_fake_annual_csv(csv_path: Path, *, project: str, variant: str, site: 
 
 
 class _FakeUtilityCLI(FakeCliBase):
-    def __init__(self, workspace: Path, *, year: int = 2024, nominal_dc_kw: float = 100.0, bifacial: bool = False):
-        super().__init__(workspace, version="8.1.7")
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        year: int = 2024,
+        nominal_dc_kw: float = 100.0,
+        bifacial: bool = False,
+        license_status: str = "TRIAL",
+        use_sfi_writer: bool = False,
+        site: str = "Geneva_MN90.SIT",
+        met: str = "Geneva_MN90_SYN.MET",
+        synthetic_met: str | None = None,
+    ):
+        super().__init__(workspace, version="8.1.7", license_status=license_status)
         self.year = year
         self.nominal_dc_kw = nominal_dc_kw
         self.bifacial = bifacial
-        self.runs = []
+        self.use_sfi_writer = use_sfi_writer
+        self.site = site
+        self.met = met
+        self.synthetic_met = synthetic_met
+        self.runs: list[dict] = []
+
+    def command_help(self, *args, **kwargs) -> str:
+        return "Available language: [en, zh]"
 
     def run_simulation(self, project, variant, *, sfi=None, out_csv=None, report_pdf=None, **kwargs):
         self.runs.append({"project": project, "variant": variant, "sfi": sfi, "out_csv": out_csv,
                           "report_pdf": report_pdf, **kwargs})
+        if self.use_sfi_writer:
+            site_name = Path(kwargs["site"]).name if kwargs.get("site") else self.site
+            met_name = self.synthetic_met if self.synthetic_met and kwargs.get("synthetic_weather") else self.met
+            write_sfi_csv(
+                Path(out_csv),
+                [("GlobInc", "W/m\u00b2"), ("GlobShd", "W/m\u00b2"), ("EArray", "kW"), ("E_Grid", "kW"), ("PR", "ratio"), ("IL_Pmax", "kW")],
+                _synthetic_sfi_rows(self.year),
+                project=project,
+                site=site_name,
+                met=met_name,
+                variant=f"{Path(project).stem}.{variant}",
+            )
+            if report_pdf is not None:
+                Path(report_pdf).write_bytes(b"%PDF-1.4\n%fake\n")
+            return {"returncode": 0, "warnings": [], "args": []}
         sfi_text = Path(sfi).read_text(encoding="utf-8") if sfi else ""
         is_bifi = "viGlobBak" in sfi_text
         # Read actual nominal_dc_kw from synthesized variant
         vc_text = (self.workspace / "Projects" / f"{Path(project).stem}.{variant}").read_text(encoding="utf-8-sig")
-        import re
         n_ser = int(re.search(r"NModSerie=(\d+)", vc_text).group(1))
         n_str = int(re.search(r"NStringCh=(\d+)", vc_text).group(1))
         nom_kw = n_ser * n_str * 440.0 / 1000.0
         _write_fake_annual_csv(
             Path(out_csv), project=project, variant=variant,
-            site="Geneva_MN90.SIT", met="Geneva_MN90_SYN.MET",
+            site=self.site, met=self.met,
             year=self.year, nominal_dc_kw=nom_kw, bifacial=is_bifi,
         )
         if report_pdf is not None:
@@ -125,25 +180,11 @@ class BifacialAndUtilityTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name).resolve() / EXPECTED_WORKSPACE_BASENAME
-        self.root.mkdir(parents=True, exist_ok=True)
-        for sub in (
-            "Projects", "Sites", "Meteo", "Models", "Results",
-            "ComposPV/PVmodules", "ComposPV/Inverters",
-        ):
-            (self.root / sub).mkdir(parents=True, exist_ok=True)
-        (self.root / "Sites" / "Geneva_MN90.SIT").write_bytes(
-            b"\xef\xbb\xbf" + SITE_TEXT.replace("\n", "\r\n").encode("utf-8")
-        )
-        (self.root / "Meteo" / "Geneva_MN90_SYN.MET").write_bytes(
-            b"\xef\xbb\xbf" + MET_TEXT.replace("\n", "\r\n").encode("utf-8")
-        )
-        (self.root / "ComposPV/PVmodules/Lab440.PAN").write_bytes(
-            b"\xef\xbb\xbf" + UTILITY_PAN.replace("\n", "\r\n").encode("utf-8")
-        )
-        (self.root / "ComposPV/Inverters/Lab50.OND").write_bytes(
-            b"\xef\xbb\xbf" + UTILITY_OND.replace("\n", "\r\n").encode("utf-8")
-        )
+        self.root = init_workspace(Path(tmp.name).resolve() / EXPECTED_WORKSPACE_BASENAME)
+        write_utf8_crlf(self.root / "Sites" / "Geneva_MN90.SIT", SITE_TEXT)
+        write_utf8_crlf(self.root / "Meteo" / "Geneva_MN90_SYN.MET", MET_TEXT)
+        write_utf8_crlf(self.root / "ComposPV/PVmodules/Lab440.PAN", UTILITY_PAN)
+        write_utf8_crlf(self.root / "ComposPV/Inverters/Lab50.OND", UTILITY_OND)
         self.components = ComponentStore(self.root)
         self.store = VariantStore(self.root, self.components)
 
@@ -338,9 +379,7 @@ class BifacialAndUtilityTests(unittest.TestCase):
         self.assertTrue(any(i["field"] == "template_project" for i in bad_tpl["issues"]))
 
         # Monofacial .PAN (Flags=$00 without bit 23) must be blocked at preflight when bifacial is requested
-        (self.root / "ComposPV/PVmodules/Lab440Mono.PAN").write_bytes(
-            b"\xef\xbb\xbf" + UTILITY_MONO_PAN.replace("\n", "\r\n").encode("utf-8")
-        )
+        write_utf8_crlf(self.root / "ComposPV/PVmodules/Lab440Mono.PAN", UTILITY_MONO_PAN)
         fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
         with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
             bad_mono = simulate_design(cli, self.store, spec={
@@ -531,9 +570,7 @@ class BifacialAndUtilityTests(unittest.TestCase):
             self.assertEqual(list((self.root / "Projects").iterdir()), [])
 
     def test_variant_update_rejects_mounting_bifacial_on_monofacial_pan(self):
-        (self.root / "ComposPV/PVmodules/Mono440.PAN").write_bytes(
-            b"\xef\xbb\xbf" + UTILITY_MONO_PAN.replace("\n", "\r\n").encode("utf-8")
-        )
+        write_utf8_crlf(self.root / "ComposPV/PVmodules/Mono440.PAN", UTILITY_MONO_PAN)
         cli = _FakeUtilityCLI(self.root, year=2024)
         fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
         req = SingleDesignRequest(
@@ -595,63 +632,22 @@ class BifacialAndUtilityTests(unittest.TestCase):
                 self.assertAlmostEqual(metrics["rear_mismatch_loss_kwh"], 2.0, places=6)
                 self.assertAlmostEqual(metrics["mean_pr_bifi"], 0.85, places=6)
 
-    @staticmethod
-    @lru_cache(maxsize=2)
-    def _synthetic_2024_rows() -> tuple[list, ...]:
-        start = datetime(2024, 1, 1, 0, 0)
-        rows: list[list] = []
-        for h in range(8784):
-            dt = start + timedelta(hours=h)
-            is_day = 8 <= dt.hour < 16
-            rows.append([
-                dt.strftime("%d/%m/%y %H:%M"),
-                500.0 if is_day else 0.0,
-                480.0 if is_day else 0.0,
-                160.0 if is_day else 0.0,
-                147.2064 if is_day else 0.0,
-                0.82 if is_day else 0.0,
-                0.0,
-            ])
-        return tuple(rows)
-
-    def _seed_multi_orientation_assets(self) -> FakeCliBase:
+    def _seed_multi_orientation_assets(self) -> _FakeUtilityCLI:
         init_full_workspace(self.root.parent)
-        (self.root / "ComposPV" / "PVmodules" / "TestSolar_TS600.PAN").write_bytes(
-            b"\xef\xbb\xbf" + UTILITY_PAN.replace("\n", "\r\n").encode("utf-8")
-        )
-        (self.root / "ComposPV" / "Inverters" / "TestInv_300K.OND").write_bytes(
-            b"\xef\xbb\xbf" + UTILITY_OND.replace("\n", "\r\n").encode("utf-8")
-        )
+        write_utf8_crlf(self.root / "ComposPV" / "PVmodules" / "TestSolar_TS600.PAN", UTILITY_PAN)
+        write_utf8_crlf(self.root / "ComposPV" / "Inverters" / "TestInv_300K.OND", UTILITY_OND)
         _, site_body = placeholder_site_block("TestSite.SIT", "TestSite")
-        site_text = "\ufeffPVObject_=pvSite\r\n" + "\r\n".join(f"  {ln}" for ln in site_body) + "\r\nEnd of PVObject pvSite\r\n"
-        (self.root / "Sites" / "TestSite.SIT").write_text(site_text, encoding="utf-8")
-        rows = self._synthetic_2024_rows()
-
-        class _MultiOrientCLI(FakeCliBase):
-            def __init__(self, workspace: Path):
-                super().__init__(workspace, version="8.1.7", license_status="ACTIVATED")
-                self.run_calls: list[dict] = []
-
-            def command_help(self, command: str, allow_window_creation=None) -> str:
-                return "Available language: [en, zh]"
-
-            def run_simulation(self, project: str, variant: str, **kwargs) -> dict:
-                self.run_calls.append({"project": project, "variant": variant, **kwargs})
-                out_csv = Path(kwargs["out_csv"])
-                pdf = Path(kwargs["report_pdf"])
-                write_sfi_csv(
-                    out_csv,
-                    [("GlobInc", "W/m²"), ("GlobShd", "W/m²"), ("EArray", "kW"), ("E_Grid", "kW"), ("PR", "ratio"), ("IL_Pmax", "kW")],
-                    rows,
-                    project=project,
-                    site=Path(kwargs["site"]).name if kwargs.get("site") else "TestSite.SIT",
-                    met="Synthetic_TestSite.MET",
-                    variant=f"{Path(project).stem}.{variant}",
-                )
-                pdf.write_bytes(b"%PDF-1.4\n%fake\n")
-                return {"returncode": 0, "warnings": [], "args": []}
-
-        return _MultiOrientCLI(self.root)
+        site_text = "PVObject_=pvSite\n" + "\n".join(f"  {ln}" for ln in site_body) + "\nEnd of PVObject pvSite\n"
+        write_utf8_crlf(self.root / "Sites" / "TestSite.SIT", site_text)
+        return _FakeUtilityCLI(
+            self.root,
+            year=2024,
+            license_status="ACTIVATED",
+            use_sfi_writer=True,
+            site="TestSite.SIT",
+            met="Synthetic_TestSite.MET",
+            synthetic_met="Synthetic_TestSite.MET",
+        )
 
     def test_validate_utility_spec_multi_orientation_rules(self):
         spec = {
@@ -737,8 +733,8 @@ class BifacialAndUtilityTests(unittest.TestCase):
         }
         sim = simulate_design(cli, self.store, spec=spec, dry_run=False)
         self.assertIn(sim["status"], ("completed", "needs_review"), sim)
-        self.assertEqual(len(cli.run_calls), 1)
-        call = cli.run_calls[0]
+        self.assertEqual(len(cli.runs), 1)
+        call = cli.runs[0]
         self.assertTrue(call["synthetic_weather"])
         self.assertEqual(Path(call["site"]).name, "TestSite.SIT")
         self.assertIsNone(call.get("met"))
@@ -748,45 +744,14 @@ class BifacialAndUtilityTests(unittest.TestCase):
         for idx in range(5):
             (self.root / "Projects" / f"_DEMO_Junk_{idx}.PRJ").write_text("not a valid prj", encoding="utf-8")
 
-        calls: list[dict] = []
-        ws = self.root
-
-        class _LangCLI(FakeCliBase):
-            def __init__(self):
-                super().__init__(ws, version="8.1.7", license_status="ACTIVATED")
-
-            def command_help(self, *a, **k):
-                return "Available language: [en, zh]"
-
-            def run_simulation(self, project, variant, **kwargs):
-                calls.append(kwargs)
-                out_csv = Path(kwargs["out_csv"])
-                pdf = Path(kwargs["report_pdf"])
-                rows = []
-                start = datetime(1990, 1, 1, 0, 0)
-                for h in range(8760):
-                    dt = start + timedelta(hours=h)
-                    day = 8 <= dt.hour < 16
-                    rows.append([
-                        dt.strftime("%d/%m/%y %H:%M"),
-                        500.0 if day else 0.0,
-                        480.0 if day else 0.0,
-                        160.0 if day else 0.0,
-                        147.2064 if day else 0.0,
-                        0.82 if day else 0.0,
-                        0.0,
-                    ])
-                write_sfi_csv(
-                    out_csv,
-                    [("GlobInc", "W/m²"), ("GlobShd", "W/m²"), ("EArray", "kW"), ("E_Grid", "kW"), ("PR", "ratio"), ("IL_Pmax", "kW")],
-                    rows,
-                    project=project,
-                    site="Geneva_MN90.SIT",
-                    met="Geneva_MN90_SYN.MET",
-                    variant=f"{Path(project).stem}.{variant}",
-                )
-                pdf.write_bytes(b"%PDF-1.4\n%fake\n")
-                return {"returncode": 0, "warnings": [], "args": []}
+        cli = _FakeUtilityCLI(
+            self.root,
+            year=1990,
+            license_status="ACTIVATED",
+            use_sfi_writer=True,
+            site="Geneva_MN90.SIT",
+            met="Geneva_MN90_SYN.MET",
+        )
 
         req = SingleDesignRequest(
             scope="ground_sheds",
@@ -803,7 +768,7 @@ class BifacialAndUtilityTests(unittest.TestCase):
         )
         spec = req.model_dump(exclude_none=True)
 
-        compact = simulate_design(_LangCLI(), self.store, spec=spec, dry_run=True, verbose=False)
+        compact = simulate_design(cli, self.store, spec=spec, dry_run=True, verbose=False)
         self.assertEqual(compact["status"], "ready", compact.get("issues"))
         tpl_block = compact["preview"]["discovery"]["candidates"]["templates"]
         self.assertIsInstance(tpl_block, dict)
@@ -811,15 +776,15 @@ class BifacialAndUtilityTests(unittest.TestCase):
         self.assertTrue(tpl_block["summary"]["truncated"])
         self.assertNotIn("selection_rule", compact["preview"]["discovery"])
 
-        full = simulate_design(_LangCLI(), self.store, spec=spec, dry_run=True, verbose=True)
+        full = simulate_design(cli, self.store, spec=spec, dry_run=True, verbose=True)
         self.assertIsInstance(full["preview"]["discovery"]["candidates"]["templates"], list)
         self.assertEqual(len(full["preview"]["discovery"]["candidates"]["templates"]), 5)
         self.assertIn("selection_rule", full["preview"]["discovery"])
 
-        done = simulate_design(_LangCLI(), self.store, spec=spec, dry_run=False, verbose=False)
+        done = simulate_design(cli, self.store, spec=spec, dry_run=False, verbose=False)
         self.assertIn(done["status"], ("completed", "needs_review"), done)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0]["report_language"], "zh")
+        self.assertEqual(len(cli.runs), 1)
+        self.assertEqual(cli.runs[0]["report_language"], "zh")
 
 
 if __name__ == "__main__":

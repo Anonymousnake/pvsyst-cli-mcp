@@ -250,6 +250,21 @@ def orient_block(lines):
     return block
 
 
+def _check_single_orient_subarray_strings(store, lines, sub_root):
+    """Validate single-orientation string counts, orientation list, no 3D geometry, and PV-only scope."""
+    strings = sub_root.one("NStringCh")[1]
+    if (sub_root.one("NoOrientation")[1] != "1" or not strings.isdigit() or int(strings) < 1
+            or sub_root.one("NStrOrient1")[1] != strings):
+        raise ValueError("Requires all strings on orientation 1 with NStrOrient1 equal to NStringCh")
+    if any(key.startswith("NStrOrient") and key != "NStrOrient1" and sub_root.one(key)[1] != "0"
+           for key in sub_root.fields):
+        raise ValueError("Every other NStrOrient* must be zero")
+    store._orientation_list(lines)
+    store._require_no_geometry(lines)
+    if any(block.object_type in ("pvLoad", "pvGridStorage") for block in objects("".join(lines))):
+        raise ValueError("Load and storage objects are outside this batch")
+
+
 def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), system_flags=("$06000000",),
                    sub_flags=("$019E1002",)):
     """Verified native 8.1.6 PV-only single-subarray Grid scope; callers own flag-family validation."""
@@ -277,17 +292,7 @@ def _require_scope(store, lines, arrays, system, *, main_flags=("$01900400",), s
         raise ValueError(f"Subarray requires native {TEXT_LABEL} and the caller's verified flag family")
     if sub_root.one("Flags2")[1] != "$20":
         raise ValueError("Subarray requires the verified Flags2=$20")
-    strings = sub_root.one("NStringCh")[1]
-    if (sub_root.one("NoOrientation")[1] != "1" or not strings.isdigit() or int(strings) < 1
-            or sub_root.one("NStrOrient1")[1] != strings):
-        raise ValueError("Requires all strings on orientation 1 with NStrOrient1 equal to NStringCh")
-    if any(key.startswith("NStrOrient") and key != "NStrOrient1" and sub_root.one(key)[1] != "0"
-           for key in sub_root.fields):
-        raise ValueError("Every other NStrOrient* must be zero")
-    store._orientation_list(lines)
-    store._require_no_geometry(lines)
-    if any(block.object_type in ("pvLoad", "pvGridStorage") for block in objects("".join(lines))):
-        raise ValueError("Load and storage objects are outside this batch")
+    _check_single_orient_subarray_strings(store, lines, sub_root)
     if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
         raise ValueError("P50/P90 and saved horizon objects are outside this batch")
     if grid_inventory(lines, arrays)["counts_valid"] is not True:

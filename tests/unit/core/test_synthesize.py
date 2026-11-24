@@ -391,12 +391,8 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
             "  VarMeteo, list of=1 TVarSimul\n"
             "End of PVObject pvMeteo\n"
         )
-        (self.root / "Sites" / "Hawaii_2020.SIT").write_bytes(
-            b"\xef\xbb\xbf" + hawaii_sit.replace("\n", "\r\n").encode("utf-8")
-        )
-        (self.root / "Meteo" / "Hawaii_2020_1min_ClipCorr.MET").write_bytes(
-            b"\xef\xbb\xbf" + hawaii_met.replace("\n", "\r\n").encode("utf-8")
-        )
+        write_utf8_crlf(self.root / "Sites" / "Hawaii_2020.SIT", hawaii_sit)
+        write_utf8_crlf(self.root / "Meteo" / "Hawaii_2020_1min_ClipCorr.MET", hawaii_met)
         synth = synthesize_project_and_variant(
             self.store,
             site_name="Hawaii_2020.SIT",
