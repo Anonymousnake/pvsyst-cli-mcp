@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from pvsyst_auto.api.weather import pvsyst_create_site
+from pvsyst_auto.native.cli import PVsystCLI
 from pvsyst_auto.weather import acquisition
 from pvsyst_auto.weather.csv import inspect_weather_csv
 
@@ -188,6 +190,67 @@ class MultiProviderWeatherTests(unittest.TestCase):
                     self.assertEqual((res["status"], res["stage"]), ("blocked", "preflight"), res)
                     self.assertTrue(res["issues"])
         mock_get.assert_not_called()
+
+    def test_region_error_and_schema_expose_allowed_values(self):
+        fake_exe = self.root / "PVsystCLI.exe"
+        fake_exe.write_bytes(b"fake")
+        cli = PVsystCLI(cli_path=fake_exe, workspace=self.root)
+        with patch.object(cli, "_require", return_value=None):
+            with self.assertRaisesRegex(ValueError, "Unknown region.*asia.*europe"):
+                cli.create_site_details("S", 30.0, 120.0, self.root / "Meteo" / "m.csv", self.root / "s.sit", region="Asia")
+        ann = pvsyst_create_site.__annotations__["region"]
+        self.assertIn("asia", str(ann))
+        self.assertIn("north_america", str(ann))
+
+    def test_nasa_power_twilight_dhi_tolerance_and_strict_opt_out(self):
+        year = 2022
+        offset_hours = 8
+        utc_start = datetime(year, 1, 1, 0, 0) - timedelta(hours=offset_hours)
+        ghi_map, dhi_map, t2m_map = {}, {}, {}
+        twilight_key = None
+        for step in range(8760):
+            utc_dt = utc_start + timedelta(hours=step)
+            key = utc_dt.strftime("%Y%m%d%H")
+            local_h = (utc_dt.hour + offset_hours) % 24
+            ghi = 500.0 if 8 <= local_h <= 16 else 0.0
+            dhi = 150.0 if ghi > 0 else 0.0
+            if step == 100:
+                ghi = 14.48
+                dhi = 17.26
+                twilight_key = key
+            ghi_map[key] = ghi
+            dhi_map[key] = dhi
+            t2m_map[key] = 15.0
+        payload = {
+            "geometry": {"coordinates": [110.0, 35.0, 400.0]},
+            "properties": {
+                "parameter": {
+                    "ALLSKY_SFC_SW_DWN": ghi_map,
+                    "ALLSKY_SFC_SW_DIFF": dhi_map,
+                    "T2M": t2m_map,
+                }
+            },
+        }
+        raw = json.dumps(payload)
+
+        with patch.object(acquisition, "_provider_get", return_value=(payload, raw, "https://power.larc.nasa.gov/mock")):
+            ok = acquisition.download_weather(
+                self.root, csv_name="nasa_twilight_ok.csv", year=year,
+                latitude=35.0, longitude=110.0, site_name="TwSite",
+                country_code="CN", timezone_name="Asia/Shanghai",
+                provider="nasa_power", dry_run=False,
+            )
+            self.assertEqual(ok["status"], "prepared", ok["issues"])
+            self.assertTrue(any("twilight" in w.lower() and twilight_key in w for w in ok["warnings"]))
+
+            strict = acquisition.download_weather(
+                self.root, csv_name="nasa_twilight_strict.csv", year=year,
+                latitude=35.0, longitude=110.0, site_name="TwSite",
+                country_code="CN", timezone_name="Asia/Shanghai",
+                provider="nasa_power", strict_dhi=True, dry_run=False,
+            )
+            self.assertEqual(strict["status"], "blocked")
+            self.assertTrue(any("DHI (17.26) > GHI (14.48)" in i for i in strict["issues"]))
 
 
 if __name__ == "__main__":

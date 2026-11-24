@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from pvsyst_auto.engineering.economics import evaluate_economics
+from pvsyst_auto.workflows.report import generate_report
 from tests._fixtures import write_sfi_csv
 
 
@@ -465,6 +466,178 @@ class EconomicsEngineTests(unittest.TestCase):
         )
         self.assertEqual([row["simple_payback_years"] for row in res["ranking"]], [None, None])
         self.assertIsNone(res["best_scenario"])
+
+    def _write_slope_csv(self, name: str, kw_day: float, pr_val: float) -> Path:
+        start = datetime(2024, 1, 1, 0, 0)
+        rows = []
+        for h in range(240):
+            dt = start + timedelta(hours=h)
+            is_day = 9 <= dt.hour < 15
+            rows.append([
+                dt.strftime("%d/%m/%y %H:%M"),
+                500.0 if is_day else 0.0,
+                kw_day * 1.1 if is_day else 0.0,
+                kw_day if is_day else 0.0,
+                pr_val if is_day else 0.0,
+            ])
+        return _write_sfi_csv(
+            self.root / "Results" / name,
+            [("GlobInc", "W/m²"), ("EArray", "kW"), ("E_Grid", "kW"), ("PR", "ratio")],
+            rows,
+        )
+
+    def test_multi_csv_portfolio_merge_in_economics_and_report(self):
+        self._write_slope_csv("south.csv", 100.0, 0.84)
+        self._write_slope_csv("east.csv", 60.0, 0.80)
+        self._write_slope_csv("west.csv", 40.0, 0.78)
+
+        res = evaluate_economics(
+            workspace=self.root,
+            scenarios=[{
+                "label": "Combined_3Slope",
+                "csv_names": ["south.csv", "east.csv", "west.csv"],
+                "csv_weights": [0.5, 0.3, 0.2],
+                "installed_dc_kw": 200.0,
+                "capex_total": 600_000.0,
+            }],
+            financial={"currency": "CNY", "first_year_degradation_pct": 0.0, "annual_degradation_pct": 0.0},
+            tariff={"mode": "feed_in", "feed_in_tariff": 0.35},
+        )
+        sc = res["scenarios"][0]
+        self.assertAlmostEqual(sc["year1_energy_kwh"], 4560.0, places=2)
+        self.assertEqual(len(sc["settlement"]["merged_sources"]), 3)
+
+        rep = generate_report(
+            workspace=self.root,
+            title="Portfolio Merged Report",
+            output_name="portfolio_merged.html",
+            scenarios=[{
+                "label": "Combined_3Slope",
+                "csv_names": ["south.csv", "east.csv", "west.csv"],
+                "csv_weights": [0.5, 0.3, 0.2],
+                "installed_dc_kw": 200.0,
+                "capex_total": 600_000.0,
+            }],
+            financial={"currency": "CNY"},
+            tariff={"mode": "feed_in", "feed_in_tariff": 0.35},
+            dry_run=False,
+        )
+        self.assertEqual(rep["status"], "generated")
+        self.assertTrue(Path(rep["report_path"]).is_file())
+
+    def test_mixed_site_units_and_load_at_project_exit(self):
+        from pvsyst_auto.workflows.report import _summarize_multi_csv_for_report
+        stamp = "01/06/24 12:00"
+        base = self.root / "Results"
+        a = _write_sfi_csv(base / "a.csv", [("GlobInc", "W/m2"), ("PR", "%"), ("E_Grid", "kWh"),
+                                             ("E_User", "kWh")], [[stamp, 1000, 80, 0, 10]])
+        b = _write_sfi_csv(base / "b.csv", [("GlobInc", "kW/m2"), ("PR", "%"), ("E_Grid", "kWh")],
+                           [[stamp, 1, 60, -5]])
+        self.assertEqual(_summarize_multi_csv_for_report([a, b], [1, 1])["overall_weighted_pr"], 0.7)
+        result = evaluate_economics(workspace=self.root, scenarios=[{"csv_names": [a.name, b.name],
+                                    "csv_weights": [1, 1], "capex_total": 100}],
+                                    financial={"project_life_years": 1, "financing": {"equity_ratio_pct": 20,
+                                               "loan_tenor_years": 10}}, include_cashflow_schedule=True)
+        scenario = result["scenarios"][0]
+        self.assertEqual(scenario["year1_energy_kwh"], 10)
+        self.assertEqual(scenario["financials"]["cashflow_schedule"][0]["debt_principal"], 80)
+
+    def test_composable_vat_cit_financing_and_staged_opex(self):
+        base_scenario = [{
+            "label": "Utility_100MW",
+            "annual_yield_kwh": 150_000_000.0,
+            "installed_dc_kw": 100_000.0,
+            "capex_total": 350_000_000.0,
+        }]
+        tariff = {"mode": "feed_in", "feed_in_tariff": 0.35}
+
+        plain = evaluate_economics(
+            scenarios=base_scenario,
+            financial={"currency": "CNY", "project_life_years": 25, "opex_per_kw_year": 45.0},
+            tariff=tariff,
+        )["scenarios"][0]["financials"]
+        self.assertNotIn("tax_summary", plain)
+        self.assertNotIn("financing_summary", plain)
+
+        vat_no_credit = evaluate_economics(
+            scenarios=base_scenario,
+            financial={
+                "currency": "CNY", "project_life_years": 25, "opex_per_kw_year": 45.0,
+                "vat": {"rate_pct": 13.0, "tariff_includes_vat": True, "surtax_pct": 12.0},
+            },
+            tariff=tariff,
+        )["scenarios"][0]["financials"]
+
+        vat_with_credit = evaluate_economics(
+            scenarios=base_scenario,
+            financial={
+                "currency": "CNY", "project_life_years": 25, "opex_per_kw_year": 45.0,
+                "vat": {
+                    "rate_pct": 13.0,
+                    "tariff_includes_vat": True,
+                    "deductible_capex_share": 0.85,
+                    "surtax_pct": 12.0,
+                },
+            },
+            tariff=tariff,
+        )["scenarios"][0]["financials"]
+        self.assertGreater(vat_with_credit["pre_tax_project_irr_pct"], vat_no_credit["pre_tax_project_irr_pct"] + 0.5)
+        self.assertIsNotNone(vat_with_credit["tax_summary"]["vat_credit_exhausted_year"])
+        self.assertEqual(vat_with_credit["cashflow_schedule"][0]["vat_payable"], 0.0)
+
+        full = evaluate_economics(
+            scenarios=base_scenario,
+            financial={
+                "currency": "CNY",
+                "project_life_years": 25,
+                "discount_rate_pct": 6.0,
+                "opex_escalation_pct": 0.0,
+                "upfront_opex": 5_000_000.0,
+                "opex_tiers": [
+                    {"start_year": 1, "end_year": 5, "opex_per_kw_year": 35.0, "label": "warranty_om"},
+                    {"start_year": 6, "end_year": 25, "opex_per_kw_year": 50.0, "label": "post_warranty_om"},
+                    {"start_year": 1, "end_year": 25, "extra_annual_opex": 1_000_000.0, "label": "land_lease"},
+                ],
+                "vat": {
+                    "rate_pct": 13.0,
+                    "tariff_includes_vat": True,
+                    "deductible_capex_share": 0.85,
+                    "surtax_pct": 12.0,
+                },
+                "cit": {
+                    "rate_pct": 25.0,
+                    "exempt_years": 3,
+                    "half_rate_years": 3,
+                    "depreciation_years": 20,
+                    "residual_value_pct": 5.0,
+                    "loss_carryforward_years": 5,
+                },
+                "financing": {
+                    "equity_ratio_pct": 20.0,
+                    "loan_tenor_years": 15,
+                    "loan_grace_years": 1,
+                    "loan_interest_rate_pct": 3.5,
+                    "repayment_method": "equal_principal",
+                },
+            },
+            tariff=tariff,
+            rank_by="equity_irr",
+        )["scenarios"][0]["financials"]
+
+        sched = full["cashflow_schedule"]
+        self.assertAlmostEqual(sched[0]["opex"], 4_500_000.0, places=2)
+        self.assertAlmostEqual(sched[5]["opex"], 6_000_000.0, places=2)
+        self.assertEqual(sched[0]["cit_project"], 0.0)
+        self.assertEqual(sched[2]["cit_project"], 0.0)
+        self.assertGreater(sched[3]["cit_project"], 0.0)
+        self.assertGreater(sched[6]["cit_project"], sched[3]["cit_project"])
+        self.assertEqual(sched[0]["debt_principal"], 0.0)
+        self.assertGreater(sched[0]["debt_interest"], 0.0)
+        self.assertGreater(sched[1]["debt_principal"], 0.0)
+        self.assertEqual(sched[15]["debt_service"], 0.0)
+        self.assertLess(full["post_tax_project_irr_pct"], full["pre_tax_project_irr_pct"])
+        self.assertGreater(full["financing_summary"]["equity_irr_pct"], full["post_tax_project_irr_pct"])
+        self.assertGreater(full["financing_summary"]["min_dscr"], 1.0)
 
 
 if __name__ == "__main__":

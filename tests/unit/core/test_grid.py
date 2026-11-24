@@ -72,7 +72,8 @@ class GridTests(unittest.TestCase):
         self.assertEqual(snapshot, expected)
         self.path.write_bytes(snapshot)
 
-    def test_uneven_groups_belonging_to_same_array_are_valid(self):
+    def test_circuit_inventory_counts_metadata_and_structural_guards(self):
+        # 1. Uneven groups belonging to same array are valid
         groups = GROUP + GROUP.replace("NElements=2", "NElements=1").replace("NElements=3", "NElements=4")
         arrays = ARRAY.replace("NInverter=2", "NInverter=3").replace("NStringCh=6", "NStringCh=10")
         r = self.inspect(grid_text(groups, arrays))
@@ -80,6 +81,97 @@ class GridTests(unittest.TestCase):
         self.assertEqual(r["grid_circuit"]["totals"], {"inverters": 3, "strings": 10, "explicit_mppt_inputs": 0})
         self.assertEqual(r["grid_circuit"]["subarrays"][0]["declared_module_count"], 120)
         self.assertEqual(len(r["grid_circuit"]["inverter_groups"]), 2)
+
+        # 2. Count disagreement is visible without rewriting either source
+        r = self.inspect(grid_text(arrays=ARRAY.replace("NStringCh=6", "NStringCh=8").replace("NInverter=2", "NInverter=1")))
+        self.assertFalse(r["valid"])
+        self.assertTrue(r["checks_complete"])
+        self.assertEqual(len(r["issues"]), 2)
+        row = r["grid_circuit"]["subarrays"][0]
+        self.assertEqual(row["declared_module_count"], 96)
+        self.assertEqual(row["circuit_module_count"], 72)
+
+        # 3. Multiple arrays keep separate counts
+        group2 = GROUP.replace("SubArrayId=1", "SubArrayId=2").replace("Array A", "Array B")
+        array2 = ARRAY.replace("SubArrayId=1", "SubArrayId=2").replace("Array A", "Array B")
+        r = self.inspect(grid_text(GROUP + group2, ARRAY + array2))
+        self.assertTrue(r["valid"])
+        self.assertEqual(r["grid_circuit"]["totals"]["strings"], 12)
+        self.assertEqual([sub["circuit"]["inverters"] for sub in r["grid_circuit"]["subarrays"]], [2, 2])
+
+        # 4. Cable and nested array metadata cannot supply fields
+        group_meta = GROUP.replace("  NElements=2", "  CableDefinition=Start\nNElements=999\nSubArrayId=99\nCableDefinition=End\n  NElements=2")
+        arrays_meta = ARRAY.replace("  NStringCh=6", "PVObject_Metadata=pvExtra\nNStringCh=6\nEnd of PVObject pvExtra")
+        r = self.inspect(grid_text(group_meta, arrays_meta))
+        self.assertIsNone(r["valid"])
+        self.assertFalse(r["checks_complete"])
+        self.assertEqual(r["issues"], [])
+        self.assertEqual(r["grid_circuit"]["totals"]["strings"], 6)
+        self.assertIn("missing NStringCh", " ".join(r["unchecked_checks"]))
+
+        # 5. Invalid and duplicate counts do not become defaults
+        for value in ("0", "-1", "1.0", "nan", "2147483648", "1\nNElements=2"):
+            with self.subTest(value=value):
+                r = self.inspect(grid_text(GROUP.replace("NElements=2", "NElements=" + value)))
+                self.assertFalse(r["valid"])
+                self.assertTrue(r["issues"])
+                self.assertIsNone(r["grid_circuit"]["totals"])
+        r = self.inspect(grid_text(GROUP.replace("NElements=2", "NElements=2147483647")))
+        self.assertFalse(r["valid"])
+        self.assertIn("Expanded circuit count", " ".join(r["issues"]))
+
+        # 6. Nodes in nested metadata cannot be counted
+        nested_group = GROUP.replace("  Children=Start", "  CableDefinition=Start\n  Children=Start")
+        nested_group = nested_group.replace("  Children=End", "  Children=End\n  CableDefinition=End")
+        r = self.inspect(grid_text(nested_group))
+        self.assertFalse(r["valid"])
+        self.assertIn("nested metadata", " ".join(r["issues"]))
+        self.assertIsNone(r["grid_circuit"]["totals"])
+
+        # 7. Repeated injection counts are explicitly unchecked
+        r = self.inspect(grid_text().replace("InjectionPointNode Start;", "InjectionPointNode Start;\nNElements=2"))
+        self.assertIsNone(r["valid"])
+        self.assertIn("repeated transformer/injection", " ".join(r["unchecked_checks"]))
+        self.assertIsNone(r["grid_circuit"]["totals"])
+
+        # 8. Bad references rejected while Start/End array names work
+        for bad_group in (GROUP.replace("SubArrayId=1", "SubArrayId=99"),
+                          GROUP.replace("SubArrayName=Array A", "SubArrayName=Wrong"),
+                          GROUP.replace("  SubArrayId=1", "  SubArrayId=1\nSubArrayId=1", 1)):
+            r = self.inspect(grid_text(bad_group))
+            self.assertFalse(r["valid"])
+            self.assertTrue(r["issues"])
+        for name in ("Start", "End"):
+            self.assertTrue(self.inspect(grid_text(GROUP.replace("Array A", name),
+                                                  ARRAY.replace("Array A", name)))["valid"])
+
+        # 9. Unknown node is unchecked and malformed tree is invalid
+        r = self.inspect(grid_text(GROUP.replace("StringNode", "OptimizerNode")))
+        self.assertIsNone(r["valid"])
+        self.assertIn("Unsupported circuit node", " ".join(r["unchecked_checks"]))
+        for source in (grid_text().replace("StringNode End;", "MPPTNode End;"),
+                       grid_text().replace("Children=Start", "Children=Start\nNElements=2", 1),
+                       grid_text().replace("Children=End", "Wrong=End", 1)):
+            r = self.inspect(source)
+            self.assertFalse(r["valid"])
+            self.assertIsNone(r["grid_circuit"]["totals"])
+
+        # 10. Empty, missing, and duplicate circuits are invalid
+        for text in (grid_text(groups=""), grid_text().replace("PVObject_SystemCircuit=pvCircuit", "PVObject_Other=pvCircuit"),
+                     grid_text().replace("PVObject_SystemCircuit=pvCircuit", "PVObject_SystemCircuit=pvCircuit\nPVObject_SystemCircuit=pvCircuit")):
+            r = self.inspect(text)
+            self.assertFalse(r["valid"])
+            self.assertTrue(r["issues"])
+
+        # 11. Missing root block raises ValueError rather than StopIteration
+        from pvsyst_auto.components.editor import root_block
+        from pvsyst_auto.project import tracking
+        with self.assertRaisesRegex(ValueError, "no root PVObject block"):
+            root_block(["no objects here"])
+        with self.assertRaisesRegex(ValueError, "no root PVObject block"):
+            root_block(["no objects here"], (0, 0))
+        with self.assertRaisesRegex(ValueError, "no root PVObject block"):
+            tracking._require_scope(None, ["no objects here"], {}, None)
 
     def test_multiplication_and_missing_nelements_default_to_one(self):
         group = GROUP.replace("    StringNode Start;", "MPPTNode Start;\nNElements=3\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n    StringNode Start;")
@@ -310,69 +402,6 @@ class GridTests(unittest.TestCase):
             self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, independent_mppt_enabled=True)
         self.assertEqual(self.path.read_bytes(), original)
 
-    def test_count_disagreement_is_visible_without_rewriting_either_source(self):
-        r = self.inspect(grid_text(arrays=ARRAY.replace("NStringCh=6", "NStringCh=8").replace("NInverter=2", "NInverter=1")))
-        self.assertFalse(r["valid"])
-        self.assertTrue(r["checks_complete"])
-        self.assertEqual(len(r["issues"]), 2)
-        row = r["grid_circuit"]["subarrays"][0]
-        self.assertEqual(row["declared_module_count"], 96)
-        self.assertEqual(row["circuit_module_count"], 72)
-
-    def test_multiple_arrays_keep_separate_counts(self):
-        group2 = GROUP.replace("SubArrayId=1", "SubArrayId=2").replace("Array A", "Array B")
-        array2 = ARRAY.replace("SubArrayId=1", "SubArrayId=2").replace("Array A", "Array B")
-        r = self.inspect(grid_text(GROUP + group2, ARRAY + array2))
-        self.assertTrue(r["valid"])
-        self.assertEqual(r["grid_circuit"]["totals"]["strings"], 12)
-        self.assertEqual([r["circuit"]["inverters"] for r in r["grid_circuit"]["subarrays"]], [2, 2])
-
-    def test_cable_and_nested_array_metadata_cannot_supply_fields(self):
-        group = GROUP.replace("  NElements=2", "  CableDefinition=Start\nNElements=999\nSubArrayId=99\nCableDefinition=End\n  NElements=2")
-        arrays = ARRAY.replace("  NStringCh=6", "PVObject_Metadata=pvExtra\nNStringCh=6\nEnd of PVObject pvExtra")
-        r = self.inspect(grid_text(group, arrays))
-        self.assertIsNone(r["valid"])
-        self.assertFalse(r["checks_complete"])
-        self.assertEqual(r["issues"], [])
-        self.assertEqual(r["grid_circuit"]["totals"]["strings"], 6)
-        self.assertIn("missing NStringCh", " ".join(r["unchecked_checks"]))
-
-    def test_invalid_and_duplicate_counts_do_not_become_defaults(self):
-        for value in ("0", "-1", "1.0", "nan", "2147483648", "1\nNElements=2"):
-            with self.subTest(value=value):
-                r = self.inspect(grid_text(GROUP.replace("NElements=2", "NElements=" + value)))
-                self.assertFalse(r["valid"])
-                self.assertTrue(r["issues"])
-                self.assertIsNone(r["grid_circuit"]["totals"])
-        r = self.inspect(grid_text(GROUP.replace("NElements=2", "NElements=2147483647")))
-        self.assertFalse(r["valid"])
-        self.assertIn("Expanded circuit count", " ".join(r["issues"]))
-
-    def test_nodes_in_nested_metadata_cannot_be_counted(self):
-        group = GROUP.replace("  Children=Start", "  CableDefinition=Start\n  Children=Start")
-        group = group.replace("  Children=End", "  Children=End\n  CableDefinition=End")
-        r = self.inspect(grid_text(group))
-        self.assertFalse(r["valid"])
-        self.assertIn("nested metadata", " ".join(r["issues"]))
-        self.assertIsNone(r["grid_circuit"]["totals"])
-
-    def test_repeated_injection_counts_are_explicitly_unchecked(self):
-        r = self.inspect(grid_text().replace("InjectionPointNode Start;", "InjectionPointNode Start;\nNElements=2"))
-        self.assertIsNone(r["valid"])
-        self.assertIn("repeated transformer/injection", " ".join(r["unchecked_checks"]))
-        self.assertIsNone(r["grid_circuit"]["totals"])
-
-    def test_bad_references_and_names_are_rejected(self):
-        for group in (GROUP.replace("SubArrayId=1", "SubArrayId=99"),
-                      GROUP.replace("SubArrayName=Array A", "SubArrayName=Wrong"),
-                      GROUP.replace("  SubArrayId=1", "  SubArrayId=1\nSubArrayId=1", 1)):
-            r = self.inspect(grid_text(group))
-            self.assertFalse(r["valid"])
-            self.assertTrue(r["issues"])
-        for name in ("Start", "End"):
-            self.assertTrue(self.inspect(grid_text(GROUP.replace("Array A", name),
-                                                  ARRAY.replace("Array A", name)))["valid"])
-
     def test_shared_allocation_counts_only_verified_layouts(self):
         # A shared inverter cannot be charged in full to both subarrays.
         group = GROUP.replace("  SubArrayId=1", "  SubArrayId=0", 1)
@@ -519,17 +548,6 @@ class GridTests(unittest.TestCase):
             self.assertIsNone(r["valid"])
             self.assertIsNone(r["grid_circuit"]["totals"])
             r = self.inspect(grid_text(shared.replace("SubArrayName=Array A; Array B", "SubArrayName=Wrong"), first + second))
-            self.assertFalse(r["valid"])
-            self.assertIsNone(r["grid_circuit"]["totals"])
-
-    def test_unknown_node_is_unchecked_and_malformed_tree_is_invalid(self):
-        r = self.inspect(grid_text(GROUP.replace("StringNode", "OptimizerNode")))
-        self.assertIsNone(r["valid"])
-        self.assertIn("Unsupported circuit node", " ".join(r["unchecked_checks"]))
-        for source in (grid_text().replace("StringNode End;", "MPPTNode End;"),
-                       grid_text().replace("Children=Start", "Children=Start\nNElements=2", 1),
-                       grid_text().replace("Children=End", "Wrong=End", 1)):
-            r = self.inspect(source)
             self.assertFalse(r["valid"])
             self.assertIsNone(r["grid_circuit"]["totals"])
 
@@ -712,24 +730,6 @@ class GridTests(unittest.TestCase):
                 operation()
             self.assertEqual(self.path.read_bytes(), original)
             self.assertEqual(list((self.root / "Projects" / ".mcp-variant-backups").iterdir()), backups)
-
-    def test_empty_missing_and_duplicate_circuits_are_invalid(self):
-        for text in (grid_text(groups=""), grid_text().replace("PVObject_SystemCircuit=pvCircuit", "PVObject_Other=pvCircuit"),
-                     grid_text().replace("PVObject_SystemCircuit=pvCircuit", "PVObject_SystemCircuit=pvCircuit\nPVObject_SystemCircuit=pvCircuit")):
-            r = self.inspect(text)
-            self.assertFalse(r["valid"])
-            self.assertTrue(r["issues"])
-
-
-    def test_missing_root_block_raises_value_error_not_stop_iteration(self):
-        from pvsyst_auto.components.editor import root_block
-        from pvsyst_auto.project import tracking
-        with self.assertRaisesRegex(ValueError, "no root PVObject block"):
-            root_block(["no objects here"])
-        with self.assertRaisesRegex(ValueError, "no root PVObject block"):
-            root_block(["no objects here"], (0, 0))
-        with self.assertRaisesRegex(ValueError, "no root PVObject block"):
-            tracking._require_scope(None, ["no objects here"], {}, None)
 
     def test_explicit_counts_and_flag_spelling_are_preserved(self):
         port = ("MPPTNode Start;\nNElements=1\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n"

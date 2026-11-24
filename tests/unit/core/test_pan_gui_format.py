@@ -22,7 +22,7 @@ class PanGUIFormatTests(unittest.TestCase):
         self.store.create("PAN", "gui.PAN", "\ufeff" + GUI_PAN.replace("\n", "\r\n"))
         self.path = self.store._path("PAN", "gui.PAN")
 
-    def test_create_and_inspect_accept_gui_export_spelling(self):
+    def test_gui_spelling_inspect_edit_and_noop(self):
         info = self.store.inspect("PAN", "gui.PAN")
         self.assertFalse(info["warnings"] or info["structural_errors"] or info["known_value_errors"])
         self.assertEqual(info["fields"]["Isc"], ["11.05"])
@@ -33,7 +33,6 @@ class PanGUIFormatTests(unittest.TestCase):
             self.assertTrue(info["commercial"]["fields"][key]["editable"])
             self.assertFalse(info["commercial"]["fields"][key]["paired_root_present"])
 
-    def test_mixed_edit_previews_aliases_and_dimensions_preserve_bytes(self):
         original = self.path.read_bytes()
         args = {"updates": {"ISC": "11.2", "MuISC": "0.006"},
                 "commercial_updates": {"Width": "1.05", "Height": "2.0"},
@@ -51,7 +50,6 @@ class PanGUIFormatTests(unittest.TestCase):
         self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
         self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / "PAN" / edited["backup_name"]).read_bytes(), original)
 
-    def test_both_input_spellings_preserve_target_keys_and_noop(self):
         for source in (PAN, GUI_PAN):
             self.path.write_text(source, encoding="utf-8")
             for updates in ({"ISC": "11.05", "MuISC": "0.0055"}, {"Isc": "11.05", "muISC": "0.0055"}):
@@ -61,7 +59,7 @@ class PanGUIFormatTests(unittest.TestCase):
                 self.assertEqual(self.path.read_bytes(), before)
                 self.assertNotIn("backup_name", result)
 
-    def test_duplicate_aliases_and_conflicting_requests_rejected(self):
+    def test_duplicate_aliases_bad_values_and_object_scoping_guards(self):
         for updates in ({"ISC": "11.2", "Isc": "11.3"}, {"MuISC": ".005", "muISC": ".006"}):
             before = self.path.read_bytes()
             with self.assertRaises(ValueError):
@@ -76,7 +74,6 @@ class PanGUIFormatTests(unittest.TestCase):
                 self.store.update("PAN", "gui.PAN", {"PNom": "441"})
             self.assertEqual(self.path.read_bytes(), before)
 
-    def test_bad_gui_numeric_values_and_missing_dimensions_are_not_hidden(self):
         sources = [GUI_PAN.replace("Width=1.032", f"Width={value}") for value in ("0", "-1", "nan", "x")]
         sources += [GUI_PAN.replace("Isc=11.05", f"Isc={value}") for value in ("0", "-1", "NaN", "10")]
         sources += [GUI_PAN.replace("muISC=0.0055", "muISC=inf"),
@@ -92,7 +89,6 @@ class PanGUIFormatTests(unittest.TestCase):
                     self.store.update("PAN", "gui.PAN", {"Model": "Bad source"})
                 self.assertEqual(self.path.read_bytes(), before)
 
-    def test_physical_values_and_dimensions_must_belong_to_correct_objects(self):
         for source in (
             GUI_PAN.replace("  Isc=11.05\n", "").replace("    Model=440W", "    Model=440W\n    Isc=11.05"),
             GUI_PAN.replace("    Width=1.032\n", "").replace("  PNom=440", "  PNom=440\n  Width=1.032")):
@@ -102,7 +98,6 @@ class PanGUIFormatTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.store.update("PAN", "gui.PAN", {"Isc": "11.2"})
             self.assertEqual(self.path.read_bytes(), before)
-        # A similarly named metadata field is preserved, not mistaken for the physical one.
         source = GUI_PAN.replace("    Model=440W", "    Model=440W\n    Isc=99")
         self.path.write_text(source, encoding="utf-8")
         self.store.update("PAN", "gui.PAN", {"ISC": "11.2"})
@@ -117,5 +112,4 @@ class PanGUIFormatTests(unittest.TestCase):
         source = GUI_PAN.replace("  Version=", "  Manufacturer=Root metadata\n  Version=")
         self.path.write_text(source, encoding="utf-8")
         self.assertEqual(self.store.inspect("PAN", "gui.PAN")["manufacturer"], "Lab")
-        # PAN aliases do not turn an unrelated component's metadata into a numeric field.
         self.store.create("GEN", "meta.GEN", GEN.replace("  TypeGen=", "  Isc=metadata\n  TypeGen="))

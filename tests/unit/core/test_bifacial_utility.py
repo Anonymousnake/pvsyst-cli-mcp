@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,10 +13,11 @@ from pvsyst_auto.api.schemas import SingleDesignRequest
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
 from pvsyst_auto.project.bifacial import normalize_bifacial_spec, render_bifacial_block
-from pvsyst_auto.project.synthesize import synthesize_utility_project
+from pvsyst_auto.project.synthesize import placeholder_site_block, synthesize_utility_project
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import EXPECTED_WORKSPACE_BASENAME, prepare_design_project, simulate_design
-from tests._fixtures import FakeCliBase
+from pvsyst_auto.workflows.utility import validate_utility_spec
+from tests._fixtures import FakeCliBase, init_full_workspace, write_sfi_csv
 from tests.unit.core.test_components import OND, PAN
 from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
 
@@ -592,6 +594,232 @@ class BifacialAndUtilityTests(unittest.TestCase):
                 self.assertAlmostEqual(metrics["ground_irradiation_kwh_m2"], 0.4, places=6)
                 self.assertAlmostEqual(metrics["rear_mismatch_loss_kwh"], 2.0, places=6)
                 self.assertAlmostEqual(metrics["mean_pr_bifi"], 0.85, places=6)
+
+    @staticmethod
+    @lru_cache(maxsize=2)
+    def _synthetic_2024_rows() -> tuple[list, ...]:
+        start = datetime(2024, 1, 1, 0, 0)
+        rows: list[list] = []
+        for h in range(8784):
+            dt = start + timedelta(hours=h)
+            is_day = 8 <= dt.hour < 16
+            rows.append([
+                dt.strftime("%d/%m/%y %H:%M"),
+                500.0 if is_day else 0.0,
+                480.0 if is_day else 0.0,
+                160.0 if is_day else 0.0,
+                147.2064 if is_day else 0.0,
+                0.82 if is_day else 0.0,
+                0.0,
+            ])
+        return tuple(rows)
+
+    def _seed_multi_orientation_assets(self) -> FakeCliBase:
+        init_full_workspace(self.root.parent)
+        (self.root / "ComposPV" / "PVmodules" / "TestSolar_TS600.PAN").write_bytes(
+            b"\xef\xbb\xbf" + UTILITY_PAN.replace("\n", "\r\n").encode("utf-8")
+        )
+        (self.root / "ComposPV" / "Inverters" / "TestInv_300K.OND").write_bytes(
+            b"\xef\xbb\xbf" + UTILITY_OND.replace("\n", "\r\n").encode("utf-8")
+        )
+        _, site_body = placeholder_site_block("TestSite.SIT", "TestSite")
+        site_text = "\ufeffPVObject_=pvSite\r\n" + "\r\n".join(f"  {ln}" for ln in site_body) + "\r\nEnd of PVObject pvSite\r\n"
+        (self.root / "Sites" / "TestSite.SIT").write_text(site_text, encoding="utf-8")
+        rows = self._synthetic_2024_rows()
+
+        class _MultiOrientCLI(FakeCliBase):
+            def __init__(self, workspace: Path):
+                super().__init__(workspace, version="8.1.7", license_status="ACTIVATED")
+                self.run_calls: list[dict] = []
+
+            def command_help(self, command: str, allow_window_creation=None) -> str:
+                return "Available language: [en, zh]"
+
+            def run_simulation(self, project: str, variant: str, **kwargs) -> dict:
+                self.run_calls.append({"project": project, "variant": variant, **kwargs})
+                out_csv = Path(kwargs["out_csv"])
+                pdf = Path(kwargs["report_pdf"])
+                write_sfi_csv(
+                    out_csv,
+                    [("GlobInc", "W/m²"), ("GlobShd", "W/m²"), ("EArray", "kW"), ("E_Grid", "kW"), ("PR", "ratio"), ("IL_Pmax", "kW")],
+                    rows,
+                    project=project,
+                    site=Path(kwargs["site"]).name if kwargs.get("site") else "TestSite.SIT",
+                    met="Synthetic_TestSite.MET",
+                    variant=f"{Path(project).stem}.{variant}",
+                )
+                pdf.write_bytes(b"%PDF-1.4\n%fake\n")
+                return {"returncode": 0, "warnings": [], "args": []}
+
+        return _MultiOrientCLI(self.root)
+
+    def test_validate_utility_spec_multi_orientation_rules(self):
+        spec = {
+            "scope": "ground_sheds",
+            "ground_layout": {
+                "model_mode": "unlimited",
+                "pitch_m": 10.0,
+                "sub_orientations": [
+                    {"label": "South", "tilt": 25.0, "azimuth": 0.0, "weight": 0.5},
+                    {"label": "East", "tilt": 20.0, "azimuth": -90.0, "weight": 0.3},
+                    {"label": "West", "tilt": 20.0, "azimuth": 90.0, "weight": 0.2},
+                ],
+            },
+        }
+        issues: list[dict] = []
+        validate_utility_spec(spec, "ground_sheds", issues)
+        self.assertEqual(issues, [])
+
+        bad_spec = {
+            "scope": "ground_sheds",
+            "ground_layout": {
+                "sub_orientations": [
+                    {"tilt": 25.0, "azimuth": 0.0, "weight": 0.5},
+                    {"tilt": 20.0, "azimuth": 90.0, "target_dc_kw": 1000.0},
+                ],
+            },
+        }
+        bad_issues: list[dict] = []
+        validate_utility_spec(bad_spec, "ground_sheds", bad_issues)
+        self.assertTrue(any("not a mix" in i["message"] for i in bad_issues))
+
+    def test_prepare_and_validate_multi_orientation_ground_sheds_project(self):
+        cli = self._seed_multi_orientation_assets()
+        spec = {
+            "scope": "ground_sheds",
+            "new_project": "Hillside_3Slope.PRJ",
+            "year": 2024,
+            "target_dc_kw": 3600.0,
+            "module": {"file_name": "TestSolar_TS600.PAN"},
+            "inverter": {"file_name": "TestInv_300K.OND"},
+            "sizing_mode": "auto_from_components",
+            "weather": {"mode": "synthetic_from_site", "sit_name": "TestSite.SIT"},
+            "ground_layout": {
+                "model_mode": "unlimited",
+                "pitch_m": 11.0,
+                "shed_count": 20,
+                "module_rows": 2,
+                "sub_orientations": [
+                    {"label": "South_Slope", "tilt": 26.0, "azimuth": 0.0, "weight": 0.5},
+                    {"label": "East_Slope", "tilt": 18.0, "azimuth": -90.0, "weight": 0.3, "pitch_m": 9.5},
+                    {"label": "West_Slope", "tilt": 18.0, "azimuth": 90.0, "weight": 0.2, "pitch_m": 9.5},
+                ],
+            },
+        }
+        dry = prepare_design_project(cli, self.store, spec=spec, dry_run=True)
+        self.assertEqual(dry["status"], "ready", dry.get("issues"))
+        sub_o = dry["utility_summary"]["sub_orientations"]
+        self.assertEqual(len(sub_o), 3)
+        self.assertAlmostEqual(sum(s["share_pct"] for s in sub_o), 100.0, places=1)
+        self.assertEqual([s["azimuth_deg"] for s in sub_o], [0.0, -90.0, 90.0])
+
+        exec_res = prepare_design_project(cli, self.store, spec=spec, dry_run=False)
+        self.assertIn(exec_res["status"], ("prepared", "needs_review"), exec_res)
+        struct = self.store.validate_structure("Hillside_3Slope.PRJ", "VC0")
+        self.assertTrue(struct["valid"], struct)
+        params = self.store.inspect_parameters("Hillside_3Slope.PRJ", "VC0")
+        self.assertEqual(len(params["orientations"]), 3)
+        self.assertEqual(len(params["subarrays"]), 3)
+
+    def test_synthetic_from_site_runs_simulation_without_met(self):
+        cli = self._seed_multi_orientation_assets()
+        spec = {
+            "scope": "ground_sheds",
+            "new_project": "SynthWeather.PRJ",
+            "year": 2024,
+            "target_dc_kw": 360.0,
+            "tilt": 22.0,
+            "azimuth": 0.0,
+            "module": {"file_name": "TestSolar_TS600.PAN"},
+            "inverter": {"file_name": "TestInv_300K.OND"},
+            "sizing_mode": "auto_from_components",
+            "weather": {"mode": "synthetic_from_site", "sit_name": "TestSite.SIT"},
+        }
+        sim = simulate_design(cli, self.store, spec=spec, dry_run=False)
+        self.assertIn(sim["status"], ("completed", "needs_review"), sim)
+        self.assertEqual(len(cli.run_calls), 1)
+        call = cli.run_calls[0]
+        self.assertTrue(call["synthetic_weather"])
+        self.assertEqual(Path(call["site"]).name, "TestSite.SIT")
+        self.assertIsNone(call.get("met"))
+
+    def test_compact_preview_folds_rejected_templates_unless_verbose(self):
+        init_full_workspace(self.root.parent)
+        for idx in range(5):
+            (self.root / "Projects" / f"_DEMO_Junk_{idx}.PRJ").write_text("not a valid prj", encoding="utf-8")
+
+        calls: list[dict] = []
+        ws = self.root
+
+        class _LangCLI(FakeCliBase):
+            def __init__(self):
+                super().__init__(ws, version="8.1.7", license_status="ACTIVATED")
+
+            def command_help(self, *a, **k):
+                return "Available language: [en, zh]"
+
+            def run_simulation(self, project, variant, **kwargs):
+                calls.append(kwargs)
+                out_csv = Path(kwargs["out_csv"])
+                pdf = Path(kwargs["report_pdf"])
+                rows = []
+                start = datetime(1990, 1, 1, 0, 0)
+                for h in range(8760):
+                    dt = start + timedelta(hours=h)
+                    day = 8 <= dt.hour < 16
+                    rows.append([
+                        dt.strftime("%d/%m/%y %H:%M"),
+                        500.0 if day else 0.0,
+                        480.0 if day else 0.0,
+                        160.0 if day else 0.0,
+                        147.2064 if day else 0.0,
+                        0.82 if day else 0.0,
+                        0.0,
+                    ])
+                write_sfi_csv(
+                    out_csv,
+                    [("GlobInc", "W/m²"), ("GlobShd", "W/m²"), ("EArray", "kW"), ("E_Grid", "kW"), ("PR", "ratio"), ("IL_Pmax", "kW")],
+                    rows,
+                    project=project,
+                    site="Geneva_MN90.SIT",
+                    met="Geneva_MN90_SYN.MET",
+                    variant=f"{Path(project).stem}.{variant}",
+                )
+                pdf.write_bytes(b"%PDF-1.4\n%fake\n")
+                return {"returncode": 0, "warnings": [], "args": []}
+
+        req = SingleDesignRequest(
+            scope="ground_sheds",
+            new_project="CompactLang.PRJ",
+            year=1990,
+            target_dc_kw=360.0,
+            tilt=22.0,
+            azimuth=0.0,
+            report_language="zh",
+            sizing_mode="auto_from_components",
+            module={"file_name": "Lab440.PAN"},
+            inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+        )
+        spec = req.model_dump(exclude_none=True)
+
+        compact = simulate_design(_LangCLI(), self.store, spec=spec, dry_run=True, verbose=False)
+        self.assertEqual(compact["status"], "ready", compact.get("issues"))
+        tpl_block = compact["preview"]["discovery"]["candidates"]["templates"]
+        self.assertIsInstance(tpl_block, dict)
+        self.assertEqual(tpl_block["summary"]["rejected_count"], 5)
+        self.assertTrue(tpl_block["summary"]["truncated"])
+        self.assertNotIn("selection_rule", compact["preview"]["discovery"])
+
+        full = simulate_design(_LangCLI(), self.store, spec=spec, dry_run=True, verbose=True)
+        self.assertIsInstance(full["preview"]["discovery"]["candidates"]["templates"], list)
+        self.assertEqual(len(full["preview"]["discovery"]["candidates"]["templates"]), 5)
+        self.assertIn("selection_rule", full["preview"]["discovery"])
+
+        done = simulate_design(_LangCLI(), self.store, spec=spec, dry_run=False, verbose=False)
+        self.assertIn(done["status"], ("completed", "needs_review"), done)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["report_language"], "zh")
 
 
 if __name__ == "__main__":

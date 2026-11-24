@@ -35,17 +35,17 @@ class ResultComparisonTests(unittest.TestCase):
         json.dumps(result, allow_nan=False)
         return result
 
-    def test_aligned_hourly_delta_direction_and_known_energy(self):
+    def test_aligned_comparison_missing_pairs_units_and_axes(self):
+        # 1. Aligned hourly delta direction and known energy
         self.write(self.a, [10, 20, 30])
         self.write(self.b, [15, 18, 37], separator=",")
-        result = self.compare()
-        s = result["summary"]["E_Grid"]
+        s = self.compare()["summary"]["E_Grid"]
         self.assertEqual((s["paired_baseline_sum"], s["paired_target_sum"], s["paired_delta_sum"]), (60, 70, 10))
         self.assertEqual((s["min_delta"], s["max_delta"], s["max_abs_delta_at"]), (-2, 7, "1990-01-01 02:00:00"))
         self.assertEqual(s["delta_energy_kwh"], 10)
         self.assertAlmostEqual(s["paired_relative_change_pct"], 100 / 6)
 
-    def test_missing_values_use_common_pairs_not_independent_totals(self):
+        # 2. Missing values use common pairs rather than independent totals
         self.write(self.a, [10, "", 30, 40, "NaN"])
         self.write(self.b, [15, 100, "inf", 42, "text"])
         s = self.compare()["summary"]["E_Grid"]
@@ -56,7 +56,7 @@ class ResultComparisonTests(unittest.TestCase):
         self.assertEqual(s["paired_coverage"], 0.4)
         self.assertIsNone(s["delta_energy_kwh"])
 
-    def test_all_missing_and_zero_baseline_have_no_relative_gain(self):
+        # 3. All missing and zero baseline have no relative gain
         for a, b in ((["", "inf"], [4, ""]), ([0, 0], [1, 2])):
             self.write(self.a, a)
             self.write(self.b, b)
@@ -67,14 +67,13 @@ class ResultComparisonTests(unittest.TestCase):
                 self.assertIsNone(s["mean_delta"])
                 self.assertIsNone(s["max_abs_delta_at"])
 
-    def test_subhour_watts_and_non_power_units(self):
+        # 4. Subhour watts and non-power units
         for unit, expected in (("W", 0.05), ("kW", 50), ("ratio", None)):
             self.write(self.a, [100, 200, 300], unit=unit, times=["00:00", "00:01", "00:02"])
             self.write(self.b, [1100, 1200, 1300], unit=unit, times=["00:00", "00:01", "00:02"])
-            s = self.compare()["summary"]["E_Grid"]
-            self.assertEqual(s["delta_energy_kwh"], expected)
+            self.assertEqual(self.compare()["summary"]["E_Grid"]["delta_energy_kwh"], expected)
 
-    def test_single_and_identical_irregular_axes_compare_without_energy(self):
+        # 5. Single and identical irregular axes compare without energy
         for times in (["00:00"], ["00:00", "01:00", "03:00"]):
             self.write(self.a, [1] * len(times), times=times)
             self.write(self.b, [2] * len(times), times=times)
@@ -82,7 +81,15 @@ class ResultComparisonTests(unittest.TestCase):
             self.assertIsNone(report["step_minutes"])
             self.assertIsNone(report["summary"]["E_Grid"]["delta_energy_kwh"])
 
-    def test_reject_mismatched_duplicate_or_descending_timestamps(self):
+        # 6. Reordered columns compare by name
+        self.write(self.a, ["1;0.1", "2;0.2"], unit="kW;ratio", header="E_Grid;PR")
+        self.write(self.b, ["0.15;3", "0.3;4"], unit="ratio;kW", header="PR;E_Grid")
+        s = self.compare(("PR", "E_Grid"))["summary"]
+        self.assertEqual(s["E_Grid"]["paired_delta_sum"], 4)
+        self.assertAlmostEqual(s["PR"]["mean_delta"], 0.075)
+
+    def test_comparison_timestamp_unit_format_and_mutation_guards(self):
+        # 1. Mismatched, duplicate or descending timestamps
         for ta, tb in ((["00:00", "01:00"], ["00:00", "02:00"]),
                        (["00:00", "00:00"], ["00:00", "00:00"]),
                        (["01:00", "00:00"], ["01:00", "00:00"]),
@@ -92,7 +99,7 @@ class ResultComparisonTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.compare()
 
-    def test_reject_unknown_or_mismatched_units_and_ambiguous_columns(self):
+        # 2. Unknown/mismatched units, ambiguous headers and invalid column lists
         self.write(self.a, [1, 2])
         for kwargs in ({"unit": "W"}, {"unit": ""}, {"header": "Other"},
                        {"header": "E_Grid;E_Grid", "unit": "kW;kW"}):
@@ -104,8 +111,7 @@ class ResultComparisonTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.compare(columns)
 
-    def test_reject_malformed_timestamps_extra_values_missing_units_and_empty_data(self):
-        self.write(self.a, [1, 2])
+        # 3. Malformed timestamps, extra values, missing units and empty data
         for text in ("date;E_Grid\n;kW\n32/01/90 00:00;1\n",
                      "date;E_Grid\n;kW\n01/01/90 00:00;1;2\n",
                      "date;E_Grid\n01/01/90 00:00;1\n01/01/90 01:00;2\n",
@@ -114,14 +120,7 @@ class ResultComparisonTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.compare()
 
-    def test_reordered_columns_compare_by_name(self):
-        self.write(self.a, ["1;0.1", "2;0.2"], unit="kW;ratio", header="E_Grid;PR")
-        self.write(self.b, ["0.15;3", "0.3;4"], unit="ratio;kW", header="PR;E_Grid")
-        s = self.compare(("PR", "E_Grid"))["summary"]
-        self.assertEqual(s["E_Grid"]["paired_delta_sum"], 4)
-        self.assertAlmostEqual(s["PR"]["mean_delta"], 0.075)
-
-    def test_changed_file_during_read_is_rejected(self):
+        # 4. Changed file during read is rejected
         self.write(self.a, [1, 2])
         self.write(self.b, [3, 4])
         original = results.iter_result_csv
@@ -132,15 +131,15 @@ class ResultComparisonTests(unittest.TestCase):
         with patch.object(results, "iter_result_csv", side_effect=change), self.assertRaisesRegex(ValueError, "changed during"):
             self.compare()
 
-    def test_extreme_finite_values_never_produce_infinite_json(self):
+        # 5. Extreme finite values never produce infinite JSON
         self.write(self.a, [-1e308, -1e308])
         self.write(self.b, [1e308, 1e308])
         with self.assertRaisesRegex(ValueError, "finite numeric range"):
             self.compare()
 
-    def test_server_cross_folder_paths_and_existing_summary(self):
-        (self.root / "Results").mkdir()
-        (self.root / "UserHourly").mkdir()
+    def test_server_cross_folder_column_bounds_and_coverage(self):
+        (self.root / "Results").mkdir(exist_ok=True)
+        (self.root / "UserHourly").mkdir(exist_ok=True)
         self.write(self.root / "UserHourly" / "base.csv", [1, 2])
         self.write(self.root / "Results" / "target.csv", [3, 4])
         with patch.object(server, "_cli", PVsystCLI(sys.executable, self.root)):
@@ -153,14 +152,22 @@ class ResultComparisonTests(unittest.TestCase):
                 with self.assertRaises((ValueError, server.ToolError)):
                     api_results.pvsyst_read_results("target.csv", "E_Grid", **kwargs)
 
-    def test_compare_rejects_bare_string_columns_and_reports_missing_coverage(self):
+            for bad_columns in ("", " , ", "E_Grid,E_Grid", ",".join(f"C{i}" for i in range(65))):
+                with self.subTest(columns=bad_columns), self.assertRaisesRegex(ValueError, "1..64 distinct"):
+                    api_results.pvsyst_read_results("target.csv", bad_columns)
+            with patch.object(api_results, "compare_results",
+                              side_effect=PermissionError(13, "Permission denied", "base.csv")), \
+                    self.assertRaises(server.ToolError) as raised:
+                asyncio.run(server.mcp.call_tool("pvsyst_read_results", {
+                    "csv_name": "target.csv", "columns": "E_Grid", "compare_to": "base.csv"}))
+            self.assertIn("PermissionError:", str(raised.exception))
+
         self.write(self.a, ["1;2", "3;4"], unit="kW;kW", header="P;R")
         self.write(self.b, ["1;2", "3;4"], unit="kW;kW", header="P;R")
         with self.assertRaisesRegex(ValueError, "distinct numeric columns"):
             results.compare_results(self.a, self.b, "PR")
         self.assertEqual(results.compare_results(self.a, self.b, ("P", "R"))["columns"], ["P", "R"])
 
-        (self.root / "Results").mkdir(exist_ok=True)
         path = self.root / "Results" / "missing.csv"
         with patch.object(server, "_cli", PVsystCLI(sys.executable, self.root)):
             for missing in ("", "NaN", "inf", "text"):
@@ -278,21 +285,6 @@ class ResultComparisonTests(unittest.TestCase):
         write_annual(dark_e_grid=0.2, day_pr=0.8)
         with self.assertRaisesRegex(ValueError, "Native PR disagrees"):
             results.annual_summary(annual_path, 1990, nominal)
-
-    def test_read_results_column_bounds_and_permission_error_prefix(self):
-        (self.root / "Results").mkdir(exist_ok=True)
-        self.write(self.root / "Results" / "base.csv", [1, 2])
-        self.write(self.root / "Results" / "target.csv", [3, 4])
-        with patch.object(server, "_cli", PVsystCLI(sys.executable, self.root)):
-            for bad_columns in ("", " , ", "E_Grid,E_Grid", ",".join(f"C{i}" for i in range(65))):
-                with self.subTest(columns=bad_columns), self.assertRaisesRegex(ValueError, "1..64 distinct"):
-                    api_results.pvsyst_read_results("target.csv", bad_columns)
-            with patch.object(api_results, "compare_results",
-                              side_effect=PermissionError(13, "Permission denied", "base.csv")), \
-                    self.assertRaises(server.ToolError) as raised:
-                asyncio.run(server.mcp.call_tool("pvsyst_read_results", {
-                    "csv_name": "target.csv", "columns": "E_Grid", "compare_to": "base.csv"}))
-            self.assertIn("PermissionError:", str(raised.exception))
 
 
 if __name__ == "__main__":
