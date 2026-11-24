@@ -35,6 +35,33 @@ def _pos_int(val: Any, name: str) -> int:
     return val
 
 
+def _synthetic_meteo_block(site_identity: str, resolved_met: str, version: str) -> list[str]:
+    return [
+        "  PVObject_Meteo=pvMeteo",
+        f"    Comment={site_identity} synthetic meteo",
+        f"    Version={version}",
+        "    Flags=$010084E1",
+        f"    NomF={resolved_met}",
+        f"    Site={site_identity}",
+        "  End of PVObject pvMeteo",
+    ]
+
+
+def _run_standalone_economics(energy_balance: dict, eco_spec: dict) -> dict:
+    from pvsyst_auto.engineering.economics import evaluate_standalone_economics
+
+    return evaluate_standalone_economics(
+        energy_balance,
+        capex_total=eco_spec["capex_total"],
+        annual_om_opex=eco_spec.get("annual_om_opex", 0.0),
+        fuel_price_per_liter=eco_spec.get("fuel_price_per_liter", 1.50),
+        genset_opex_per_hour=eco_spec.get("genset_opex_per_hour", 0.0),
+        genset_fuel_rate_l_per_kwh=eco_spec.get("genset_fuel_rate_l_per_kwh"),
+        avoided_tariff_per_kwh=eco_spec.get("avoided_tariff_per_kwh", 0.0),
+        financial=eco_spec.get("financial"),
+    )
+
+
 def generate_genset_text(
     *,
     model: str,
@@ -189,15 +216,7 @@ def synthesize_standalone_project(
             resolved_met, meteo_lines = load_meteo_header(met_path, site_identity, site_body)
         else:
             resolved_met = met_name
-            meteo_lines = [
-                "  PVObject_Meteo=pvMeteo",
-                f"    Comment={site_identity} synthetic meteo",
-                f"    Version={version}",
-                "    Flags=$010084E1",
-                f"    NomF={resolved_met}",
-                f"    Site={site_identity}",
-                "  End of PVObject pvMeteo",
-            ]
+            meteo_lines = _synthetic_meteo_block(site_identity, resolved_met, version)
     else:
         resolved_site = site_name
         resolved_met = met_name
@@ -209,15 +228,7 @@ def synthesize_standalone_project(
             f"NomF={resolved_site}",
             f"Site={site_identity}",
         ]
-        meteo_lines = [
-            "  PVObject_Meteo=pvMeteo",
-            f"    Comment={site_identity} synthetic meteo",
-            f"    Version={version}",
-            "    Flags=$010084E1",
-            f"    NomF={resolved_met}",
-            f"    Site={site_identity}",
-            "  End of PVObject pvMeteo",
-        ]
+        meteo_lines = _synthetic_meteo_block(site_identity, resolved_met, version)
 
     # Pre-sizing heuristic estimates & sanity checks
     warnings: list[str] = []
@@ -461,16 +472,9 @@ def run_standalone_design(
         if not isinstance(eco_spec, dict):
             raise ValueError("standalone.economics must be an object")
         if eco_spec.get("capex_total") is not None:
-            from pvsyst_auto.engineering.economics import evaluate_standalone_economics
-            evaluate_standalone_economics(
+            _run_standalone_economics(
                 {"e_user_kwh": 0.0, "e_backup_kwh": 0.0, "backup_runtime_hours": 0.0, "backup_fuel_liters": 0.0},
-                capex_total=eco_spec["capex_total"],
-                annual_om_opex=eco_spec.get("annual_om_opex", 0.0),
-                fuel_price_per_liter=eco_spec.get("fuel_price_per_liter", 1.50),
-                genset_opex_per_hour=eco_spec.get("genset_opex_per_hour", 0.0),
-                genset_fuel_rate_l_per_kwh=eco_spec.get("genset_fuel_rate_l_per_kwh"),
-                avoided_tariff_per_kwh=eco_spec.get("avoided_tariff_per_kwh", 0.0),
-                financial=eco_spec.get("financial"),
+                eco_spec,
             )
 
     synth = synthesize_standalone_project(
@@ -648,17 +652,7 @@ def run_standalone_design(
     eco_summary = None
     eco_spec = sa.get("economics")
     if isinstance(eco_spec, dict) and eco_spec.get("capex_total") is not None:
-        from pvsyst_auto.engineering.economics import evaluate_standalone_economics
-        eco_summary = evaluate_standalone_economics(
-            energy_balance,
-            capex_total=eco_spec["capex_total"],
-            annual_om_opex=eco_spec.get("annual_om_opex", 0.0),
-            fuel_price_per_liter=eco_spec.get("fuel_price_per_liter", 1.50),
-            genset_opex_per_hour=eco_spec.get("genset_opex_per_hour", 0.0),
-            genset_fuel_rate_l_per_kwh=eco_spec.get("genset_fuel_rate_l_per_kwh"),
-            avoided_tariff_per_kwh=eco_spec.get("avoided_tariff_per_kwh", 0.0),
-            financial=eco_spec.get("financial"),
-        )
+        eco_summary = _run_standalone_economics(energy_balance, eco_spec)
 
     out_result: dict[str, Any] = {
         "status": "needs_review" if diagnostics["needs_review"] else "completed",

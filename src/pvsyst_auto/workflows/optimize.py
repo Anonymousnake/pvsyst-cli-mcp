@@ -67,6 +67,27 @@ def _summarize_egrid_kwh(csv_path: Path) -> float | None:
         return None
 
 
+def _record_nmod_serie_action(
+    sub0: dict,
+    sub_updates: dict[str, Any],
+    actions: list[dict[str, Any]],
+    *,
+    code: str,
+    cur: int,
+    new_val: int,
+    reason: str,
+) -> bool:
+    sub_updates["NModSerie"] = new_val
+    actions.append({
+        "finding_code": code,
+        "target": f"subarray[{sub0['id']}].NModSerie",
+        "before": cur,
+        "after": new_val,
+        "reason": reason,
+    })
+    return True
+
+
 def propose_remediations(
     store,
     project: str,
@@ -130,18 +151,13 @@ def propose_remediations(
                 suggested_max = s_max if (s_max is not None and 1 <= s_max < cur) else None
                 new_val = suggested_max if suggested_max is not None else max(1, cur - max(1, round(cur * 0.1)))
                 if new_val < cur:
-                    sub_updates["NModSerie"] = new_val
-                    series_changed = True
-                    actions.append({
-                        "finding_code": code,
-                        "target": f"subarray[{sub0['id']}].NModSerie",
-                        "before": cur,
-                        "after": new_val,
-                        "reason": (
+                    series_changed = _record_nmod_serie_action(
+                        sub0, sub_updates, actions, code=code, cur=cur, new_val=new_val,
+                        reason=(
                             f"Reduce string length from {cur} to {new_val} to clear IL_Vmax overvoltage"
                             + (" (from suggest_sizing cold Voc bound)" if suggested_max else " (-10% step)")
                         ),
-                    })
+                    )
 
         elif code == "INVERTER_UNDERVOLTAGE" and sub0 is not None and not series_changed:
             cur = _parse_int((sub0.get("values") or {}).get("NModSerie"))
@@ -152,15 +168,10 @@ def propose_remediations(
                 if s_max is not None:
                     new_val = min(new_val, s_max)
                 if new_val > cur:
-                    sub_updates["NModSerie"] = new_val
-                    series_changed = True
-                    actions.append({
-                        "finding_code": code,
-                        "target": f"subarray[{sub0['id']}].NModSerie",
-                        "before": cur,
-                        "after": new_val,
-                        "reason": f"Increase string length from {cur} to {new_val} to keep hot Vmp above VMppMin",
-                    })
+                    series_changed = _record_nmod_serie_action(
+                        sub0, sub_updates, actions, code=code, cur=cur, new_val=new_val,
+                        reason=f"Increase string length from {cur} to {new_val} to keep hot Vmp above VMppMin",
+                    )
 
         elif code == "INVERTER_CLIPPING_HIGH" and sub0 is not None and allow_resize:
             vals = sub0.get("values") or {}
@@ -285,6 +296,13 @@ def optimize_variant(
         csv_path, store=store, project=proj, variant=base_var, thresholds=thresholds
     )
     baseline_egrid = _summarize_egrid_kwh(csv_path)
+    baseline_summary = {
+        "variant": base_var,
+        "csv": safe_csv,
+        "e_grid_sum": baseline_egrid,
+        "weighted_pr": baseline_diag.get("weighted_pr"),
+        "diagnostics": compact_diagnostics_summary(baseline_diag),
+    }
 
     if baseline_diag.get("status") == "blocked":
         return {
@@ -294,13 +312,7 @@ def optimize_variant(
             "project": proj,
             "baseline_variant": base_var,
             "baseline_csv": safe_csv,
-            "baseline": {
-                "variant": base_var,
-                "csv": safe_csv,
-                "e_grid_sum": baseline_egrid,
-                "weighted_pr": baseline_diag.get("weighted_pr"),
-                "diagnostics": compact_diagnostics_summary(baseline_diag),
-            },
+            "baseline": baseline_summary,
             "proposed_remediation": None,
             "iterations": [],
             "recommended_variant": base_var,
@@ -318,13 +330,7 @@ def optimize_variant(
         "project": proj,
         "baseline_variant": base_var,
         "baseline_csv": safe_csv,
-        "baseline": {
-            "variant": base_var,
-            "csv": safe_csv,
-            "e_grid_sum": baseline_egrid,
-            "weighted_pr": baseline_diag.get("weighted_pr"),
-            "diagnostics": compact_diagnostics_summary(baseline_diag),
-        },
+        "baseline": baseline_summary,
         "proposed_remediation": first_proposal,
         "iterations": [],
         "recommended_variant": base_var,

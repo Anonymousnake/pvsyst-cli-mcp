@@ -95,12 +95,37 @@ class RegularResultCsv:
         self.units: dict[str, str] = result_units(csv_path, strict=True)
         self.headers: list[str] = []
         self.idx: dict[str, int] = {}
+        self.col_scale: dict[str, tuple[float, bool]] = {}
         self.rows_count: int = 0
         self.step_minutes: float | None = None
         self._empty_message = empty_message
         self._irregular_message = irregular_message
         self._required_any_of = required_any_of
         self._missing_required_message = missing_required_message
+
+    def cell_kwh(self, row: list, col: str, dt_hours: float) -> float:
+        """Convert one CSV cell to kWh, integrating power units over ``dt_hours``."""
+        col_i = self.idx.get(col)
+        if col_i is None:
+            return 0.0
+        factor, needs_dt = self.col_scale[col]
+        if factor == 0.0:
+            raise ValueError(f"{col} requires a power or energy unit, got {self.units.get(col, '')!r}")
+        raw = row[col_i]
+        val = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0.0
+        return val * factor * (dt_hours if needs_dt else 1.0)
+
+    def cell_kw(self, row: list, col: str, dt_hours: float) -> float:
+        """Convert one CSV cell to kW, dividing energy units by ``dt_hours``."""
+        col_i = self.idx.get(col)
+        if col_i is None:
+            return 0.0
+        factor, is_power = self.col_scale[col]
+        if factor == 0.0:
+            raise ValueError(f"{col} requires a power or energy unit, got {self.units.get(col, '')!r}")
+        raw = row[col_i]
+        val = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0.0
+        return val * factor if is_power else (val * factor / dt_hours)
 
     def iter_rows(self):
         first_row = None
@@ -110,6 +135,7 @@ class RegularResultCsv:
             if self.rows_count == 0:
                 self.headers = list(headers)
                 self.idx = {name: i for i, name in enumerate(headers) if i > 0}
+                self.col_scale = {col: energy_unit_scale(self.units.get(col, "")) for col in self.idx}
                 if self._required_any_of and not any(c in self.idx for c in self._required_any_of):
                     raise ValueError(
                         self._missing_required_message
@@ -140,6 +166,26 @@ class RegularResultCsv:
         if first_row is not None:
             self.step_minutes = 60.0
             yield first_row[0], first_row, 1.0
+
+
+def iter_aligned_result_rows(
+    readers: list[RegularResultCsv],
+    *,
+    count_mismatch_message: str = "Merged result CSVs have different row counts; all portfolio CSVs must align",
+):
+    """Yield ``(timestamp, dt_hours, per_reader_items)`` across aligned ``RegularResultCsv`` readers."""
+    sentinel = object()
+    for row_idx, items in enumerate(zip_longest(*(r.iter_rows() for r in readers), fillvalue=sentinel)):
+        if any(item is sentinel for item in items):
+            raise ValueError(count_mismatch_message)
+        stamp, _, dt_hours = items[0]
+        for k, (st_k, _, dt_k) in enumerate(items[1:], start=1):
+            if st_k != stamp or abs(dt_k - dt_hours) > 1e-6:
+                raise ValueError(
+                    f"Merged result CSV {readers[k].csv_path.name} timestamp mismatch at row {row_idx + 1}: "
+                    f"expected {stamp.isoformat()} (dt={dt_hours:g}h), got {st_k.isoformat()} (dt={dt_k:g}h)"
+                )
+        yield stamp, dt_hours, items
 
 
 def annual_summary(path, year, nominal_dc_power_kw):

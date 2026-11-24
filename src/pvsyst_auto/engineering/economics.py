@@ -6,14 +6,13 @@ Pure Python standard library implementation. Streams hourly or sub-hourly PVsyst
 """
 from __future__ import annotations
 
-import itertools
 import math
 from pathlib import Path
 from typing import Any
 
 from pvsyst_auto.native.cli import parse_batch_results
 from pvsyst_auto.project.paths import safe_filename, workspace_file
-from pvsyst_auto.results import BATCH_ENERGY_TO_KWH, RegularResultCsv, energy_unit_scale
+from pvsyst_auto.results import BATCH_ENERGY_TO_KWH, RegularResultCsv, iter_aligned_result_rows
 from pvsyst_auto.validation import finite_number as _finite
 
 _VALID_RANK_KEYS = (
@@ -533,22 +532,11 @@ def _settle_multi_csv_year1(csv_paths: list[Path], weights: list[float], tariff:
     per_meta: list[dict[str, Any]] = []
     has_load = False
     has_storage = False
-    sentinel = object()
-    iterators = [r.iter_rows() for r in readers]
 
-    for row_idx, items in enumerate(itertools.zip_longest(*iterators, fillvalue=sentinel)):
-        if any(item is sentinel for item in items):
-            raise ValueError(
-                "Merged result CSVs have different row counts; all portfolio CSVs must span identical timestamps"
-            )
-        stamp, _, dt_hours = items[0]
-        for k, (st_k, _, dt_k) in enumerate(items[1:], start=1):
-            if st_k != stamp or abs(dt_k - dt_hours) > 1e-6:
-                raise ValueError(
-                    f"Merged result CSV {csv_paths[k].name} timestamp mismatch at row {row_idx + 1}: "
-                    f"expected {stamp.isoformat()} (dt={dt_hours:g}h), got {st_k.isoformat()} (dt={dt_k:g}h)"
-                )
-
+    for stamp, dt_hours, items in iter_aligned_result_rows(
+        readers,
+        count_mismatch_message="Merged result CSVs have different row counts; all portfolio CSVs must span identical timestamps",
+    ):
         if not per_meta:
             for r in readers:
                 idx = r.idx
@@ -559,7 +547,6 @@ def _settle_multi_csv_year1(csv_paths: list[Path], weights: list[float], tariff:
                     "has_load": "E_User" in idx,
                     "has_import": "EFrGrid" in idx,
                     "has_storage": ("EBatCh" in idx or "EBatDis" in idx),
-                    "col_scale": {col: energy_unit_scale(r.units.get(col, "")) for col in idx},
                 })
             has_load = any(m["has_load"] for m in per_meta)
             has_storage = any(m["has_storage"] for m in per_meta)
@@ -573,28 +560,16 @@ def _settle_multi_csv_year1(csv_paths: list[Path], weights: list[float], tariff:
 
         for meta, w, (_, row, dt_k) in zip(per_meta, weights, items):
             idx = meta["idx"]
-            col_scale = meta["col_scale"]
             reader_k = meta["reader"]
 
-            def kwh(col: str) -> float:
-                col_i = idx.get(col)
-                if col_i is None:
-                    return 0.0
-                raw = row[col_i]
-                val = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0.0
-                factor, needs_dt = col_scale[col]
-                if factor == 0.0:
-                    raise ValueError(f"{col} requires a power or energy unit, got {reader_k.units.get(col, '')!r}")
-                return val * factor * (dt_k if needs_dt else 1.0)
-
-            raw_eg = kwh(meta["export_col"])
+            raw_eg = reader_k.cell_kwh(row, meta["export_col"], dt_k)
             e_exp_sum += w * max(0.0, raw_eg)
-            e_user_k = max(0.0, kwh("E_User")) if meta["has_load"] else 0.0
+            e_user_k = max(0.0, reader_k.cell_kwh(row, "E_User", dt_k)) if meta["has_load"] else 0.0
             e_user_sum += w * e_user_k
             if meta["has_import"]:
-                e_imp_k = max(0.0, kwh("EFrGrid"))
+                e_imp_k = max(0.0, reader_k.cell_kwh(row, "EFrGrid", dt_k))
             elif meta["has_load"] and "E_Solar" in idx:
-                e_imp_k = max(0.0, e_user_k - max(0.0, kwh("E_Solar")))
+                e_imp_k = max(0.0, e_user_k - max(0.0, reader_k.cell_kwh(row, "E_Solar", dt_k)))
             elif raw_eg < 0:
                 e_imp_k = -raw_eg
             else:
@@ -608,9 +583,9 @@ def _settle_multi_csv_year1(csv_paths: list[Path], weights: list[float], tariff:
                 e_exp_sum -= inferred
             e_imp_sum += w * e_imp_k
             if "EBatCh" in idx:
-                e_bat_ch_sum += w * max(0.0, kwh("EBatCh"))
+                e_bat_ch_sum += w * max(0.0, reader_k.cell_kwh(row, "EBatCh", dt_k))
             if "EBatDis" in idx:
-                e_bat_dis_sum += w * max(0.0, kwh("EBatDis"))
+                e_bat_dis_sum += w * max(0.0, reader_k.cell_kwh(row, "EBatDis", dt_k))
 
         p_name, imp_rate, exp_rate = _lookup_rate(stamp, tariff)
         e_exp = e_exp_sum

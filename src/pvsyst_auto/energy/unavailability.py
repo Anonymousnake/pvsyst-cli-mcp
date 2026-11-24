@@ -121,11 +121,15 @@ def _validate_periods(raw_periods) -> list[tuple[str, float]]:
     return normalized
 
 
-def _format_unavail_block(periods: list[tuple[str, float]], ending: str) -> list[str]:
-    total_hours = sum(dur for _, dur in periods)
-    fraction = min(1.0, total_hours / 8760.0)
-    min_d = max(1, int(round(min(dur for _, dur in periods))))
-    max_d = max(min_d, int(round(max(dur for _, dur in periods))))
+def _render_unavail_lines(
+    periods: list[tuple[str, float]],
+    *,
+    time_fraction_str: str,
+    min_d: int,
+    max_d: int,
+    random_seed: int,
+    ending: str,
+) -> list[str]:
     block = [
         f"    SystemUnavail=TUnavailability{ending}",
         f"      PVObject_=pvUnavail{ending}",
@@ -133,11 +137,11 @@ def _format_unavail_block(periods: list[tuple[str, float]], ending: str) -> list
         f"        Flags=$00{ending}",
         f"      DefMode=Periods{ending}",
         f"      RandomUnavSettings=TRandomUnavSettings{ending}",
-        f"        TimeFraction={fraction:.3f}{ending}",
+        f"        TimeFraction={time_fraction_str}{ending}",
         f"        NbPeriods={len(periods)}{ending}",
         f"        MinDuration={min_d}{ending}",
         f"        MaxDuration={max_d}{ending}",
-        f"        RandomInit =7{ending}",
+        f"        RandomInit ={random_seed}{ending}",
         f"      EndTags{ending}",
         f"      UnavailPeriods=Start{ending}",
     ]
@@ -152,6 +156,21 @@ def _format_unavail_block(periods: list[tuple[str, float]], ending: str) -> list
         f"      End of PVObject pvUnavail{ending}",
     ])
     return block
+
+
+def _format_unavail_block(periods: list[tuple[str, float]], ending: str) -> list[str]:
+    total_hours = sum(dur for _, dur in periods)
+    fraction = min(1.0, total_hours / 8760.0)
+    min_d = max(1, int(round(min(dur for _, dur in periods))))
+    max_d = max(min_d, int(round(max(dur for _, dur in periods))))
+    return _render_unavail_lines(
+        periods,
+        time_fraction_str=f"{fraction:.3f}",
+        min_d=min_d,
+        max_d=max_d,
+        random_seed=7,
+        ending=ending,
+    )
 
 
 def _materialize_random_periods(cfg: dict) -> list[tuple[str, float]]:
@@ -212,32 +231,14 @@ def _materialize_random_periods(cfg: dict) -> list[tuple[str, float]]:
 
 def _format_random_unavail_block(cfg: dict, ending: str) -> list[str]:
     periods = _materialize_random_periods(cfg)
-    block = [
-        f"    SystemUnavail=TUnavailability{ending}",
-        f"      PVObject_=pvUnavail{ending}",
-        f"        Version={HEADLESS_RECORD_VERSION}{ending}",
-        f"        Flags=$00{ending}",
-        f"      DefMode=Periods{ending}",
-        f"      RandomUnavSettings=TRandomUnavSettings{ending}",
-        f"        TimeFraction={cfg['time_fraction']:.4f}{ending}",
-        f"        NbPeriods={len(periods)}{ending}",
-        f"        MinDuration={cfg['min_duration_hours']}{ending}",
-        f"        MaxDuration={cfg['max_duration_hours']}{ending}",
-        f"        RandomInit ={cfg['random_seed']}{ending}",
-        f"      EndTags{ending}",
-        f"      UnavailPeriods=Start{ending}",
-    ]
-    for date_beg, dur in periods:
-        block.extend([
-            f"        DateBeg={date_beg}{ending}",
-            f"        Duration={dur:.3f}{ending}",
-            f"      EndTags{ending}",
-        ])
-    block.extend([
-        f"      EndTags{ending}",
-        f"      End of PVObject pvUnavail{ending}",
-    ])
-    return block
+    return _render_unavail_lines(
+        periods,
+        time_fraction_str=f"{cfg['time_fraction']:.4f}",
+        min_d=cfg["min_duration_hours"],
+        max_d=cfg["max_duration_hours"],
+        random_seed=cfg["random_seed"],
+        ending=ending,
+    )
 
 
 def _validate_random_settings(updates: dict) -> dict:
