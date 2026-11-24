@@ -69,6 +69,19 @@ def _roof_mesh(name: str, ox: float, oy: float, tilt_deg: float, rot_deg: float 
     return roof_mesh(name, ox, oy, tilt_deg, rot_deg, x_bounds=(-1.0, 22.0), y_bounds=(-1.0, 14.0), z_offset=4.0)
 
 
+def _south_roof_house_and_layout() -> tuple[dict, dict]:
+    house = {"kind": "mesh", "meshes": [_roof_mesh("SouthRoof", 0.0, 0.0, 25.0, 0.0)]}
+    layout = {
+        "tables": [{
+            "name": "SouthArray", "module_rows": 2, "module_columns": 6,
+            "orientation": "portrait", "row_spacing_m": 0.02, "column_spacing_m": 0.02,
+            "origin_m": [1.0, 1.0, 4.0 + math.tan(math.radians(25.0)) + 0.1],
+            "roof_mesh": "SouthRoof",
+        }]
+    }
+    return house, layout
+
+
 class ZeroTemplateSynthesizerTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -197,15 +210,7 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
             resolve_modules(self.components, "OpaqueBuiltIn.PAN", None)
 
     def test_house_task_schema_and_zero_template_end_to_native_saved(self):
-        house = {"kind": "mesh", "meshes": [_roof_mesh("SouthRoof", 0.0, 0.0, 25.0, 0.0)]}
-        layout = {
-            "tables": [{
-                "name": "SouthArray", "module_rows": 2, "module_columns": 6,
-                "orientation": "portrait", "row_spacing_m": 0.02, "column_spacing_m": 0.02,
-                "origin_m": [1.0, 1.0, 4.0 + math.tan(math.radians(25.0)) + 0.1],
-                "roof_mesh": "SouthRoof",
-            }]
-        }
+        house, layout = _south_roof_house_and_layout()
 
         # Schema rejects mixing source_project and zero-template fields, or omitting site/met.
         with self.assertRaises(ValidationError):
@@ -493,15 +498,7 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
                     self.assertAlmostEqual(dry["plan"]["source"]["tilt_deg"], tilt, places=3)
 
         # 4. Explicit pmism_mpp and module_quality_loss clear their default bits; omitted fields keep them.
-        house = {"kind": "mesh", "meshes": [_roof_mesh("SouthRoof", 0.0, 0.0, 25.0, 0.0)]}
-        layout = {
-            "tables": [{
-                "name": "SouthArray", "module_rows": 2, "module_columns": 6,
-                "orientation": "portrait", "row_spacing_m": 0.02, "column_spacing_m": 0.02,
-                "origin_m": [1.0, 1.0, 4.0 + math.tan(math.radians(25.0)) + 0.1],
-                "roof_mesh": "SouthRoof",
-            }]
-        }
+        house, layout = _south_roof_house_and_layout()
         cases = (
             ("both_omitted", {}, "$001E0002", True, True),
             ("only_mism", {"pmism_mpp": 5.0}, "$001A0002", False, True),
@@ -558,15 +555,7 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
         import json
         from pvsyst_auto.native.cli import PVsystError
 
-        house = {"kind": "mesh", "meshes": [_roof_mesh("SouthRoof", 0.0, 0.0, 25.0, 0.0)]}
-        layout = {
-            "tables": [{
-                "name": "SouthArray", "module_rows": 2, "module_columns": 6,
-                "orientation": "portrait", "row_spacing_m": 0.02, "column_spacing_m": 0.02,
-                "origin_m": [1.0, 1.0, 4.0 + math.tan(math.radians(25.0)) + 0.1],
-                "roof_mesh": "SouthRoof",
-            }]
-        }
+        house, layout = _south_roof_house_and_layout()
 
         # Non-zero base_slope_deg must fail in both dry_run=True and confirm=True before any writes
         cli = FakeCLI(self.root / "PVsystCLI.exe", self.root)

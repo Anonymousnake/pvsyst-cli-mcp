@@ -550,6 +550,39 @@ def synthesize_circuit_and_subarrays(subarrays: list[dict], *,
         "        Children=Start",
     ]
 
+    def _string_node(str_count: int, sub_id: int, comment: str, indent: str) -> list[str]:
+        return [
+            f"{indent}StringNode Start;",
+            f"{indent}  NElements={str_count}",
+            f"{indent}  SubArrayId={sub_id}",
+            f"{indent}  SubArrayName={comment}",
+            f"{indent}StringNode End;",
+        ]
+
+    def _mppt_node(mppt_count: int, str_per_mppt: int, sub_id: int, comment: str) -> list[str]:
+        return [
+            "              MPPTNode Start;",
+            f"                NElements={mppt_count}",
+            f"                SubArrayId={sub_id}",
+            f"                SubArrayName={comment}",
+            "                Children=Start",
+            *_string_node(str_per_mppt, sub_id, comment, "                  "),
+            "                Children=End",
+            "              MPPTNode End;",
+        ]
+
+    def _inverter_node(inv_count: int, sub_id: int, comment: str, children: list[str]) -> list[str]:
+        return [
+            "          InverterNode Start;",
+            f"            NElements={inv_count}",
+            f"            SubArrayId={sub_id}",
+            f"            SubArrayName={comment}",
+            "            Children=Start",
+            *children,
+            "            Children=End",
+            "          InverterNode End;",
+        ]
+
     emitted_groups: set[int] = set()
     for sub in normalized:
         gid = sub["power_sharing_inverter_id"]
@@ -560,74 +593,34 @@ def synthesize_circuit_and_subarrays(subarrays: list[dict], *,
             members = shared_groups[gid]
             group_inv = members[0]["n_inverter"]
             shared_name = "; ".join(m["comment"] for m in members)
-            circuit_lines.extend([
-                "          InverterNode Start;",
-                f"            NElements={group_inv}",
-                "            SubArrayId=0",
-                f"            SubArrayName={shared_name}",
-                "            Children=Start",
-            ])
-            for m in members:
-                mppt_per_inv = m["n_inv_mppt"] // group_inv
-                str_per_mppt = m["n_string_ch"] // m["n_inv_mppt"]
-                circuit_lines.extend([
-                    "              MPPTNode Start;",
-                    f"                NElements={mppt_per_inv}",
-                    f"                SubArrayId={m['subarray_id']}",
-                    f"                SubArrayName={m['comment']}",
-                    "                Children=Start",
-                    "                  StringNode Start;",
-                    f"                    NElements={str_per_mppt}",
-                    f"                    SubArrayId={m['subarray_id']}",
-                    f"                    SubArrayName={m['comment']}",
-                    "                  StringNode End;",
-                    "                Children=End",
-                    "              MPPTNode End;",
-                ])
-            circuit_lines.extend([
-                "            Children=End",
-                "          InverterNode End;",
-            ])
+            mppt_children = [
+                line
+                for m in members
+                for line in _mppt_node(
+                    m["n_inv_mppt"] // group_inv,
+                    m["n_string_ch"] // m["n_inv_mppt"],
+                    m["subarray_id"],
+                    m["comment"],
+                )
+            ]
+            circuit_lines.extend(_inverter_node(group_inv, 0, shared_name, mppt_children))
         elif sub["independent_mppt"]:
             mppt_per_inv = sub["n_inv_mppt"] // sub["n_inverter"]
             str_per_mppt = sub["n_string_ch"] // sub["n_inv_mppt"]
-            circuit_lines.extend([
-                "          InverterNode Start;",
-                f"            NElements={sub['n_inverter']}",
-                f"            SubArrayId={sub['subarray_id']}",
-                f"            SubArrayName={sub['comment']}",
-                "            Children=Start",
-                "              MPPTNode Start;",
-                f"                NElements={mppt_per_inv}",
-                f"                SubArrayId={sub['subarray_id']}",
-                f"                SubArrayName={sub['comment']}",
-                "                Children=Start",
-                "                  StringNode Start;",
-                f"                    NElements={str_per_mppt}",
-                f"                    SubArrayId={sub['subarray_id']}",
-                f"                    SubArrayName={sub['comment']}",
-                "                  StringNode End;",
-                "                Children=End",
-                "              MPPTNode End;",
-                "            Children=End",
-                "          InverterNode End;",
-            ])
+            circuit_lines.extend(_inverter_node(
+                sub["n_inverter"],
+                sub["subarray_id"],
+                sub["comment"],
+                _mppt_node(mppt_per_inv, str_per_mppt, sub["subarray_id"], sub["comment"]),
+            ))
         else:
             str_per_inv = sub["n_string_ch"] // sub["n_inverter"]
-            circuit_lines.extend([
-                "          InverterNode Start;",
-                f"            NElements={sub['n_inverter']}",
-                f"            SubArrayId={sub['subarray_id']}",
-                f"            SubArrayName={sub['comment']}",
-                "            Children=Start",
-                "              StringNode Start;",
-                f"                NElements={str_per_inv}",
-                f"                SubArrayId={sub['subarray_id']}",
-                f"                SubArrayName={sub['comment']}",
-                "              StringNode End;",
-                "            Children=End",
-                "          InverterNode End;",
-            ])
+            circuit_lines.extend(_inverter_node(
+                sub["n_inverter"],
+                sub["subarray_id"],
+                sub["comment"],
+                _string_node(str_per_inv, sub["subarray_id"], sub["comment"], "              "),
+            ))
 
     circuit_lines.extend([
         "        Children=End",
@@ -1534,6 +1527,17 @@ def synthesize_utility_project(
         terrain_summary = terrain_mesh.summary()
         need_3d = True
     if need_3d:
+        mod_shading_kwargs = {
+            "module_rows": n_rows,
+            "module_columns": n_cols,
+            "module_width_m": mw,
+            "module_length_m": ml,
+            "module_name": resolved_mod_name,
+            "module_orient": module_orient,
+            "spacing_x_m": sx,
+            "spacing_y_m": sy,
+            "version": version,
+        }
         if field_type in ("TrackHorizNSAxis", "UnlimTracking"):
             if terrain_mesh is not None:
                 from pvsyst_auto.scene.terrain import build_terrain_tracker_shading
@@ -1542,19 +1546,11 @@ def synthesize_utility_project(
                     tracker_count=shed_count,
                     pitch_ew_m=resolved_pitch,
                     axis_azimuth_deg=axis_azimuth_deg,
-                    module_rows=n_rows,
-                    module_columns=n_cols,
-                    module_width_m=mw,
-                    module_length_m=ml,
-                    module_name=resolved_mod_name,
-                    module_orient=module_orient,
-                    spacing_x_m=sx,
-                    spacing_y_m=sy,
                     ground_clearance_m=ground_clearance_m,
                     follow_slope=bool(terrain.get("follow_slope", True)),
                     max_axis_tilt_deg=float(terrain.get("max_axis_tilt_deg", 15.0)),
                     obstacles=obstacles,
-                    version=version,
+                    **mod_shading_kwargs,
                 )
                 terrain_summary = trk_terrain_info
             else:
@@ -1562,15 +1558,7 @@ def synthesize_utility_project(
                     tracker_count=shed_count,
                     pitch_ew_m=resolved_pitch,
                     axis_azimuth_deg=axis_azimuth_deg,
-                    module_rows=n_rows,
-                    module_columns=n_cols,
-                    module_width_m=mw,
-                    module_length_m=ml,
-                    module_name=resolved_mod_name,
-                    module_orient=module_orient,
-                    spacing_x_m=sx,
-                    spacing_y_m=sy,
-                    version=version,
+                    **mod_shading_kwargs,
                 )
         elif site_polygon is not None or terrain_mesh is not None:
             from pvsyst_auto.scene.ground import build_ground_3d_shading, plan_ground_polygon_layout
@@ -1651,15 +1639,7 @@ def synthesize_utility_project(
                 tilt_deg=tilt_deg,
                 azimuth_deg=azimuth_deg,
                 base_slope_deg=eff_base_slope,
-                module_rows=n_rows,
-                module_columns=n_cols,
-                module_width_m=mw,
-                module_length_m=ml,
-                module_name=resolved_mod_name,
-                module_orient=module_orient,
-                spacing_x_m=sx,
-                spacing_y_m=sy,
-                version=version,
+                **mod_shading_kwargs,
             )
             if obstacles:
                 from pvsyst_auto.scene.author import obstacle_profiles

@@ -142,27 +142,20 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     inverter temperature, power factor, power controls, P50/P90, string mismatch, ageing, IAM,
     system unavailability periods/random/removal, bifacial pvBiFacial, spectral correction, or
     native TEcoEvaluation for PDF financial pages) with SHA-256 optimistic locking and rollback backup."""
+    def _dump(model, *, exclude_none: bool = True):
+        return model.model_dump(exclude_none=exclude_none) if model is not None else None
+
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
-                        generator_updates.model_dump(exclude_none=True) if generator_updates is not None else None,
+                        _dump(generator_updates),
                         dry_run, power_sharing_enabled, independent_mppt_enabled, main_array_updates, variant_name, add_utf8_bom,
-                        soiling_updates.model_dump(exclude_none=True) if soiling_updates is not None else None,
-                        grid_limit_updates.model_dump(exclude_none=True) if grid_limit_updates is not None else None,
-                        auxiliary_updates.model_dump(exclude_none=True) if auxiliary_updates is not None else None,
-                        seasonal_updates.model_dump(exclude_none=True) if seasonal_updates is not None else None,
-                        horizon_updates.model_dump(exclude_none=True) if horizon_updates is not None else None,
-                        inverter_temperature_updates.model_dump(exclude_none=True) if inverter_temperature_updates is not None else None,
-                        power_factor_updates.model_dump(exclude_none=True) if power_factor_updates is not None else None,
-                        p50_p90_updates.model_dump() if p50_p90_updates is not None else None,
-                        power_controls_updates.model_dump(exclude_none=True) if power_controls_updates is not None else None,
-                        string_mismatch_updates.model_dump(exclude_none=True) if string_mismatch_updates is not None else None,
-                        ageing_updates.model_dump(exclude_none=True) if ageing_updates is not None else None,
-                        iam_updates.model_dump(exclude_none=True) if iam_updates is not None else None,
-                        ageing_enabled,
-                        system_unavailability_updates.model_dump(exclude_none=True) if system_unavailability_updates is not None else None,
-                        bifacial_updates.model_dump(exclude_none=True) if bifacial_updates is not None else None,
-                        spectral_updates.model_dump(exclude_none=True) if spectral_updates is not None else None,
-                        native_economics_updates.model_dump(exclude_none=True) if native_economics_updates is not None else None)
+                        _dump(soiling_updates), _dump(grid_limit_updates), _dump(auxiliary_updates),
+                        _dump(seasonal_updates), _dump(horizon_updates), _dump(inverter_temperature_updates),
+                        _dump(power_factor_updates), _dump(p50_p90_updates, exclude_none=False),
+                        _dump(power_controls_updates), _dump(string_mismatch_updates),
+                        _dump(ageing_updates), _dump(iam_updates), ageing_enabled,
+                        _dump(system_unavailability_updates), _dump(bifacial_updates),
+                        _dump(spectral_updates), _dump(native_economics_updates))
 
 @categorized_tool()
 def pvsyst_convert_orientation(

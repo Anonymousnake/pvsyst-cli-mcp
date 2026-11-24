@@ -3,7 +3,7 @@
 `pvsyst_run_house_task(spec, dry_run=True, confirm=False, resume=False, retry_simulation=False)` 把住宅光伏建模的各个环节——克隆工作工程、生成 `.pvc2` 三维场景（含屋顶与可选周边遮挡物 `obstacles`）、免 GUI 原生写入含 3D 阴影/组件布局的 `.VCx` 变体、再启动 `PVsystCLI.exe` 重新加载该变体跑完全年逐时仿真——整合成一条带断点续跑检查点（Checkpoint）的完整流水线。
 
 - 全流程完全免去桌面 GUI 启动与窗口自动化（`native/scene` GUI 桥接已在 `v0.6.0` 移除）。
-- 如果还没准备源工程，可以先调 [`pvsyst_prepare_design_project`](design-project-preparation.md) 生成源工程，或者直接用把规格书绑定也包进去的 [`pvsyst_run_sourced_house_task`](sourced-house-task.md)。
+- 如果还没准备源工程，可以先调 `pvsyst_prepare_design_project`（[`single-design-inputs.md`](single-design-inputs.md)）生成源工程，或者直接用把规格书绑定也包进去的 `pvsyst_run_sourced_house_task`（见[工具参考](tool-reference.md)）。
 - 如果不需要 3D 房屋阴影、只跑常规无阴影固定平面，直接用 [`pvsyst_simulate_design`](single-design-inputs.md) 即可。
 
 ## 环境前提与输入参数
@@ -21,8 +21,8 @@
 | `new_project` | 新生成的住宅工程 `.PRJ` 文件名（工程、检查点、`.SFI`、`.pvc2` 及输出 CSV/PDF 均不可与现有文件重名） |
 | `variant_name` | 新变体的显示标题（`1..80` UTF-8 字节单行文本；实际保存的 `.VCx` 编号由 PVsyst `SaveAs` 自动分配） |
 | `year` | 仿真年份（整数 `1969..2068`），需与继承的 `.MET` 文件年份一致 |
-| `house` | `kind="mesh"` 的完整具名房屋构件三角网格（墙体、屋面、挑檐、门窗、烟囱、门廊等；详见[住宅与光伏建模](house-pv-modeling.md)） |
-| `obstacles` | 可选；周边环境遮挡物列表（`1..64` 个），支持 `building`、`tree`（原生 `oeTree`）、`wall`、`mesh` 四类构件，见[住宅与光伏建模](house-pv-modeling.md) |
+| `house` | `kind="mesh"` 的完整具名房屋构件三角网格（墙体、屋面、挑檐、门窗、烟囱、门廊等） |
+| `obstacles` | 可选；周边环境遮挡物列表（`1..64` 个），支持 `building`、`tree`（原生 `oeTree`）、`wall`、`mesh` 四类构件 |
 | `layout` | 单区域排布或 `tables` 中的多区域排布，组件总颗数必须与源变体子阵列严格一致 |
 | `string_layout` | 可选；显式 per-module-cell 组串接线声明 `{tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`，作为 `layout` 同级兄弟块，不替换 `layout`。`row`/`col` 1 基、`global_string>=0`（`0`=未分配 draft）、`subarray_id` 为真实源子阵 id。省略即旧行为：旧 recipe v1/v2 形状与字节不变、不升版本、不造 v3。draft 可保存/回读但原生 import 前须补全；显式接线仅在 `shading_mode="module_layout"` 时被消费，`linear` 会在写入前拒绝而不是悄悄丢弃 |
 | `module_geometry` | 组件几何尺寸（`model_name`、`nom_power_wp`、`width_m`、`length_m`、`geometry_depth_m`） |
@@ -62,7 +62,7 @@
 
 免去 GUI 操作，根据声明的房屋网格、`obstacles` 与 PV 区域在内存中直接构建并校验场景记录，写出新变体文件；**导入阶段**不启动 `PVsyst.exe`，不改写 `INI` 配置、剪贴板或许可文件，也不执行仿真。当 `pvsyst_run_house_task(dry_run=false, confirm=true)` 时会在同一流程内自动继续调用 CLI 跑完全年仿真（见下）。
 
-支持范围：高层 `pvsyst_run_house_task` 与底层导入共用同一套原生构建校验，支持横装 `landscape` 与竖装 `portrait`（`ModOrient=moPortrait`）、零或正的模块间距（`row_spacing_m` / `column_spacing_m >= 0`，写入 `ModSpacingX`/`ModSpacingY`）、任意多个（2 个、3 个及以上）固定朝向屋面与 `PowerSharingInverterId >= 0` 共享多 MPPT 逆变器。未提供 `string_layout` 时：`linear` 支持分组多朝向 `1..64` 张表及单朝向 `1..3` 张表；`module_layout` 支持单朝向双表双串或分组多朝向每子阵 1 串 1 表。提供 `string_layout` 时可对 `1..64` 张表跨表/单表多串逐 cell 绑定任意固定平面与共享逆变器组合。不满足拓扑/总数/平面约束时直接报错中止而不做隐式修改。更多细节见[住宅与光伏建模](house-pv-modeling.md)。
+支持范围：高层 `pvsyst_run_house_task` 与底层导入共用同一套原生构建校验，支持横装 `landscape` 与竖装 `portrait`（`ModOrient=moPortrait`）、零或正的模块间距（`row_spacing_m` / `column_spacing_m >= 0`，写入 `ModSpacingX`/`ModSpacingY`）、任意多个（2 个、3 个及以上）固定朝向屋面与 `PowerSharingInverterId >= 0` 共享多 MPPT 逆变器。未提供 `string_layout` 时：`linear` 支持分组多朝向 `1..64` 张表及单朝向 `1..3` 张表；`module_layout` 支持单朝向双表双串或分组多朝向每子阵 1 串 1 表。提供 `string_layout` 时可对 `1..64` 张表跨表/单表多串逐 cell 绑定任意固定平面与共享逆变器组合。不满足拓扑/总数/平面约束时直接报错中止而不做隐式修改。更多功能支持矩阵见[功能入口地图](native-entry-map.md)。
 
 状态说明：高层 `pvsyst_run_house_task` 的 **native 导入阶段**只写入场景记录文件（`stored_geometry_verified` 和 `stored_module_layout_verified` 仅反映文件已正确保存），此时 `imported`、`native_geometry_verified` 和 `native_consumption_verified` 仍为 `false`——表示 PVsyst 尚未实际加载并计算该变体。只有当调用 `dry_run=false, confirm=true` 继续跑完 CLI 全年仿真且结果上下文校验通过后，`native_consumption_verified` 才会置为 `true`。如果直接调用底层 [`pvsyst_import_house_pv_scene`](tool-reference.md) 单独生成变体，随后需再调用 [`pvsyst_run_simulation`](tool-reference.md) 运行仿真。
 

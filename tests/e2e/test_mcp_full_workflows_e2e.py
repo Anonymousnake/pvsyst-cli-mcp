@@ -39,6 +39,16 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 REPO = Path(__file__).resolve().parents[2]
+_DEFAULT_STORAGE_BOUNDS = {
+    "soc_min": 0.2,
+    "soc_max": 0.95,
+    "max_charge_ac_kw": 5.0,
+    "max_discharge_ac_kw": 5.0,
+    "charger_max_efficiency_pct": 97.0,
+    "charger_euro_efficiency_pct": 95.0,
+    "battery_inverter_max_efficiency_pct": 97.0,
+    "battery_inverter_euro_efficiency_pct": 95.0,
+}
 
 
 def _decode(reply):
@@ -321,16 +331,9 @@ class RealMcpServerWorkflowsE2E(unittest.TestCase):
                             "discharging_strategy": "specified_hours",
                             "discharging_power_kw": 3.0,
                             "discharging_schedule_48": [3.0] * 12 + [0.0] * 24 + [3.0] * 12,
-                            "soc_min": 0.2,
-                            "soc_max": 0.95,
                             "initial_soc": 0.6,
                             "reserve_soc": 0.5,
-                            "max_charge_ac_kw": 5.0,
-                            "max_discharge_ac_kw": 5.0,
-                            "charger_max_efficiency_pct": 97.0,
-                            "charger_euro_efficiency_pct": 95.0,
-                            "battery_inverter_max_efficiency_pct": 97.0,
-                            "battery_inverter_euro_efficiency_pct": 95.0,
+                            **_DEFAULT_STORAGE_BOUNDS,
                         },
                         "dry_run": False,
                     }))
@@ -350,16 +353,9 @@ class RealMcpServerWorkflowsE2E(unittest.TestCase):
                             "discharge_start_hour": 19,
                             "discharge_end_hour": 6,
                             "grid_limit_kw": 3.2,
-                            "soc_min": 0.2,
-                            "soc_max": 0.95,
                             "initial_soc": 0.6,
                             "reserve_soc": 0.5,
-                            "max_charge_ac_kw": 5.0,
-                            "max_discharge_ac_kw": 5.0,
-                            "charger_max_efficiency_pct": 97.0,
-                            "charger_euro_efficiency_pct": 95.0,
-                            "battery_inverter_max_efficiency_pct": 97.0,
-                            "battery_inverter_euro_efficiency_pct": 95.0,
+                            **_DEFAULT_STORAGE_BOUNDS,
                         },
                         "dry_run": False,
                     }))
@@ -702,16 +698,9 @@ End of PVObject pvModule
                             "discharge_start_hour": 19,
                             "discharge_end_hour": 6,
                             "grid_limit_kw": 2.5,
-                            "soc_min": 0.2,
-                            "soc_max": 0.95,
                             "initial_soc": 0.5,
                             "reserve_soc": 0.4,
-                            "max_charge_ac_kw": 5.0,
-                            "max_discharge_ac_kw": 5.0,
-                            "charger_max_efficiency_pct": 97.0,
-                            "charger_euro_efficiency_pct": 95.0,
-                            "battery_inverter_max_efficiency_pct": 97.0,
-                            "battery_inverter_euro_efficiency_pct": 95.0,
+                            **_DEFAULT_STORAGE_BOUNDS,
                         },
                         "dry_run": False,
                     }))

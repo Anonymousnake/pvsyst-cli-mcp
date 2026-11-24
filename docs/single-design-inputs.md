@@ -2,7 +2,7 @@
 
 `pvsyst_simulate_design(spec, dry_run=True)` 是面向单方案设计（固定倾角、地面棚架/跟踪器及离网系统）的最高层一站式入口。它把组件查找、零模板合成或模板筛选、串并联整数容量规划、天气下载/转换以及全年仿真打包在一个统一的 `spec` 里执行。
 
-如果只想把工程文件配好落盘、暂不跑全年仿真（例如后面还要导 3D 房屋场景），可以把完全相同的 `spec` 传给 [`pvsyst_prepare_design_project`](design-project-preparation.md)。
+如果只想把工程文件配好落盘、暂不跑全年仿真（例如后面还要导 3D 房屋场景），可以把完全相同的 `spec` 传给 [`pvsyst_prepare_design_project`](tool-reference.md)。
 
 ## `spec` 顶层字段
 
@@ -64,8 +64,8 @@
 
 ## 两种容量与电气边界写法
 
-- **直接传 `capacity`**：直接给出冷态 $V_{oc}$、冷/热态 $V_{mp}$、组件与单路 MPPT 最大工作/短路电流等数值边界，详见[容量规划](capacity-sizing.md)。
-- **传 `electrical_design`（带出处推导）**：适合从规格书摘录原始参数的场景（也可配合 [`pvsyst_prepare_sourced_design`](weather-engineering-review.md) 自动组装）。需要注意几个常见坑：
+- **直接传 `capacity`**：直接给出冷态 $V_{oc}$、冷/热态 $V_{mp}$、组件与单路 MPPT 最大工作/短路电流等数值边界（依据 IEC 62548 / NEC 690 温度修正）。
+- **传 `electrical_design`（带出处推导）**：适合从规格书摘录原始参数的场景（也可配合 `pvsyst_prepare_sourced_design` 自动组装，见[工具参考](tool-reference.md)）。需要注意几个常见坑：
   - 温度系数必须写明单位（如 `%/°C` 或 `V/°C`）和出处；不能拿功率温度系数 $\beta_{P\max}$ 去冒充工作电压温度系数 $\beta_{Vmp}$。
   - 逆变器 `.OND` 里的整机 `IDCMax` 不能直接当成单路 MPPT 的最大输入电流（也不能简单除以 MPPT 路数，因为很多逆变器各路分配不均或总量受限），必须明确声明单路 MPPT 电流上限。
   - 如果用短路电流温度系数 $\alpha_{Isc}$ 推导最大电流，必须同时给出最大有效辐照度 `max_irradiance_w_m2` 和双面背面增益 `rear_gain_factor`（不会默认按 $1000\text{ W/m}^2$ 或背面增益 $0$ 偷算）。
