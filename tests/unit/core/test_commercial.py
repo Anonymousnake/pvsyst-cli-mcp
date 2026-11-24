@@ -37,35 +37,24 @@ class CommercialTests(unittest.TestCase):
         args = {"updates": {}, "expected_sha256": hashlib.sha256(self.paths[kind].read_bytes()).hexdigest()}
         return self.store.update(kind, f"test.{kind}", **(args | kwargs))
 
-    def test_form_all_types_noop_remarks_and_shared_snapshot(self):
-        # 1. Noop preserves numeric spelling, BOM and mixed whitespace (no backup created yet)
+    def test_form_all_types_preview_apply_restore_and_noop(self):
         pan_path = self.paths["PAN"]
         pan_initial = pan_path.read_bytes()
-        source = pan_path.read_text(encoding="utf-8").replace("Width = 1.032", "Width \t=  1.032  ")
-        pan_path.write_bytes(b"\xef\xbb\xbf" + source.replace("\n", "\r\n").encode())
-        noop_orig = pan_path.read_bytes()
-        result = self.edit(commercial_updates={"Width": "1.032"}, remarks=["First", "Second"])
-        self.assertFalse(result["changed"])
-        self.assertNotIn("backup_name", result)
-        self.assertEqual(pan_path.read_bytes(), noop_orig)
-        self.assertFalse((self.root / "ComposPV" / ".mcp-backups").exists())
-        self.edit(commercial_updates={"Depth": "0.031"}, remarks=["One", "Two", "Three", "Four", "Five"])
-        data = pan_path.read_bytes()
-        self.assertTrue(data.startswith(b"\xef\xbb\xbf"))
-        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
-        self.assertIn(b"Width \t=  1.032  ", data)
+        with self.subTest(case="pan_noop_and_bom_whitespace"):
+            source = pan_path.read_text(encoding="utf-8").replace("Width = 1.032", "Width \t=  1.032  ")
+            pan_path.write_bytes(b"\xef\xbb\xbf" + source.replace("\n", "\r\n").encode())
+            noop_orig = pan_path.read_bytes()
+            result = self.edit(commercial_updates={"Width": "1.032"}, remarks=["First", "Second"])
+            self.assertFalse(result["changed"])
+            self.assertNotIn("backup_name", result)
+            self.assertEqual(pan_path.read_bytes(), noop_orig)
+            self.assertFalse((self.root / "ComposPV" / ".mcp-backups").exists())
+            self.edit(commercial_updates={"Depth": "0.031"}, remarks=["One", "Two", "Three", "Four", "Five"])
+            data = pan_path.read_bytes()
+            self.assertTrue(data.startswith(b"\xef\xbb\xbf"))
+            self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+            self.assertIn(b"Width \t=  1.032  ", data)
 
-        # 2. Clear then add remarks and optional fields
-        pan_path.write_bytes(pan_initial)
-        self.edit(remarks=[])
-        self.assertNotIn(b"Remarks", pan_path.read_bytes())
-        opt = self.edit(commercial_updates={"DataSource": "", "Depth": "0.03"}, remarks=["A", ""])
-        form = opt["commercial_after"]
-        self.assertEqual(form["remarks"], ["A", ""])
-        self.assertEqual(form["fields"]["DataSource"]["value"], "")
-        self.assertEqual(form["fields"]["Depth"]["value"], "0.03")
-
-        # 3. Preview, apply and exact backup restore across all four component types
         pan_path.write_bytes(pan_initial)
         for kind, path in self.paths.items():
             with self.subTest(kind=kind):
@@ -93,19 +82,31 @@ class CommercialTests(unittest.TestCase):
                 self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / kind / edited["backup_name"]).read_bytes(), original)
                 path.write_bytes(original)
 
-        # 4. Scoped scalar does not change outer objects, and scalar + commercial share one snapshot
+    def test_remarks_optional_fields_scoping_and_shared_snapshot(self):
+        with self.subTest(case="clear_and_add_remarks_optional_fields"):
+            pan_path = self.paths["PAN"]
+            self.edit(remarks=[])
+            self.assertNotIn(b"Remarks", pan_path.read_bytes())
+            opt = self.edit(commercial_updates={"DataSource": "", "Depth": "0.03"}, remarks=["A", ""])
+            form = opt["commercial_after"]
+            self.assertEqual(form["remarks"], ["A", ""])
+            self.assertEqual(form["fields"]["DataSource"]["value"], "")
+            self.assertEqual(form["fields"]["Depth"]["value"], "0.03")
+
         gen_path = self.paths["GEN"]
         gen_base = gen_path.read_bytes()
-        scoped_src = gen_path.read_text(encoding="utf-8").replace("  TypeGen=", "  Weight=123\n  TypeGen=")
-        gen_path.write_text(scoped_src, encoding="utf-8")
-        self.edit("GEN", commercial_updates={"Weight": "55"})
-        self.assertIn("  Weight=123\n", gen_path.read_text(encoding="utf-8"))
-        self.assertIn("    Weight=55\n", gen_path.read_text(encoding="utf-8"))
+        with self.subTest(case="scoped_scalar_preserves_outer_weight"):
+            scoped_src = gen_path.read_text(encoding="utf-8").replace("  TypeGen=", "  Weight=123\n  TypeGen=")
+            gen_path.write_text(scoped_src, encoding="utf-8")
+            self.edit("GEN", commercial_updates={"Weight": "55"})
+            self.assertIn("  Weight=123\n", gen_path.read_text(encoding="utf-8"))
+            self.assertIn("    Weight=55\n", gen_path.read_text(encoding="utf-8"))
 
-        gen_path.write_bytes(gen_base)
-        shared = self.edit("GEN", updates={"PNomGen": "55"}, commercial_updates={"Model": "55 kVA"})
-        self.assertIn(b"PNomGen=55", gen_path.read_bytes())
-        self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / "GEN" / shared["backup_name"]).read_bytes(), gen_base)
+        with self.subTest(case="scalar_and_commercial_share_one_snapshot"):
+            gen_path.write_bytes(gen_base)
+            shared = self.edit("GEN", updates={"PNomGen": "55"}, commercial_updates={"Model": "55 kVA"})
+            self.assertIn(b"PNomGen=55", gen_path.read_bytes())
+            self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / "GEN" / shared["backup_name"]).read_bytes(), gen_base)
 
     def test_guard_invalid_values_and_conflicting_arguments_leave_no_backup(self):
         bad = [
@@ -137,16 +138,17 @@ class CommercialTests(unittest.TestCase):
 
     def test_ambiguous_arrays_and_pan_dimension_counterparts(self):
         path = self.paths["PAN"]
-        data = path.read_text(encoding="utf-8").replace("  LargApp=1.032", "  Other=1.032")
-        path.write_text(data, encoding="utf-8")
-        self.edit(commercial_updates={"Width": "1.1"})
-        self.assertNotIn("LargApp", path.read_text(encoding="utf-8"))
-        self.assertIn("Width = 1.1", path.read_text(encoding="utf-8"))
-        dup_data = data.replace("  Other=1.032", "  LargApp=1.032\n  LargApp=1.032")
-        path.write_text(dup_data, encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "LargApp must occur exactly once"):
+        with self.subTest(case="pan_dimension_counterparts"):
+            data = path.read_text(encoding="utf-8").replace("  LargApp=1.032", "  Other=1.032")
+            path.write_text(data, encoding="utf-8")
             self.edit(commercial_updates={"Width": "1.1"})
-        self.assertEqual(path.read_text(encoding="utf-8"), dup_data)
+            self.assertNotIn("LargApp", path.read_text(encoding="utf-8"))
+            self.assertIn("Width = 1.1", path.read_text(encoding="utf-8"))
+            dup_data = data.replace("  Other=1.032", "  LargApp=1.032\n  LargApp=1.032")
+            path.write_text(dup_data, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "LargApp must occur exactly once"):
+                self.edit(commercial_updates={"Width": "1.1"})
+            self.assertEqual(path.read_text(encoding="utf-8"), dup_data)
 
         clean = PAN.replace("  Version=", "  Comment=Lab\tFixture\tStatus\n  Version=").replace(
             "  End of PVObject pvCommercial", COMMERCIAL + "  End of PVObject pvCommercial")
@@ -160,8 +162,8 @@ class CommercialTests(unittest.TestCase):
                clean.replace("Version=8.1.6", "Version=8.0.6"),
                clean.replace("    Weight=24.5", "    PVObject_Price=pvPrice\n    End of PVObject pvPrice")]
         for text in bad:
-            path.write_text(text, encoding="utf-8")
-            with self.subTest(text=text[:100]):
+            with self.subTest(case="ambiguous_array", text=text[:100]):
+                path.write_text(text, encoding="utf-8")
                 self.assertFalse(commercial_inventory("PAN", text)["editable"])
                 with self.assertRaises(ValueError):
                     self.edit(remarks=["Repair?"])

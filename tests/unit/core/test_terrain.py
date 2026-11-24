@@ -171,48 +171,48 @@ class TerrainDemTests(unittest.TestCase):
         self.assertTrue(any(abs(t) > 1.5 for t in tilts))
 
     def test_polygon_clipper_rectangular_l_shape_and_narrow_vertical(self) -> None:
-        # 50m x 40m rectangle with 2m setback -> 46m x 36m buildable
-        rect = [[0.0, 0.0], [50.0, 0.0], [50.0, 40.0], [0.0, 40.0]]
-        plan = plan_ground_polygon_layout(
-            rect,
-            tilt_deg=25.0,
-            azimuth_deg=0.0,
-            pitch_m=8.0,
-            module_width_m=1.134,
-            module_length_m=2.278,
-            module_rows=2,
-            module_orientation="portrait",
-            setback_m=2.0,
-            max_table_columns=16,
-            base_slope_deg=5.0,
-        )
-        self.assertEqual(plan["site_area_m2"], 2000.0)
-        self.assertGreaterEqual(plan["row_count"], 4)
-        self.assertGreater(plan["table_count"], 4)
-        self.assertGreater(plan["total_modules"], 100)
-        self.assertEqual(plan["base_slope_deg"], 5.0)
-        self.assertTrue(all(t["module_columns"] <= 16 for t in plan["tables"]))
+        with self.subTest(shape="rectangle_with_setback"):
+            rect = [[0.0, 0.0], [50.0, 0.0], [50.0, 40.0], [0.0, 40.0]]
+            plan = plan_ground_polygon_layout(
+                rect,
+                tilt_deg=25.0,
+                azimuth_deg=0.0,
+                pitch_m=8.0,
+                module_width_m=1.134,
+                module_length_m=2.278,
+                module_rows=2,
+                module_orientation="portrait",
+                setback_m=2.0,
+                max_table_columns=16,
+                base_slope_deg=5.0,
+            )
+            self.assertEqual(plan["site_area_m2"], 2000.0)
+            self.assertGreaterEqual(plan["row_count"], 4)
+            self.assertGreater(plan["table_count"], 4)
+            self.assertGreater(plan["total_modules"], 100)
+            self.assertEqual(plan["base_slope_deg"], 5.0)
+            self.assertTrue(all(t["module_columns"] <= 16 for t in plan["tables"]))
 
-        # Concave L-shaped polygon (top-right quadrant cut out)
-        l_poly = [[0.0, 0.0], [60.0, 0.0], [60.0, 20.0], [25.0, 20.0], [25.0, 50.0], [0.0, 50.0]]
-        l_plan = plan_ground_polygon_layout(
-            l_poly,
-            tilt_deg=20.0,
-            azimuth_deg=15.0,
-            pitch_m=9.0,
-            module_width_m=1.052,
-            module_length_m=2.131,
-            module_rows=2,
-            setback_m=1.0,
-        )
-        self.assertAlmostEqual(l_plan["site_area_m2"], 60 * 20 + 25 * 30, places=1)
-        self.assertGreater(l_plan["table_count"], 2)
+        with self.subTest(shape="concave_l_shape"):
+            l_poly = [[0.0, 0.0], [60.0, 0.0], [60.0, 20.0], [25.0, 20.0], [25.0, 50.0], [0.0, 50.0]]
+            l_plan = plan_ground_polygon_layout(
+                l_poly,
+                tilt_deg=20.0,
+                azimuth_deg=15.0,
+                pitch_m=9.0,
+                module_width_m=1.052,
+                module_length_m=2.131,
+                module_rows=2,
+                setback_m=1.0,
+            )
+            self.assertAlmostEqual(l_plan["site_area_m2"], 60 * 20 + 25 * 30, places=1)
+            self.assertGreater(l_plan["table_count"], 2)
 
         for vertices in (
             [[0, 0], [10, 0], [10, 2], [0, 2]],
             [[0, 2], [10, 2], [10, 0], [0, 0]],
         ):
-            with self.subTest(vertices=vertices):
+            with self.subTest(shape="narrow_vertical", vertices=vertices):
                 narrow = plan_ground_polygon_layout(
                     vertices, tilt_deg=90, pitch_m=3, module_width_m=1,
                     module_length_m=1, module_rows=1, spacing_x_m=0, spacing_y_m=0,

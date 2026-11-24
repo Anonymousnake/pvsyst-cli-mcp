@@ -1053,10 +1053,7 @@ class OrientationSpectralAndNativeEcoTests(unittest.TestCase):
         )
         self.assertEqual(res3["spectral"]["after"]["enabled"], False)
 
-    def test_convert_orientation_all_targets_and_public_dome_guards(self) -> None:
-        from typing import get_args, get_type_hints
-        from pvsyst_auto.api.projects import pvsyst_convert_orientation
-
+    def test_convert_orientation_all_targets(self) -> None:
         targets = [
             ("fixed", {"tilt_deg": 28.0, "azimuth_deg": 10.0}, "FieldType=FixedPlane"),
             ("seasonal", {"summer_tilt_deg": 15.0, "winter_tilt_deg": 45.0, "winter_months": [1, 2, 11, 12]}, "FieldType=SeasonalTilt"),
@@ -1065,24 +1062,30 @@ class OrientationSpectralAndNativeEcoTests(unittest.TestCase):
             ("tracker_2axis", {"min_tilt_deg": 15.0, "max_tilt_deg": 75.0, "min_phi_deg": -120.0, "max_phi_deg": 120.0}, "FieldType=TrackTwoAxis"),
         ]
         for idx, (target, params, expected_marker) in enumerate(targets, start=1):
-            new_vc = f"VC{idx}"
-            res = convert_orientation(
-                self.store,
-                project=self.project,
-                source_variant=self.variant,
-                new_variant=new_vc,
-                target_type=target,
-                params=params,
-                dry_run=False,
-            )
-            self.assertFalse(res["dry_run"], target)
-            self.assertEqual(res["orientation_conversion"]["target_type"], target)
-            txt = (self.ws / "Projects" / f"Phase5Test.{new_vc}").read_text(encoding="latin-1")
-            self.assertIn(expected_marker, txt)
-            self.assertNotIn("PVObject_Ombrage=pvShading", txt)
+            with self.subTest(target=target):
+                new_vc = f"VC{idx}"
+                res = convert_orientation(
+                    self.store,
+                    project=self.project,
+                    source_variant=self.variant,
+                    new_variant=new_vc,
+                    target_type=target,
+                    params=params,
+                    dry_run=False,
+                )
+                self.assertFalse(res["dry_run"], target)
+                self.assertEqual(res["orientation_conversion"]["target_type"], target)
+                txt = (self.ws / "Projects" / f"Phase5Test.{new_vc}").read_text(encoding="latin-1")
+                self.assertIn(expected_marker, txt)
+                self.assertNotIn("PVObject_Ombrage=pvShading", txt)
 
-        hints = get_type_hints(pvsyst_convert_orientation)
-        self.assertNotIn("dome", get_args(hints["target_type"]))
+    def test_public_convert_orientation_dome_and_paired_subarray_guards(self) -> None:
+        from typing import get_args, get_type_hints
+        from pvsyst_auto.api.projects import pvsyst_convert_orientation
+
+        with self.subTest(case="schema_omits_dome"):
+            hints = get_type_hints(pvsyst_convert_orientation)
+            self.assertNotIn("dome", get_args(hints["target_type"]))
 
         source = self.ws / "Projects" / "Phase5Test.VC0"
         blocked_vc = self.ws / "Projects" / "Phase5Test.VC9"

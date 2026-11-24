@@ -23,56 +23,62 @@ class PanGUIFormatTests(unittest.TestCase):
         self.path = self.store._path("PAN", "gui.PAN")
 
     def test_gui_spelling_inspect_edit_and_noop(self):
-        info = self.store.inspect("PAN", "gui.PAN")
-        self.assertFalse(info["warnings"] or info["structural_errors"] or info["known_value_errors"])
-        self.assertEqual(info["fields"]["Isc"], ["11.05"])
-        self.assertNotIn("ISC", info["fields"])
-        self.assertTrue({"ISC", "Isc", "MuISC", "muISC"} <= set(info["editable_fields"]))
-        self.assertEqual(set(info["scalar_aliases"]["ISC"]), {"ISC", "Isc"})
-        for key in ("Width", "Height"):
-            self.assertTrue(info["commercial"]["fields"][key]["editable"])
-            self.assertFalse(info["commercial"]["fields"][key]["paired_root_present"])
+        with self.subTest(case="inspect_gui_spelling"):
+            info = self.store.inspect("PAN", "gui.PAN")
+            self.assertFalse(info["warnings"] or info["structural_errors"] or info["known_value_errors"])
+            self.assertEqual(info["fields"]["Isc"], ["11.05"])
+            self.assertNotIn("ISC", info["fields"])
+            self.assertTrue({"ISC", "Isc", "MuISC", "muISC"} <= set(info["editable_fields"]))
+            self.assertEqual(set(info["scalar_aliases"]["ISC"]), {"ISC", "Isc"})
+            for key in ("Width", "Height"):
+                self.assertTrue(info["commercial"]["fields"][key]["editable"])
+                self.assertFalse(info["commercial"]["fields"][key]["paired_root_present"])
 
-        original = self.path.read_bytes()
-        args = {"updates": {"ISC": "11.2", "MuISC": "0.006"},
-                "commercial_updates": {"Width": "1.05", "Height": "2.0"},
-                "expected_sha256": hashlib.sha256(original).hexdigest()}
-        self.store.update("PAN", "gui.PAN", dry_run=True, **args)
-        self.assertEqual(self.path.read_bytes(), original)
-        edited = self.store.update("PAN", "gui.PAN", **args)
-        data = self.path.read_bytes()
-        self.assertIn(b"Isc=11.2", data)
-        self.assertIn(b"muISC=0.006", data)
-        self.assertIn(b"Width=1.05", data)
-        self.assertNotIn(b"LargApp", data)
-        self.assertNotIn(b"LongApp", data)
-        self.assertTrue(data.startswith(b"\xef\xbb\xbf"))
-        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
-        self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / "PAN" / edited["backup_name"]).read_bytes(), original)
+        with self.subTest(case="mixed_edit_preview_apply_backup"):
+            original = self.path.read_bytes()
+            args = {"updates": {"ISC": "11.2", "MuISC": "0.006"},
+                    "commercial_updates": {"Width": "1.05", "Height": "2.0"},
+                    "expected_sha256": hashlib.sha256(original).hexdigest()}
+            self.store.update("PAN", "gui.PAN", dry_run=True, **args)
+            self.assertEqual(self.path.read_bytes(), original)
+            edited = self.store.update("PAN", "gui.PAN", **args)
+            data = self.path.read_bytes()
+            self.assertIn(b"Isc=11.2", data)
+            self.assertIn(b"muISC=0.006", data)
+            self.assertIn(b"Width=1.05", data)
+            self.assertNotIn(b"LargApp", data)
+            self.assertNotIn(b"LongApp", data)
+            self.assertTrue(data.startswith(b"\xef\xbb\xbf"))
+            self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+            self.assertEqual((self.root / "ComposPV" / ".mcp-backups" / "PAN" / edited["backup_name"]).read_bytes(), original)
 
-        for source in (PAN, GUI_PAN):
-            self.path.write_text(source, encoding="utf-8")
+        for label, source in (("pan", PAN), ("gui_pan", GUI_PAN)):
             for updates in ({"ISC": "11.05", "MuISC": "0.0055"}, {"Isc": "11.05", "muISC": "0.0055"}):
-                before = self.path.read_bytes()
-                result = self.store.update("PAN", "gui.PAN", updates)
-                self.assertFalse(result["changed"])
-                self.assertEqual(self.path.read_bytes(), before)
-                self.assertNotIn("backup_name", result)
+                with self.subTest(case="both_spellings_noop", source=label, updates=updates):
+                    self.path.write_text(source, encoding="utf-8")
+                    before = self.path.read_bytes()
+                    result = self.store.update("PAN", "gui.PAN", updates)
+                    self.assertFalse(result["changed"])
+                    self.assertEqual(self.path.read_bytes(), before)
+                    self.assertNotIn("backup_name", result)
 
-    def test_duplicate_aliases_bad_values_and_object_scoping_guards(self):
+    def test_duplicate_aliases_and_bad_gui_values_rejected(self):
         for updates in ({"ISC": "11.2", "Isc": "11.3"}, {"MuISC": ".005", "muISC": ".006"}):
-            before = self.path.read_bytes()
-            with self.assertRaises(ValueError):
-                self.store.update("PAN", "gui.PAN", updates)
-            self.assertEqual(self.path.read_bytes(), before)
-        for source in (GUI_PAN.replace("  Isc=11.05", "  Isc=11.05\n  ISC=11.05"),
-                       GUI_PAN.replace("  muISC=0.0055", "  muISC=0.0055\n  MuISC=0.0055")):
-            self.path.write_text(source, encoding="utf-8")
-            self.assertTrue(self.store.inspect("PAN", "gui.PAN")["known_value_errors"])
-            before = self.path.read_bytes()
-            with self.assertRaises(ValueError):
-                self.store.update("PAN", "gui.PAN", {"PNom": "441"})
-            self.assertEqual(self.path.read_bytes(), before)
+            with self.subTest(case="conflicting_request_aliases", updates=updates):
+                before = self.path.read_bytes()
+                with self.assertRaises(ValueError):
+                    self.store.update("PAN", "gui.PAN", updates)
+                self.assertEqual(self.path.read_bytes(), before)
+
+        for key, source in (("Isc", GUI_PAN.replace("  Isc=11.05", "  Isc=11.05\n  ISC=11.05")),
+                            ("muISC", GUI_PAN.replace("  muISC=0.0055", "  muISC=0.0055\n  MuISC=0.0055"))):
+            with self.subTest(case="duplicate_file_aliases", key=key):
+                self.path.write_text(source, encoding="utf-8")
+                self.assertTrue(self.store.inspect("PAN", "gui.PAN")["known_value_errors"])
+                before = self.path.read_bytes()
+                with self.assertRaises(ValueError):
+                    self.store.update("PAN", "gui.PAN", {"PNom": "441"})
+                self.assertEqual(self.path.read_bytes(), before)
 
         sources = [GUI_PAN.replace("Width=1.032", f"Width={value}") for value in ("0", "-1", "nan", "x")]
         sources += [GUI_PAN.replace("Isc=11.05", f"Isc={value}") for value in ("0", "-1", "NaN", "10")]
@@ -80,7 +86,7 @@ class PanGUIFormatTests(unittest.TestCase):
                     GUI_PAN.replace("    Width=1.032\n", ""),
                     GUI_PAN.replace("Width=1.032", "Width=1.032\n    Width=1.032")]
         for source in sources:
-            with self.subTest(source=source):
+            with self.subTest(case="bad_gui_values", source=source):
                 self.path.write_text(source, encoding="utf-8")
                 info = self.store.inspect("PAN", "gui.PAN")
                 self.assertTrue(info["known_value_errors"] or info["warnings"])
@@ -89,27 +95,36 @@ class PanGUIFormatTests(unittest.TestCase):
                     self.store.update("PAN", "gui.PAN", {"Model": "Bad source"})
                 self.assertEqual(self.path.read_bytes(), before)
 
-        for source in (
-            GUI_PAN.replace("  Isc=11.05\n", "").replace("    Model=440W", "    Model=440W\n    Isc=11.05"),
-            GUI_PAN.replace("    Width=1.032\n", "").replace("  PNom=440", "  PNom=440\n  Width=1.032")):
+    def test_object_scoping_and_metadata_isolation(self):
+        for label, source in (
+            ("isc_in_commercial", GUI_PAN.replace("  Isc=11.05\n", "").replace("    Model=440W", "    Model=440W\n    Isc=11.05")),
+            ("width_in_root", GUI_PAN.replace("    Width=1.032\n", "").replace("  PNom=440", "  PNom=440\n  Width=1.032")),
+        ):
+            with self.subTest(case=label):
+                self.path.write_text(source, encoding="utf-8")
+                self.assertTrue(self.store.inspect("PAN", "gui.PAN")["warnings"])
+                before = self.path.read_bytes()
+                with self.assertRaises(ValueError):
+                    self.store.update("PAN", "gui.PAN", {"Isc": "11.2"})
+                self.assertEqual(self.path.read_bytes(), before)
+
+        with self.subTest(case="commercial_decoy_isc_preserved"):
+            source = GUI_PAN.replace("    Model=440W", "    Model=440W\n    Isc=99")
             self.path.write_text(source, encoding="utf-8")
-            self.assertTrue(self.store.inspect("PAN", "gui.PAN")["warnings"])
-            before = self.path.read_bytes()
-            with self.assertRaises(ValueError):
-                self.store.update("PAN", "gui.PAN", {"Isc": "11.2"})
-            self.assertEqual(self.path.read_bytes(), before)
-        source = GUI_PAN.replace("    Model=440W", "    Model=440W\n    Isc=99")
-        self.path.write_text(source, encoding="utf-8")
-        self.store.update("PAN", "gui.PAN", {"ISC": "11.2"})
-        self.assertIn("    Isc=99", self.path.read_text(encoding="utf-8"))
-        self.assertIn("  Isc=11.2", self.path.read_text(encoding="utf-8"))
-        electrical = self.store.inspect("PAN", "gui.PAN")["electrical"]
-        self.assertEqual(electrical["fields"]["ISC"]["value"], 11.2)
-        self.assertEqual(electrical["fields"]["ISC"]["source_key"], "Isc")
-        self.assertEqual(electrical["fields"]["PNom"]["unit"], "W")
-        self.assertEqual(electrical["fields"]["VMaxIEC"]["status"], "missing")
-        self.assertTrue(electrical["unverified"])
-        source = GUI_PAN.replace("  Version=", "  Manufacturer=Root metadata\n  Version=")
-        self.path.write_text(source, encoding="utf-8")
-        self.assertEqual(self.store.inspect("PAN", "gui.PAN")["manufacturer"], "Lab")
-        self.store.create("GEN", "meta.GEN", GEN.replace("  TypeGen=", "  Isc=metadata\n  TypeGen="))
+            self.store.update("PAN", "gui.PAN", {"ISC": "11.2"})
+            self.assertIn("    Isc=99", self.path.read_text(encoding="utf-8"))
+            self.assertIn("  Isc=11.2", self.path.read_text(encoding="utf-8"))
+            electrical = self.store.inspect("PAN", "gui.PAN")["electrical"]
+            self.assertEqual(electrical["fields"]["ISC"]["value"], 11.2)
+            self.assertEqual(electrical["fields"]["ISC"]["source_key"], "Isc")
+            self.assertEqual(electrical["fields"]["PNom"]["unit"], "W")
+            self.assertEqual(electrical["fields"]["VMaxIEC"]["status"], "missing")
+            self.assertTrue(electrical["unverified"])
+
+        with self.subTest(case="root_manufacturer_decoy"):
+            source = GUI_PAN.replace("  Version=", "  Manufacturer=Root metadata\n  Version=")
+            self.path.write_text(source, encoding="utf-8")
+            self.assertEqual(self.store.inspect("PAN", "gui.PAN")["manufacturer"], "Lab")
+
+        with self.subTest(case="gen_isc_metadata_isolation"):
+            self.store.create("GEN", "meta.GEN", GEN.replace("  TypeGen=", "  Isc=metadata\n  TypeGen="))

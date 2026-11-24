@@ -35,92 +35,103 @@ class ResultComparisonTests(unittest.TestCase):
         json.dumps(result, allow_nan=False)
         return result
 
-    def test_aligned_comparison_missing_pairs_units_and_axes(self):
-        # 1. Aligned hourly delta direction and known energy
-        self.write(self.a, [10, 20, 30])
-        self.write(self.b, [15, 18, 37], separator=",")
-        s = self.compare()["summary"]["E_Grid"]
-        self.assertEqual((s["paired_baseline_sum"], s["paired_target_sum"], s["paired_delta_sum"]), (60, 70, 10))
-        self.assertEqual((s["min_delta"], s["max_delta"], s["max_abs_delta_at"]), (-2, 7, "1990-01-01 02:00:00"))
-        self.assertEqual(s["delta_energy_kwh"], 10)
-        self.assertAlmostEqual(s["paired_relative_change_pct"], 100 / 6)
-
-        # 2. Missing values use common pairs rather than independent totals
-        self.write(self.a, [10, "", 30, 40, "NaN"])
-        self.write(self.b, [15, 100, "inf", 42, "text"])
-        s = self.compare()["summary"]["E_Grid"]
-        self.assertEqual((s["baseline_samples"], s["target_samples"], s["paired_samples"]), (3, 3, 2))
-        self.assertEqual((s["paired_baseline_sum"], s["paired_target_sum"], s["paired_delta_sum"]), (50, 57, 7))
-        self.assertEqual(s["observed_delta_energy_kwh"], 7)
-        self.assertEqual(s["missing_pairs"], 3)
-        self.assertEqual(s["paired_coverage"], 0.4)
-        self.assertIsNone(s["delta_energy_kwh"])
-
-        # 3. All missing and zero baseline have no relative gain
-        for a, b in ((["", "inf"], [4, ""]), ([0, 0], [1, 2])):
-            self.write(self.a, a)
-            self.write(self.b, b)
+    def test_aligned_comparison_missing_pairs_and_reordered_columns(self):
+        with self.subTest(case="aligned_hourly_delta"):
+            self.write(self.a, [10, 20, 30])
+            self.write(self.b, [15, 18, 37], separator=",")
             s = self.compare()["summary"]["E_Grid"]
-            self.assertIsNone(s["paired_relative_change_pct"])
-            if not s["paired_samples"]:
-                self.assertIsNone(s["paired_delta_sum"])
-                self.assertIsNone(s["mean_delta"])
-                self.assertIsNone(s["max_abs_delta_at"])
+            self.assertEqual((s["paired_baseline_sum"], s["paired_target_sum"], s["paired_delta_sum"]), (60, 70, 10))
+            self.assertEqual((s["min_delta"], s["max_delta"], s["max_abs_delta_at"]), (-2, 7, "1990-01-01 02:00:00"))
+            self.assertEqual(s["delta_energy_kwh"], 10)
+            self.assertAlmostEqual(s["paired_relative_change_pct"], 100 / 6)
 
-        # 4. Subhour watts and non-power units
+        with self.subTest(case="missing_values_common_pairs"):
+            self.write(self.a, [10, "", 30, 40, "NaN"])
+            self.write(self.b, [15, 100, "inf", 42, "text"])
+            s = self.compare()["summary"]["E_Grid"]
+            self.assertEqual((s["baseline_samples"], s["target_samples"], s["paired_samples"]), (3, 3, 2))
+            self.assertEqual((s["paired_baseline_sum"], s["paired_target_sum"], s["paired_delta_sum"]), (50, 57, 7))
+            self.assertEqual(s["observed_delta_energy_kwh"], 7)
+            self.assertEqual(s["missing_pairs"], 3)
+            self.assertEqual(s["paired_coverage"], 0.4)
+            self.assertIsNone(s["delta_energy_kwh"])
+
+        for a, b in ((["", "inf"], [4, ""]), ([0, 0], [1, 2])):
+            with self.subTest(case="no_relative_gain", a=a, b=b):
+                self.write(self.a, a)
+                self.write(self.b, b)
+                s = self.compare()["summary"]["E_Grid"]
+                self.assertIsNone(s["paired_relative_change_pct"])
+                if not s["paired_samples"]:
+                    self.assertIsNone(s["paired_delta_sum"])
+                    self.assertIsNone(s["mean_delta"])
+                    self.assertIsNone(s["max_abs_delta_at"])
+
+        with self.subTest(case="reordered_columns"):
+            self.write(self.a, ["1;0.1", "2;0.2"], unit="kW;ratio", header="E_Grid;PR")
+            self.write(self.b, ["0.15;3", "0.3;4"], unit="ratio;kW", header="PR;E_Grid")
+            s = self.compare(("PR", "E_Grid"))["summary"]
+            self.assertEqual(s["E_Grid"]["paired_delta_sum"], 4)
+            self.assertAlmostEqual(s["PR"]["mean_delta"], 0.075)
+
+    def test_subhour_power_units_and_irregular_axes(self):
         for unit, expected in (("W", 0.05), ("kW", 50), ("ratio", None)):
-            self.write(self.a, [100, 200, 300], unit=unit, times=["00:00", "00:01", "00:02"])
-            self.write(self.b, [1100, 1200, 1300], unit=unit, times=["00:00", "00:01", "00:02"])
-            self.assertEqual(self.compare()["summary"]["E_Grid"]["delta_energy_kwh"], expected)
+            with self.subTest(case="subhour_unit", unit=unit):
+                self.write(self.a, [100, 200, 300], unit=unit, times=["00:00", "00:01", "00:02"])
+                self.write(self.b, [1100, 1200, 1300], unit=unit, times=["00:00", "00:01", "00:02"])
+                self.assertEqual(self.compare()["summary"]["E_Grid"]["delta_energy_kwh"], expected)
 
-        # 5. Single and identical irregular axes compare without energy
         for times in (["00:00"], ["00:00", "01:00", "03:00"]):
-            self.write(self.a, [1] * len(times), times=times)
-            self.write(self.b, [2] * len(times), times=times)
-            report = self.compare()
-            self.assertIsNone(report["step_minutes"])
-            self.assertIsNone(report["summary"]["E_Grid"]["delta_energy_kwh"])
+            with self.subTest(case="irregular_axes", times=times):
+                self.write(self.a, [1] * len(times), times=times)
+                self.write(self.b, [2] * len(times), times=times)
+                report = self.compare()
+                self.assertIsNone(report["step_minutes"])
+                self.assertIsNone(report["summary"]["E_Grid"]["delta_energy_kwh"])
 
-        # 6. Reordered columns compare by name
-        self.write(self.a, ["1;0.1", "2;0.2"], unit="kW;ratio", header="E_Grid;PR")
-        self.write(self.b, ["0.15;3", "0.3;4"], unit="ratio;kW", header="PR;E_Grid")
-        s = self.compare(("PR", "E_Grid"))["summary"]
-        self.assertEqual(s["E_Grid"]["paired_delta_sum"], 4)
-        self.assertAlmostEqual(s["PR"]["mean_delta"], 0.075)
-
-    def test_comparison_timestamp_unit_format_and_mutation_guards(self):
-        # 1. Mismatched, duplicate or descending timestamps
+    def test_comparison_timestamp_unit_and_format_guards(self):
         for ta, tb in ((["00:00", "01:00"], ["00:00", "02:00"]),
                        (["00:00", "00:00"], ["00:00", "00:00"]),
                        (["01:00", "00:00"], ["01:00", "00:00"]),
                        (["00:00"], ["00:00", "01:00"])):
-            self.write(self.a, [1] * len(ta), times=ta)
-            self.write(self.b, [2] * len(tb), times=tb)
-            with self.assertRaises(ValueError):
-                self.compare()
+            with self.subTest(case="timestamp_guard", ta=ta, tb=tb):
+                self.write(self.a, [1] * len(ta), times=ta)
+                self.write(self.b, [2] * len(tb), times=tb)
+                with self.assertRaises(ValueError):
+                    self.compare()
 
-        # 2. Unknown/mismatched units, ambiguous headers and invalid column lists
-        self.write(self.a, [1, 2])
         for kwargs in ({"unit": "W"}, {"unit": ""}, {"header": "Other"},
                        {"header": "E_Grid;E_Grid", "unit": "kW;kW"}):
-            self.write(self.b, [1, 2], **kwargs)
-            with self.assertRaises(ValueError):
-                self.compare()
-        self.write(self.b, [1, 2])
-        for columns in ((), ("E_Grid", "E_Grid"), ("date",)):
-            with self.assertRaises(ValueError):
-                self.compare(columns)
+            with self.subTest(case="unit_header_guard", kwargs=kwargs):
+                self.write(self.a, [1, 2])
+                self.write(self.b, [1, 2], **kwargs)
+                with self.assertRaises(ValueError):
+                    self.compare()
 
-        # 3. Malformed timestamps, extra values, missing units and empty data
+        for columns in ((), ("E_Grid", "E_Grid"), ("date",)):
+            with self.subTest(case="invalid_columns", columns=columns):
+                self.write(self.a, [1, 2])
+                self.write(self.b, [1, 2])
+                with self.assertRaises(ValueError):
+                    self.compare(columns)
+
         for text in ("date;E_Grid\n;kW\n32/01/90 00:00;1\n",
                      "date;E_Grid\n;kW\n01/01/90 00:00;1;2\n",
                      "date;E_Grid\n01/01/90 00:00;1\n01/01/90 01:00;2\n",
                      "date;E_Grid\n;kW\n"):
-            self.b.write_text(text)
-            with self.assertRaises(ValueError):
+            with self.subTest(case="malformed_csv", text=text):
+                self.write(self.a, [1, 2])
+                self.b.write_text(text)
+                with self.assertRaises(ValueError):
+                    self.compare()
+
+        with self.subTest(case="extreme_finite_values"):
+            self.write(self.a, [-1e308, -1e308])
+            self.write(self.b, [1e308, 1e308])
+            with self.assertRaisesRegex(ValueError, "finite numeric range"):
                 self.compare()
 
-        # 4. Changed file during read is rejected
+    def test_changed_file_during_read_is_rejected(self):
         self.write(self.a, [1, 2])
         self.write(self.b, [3, 4])
         original = results.iter_result_csv
@@ -131,61 +142,65 @@ class ResultComparisonTests(unittest.TestCase):
         with patch.object(results, "iter_result_csv", side_effect=change), self.assertRaisesRegex(ValueError, "changed during"):
             self.compare()
 
-        # 5. Extreme finite values never produce infinite JSON
-        self.write(self.a, [-1e308, -1e308])
-        self.write(self.b, [1e308, 1e308])
-        with self.assertRaisesRegex(ValueError, "finite numeric range"):
-            self.compare()
-
-    def test_server_cross_folder_column_bounds_and_coverage(self):
+    def test_server_cross_folder_column_bounds_and_permission_error(self):
         (self.root / "Results").mkdir(exist_ok=True)
         (self.root / "UserHourly").mkdir(exist_ok=True)
         self.write(self.root / "UserHourly" / "base.csv", [1, 2])
         self.write(self.root / "Results" / "target.csv", [3, 4])
         with patch.object(server, "_cli", PVsystCLI(sys.executable, self.root)):
-            report = api_results.pvsyst_read_results("target.csv", "E_Grid", compare_to="base.csv", compare_folder="UserHourly")
-            self.assertEqual(report["summary"]["E_Grid"]["paired_delta_sum"], 4)
-            self.assertEqual(report["baseline"]["folder"], "UserHourly")
-            self.assertEqual(api_results.pvsyst_read_results("target.csv", "E_Grid")["summary"]["E_Grid"]["sum"], 7)
+            with self.subTest(case="cross_folder_and_existing_summary"):
+                report = api_results.pvsyst_read_results("target.csv", "E_Grid", compare_to="base.csv", compare_folder="UserHourly")
+                self.assertEqual(report["summary"]["E_Grid"]["paired_delta_sum"], 4)
+                self.assertEqual(report["baseline"]["folder"], "UserHourly")
+                self.assertEqual(api_results.pvsyst_read_results("target.csv", "E_Grid")["summary"]["E_Grid"]["sum"], 7)
+
             for kwargs in ({"compare_to": "../base.csv"}, {"compare_to": "base.csv", "compare_folder": "Projects"},
                            {"compare_folder": "UserHourly"}):
-                with self.assertRaises((ValueError, server.ToolError)):
-                    api_results.pvsyst_read_results("target.csv", "E_Grid", **kwargs)
+                with self.subTest(case="invalid_compare_args", kwargs=kwargs):
+                    with self.assertRaises((ValueError, server.ToolError)):
+                        api_results.pvsyst_read_results("target.csv", "E_Grid", **kwargs)
 
             for bad_columns in ("", " , ", "E_Grid,E_Grid", ",".join(f"C{i}" for i in range(65))):
-                with self.subTest(columns=bad_columns), self.assertRaisesRegex(ValueError, "1..64 distinct"):
+                with self.subTest(case="column_bounds", columns=bad_columns), self.assertRaisesRegex(ValueError, "1..64 distinct"):
                     api_results.pvsyst_read_results("target.csv", bad_columns)
-            with patch.object(api_results, "compare_results",
-                              side_effect=PermissionError(13, "Permission denied", "base.csv")), \
-                    self.assertRaises(server.ToolError) as raised:
-                asyncio.run(server.mcp.call_tool("pvsyst_read_results", {
-                    "csv_name": "target.csv", "columns": "E_Grid", "compare_to": "base.csv"}))
-            self.assertIn("PermissionError:", str(raised.exception))
 
-        self.write(self.a, ["1;2", "3;4"], unit="kW;kW", header="P;R")
-        self.write(self.b, ["1;2", "3;4"], unit="kW;kW", header="P;R")
-        with self.assertRaisesRegex(ValueError, "distinct numeric columns"):
-            results.compare_results(self.a, self.b, "PR")
-        self.assertEqual(results.compare_results(self.a, self.b, ("P", "R"))["columns"], ["P", "R"])
+            with self.subTest(case="permission_error_prefix"):
+                with patch.object(api_results, "compare_results",
+                                  side_effect=PermissionError(13, "Permission denied", "base.csv")), \
+                        self.assertRaises(server.ToolError) as raised:
+                    asyncio.run(server.mcp.call_tool("pvsyst_read_results", {
+                        "csv_name": "target.csv", "columns": "E_Grid", "compare_to": "base.csv"}))
+                self.assertIn("PermissionError:", str(raised.exception))
 
+    def test_compare_rejects_bare_string_columns_and_reports_missing_coverage(self):
+        with self.subTest(case="bare_string_columns"):
+            self.write(self.a, ["1;2", "3;4"], unit="kW;kW", header="P;R")
+            self.write(self.b, ["1;2", "3;4"], unit="kW;kW", header="P;R")
+            with self.assertRaisesRegex(ValueError, "distinct numeric columns"):
+                results.compare_results(self.a, self.b, "PR")
+            self.assertEqual(results.compare_results(self.a, self.b, ("P", "R"))["columns"], ["P", "R"])
+
+        (self.root / "Results").mkdir(exist_ok=True)
         path = self.root / "Results" / "missing.csv"
         with patch.object(server, "_cli", PVsystCLI(sys.executable, self.root)):
             for missing in ("", "NaN", "inf", "text"):
-                path.write_text(f"date;E_Grid\n;kW\n01/01/90 00:00;10\n01/01/90 01:00;{missing}\n01/01/90 02:00;10\n",
-                                encoding="utf-8")
-                direct = summarize_results(path, ("E_Grid",))
-                report = api_results.pvsyst_read_results(path.name, "E_Grid")
-                self.assertEqual(direct, report)
-                self.assertAlmostEqual(direct["summary"]["E_Grid"]["coverage"], 2 / 3)
-                self.assertIsNone(direct["summary"]["E_Grid"]["energy_kwh"])
+                with self.subTest(case="missing_token", missing=missing):
+                    path.write_text(f"date;E_Grid\n;kW\n01/01/90 00:00;10\n01/01/90 01:00;{missing}\n01/01/90 02:00;10\n",
+                                    encoding="utf-8")
+                    direct = summarize_results(path, ("E_Grid",))
+                    report = api_results.pvsyst_read_results(path.name, "E_Grid")
+                    self.assertEqual(direct, report)
+                    self.assertAlmostEqual(direct["summary"]["E_Grid"]["coverage"], 2 / 3)
+                    self.assertIsNone(direct["summary"]["E_Grid"]["energy_kwh"])
             for body, complete, step in (("00:00;\n01:00;NaN\n02:00;inf", False, 60),
                                          ("00:00;10\n01:00;10\n03:00;10", True, None),
                                          ("00:00;10", True, None)):
-                path.write_text("date;E_Grid\n;kW\n" + "\n".join("01/01/90 " + r for r in body.splitlines()) + "\n",
-                                encoding="utf-8")
-                direct = summarize_results(path, ("E_Grid",))
-                item = direct["summary"]["E_Grid"]
-                self.assertEqual((item["complete"], direct["step_minutes"], item["energy_kwh"]), (complete, step, None))
+                with self.subTest(case="incomplete_body", body=body):
+                    path.write_text("date;E_Grid\n;kW\n" + "\n".join("01/01/90 " + r for r in body.splitlines()) + "\n",
+                                    encoding="utf-8")
+                    direct = summarize_results(path, ("E_Grid",))
+                    item = direct["summary"]["E_Grid"]
+                    self.assertEqual((item["complete"], direct["step_minutes"], item["energy_kwh"]), (complete, step, None))
 
     def test_zero_row_iterators_raise_value_error_and_block_comparison(self):
         header_only = (

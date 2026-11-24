@@ -453,75 +453,78 @@ class CommercialComponentTests(unittest.TestCase):
                 "text": "Isc temperature coefficient: 5.2 mA/°C, Nominal voltage 800 V, Power: 600 kW",
             }
         }
-        pan_res = build_sourced_component(
-            self.store,
-            component_type="PAN",
-            new_name="Demo600.PAN",
-            manufacturer="TestCo",
-            model="M600",
-            sources=sources,
-            declarations=[{
-                "field": "muIsc",
-                "value": 5.2,
-                "unit": "mA/degC",
-                "source_id": "ds",
-                "excerpt": "5.2 mA/°C",
-                "source_value_text": "5.2",
-                "source_unit_text": "mA/°C",
-            }],
-            dry_run=True,
-        )
-        self.assertEqual(pan_res["status"], "blocked")
-        issue = pan_res["issues"][0]
-        self.assertIn("MuISC", issue["did_you_mean"])
-        self.assertIn("MuISC", issue["allowed_fields"])
-        self.assertIn("MuISC", pan_res["allowed_fields"])
+        with self.subTest(case="pan_unknown_field_did_you_mean"):
+            pan_res = build_sourced_component(
+                self.store,
+                component_type="PAN",
+                new_name="Demo600.PAN",
+                manufacturer="TestCo",
+                model="M600",
+                sources=sources,
+                declarations=[{
+                    "field": "muIsc",
+                    "value": 5.2,
+                    "unit": "mA/degC",
+                    "source_id": "ds",
+                    "excerpt": "5.2 mA/°C",
+                    "source_value_text": "5.2",
+                    "source_unit_text": "mA/°C",
+                }],
+                dry_run=True,
+            )
+            self.assertEqual(pan_res["status"], "blocked")
+            issue = pan_res["issues"][0]
+            self.assertIn("MuISC", issue["did_you_mean"])
+            self.assertIn("MuISC", issue["allowed_fields"])
+            self.assertIn("MuISC", pan_res["allowed_fields"])
 
-        ond_res = build_sourced_component(
-            self.store,
-            component_type="OND",
-            new_name="Demo300.OND",
-            manufacturer="InvCo",
-            model="I300",
-            sources=sources,
-            declarations=[{
-                "field": "VNomEff",
-                "value": 800.0,
-                "unit": "V",
-                "source_id": "ds",
-                "excerpt": "800 V",
-                "source_value_text": "800",
-                "source_unit_text": "V",
-            }],
-            dry_run=True,
-        )
-        self.assertEqual(ond_res["status"], "blocked")
-        self.assertIn("VNomEff1", ond_res["issues"][0]["did_you_mean"])
-        self.assertIn("VOutConv", ond_res["allowed_fields"])
+        with self.subTest(case="ond_unknown_field_did_you_mean"):
+            ond_res = build_sourced_component(
+                self.store,
+                component_type="OND",
+                new_name="Demo300.OND",
+                manufacturer="InvCo",
+                model="I300",
+                sources=sources,
+                declarations=[{
+                    "field": "VNomEff",
+                    "value": 800.0,
+                    "unit": "V",
+                    "source_id": "ds",
+                    "excerpt": "800 V",
+                    "source_value_text": "800",
+                    "source_unit_text": "V",
+                }],
+                dry_run=True,
+            )
+            self.assertEqual(ond_res["status"], "blocked")
+            self.assertIn("VNomEff1", ond_res["issues"][0]["did_you_mean"])
+            self.assertIn("VOutConv", ond_res["allowed_fields"])
 
-        bad_unit = build_sourced_component(
-            self.store,
-            component_type="PAN",
-            new_name="DemoBadUnit.PAN",
-            manufacturer="TestCo",
-            model="M600",
-            sources=sources,
-            declarations=[{
-                "field": "PNom",
-                "value": 600.0,
-                "unit": "kW",
-                "source_id": "ds",
-                "excerpt": "600 kW",
-                "source_value_text": "600",
-                "source_unit_text": "kW",
-            }],
-            dry_run=True,
-        )
-        self.assertEqual(bad_unit["status"], "blocked")
-        self.assertEqual(bad_unit["issues"][0]["allowed_units"], ["W"])
-        doc = pvsyst_build_sourced_component.__doc__ or ""
-        for token in ("MuISC", "muVocSpec", "VOutConv", "VNomEff1..3", "CapNomC10"):
-            self.assertIn(token, doc)
+        with self.subTest(case="bad_unit_and_schema_docs"):
+            bad_unit = build_sourced_component(
+                self.store,
+                component_type="PAN",
+                new_name="DemoBadUnit.PAN",
+                manufacturer="TestCo",
+                model="M600",
+                sources=sources,
+                declarations=[{
+                    "field": "PNom",
+                    "value": 600.0,
+                    "unit": "kW",
+                    "source_id": "ds",
+                    "excerpt": "600 kW",
+                    "source_value_text": "600",
+                    "source_unit_text": "kW",
+                }],
+                dry_run=True,
+            )
+            self.assertEqual(bad_unit["status"], "blocked")
+            self.assertEqual(bad_unit["issues"][0]["allowed_units"], ["W"])
+            doc = pvsyst_build_sourced_component.__doc__ or ""
+            for token in ("MuISC", "muVocSpec", "VOutConv", "VNomEff1..3", "CapNomC10"):
+                self.assertIn(token, doc)
 
 
 if __name__ == "__main__":

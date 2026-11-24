@@ -37,7 +37,7 @@ class GeneratorTests(unittest.TestCase):
         return self.store.update_parameters("Example.PRJ", "VC0", self.sha(), 1, 1,
             generator_updates=generator if generator is not None else self.config, **kwargs)
 
-    def test_lifecycle_disabled_noop_version_and_decoy_preservation(self):
+    def test_enable_preview_apply_disable_and_disabled_noop(self):
         original = self.path.read_bytes()
         info = self.store.inspect_parameters("Example.PRJ", "VC0")["generator"]
         self.assertTrue(info["supported"])
@@ -59,7 +59,6 @@ class GeneratorTests(unittest.TestCase):
         self.edit({"enabled": False})
         self.assertEqual(self.path.read_bytes(), active.replace(b"$ab0060", b"$ab0040"))
 
-        # Configure while disabled and verify noop preserves spelling
         self.path.write_bytes(original)
         self.edit(self.config | {"enabled": False})
         disabled_bytes = self.path.read_bytes()
@@ -70,33 +69,35 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), disabled_bytes)
         self.assertEqual(list((self.root / "Projects" / ".mcp-variant-backups").iterdir()), previous_backups)
 
-        # Power above nominal returns warning rather than native rejection
-        self.path.write_bytes(original)
-        warned = self.edit(self.config | {"operating_power_kw": 60}, dry_run=True)
-        self.assertIn("exceeds GEN nominal", warned["warnings"][0])
+    def test_version_810_nested_decoys_and_nominal_power_warning(self):
+        original = self.path.read_bytes()
+        with self.subTest(case="power_above_nominal_warning"):
+            self.path.write_bytes(original)
+            warned = self.edit(self.config | {"operating_power_kw": 60}, dry_run=True)
+            self.assertIn("exceeds GEN nominal", warned["warnings"][0])
 
-        # 8.1.0 variant keeps its original version
-        self.path.write_bytes(original.replace(b"Version=8.1.6", b"Version=8.1.0", 1))
-        v810 = self.edit()
-        self.assertTrue(v810["generator_after"]["supported"])
-        self.assertIn(b"Version=8.1.0", self.path.read_bytes())
+        with self.subTest(case="version_810_preserved"):
+            self.path.write_bytes(original.replace(b"Version=8.1.6", b"Version=8.1.0", 1))
+            v810 = self.edit()
+            self.assertTrue(v810["generator_after"]["supported"])
+            self.assertIn(b"Version=8.1.0", self.path.read_bytes())
 
-        # Nested decoy fields are preserved
-        self.path.write_bytes(original)
-        text = self.path.read_text(encoding="utf-8-sig")
-        text = text.replace("    BatteryFile=", "    PVObject_Meta=pvMeta\n      Flags=$20\n"
-                            "      PEffBackUp=999\n    End of PVObject pvMeta\n    BatteryFile=")
-        text = text.replace("        NModSerie=14", "        PVObject_IAM=pvIAM\n"
-            "          VBkUpEncl_syst=0.77\n          Curve=TCubicProfile\n"
-            "            Point_1=0,1\n          End of TCubicProfile\n"
-            "        End of PVObject pvIAM\n        WiringResistance=TWiringResistance\n"
-            "          TypeLayout=1\n        EndTags\n        NModSerie=14")
-        self.path.write_text(text, encoding="utf-8")
-        decoy = self.edit()
-        result = self.path.read_text(encoding="utf-8")
-        self.assertIn("      Flags=$20\n      PEffBackUp=999", result)
-        self.assertIn("          VBkUpEncl_syst=0.77", result)
-        self.assertEqual(decoy["generator_after"]["operating_power_kw"], 40)
+        with self.subTest(case="nested_decoy_fields_preserved"):
+            self.path.write_bytes(original)
+            text = self.path.read_text(encoding="utf-8-sig")
+            text = text.replace("    BatteryFile=", "    PVObject_Meta=pvMeta\n      Flags=$20\n"
+                                "      PEffBackUp=999\n    End of PVObject pvMeta\n    BatteryFile=")
+            text = text.replace("        NModSerie=14", "        PVObject_IAM=pvIAM\n"
+                "          VBkUpEncl_syst=0.77\n          Curve=TCubicProfile\n"
+                "            Point_1=0,1\n          End of TCubicProfile\n"
+                "        End of PVObject pvIAM\n        WiringResistance=TWiringResistance\n"
+                "          TypeLayout=1\n        EndTags\n        NModSerie=14")
+            self.path.write_text(text, encoding="utf-8")
+            decoy = self.edit()
+            result = self.path.read_text(encoding="utf-8")
+            self.assertIn("      Flags=$20\n      PEffBackUp=999", result)
+            self.assertIn("          VBkUpEncl_syst=0.77", result)
+            self.assertEqual(decoy["generator_after"]["operating_power_kw"], 40)
 
     def test_invalid_settings_thresholds_and_scope_guards(self):
         invalid = [{"enabled": "true"}, {"operating_power_kw": True}, {"operating_power_kw": 0},
@@ -112,11 +113,12 @@ class GeneratorTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises((ValueError, FileNotFoundError)):
                 self.edit(self.config | change)
         for change in ({"enabled": True}, {"enabled": True, "filename": "test.GEN"}):
-            with self.assertRaises(ValueError):
+            with self.subTest(missing_fields=change), self.assertRaises(ValueError):
                 self.edit(change)
-        incomplete = self.config | {"thresholds": {"1": self.config["thresholds"]["1"]}}
-        with self.assertRaisesRegex(ValueError, "subarray 2"):
-            self.edit(incomplete)
+        with self.subTest(case="incomplete_thresholds"):
+            incomplete = self.config | {"thresholds": {"1": self.config["thresholds"]["1"]}}
+            with self.assertRaisesRegex(ValueError, "subarray 2"):
+                self.edit(incomplete)
         self.assertEqual(self.path.read_bytes(), original)
         self.assertFalse((self.root / "Projects" / ".mcp-variant-backups").exists())
 
@@ -124,46 +126,52 @@ class GeneratorTests(unittest.TestCase):
             original.replace(b"SystemType=Battery", b"SystemType=Grid"),
             original.replace(b"SystemType=Battery", b"SystemType=Battery\r\n    Flags=$40"),
             original.replace(b"VBkUpEncl_syst=0.250", b"VBkUpEncl_syst=0.250\r\n        VBkUpEncl_syst=0.8")]
-        for case in cases:
-            self.path.write_bytes(case)
-            with self.assertRaises(ValueError):
-                self.edit()
-            self.assertEqual(self.path.read_bytes(), case)
+        for idx, case in enumerate(cases):
+            with self.subTest(case="scope_guard", idx=idx):
+                self.path.write_bytes(case)
+                with self.assertRaises(ValueError):
+                    self.edit()
+                self.assertEqual(self.path.read_bytes(), case)
 
     def test_backup_and_dependency_race_guards(self):
         original = self.path.read_bytes()
         backup = self.store._backup
 
-        def ext_race(*args):
-            result = backup(*args)
-            self.path.write_bytes(original.replace(b"NModSerie=14", b"NModSerie=16"))
-            return result
-        with patch.object(self.store, "_backup", side_effect=ext_race), self.assertRaisesRegex(ValueError, "changed while preparing"):
-            self.edit()
-        self.assertIn(b"NModSerie=16", self.path.read_bytes())
-        self.assertFalse(list(self.path.parent.glob("*.tmp")))
+        with self.subTest(case="external_variant_race"):
+            self.path.write_bytes(original)
+            def ext_race(*args):
+                result = backup(*args)
+                self.path.write_bytes(original.replace(b"NModSerie=14", b"NModSerie=16"))
+                return result
+            with patch.object(self.store, "_backup", side_effect=ext_race), self.assertRaisesRegex(ValueError, "changed while preparing"):
+                self.edit()
+            self.assertIn(b"NModSerie=16", self.path.read_bytes())
+            self.assertFalse(list(self.path.parent.glob("*.tmp")))
 
-        self.path.write_bytes(original)
-        def gen_race(*args):
-            result = backup(*args)
-            self.components._path("GEN", "test.GEN").write_text(GEN.replace("PNomGen=50", "PNomGen=60"), encoding="utf-8")
-            return result
-        with patch.object(self.store, "_backup", side_effect=gen_race), self.assertRaisesRegex(ValueError, "Generator component changed"):
-            self.edit()
-        self.assertEqual(self.path.read_bytes(), original)
+        with self.subTest(case="generator_dependency_race"):
+            self.path.write_bytes(original)
+            def gen_race(*args):
+                result = backup(*args)
+                self.components._path("GEN", "test.GEN").write_text(GEN.replace("PNomGen=50", "PNomGen=60"), encoding="utf-8")
+                return result
+            with patch.object(self.store, "_backup", side_effect=gen_race), self.assertRaisesRegex(ValueError, "Generator component changed"):
+                self.edit()
+            self.assertEqual(self.path.read_bytes(), original)
 
-        self.components._path("GEN", "test.GEN").write_text(GEN, encoding="utf-8")
-        builtin = self.root / "DataRO"
-        (builtin / "Gensets").mkdir(parents=True)
-        (builtin / "Gensets" / "builtin.GEN").write_text(GEN, encoding="utf-8")
-        self.components.builtin = builtin
-        config = self.config | {"filename": "builtin.GEN"}
-        preview = self.edit(config, dry_run=True)
-        self.assertEqual(preview["generator_component"]["library"], "builtin")
-        def shadow_race(*args):
-            result = backup(*args)
-            self.components._path("GEN", "builtin.GEN").write_text(GEN, encoding="utf-8")
-            return result
-        with patch.object(self.store, "_backup", side_effect=shadow_race), self.assertRaisesRegex(ValueError, "shadows builtin"):
-            self.edit(config)
-        self.assertEqual(self.path.read_bytes(), original)
+        with self.subTest(case="builtin_shadow_race"):
+            self.path.write_bytes(original)
+            self.components._path("GEN", "test.GEN").write_text(GEN, encoding="utf-8")
+            builtin = self.root / "DataRO"
+            (builtin / "Gensets").mkdir(parents=True, exist_ok=True)
+            (builtin / "Gensets" / "builtin.GEN").write_text(GEN, encoding="utf-8")
+            self.components.builtin = builtin
+            config = self.config | {"filename": "builtin.GEN"}
+            preview = self.edit(config, dry_run=True)
+            self.assertEqual(preview["generator_component"]["library"], "builtin")
+            def shadow_race(*args):
+                result = backup(*args)
+                self.components._path("GEN", "builtin.GEN").write_text(GEN, encoding="utf-8")
+                return result
+            with patch.object(self.store, "_backup", side_effect=shadow_race), self.assertRaisesRegex(ValueError, "shadows builtin"):
+                self.edit(config)
+            self.assertEqual(self.path.read_bytes(), original)
