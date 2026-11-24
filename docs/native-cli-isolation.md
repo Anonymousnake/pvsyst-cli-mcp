@@ -16,7 +16,7 @@ Windows 上所有对原版 `PVsystCLI.exe` 的调用——包括正常的 `help`
 
 ## 与既有结果的关系
 
-CSV / PDF 仍由原 PVsyst 引擎产出，`pvsyst_run_simulation` 等工具的返回结构、`diagnostics`（超时/失败时的部分输出、经 `_redact` 脱敏）和 82 个工具 / Schema 均不变。私有桌面只是启动层隔离，不改变任何计算结果或字段。
+CSV / PDF 仍由原 PVsyst 引擎产出，`pvsyst_run_simulation` 等工具的返回结构、`diagnostics`（超时/失败时的部分输出、经 `_redact` 脱敏）和现有工具 / Schema 均不变。私有桌面只是启动层隔离，不改变任何计算结果或字段。
 
 ## 关键区别（不要混淆）
 

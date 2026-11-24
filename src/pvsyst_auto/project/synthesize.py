@@ -15,9 +15,9 @@ from pvsyst_auto.project.bifacial import render_bifacial_block
 from pvsyst_auto.project.circuit import MAX_COUNT, inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.validation import finite_number as _finite
+from pvsyst_auto.versions import SYNTH_VERSION
 from pvsyst_auto.weather.preparation import read_object_prefix
 
-SYNTH_VERSION = "8.1.7"
 DEFAULT_PAN_NAME = "Generic_Mono_300W.PAN"
 DEFAULT_OND_NAME = "Generic_7.5kW.OND"
 DEFAULT_PROJECT_SITE = "TemplateSite.SIT"

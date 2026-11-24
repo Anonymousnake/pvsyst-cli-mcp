@@ -13,7 +13,7 @@ from typing import Any
 
 from pvsyst_auto.native.cli import parse_batch_results
 from pvsyst_auto.project.paths import safe_filename, workspace_file
-from pvsyst_auto.results import RegularResultCsv, energy_unit_scale
+from pvsyst_auto.results import BATCH_ENERGY_TO_KWH, RegularResultCsv, energy_unit_scale
 from pvsyst_auto.validation import finite_number as _finite
 
 _VALID_RANK_KEYS = (
@@ -1404,10 +1404,9 @@ def evaluate_economics(
                 if not isinstance(e_grid, (int, float)) or not math.isfinite(e_grid):
                     continue
                 unit = parsed.get("units", {}).get("E_Grid", "kWh")
-                scales = {"Wh": 0.001, "kWh": 1.0, "MWh": 1000.0, "GWh": 1_000_000.0}
-                if unit not in scales:
+                if unit not in BATCH_ENERGY_TO_KWH:
                     raise ValueError(f"Expected energy unit for batch E_Grid, got {unit!r}")
-                item["annual_yield_kwh"] = e_grid * scales[unit]
+                item["annual_yield_kwh"] = e_grid * BATCH_ENERGY_TO_KWH[unit]
             resolved_scenarios.append(item)
 
     if not resolved_scenarios:

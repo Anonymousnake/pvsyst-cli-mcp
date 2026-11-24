@@ -10,6 +10,7 @@ import math
 from typing import Any
 
 from pvsyst_auto.validation import pos_finite as _pos_finite
+from pvsyst_auto.versions import SYNTH_VERSION
 
 # Boltzmann constant * 298.15 K / elementary charge (thermal voltage at 25 degC STC)
 _VT_25C = 1.380649e-23 * 298.15 / 1.602176634e-19  # ~0.025692579 V
@@ -237,7 +238,7 @@ def synthesize_pan_from_datasheet(
     lines = [
         "PVObject_=pvModule",
         f"  Comment={manufacturer}\t{model}\t{source_note}",
-        "  Version=8.1.7",
+        f"  Version={SYNTH_VERSION}",
         f"  Flags={flags}",
         "  PVObject_Commercial=pvCommercial",
         "    Flags=$0041",
@@ -485,7 +486,7 @@ def synthesize_ond_from_datasheet(
     lines = [
         "PVObject_=pvGInverter",
         f"  Comment={manufacturer}\t{model}\t{source_note}",
-        "  Version=8.1.7",
+        f"  Version={SYNTH_VERSION}",
         f"  Flags={flags_str}",
         "  PVObject_Commercial=pvCommercial",
         "    Flags=$0041",
@@ -720,7 +721,7 @@ def synthesize_btr_from_datasheet(
     lines = [
         "PVObject_=pvBattery",
         f"  Comment={manufacturer}\t{model}\t{source_note}",
-        "  Version=8.1.7",
+        f"  Version={SYNTH_VERSION}",
         "  Flags=$0000",
         "  PVObject_Commercial=pvCommercial",
         "    Flags=$0041",

@@ -12,7 +12,7 @@ import re
 from pvsyst_auto.native.cli import iter_result_csv, result_units
 from pvsyst_auto.project.fileio import write_json
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
-from pvsyst_auto.results import compare_results, fingerprint
+from pvsyst_auto.results import ENERGY_TO_KWH, POWER_TO_KW, compare_results, fingerprint
 
 
 GROUPS = ("project", "system", "main_array", "orientations", "subarrays", "grid_circuit",
@@ -207,8 +207,8 @@ def _scan_result(path, units, year):
     step = step if regular else None
     for state in stats.values():
         samples = state["samples"]
-        power_scale = {"W": 0.001, "kW": 1}.get(state["unit"])
-        energy_scale = {"Wh": 0.001, "kWh": 1}.get(state["unit"])
+        power_scale = POWER_TO_KW.get(state["unit"])
+        energy_scale = ENERGY_TO_KWH.get(state["unit"])
         if samples and step is not None and power_scale is not None:
             observed = state["sum"] * step / 60 * power_scale
         elif samples and step is not None and energy_scale is not None:

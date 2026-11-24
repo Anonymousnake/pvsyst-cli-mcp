@@ -15,6 +15,7 @@ from typing import Any
 
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.validation import finite_number as _finite
+from pvsyst_auto.versions import SEED_RECORD_VERSION, SYNTH_VERSION
 
 _EPS = 1e-9
 _EARTH_R_M = 6371000.0
@@ -359,7 +360,7 @@ def emit_pvshd_ground(
     *,
     object_index: int,
     no_obj_created: int | None = None,
-    version: str = "8.1.0",
+    version: str = SEED_RECORD_VERSION,
 ) -> list[str]:
     """Emit a verified PVsyst 8.1.7 `PVObject_<idx>=pvShdGround` block."""
     oid = no_obj_created if no_obj_created is not None else object_index
@@ -451,7 +452,7 @@ def build_terrain_tracker_shading(
     follow_slope: bool = True,
     max_axis_tilt_deg: float = 15.0,
     obstacles: list[dict[str, Any]] | None = None,
-    version: str = "8.1.7",
+    version: str = SYNTH_VERSION,
 ) -> tuple[list[str], dict[str, Any]]:
     """Build a 3D pvShading scene with per-tracker draped pvShdArrayTracking + pvShdGround terrain."""
     from pvsyst_auto.native.headless import _faces, _shd_object, _shd_tree
@@ -544,7 +545,7 @@ def build_terrain_tracker_shading(
         ])
 
     obj_idx += 1
-    lines.extend(emit_pvshd_ground(mesh, object_index=obj_idx, version="8.1.0"))
+    lines.extend(emit_pvshd_ground(mesh, object_index=obj_idx, version=SEED_RECORD_VERSION))
 
     for obs in parsed_obstacles:
         obj_idx += 1

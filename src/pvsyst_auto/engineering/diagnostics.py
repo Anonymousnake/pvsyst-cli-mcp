@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 
 from pvsyst_auto.components.editor import root_block
-from pvsyst_auto.results import RegularResultCsv
+from pvsyst_auto.results import ENERGY_TO_KWH, IRRAD_UNIT_KIND, POWER_TO_KW, RegularResultCsv
 
 SEVERITY_ORDER = {"none": 0, "info": 1, "medium": 2, "high": 3, "critical": 4}
 
@@ -37,16 +37,8 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
     "phase_lag_max_hours": 2.0,
 }
 
-_POWER_SCALE = {"W": 0.001, "kW": 1.0}
-_ENERGY_SCALE = {"Wh": 0.001, "kWh": 1.0}
 _APPARENT_POWER_SCALE = {"VA": 0.001, "kVA": 1.0}
 _APPARENT_ENERGY_SCALE = {"VAh": 0.001, "kVAh": 1.0}
-_IRRAD_SCALE = {
-    "W/m2": 0.001, "W/m\u00b2": 0.001,
-    "Wh/m2": 0.001, "Wh/m\u00b2": 0.001,
-    "kW/m2": 1.0, "kW/m\u00b2": 1.0,
-    "kWh/m2": 1.0, "kWh/m\u00b2": 1.0,
-}
 _PR_SCALE = {"ratio": 1.0, "%": 0.01}
 _HEX_FLAG = re.compile(r"\$[0-9a-fA-F]{1,8}")
 _LOAD_FLAG_BIT = 0x00080000
@@ -75,51 +67,45 @@ def _validate_thresholds(overrides: dict | None) -> dict[str, float]:
 
 
 def _to_kwh(raw_sum: float, unit: str, step_hours: float) -> float | None:
-    if unit in _POWER_SCALE:
-        return raw_sum * _POWER_SCALE[unit] * step_hours
-    if unit in _ENERGY_SCALE:
-        return raw_sum * _ENERGY_SCALE[unit]
+    if unit in POWER_TO_KW:
+        return raw_sum * POWER_TO_KW[unit] * step_hours
+    if unit in ENERGY_TO_KWH:
+        return raw_sum * ENERGY_TO_KWH[unit]
+    return None
+
+
+def _scale_to_kw(value: float, unit: str, step_hours: float, power_scale: dict[str, float], energy_scale: dict[str, float]) -> float | None:
+    if unit in power_scale:
+        return value * power_scale[unit]
+    if unit in energy_scale and step_hours > 0:
+        return value * energy_scale[unit] / step_hours
     return None
 
 
 def _to_kw(value: float, unit: str, step_hours: float) -> float | None:
-    if unit in _POWER_SCALE:
-        return value * _POWER_SCALE[unit]
-    if unit in _ENERGY_SCALE and step_hours > 0:
-        return value * _ENERGY_SCALE[unit] / step_hours
-    return None
+    return _scale_to_kw(value, unit, step_hours, POWER_TO_KW, ENERGY_TO_KWH)
 
 
 def _to_kva(value: float, unit: str, step_hours: float) -> float | None:
-    if unit in _APPARENT_POWER_SCALE:
-        return value * _APPARENT_POWER_SCALE[unit]
-    if unit in _APPARENT_ENERGY_SCALE and step_hours > 0:
-        return value * _APPARENT_ENERGY_SCALE[unit] / step_hours
-    return None
+    return _scale_to_kw(value, unit, step_hours, _APPARENT_POWER_SCALE, _APPARENT_ENERGY_SCALE)
 
 
 def _to_kwh_m2(raw_sum: float, unit: str, step_hours: float) -> float | None:
-    if unit in ("W/m2", "W/m\u00b2"):
-        return raw_sum * 0.001 * step_hours
-    if unit in ("kW/m2", "kW/m\u00b2"):
-        return raw_sum * step_hours
-    if unit in ("Wh/m2", "Wh/m\u00b2"):
-        return raw_sum * 0.001
-    if unit in ("kWh/m2", "kWh/m\u00b2"):
-        return raw_sum
-    return None
+    info = IRRAD_UNIT_KIND.get(unit)
+    if info is None:
+        return None
+    scale, is_power = info
+    return raw_sum * scale * (step_hours if is_power else 1.0)
 
 
 def _to_w_m2(value: float, unit: str, step_hours: float = 1.0) -> float | None:
-    if unit in ("W/m2", "W/m\u00b2"):
-        return value
-    if unit in ("kW/m2", "kW/m\u00b2"):
-        return value * 1000.0
-    if unit in ("Wh/m2", "Wh/m\u00b2") and step_hours > 0:
-        return value / step_hours
-    if unit in ("kWh/m2", "kWh/m\u00b2") and step_hours > 0:
-        return value * 1000.0 / step_hours
-    return None
+    info = IRRAD_UNIT_KIND.get(unit)
+    if info is None:
+        return None
+    scale, is_power = info
+    if not is_power and step_hours <= 0:
+        return None
+    return value * (scale * 1000.0) / (1.0 if is_power else step_hours)
 
 
 def _variant_context(store, project: str | None, variant: str | None) -> tuple[dict | None, dict | None]:

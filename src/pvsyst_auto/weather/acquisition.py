@@ -542,13 +542,48 @@ def _clamp_dhi(ghi: float, dhi: float, *, strict_dhi: bool, allow_rounding: bool
     return dhi, "reject"
 
 
+class _DhiClampStats:
+    """Track rounding and twilight DHI->GHI clamps across provider row builders."""
+
+    def __init__(self) -> None:
+        self.rounding_count = 0
+        self.twilight_count = 0
+        self.twilight_max_excess = 0.0
+        self.twilight_sample: str | None = None
+
+    def check(self, ghi: float, dhi: float, sample_label: str, *, strict_dhi: bool,
+              allow_rounding: bool = True) -> tuple[float, str | None]:
+        clamped, reason = _clamp_dhi(ghi, dhi, strict_dhi=strict_dhi, allow_rounding=allow_rounding)
+        if reason == "rounding":
+            self.rounding_count += 1
+        elif reason == "twilight":
+            excess = dhi - ghi
+            self.twilight_count += 1
+            if excess > self.twilight_max_excess:
+                self.twilight_max_excess = excess
+                self.twilight_sample = f"{sample_label} GHI={ghi:.2f} DHI={dhi:.2f}"
+        return clamped, reason
+
+    def append_warnings(self, warnings: list[str]) -> None:
+        if self.rounding_count:
+            warnings.append(
+                f"Clamped tiny rounding excess (<= 2 W/m2) where DHI > GHI on {self.rounding_count} hours."
+            )
+        if self.twilight_count:
+            warnings.append(
+                f"Clamped {self.twilight_count} low-irradiance twilight hour(s) where DHI slightly exceeded "
+                f"GHI (0 < GHI < {TWILIGHT_GHI_MAX_WM2:g} W/m2, max excess {self.twilight_max_excess:.2f} W/m2, "
+                f"e.g. {self.twilight_sample}); pass strict_dhi=true to reject instead."
+            )
+
+
 def _build_rows(values, *, year, utc_start, strict_dhi=False):
     """Build local-standard interval-start rows; every gap is a block, never a fill."""
     hours = _year_hours(year)
     local_start = datetime(year, 1, 1)
     missing, missing_count = [], 0
     inverted, negative, extreme = [], [], []
-    twilight_clamped, twilight_max_excess, twilight_sample = 0, 0.0, None
+    dhi_stats = _DhiClampStats()
     rows = []
     for index in range(hours):
         local = local_start + timedelta(hours=index)
@@ -582,15 +617,8 @@ def _build_rows(values, *, year, utc_start, strict_dhi=False):
         if (ghi < 0 or dhi < 0) and len(negative) < 6:
             negative.append(f"{local.isoformat()} GHI={ghi} DHI={dhi}")
         if dhi > ghi:
-            clamped, reason = _clamp_dhi(ghi, dhi, strict_dhi=strict_dhi, allow_rounding=False)
-            if reason == "twilight":
-                excess = dhi - ghi
-                twilight_clamped += 1
-                if excess > twilight_max_excess:
-                    twilight_max_excess = excess
-                    twilight_sample = f"{local.isoformat()} GHI={ghi:.2f} DHI={dhi:.2f}"
-                dhi = clamped
-            elif len(inverted) < 6:
+            dhi, reason = dhi_stats.check(ghi, dhi, local.isoformat(), strict_dhi=strict_dhi, allow_rounding=False)
+            if reason == "reject" and len(inverted) < 6:
                 inverted.append(f"{local.isoformat()} GHI={ghi} DHI={dhi}")
         if tamb <= -273.15 and len(extreme) < 6:
             extreme.append(f"{local.isoformat()} Tamb={tamb}")
@@ -608,25 +636,20 @@ def _build_rows(values, *, year, utc_start, strict_dhi=False):
     if not issues and len(rows) != hours:
         issues.append(f"expected {hours} rows, built {len(rows)}")
     warnings = []
-    if twilight_clamped:
-        warnings.append(
-            f"Clamped {twilight_clamped} low-irradiance twilight hour(s) where DHI slightly exceeded "
-            f"GHI (0 < GHI < {TWILIGHT_GHI_MAX_WM2:g} W/m2, max excess {twilight_max_excess:.2f} W/m2, "
-            f"e.g. {twilight_sample}); pass strict_dhi=true to reject instead."
-        )
+    dhi_stats.append_warnings(warnings)
     if rows and any(row[3] < -60 or row[3] > 60 for row in rows):
         warnings.append("ambient temperatures outside -60..60 deg.C need source review")
     return rows, issues, warnings
 
 
-def _standard_csv_text(rows, *, site, year, offset_hours):
+def _standard_csv_text(rows, *, site, year, offset_hours, data_source_label=PROVIDER_LABEL):
     stream = io.StringIO()
     writer = csv.writer(stream, delimiter=";", lineterminator="\n")
     writer.writerows([
         ["#Weather data hourly data"],
         ["#Site", site["name"]],
         ["#Country", site["country_code"]],
-        ["#Data Source", PROVIDER_LABEL],
+        ["#Data Source", data_source_label],
         ["#Time step", "Hour"],
         ["#Year", year],
         ["#Latitude", _number_text(site["latitude"])],
@@ -642,9 +665,93 @@ def _standard_csv_text(rows, *, site, year, offset_hours):
     return stream.getvalue()
 
 
-def _standard_csv_text_with_source(rows, *, site, year, offset_hours, data_source_label):
-    text = _standard_csv_text(rows, site=site, year=year, offset_hours=offset_hours)
-    return text.replace(f"#Data Source;{PROVIDER_LABEL}", f"#Data Source;{data_source_label}", 1)
+def _prepare_weather_paths(
+    workspace_path: Path,
+    *,
+    csv_name: str,
+    raw_suffix: str,
+    dry_run: bool,
+    result: dict,
+    empty_note: str = "csv_name is empty; supply it before an execution run",
+    conflict_suffix: str = "",
+) -> tuple[Path, Path, Path] | None:
+    if not csv_name:
+        if dry_run:
+            result["warnings"].append(empty_note)
+            result["status"] = "ready"
+            return None
+        raise WeatherAcquisitionError("csv_name is required for an execution run")
+    if not dry_run:
+        (workspace_path / "Meteo").mkdir(parents=True, exist_ok=True)
+        (workspace_path / "Results").mkdir(parents=True, exist_ok=True)
+    elif not workspace_path.is_dir():
+        raise WeatherAcquisitionError(
+            f"workspace {workspace_path} must be an existing directory for a plan run"
+        )
+    csv_path = workspace_file(workspace_path, "Meteo", csv_name, ".csv")
+    stem = csv_path.stem
+    raw_path = workspace_file(workspace_path, "Meteo", stem + raw_suffix, ".json")
+    manifest_path = workspace_file(workspace_path, "Results", stem + "_acquisition.json", ".json")
+    result["artifacts"] = {"csv": str(csv_path), "raw_json": str(raw_path), "manifest": str(manifest_path)}
+    existing = [str(p) for p in (csv_path, raw_path, manifest_path) if p.exists()]
+    if existing:
+        raise WeatherAcquisitionError("refusing to overwrite existing files: " + ", ".join(existing) + conflict_suffix)
+    if dry_run:
+        result["status"] = "ready"
+        return None
+    return csv_path, raw_path, manifest_path
+
+
+def _fetch_and_save_raw(url: str, params: dict, raw_path: Path, result: dict) -> dict:
+    result["stage"] = "request"
+    payload, raw_text, request_url = _provider_get(url, params)
+    raw_bytes = raw_text.encode("utf-8")
+    if len(raw_bytes) > MAX_RESPONSE_BYTES:
+        result["stage"] = "raw"
+        raise WeatherAcquisitionError("provider response exceeds the raw storage limit")
+    result["plan"]["request_url"] = request_url
+    result["stage"] = "raw"
+    _bounded_write(raw_path, raw_text)
+    result["created_files"]["raw_json"] = {"name": raw_path.name, "bytes": len(raw_bytes)}
+    result["raw_preserved"] = True
+    return payload
+
+
+def _finalize_weather_csv(
+    csv_path: Path,
+    rows: list,
+    *,
+    site: dict,
+    year: int,
+    offset_hours: int | float,
+    label: str,
+    result: dict,
+    verified_extra: dict | None = None,
+) -> None:
+    result["stage"] = "write"
+    _bounded_write(csv_path, _standard_csv_text(
+        rows, site=site, year=year, offset_hours=offset_hours, data_source_label=label,
+    ))
+    result["created_files"]["csv"] = {"name": csv_path.name, "rows": len(rows)}
+    verified = {"rows": len(rows), "dhi_le_ghi": True, "no_missing_hours": True}
+    if verified_extra:
+        verified.update(verified_extra)
+    result["plan"]["verified"] = verified
+    result.update(status="prepared", stage="done")
+
+
+def _write_manifest_checkpoint(manifest_path: Path | None, result: dict, *, dry_run: bool) -> None:
+    if not dry_run and manifest_path is not None:
+        # New-only provenance on disk, so a blocked or failed execution keeps its reason
+        # next to the raw response instead of leaving no trace.
+        result["created_files"]["manifest"] = {"name": manifest_path.name}
+        try:
+            _bounded_write(manifest_path, json.dumps(result, indent=2, ensure_ascii=True, allow_nan=False))
+        except (OSError, ValueError) as error:
+            result["created_files"].pop("manifest", None)
+            result["issues"].append("manifest write failed: " + str(error))
+            if result["status"] == "prepared":
+                result.update(status="failed", stage="manifest")
 
 
 def _download_pvgis_tmy(
@@ -693,39 +800,13 @@ def _download_pvgis_tmy(
     }
     manifest_path = None
     try:
-        if not csv_name:
-            if dry_run:
-                result["warnings"].append("csv_name is empty; supply it before an execution run")
-                result["status"] = "ready"
-                return result
-            raise WeatherAcquisitionError("csv_name is required for an execution run")
-        if not dry_run:
-            (workspace_path / "Meteo").mkdir(parents=True, exist_ok=True)
-            (workspace_path / "Results").mkdir(parents=True, exist_ok=True)
-        elif not workspace_path.is_dir():
-            raise WeatherAcquisitionError(f"workspace {workspace_path} must be an existing directory for a plan run")
-        csv_path = workspace_file(workspace_path, "Meteo", csv_name, ".csv")
-        stem = csv_path.stem
-        raw_path = workspace_file(workspace_path, "Meteo", stem + "_pvgis_tmy_raw.json", ".json")
-        manifest_path = workspace_file(workspace_path, "Results", stem + "_acquisition.json", ".json")
-        result["artifacts"] = {"csv": str(csv_path), "raw_json": str(raw_path), "manifest": str(manifest_path)}
-        existing = [str(p) for p in (csv_path, raw_path, manifest_path) if p.exists()]
-        if existing:
-            raise WeatherAcquisitionError("refusing to overwrite existing files: " + ", ".join(existing))
-        if dry_run:
-            result["status"] = "ready"
+        paths = _prepare_weather_paths(
+            workspace_path, csv_name=csv_name, raw_suffix="_pvgis_tmy_raw.json", dry_run=dry_run, result=result,
+        )
+        if paths is None:
             return result
-
-        result["stage"] = "request"
-        payload, raw_text, request_url = _provider_get(PVGIS_TMY_URL, params)
-        raw_bytes = raw_text.encode("utf-8")
-        if len(raw_bytes) > MAX_RESPONSE_BYTES:
-            raise WeatherAcquisitionError("provider response exceeds the raw storage limit")
-        result["plan"]["request_url"] = request_url
-        result["stage"] = "raw"
-        _bounded_write(raw_path, raw_text)
-        result["created_files"]["raw_json"] = {"name": raw_path.name, "bytes": len(raw_bytes)}
-        result["raw_preserved"] = True
+        csv_path, raw_path, manifest_path = paths
+        payload = _fetch_and_save_raw(PVGIS_TMY_URL, params, raw_path, result)
 
         inputs = payload.get("inputs") or {}
         loc_echo = inputs.get("location") or {}
@@ -751,10 +832,7 @@ def _download_pvgis_tmy(
         # Map each UTC row into its 0..8759 hour-of-non-leap-year index, then shift by offset_hours
         base_start = datetime(tmy_year, 1, 1, 0, 0)
         by_local_idx: dict[int, tuple[float, float, float]] = {}
-        clamped_dhi = 0
-        twilight_clamped = 0
-        twilight_max_excess = 0.0
-        twilight_sample = None
+        dhi_stats = _DhiClampStats()
         for row_idx, item in enumerate(hourly):
             if not isinstance(item, dict):
                 raise WeatherAcquisitionError(f"PVGIS TMY row {row_idx} is not an object")
@@ -774,56 +852,27 @@ def _download_pvgis_tmy(
             if ghi < 0 or dhi < 0:
                 raise WeatherAcquisitionError(f"Negative irradiance in PVGIS row {row_idx}")
             if dhi > ghi:
-                clamped, reason = _clamp_dhi(ghi, dhi, strict_dhi=strict_dhi)
-                if reason == "rounding":
-                    dhi = clamped
-                    clamped_dhi += 1
-                elif reason == "twilight":
-                    excess = dhi - ghi
-                    twilight_clamped += 1
-                    if excess > twilight_max_excess:
-                        twilight_max_excess = excess
-                        twilight_sample = f"{raw_time} GHI={ghi:.2f} DHI={dhi:.2f}"
-                    dhi = clamped
-                else:
+                dhi, reason = dhi_stats.check(ghi, dhi, raw_time, strict_dhi=strict_dhi)
+                if reason == "reject":
                     raise WeatherAcquisitionError(f"PVGIS row {row_idx} has DHI ({dhi}) > GHI ({ghi})")
             by_local_idx[local_index] = (ghi, dhi, tamb)
 
         if len(by_local_idx) != 8760:
             raise WeatherAcquisitionError(f"PVGIS TMY mapped {len(by_local_idx)} unique local hours; expected 8760")
-        if clamped_dhi:
-            result["warnings"].append(f"Clamped tiny rounding excess (<= 2 W/m2) where DHI > GHI on {clamped_dhi} hours.")
-        if twilight_clamped:
-            result["warnings"].append(
-                f"Clamped {twilight_clamped} low-irradiance twilight hour(s) where DHI slightly exceeded "
-                f"GHI (0 < GHI < {TWILIGHT_GHI_MAX_WM2:g} W/m2, max excess {twilight_max_excess:.2f} W/m2, "
-                f"e.g. {twilight_sample}); pass strict_dhi=true to reject instead."
-            )
+        dhi_stats.append_warnings(result["warnings"])
         rows = [(base_start + timedelta(hours=h), *by_local_idx[h]) for h in range(8760)]
 
-        result["stage"] = "write"
-        _bounded_write(csv_path, _standard_csv_text_with_source(
-            rows, site=site, year=tmy_year, offset_hours=offset_hours, data_source_label=label
-        ))
-        result["created_files"]["csv"] = {"name": csv_path.name, "rows": len(rows)}
-        result["plan"]["verified"] = {"rows": len(rows), "dhi_le_ghi": True, "no_missing_hours": True}
-        result.update(status="prepared", stage="done")
+        _finalize_weather_csv(
+            csv_path, rows, site=site, year=tmy_year, offset_hours=offset_hours, label=label, result=result,
+        )
     except WeatherAcquisitionError as error:
-        result.update(status="blocked" if result["stage"] != "request" else "failed")
+        result.update(status="failed" if result["stage"] == "request" else "blocked")
         result["issues"].append(str(error))
     except (OSError, ValueError) as error:
         result.update(status="failed")
         result["issues"].append(str(error))
     finally:
-        if not dry_run and manifest_path is not None:
-            result["created_files"]["manifest"] = {"name": manifest_path.name}
-            try:
-                _bounded_write(manifest_path, json.dumps(result, indent=2, ensure_ascii=True, allow_nan=False))
-            except (OSError, ValueError) as error:
-                result["created_files"].pop("manifest", None)
-                result["issues"].append("manifest write failed: " + str(error))
-                if result["status"] == "prepared":
-                    result.update(status="failed", stage="manifest")
+        _write_manifest_checkpoint(manifest_path, result, dry_run=dry_run)
     return result
 
 
@@ -882,39 +931,13 @@ def _download_nasa_power(
     }
     manifest_path = None
     try:
-        if not csv_name:
-            if dry_run:
-                result["warnings"].append("csv_name is empty; supply it before an execution run")
-                result["status"] = "ready"
-                return result
-            raise WeatherAcquisitionError("csv_name is required for an execution run")
-        if not dry_run:
-            (workspace_path / "Meteo").mkdir(parents=True, exist_ok=True)
-            (workspace_path / "Results").mkdir(parents=True, exist_ok=True)
-        elif not workspace_path.is_dir():
-            raise WeatherAcquisitionError(f"workspace {workspace_path} must be an existing directory for a plan run")
-        csv_path = workspace_file(workspace_path, "Meteo", csv_name, ".csv")
-        stem = csv_path.stem
-        raw_path = workspace_file(workspace_path, "Meteo", stem + "_nasapower_raw.json", ".json")
-        manifest_path = workspace_file(workspace_path, "Results", stem + "_acquisition.json", ".json")
-        result["artifacts"] = {"csv": str(csv_path), "raw_json": str(raw_path), "manifest": str(manifest_path)}
-        existing = [str(p) for p in (csv_path, raw_path, manifest_path) if p.exists()]
-        if existing:
-            raise WeatherAcquisitionError("refusing to overwrite existing files: " + ", ".join(existing))
-        if dry_run:
-            result["status"] = "ready"
+        paths = _prepare_weather_paths(
+            workspace_path, csv_name=csv_name, raw_suffix="_nasapower_raw.json", dry_run=dry_run, result=result,
+        )
+        if paths is None:
             return result
-
-        result["stage"] = "request"
-        payload, raw_text, request_url = _provider_get(NASA_POWER_URL, params)
-        raw_bytes = raw_text.encode("utf-8")
-        if len(raw_bytes) > MAX_RESPONSE_BYTES:
-            raise WeatherAcquisitionError("provider response exceeds the raw storage limit")
-        result["plan"]["request_url"] = request_url
-        result["stage"] = "raw"
-        _bounded_write(raw_path, raw_text)
-        result["created_files"]["raw_json"] = {"name": raw_path.name, "bytes": len(raw_bytes)}
-        result["raw_preserved"] = True
+        csv_path, raw_path, manifest_path = paths
+        payload = _fetch_and_save_raw(NASA_POWER_URL, params, raw_path, result)
 
         coords = (payload.get("geometry") or {}).get("coordinates") or []
         elev_echo = coords[2] if len(coords) >= 3 else None
@@ -939,10 +962,7 @@ def _download_nasa_power(
             raise WeatherAcquisitionError("NASA POWER response missing required parameter maps")
 
         rows = []
-        clamped_dhi = 0
-        twilight_clamped = 0
-        twilight_max_excess = 0.0
-        twilight_sample = None
+        dhi_stats = _DhiClampStats()
         for step in range(hours):
             utc_dt = utc_start + timedelta(hours=step)
             local_dt = datetime(year, 1, 1) + timedelta(hours=step)
@@ -957,52 +977,23 @@ def _download_nasa_power(
             if ghi < 0 or dhi < 0:
                 raise WeatherAcquisitionError(f"NASA POWER negative irradiance at UTC hour {key}")
             if dhi > ghi:
-                clamped, reason = _clamp_dhi(ghi, dhi, strict_dhi=strict_dhi)
-                if reason == "rounding":
-                    dhi = clamped
-                    clamped_dhi += 1
-                elif reason == "twilight":
-                    excess = dhi - ghi
-                    twilight_clamped += 1
-                    if excess > twilight_max_excess:
-                        twilight_max_excess = excess
-                        twilight_sample = f"{key} GHI={ghi:.2f} DHI={dhi:.2f}"
-                    dhi = clamped
-                else:
+                dhi, reason = dhi_stats.check(ghi, dhi, key, strict_dhi=strict_dhi)
+                if reason == "reject":
                     raise WeatherAcquisitionError(f"NASA POWER DHI ({dhi}) > GHI ({ghi}) at UTC hour {key}")
             rows.append((local_dt, ghi, dhi, tamb))
 
-        if clamped_dhi:
-            result["warnings"].append(f"Clamped tiny rounding excess (<= 2 W/m2) where DHI > GHI on {clamped_dhi} hours.")
-        if twilight_clamped:
-            result["warnings"].append(
-                f"Clamped {twilight_clamped} low-irradiance twilight hour(s) where DHI slightly exceeded "
-                f"GHI (0 < GHI < {TWILIGHT_GHI_MAX_WM2:g} W/m2, max excess {twilight_max_excess:.2f} W/m2, "
-                f"e.g. {twilight_sample}); pass strict_dhi=true to reject instead."
-            )
-        result["stage"] = "write"
-        _bounded_write(csv_path, _standard_csv_text_with_source(
-            rows, site=site, year=year, offset_hours=offset_hours, data_source_label=label
-        ))
-        result["created_files"]["csv"] = {"name": csv_path.name, "rows": len(rows)}
-        result["plan"]["verified"] = {"rows": len(rows), "dhi_le_ghi": True, "no_missing_hours": True}
-        result.update(status="prepared", stage="done")
+        dhi_stats.append_warnings(result["warnings"])
+        _finalize_weather_csv(
+            csv_path, rows, site=site, year=year, offset_hours=offset_hours, label=label, result=result,
+        )
     except WeatherAcquisitionError as error:
-        result.update(status="blocked" if result["stage"] != "request" else "failed")
+        result.update(status="failed" if result["stage"] == "request" else "blocked")
         result["issues"].append(str(error))
     except (OSError, ValueError) as error:
         result.update(status="failed")
         result["issues"].append(str(error))
     finally:
-        if not dry_run and manifest_path is not None:
-            result["created_files"]["manifest"] = {"name": manifest_path.name}
-            try:
-                _bounded_write(manifest_path, json.dumps(result, indent=2, ensure_ascii=True, allow_nan=False))
-            except (OSError, ValueError) as error:
-                result["created_files"].pop("manifest", None)
-                result["issues"].append("manifest write failed: " + str(error))
-                if result["status"] == "prepared":
-                    result.update(status="failed", stage="manifest")
+        _write_manifest_checkpoint(manifest_path, result, dry_run=dry_run)
     return result
 
 
@@ -1128,52 +1119,19 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
             result["warnings"].append(
                 "no altitude is available yet; execution reuses the Open-Meteo grid elevation "
                 "echo and records it as provider evidence")
-        if not csv_name:
-            if dry_run:
-                result["warnings"].append(
-                    "csv_name is empty; supply it before an execution run to name the new CSV")
-                result["status"] = "ready"
-                return result
-            raise WeatherAcquisitionError("csv_name is required for an execution run")
-        if not dry_run:
-            # An execution run may create its own Meteo/Results folders; a plan never writes.
-            (workspace_path / "Meteo").mkdir(parents=True, exist_ok=True)
-            (workspace_path / "Results").mkdir(parents=True, exist_ok=True)
-        elif not workspace_path.is_dir():
-            raise WeatherAcquisitionError(
-                f"workspace {workspace_path} must be an existing directory for a plan run")
-        csv_path = workspace_file(workspace_path, "Meteo", csv_name, ".csv")
-        stem = csv_path.stem
-        raw_path = workspace_file(workspace_path, "Meteo", stem + "_openmeteo_raw.json", ".json")
-        manifest_path = workspace_file(workspace_path, "Results", stem + "_acquisition.json", ".json")
-        result["artifacts"] = {"csv": str(csv_path), "raw_json": str(raw_path),
-                               "manifest": str(manifest_path)}
-        existing = [str(path) for path in (csv_path, raw_path, manifest_path) if path.exists()]
-        if existing:
-            raise WeatherAcquisitionError(
-                "refusing to overwrite existing files: " + ", ".join(existing)
-                + "; choose new names")
-        if dry_run:
-            result["status"] = "ready"
+        paths = _prepare_weather_paths(
+            workspace_path,
+            csv_name=csv_name,
+            raw_suffix="_openmeteo_raw.json",
+            dry_run=dry_run,
+            result=result,
+            empty_note="csv_name is empty; supply it before an execution run to name the new CSV",
+            conflict_suffix="; choose new names",
+        )
+        if paths is None:
             return result
-
-        result["stage"] = "request"
-        try:
-            payload, raw_text, request_url = _provider_get(ARCHIVE_URL, params)
-        except WeatherAcquisitionError as error:
-            result.update(status="failed", stage="request")
-            result["issues"].append(str(error))
-            return result
-        raw_bytes = raw_text.encode("utf-8")
-        if len(raw_bytes) > MAX_RESPONSE_BYTES:
-            result.update(status="blocked", stage="raw")
-            result["issues"].append("provider response exceeds the raw storage limit")
-            return result
-        result["plan"]["request_url"] = request_url
-        result["stage"] = "raw"
-        _bounded_write(raw_path, raw_text)
-        result["created_files"]["raw_json"] = {"name": raw_path.name, "bytes": len(raw_bytes)}
-        result["raw_preserved"] = True
+        csv_path, raw_path, manifest_path = paths
+        payload = _fetch_and_save_raw(ARCHIVE_URL, params, raw_path, result)
         result["provider_echo"] = {
             "grid_latitude": payload.get("latitude"), "grid_longitude": payload.get("longitude"),
             "grid_elevation_m": payload.get("elevation"), "timezone": payload.get("timezone"),
@@ -1196,12 +1154,7 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
                 return result
 
         result["stage"] = "validation"
-        try:
-            values, labels = _index_payload(payload)
-        except WeatherAcquisitionError as error:
-            result.update(status="blocked", stage="validation")
-            result["issues"].append(str(error))
-            return result
+        values, labels = _index_payload(payload)
         rows, issues, warnings = _build_rows(values, year=year, utc_start=utc_start, strict_dhi=strict_dhi)
         result["warnings"].extend(warnings)
         result["plan"]["provider_labels"] = len(labels)
@@ -1210,31 +1163,22 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
             result["issues"].extend(issues)
             return result
 
-        result["stage"] = "write"
-        _bounded_write(csv_path, _standard_csv_text(rows, site=site, year=year,
-                                                    offset_hours=offset_hours))
-        result["created_files"]["csv"] = {"name": csv_path.name, "rows": len(rows)}
-        result["plan"]["verified"] = {"rows": len(rows), "provider_labels": len(labels),
-                                      "dhi_le_ghi": True, "no_missing_hours": True,
-                                      "labels_match_local_year": True}
-        result.update(status="prepared", stage="done")
+        _finalize_weather_csv(
+            csv_path,
+            rows,
+            site=site,
+            year=year,
+            offset_hours=offset_hours,
+            label=PROVIDER_LABEL,
+            result=result,
+            verified_extra={"provider_labels": len(labels), "labels_match_local_year": True},
+        )
     except WeatherAcquisitionError as error:
-        result.update(status="blocked")
+        result.update(status="failed" if result["stage"] == "request" else "blocked")
         result["issues"].append(str(error))
     except (OSError, ValueError) as error:
         result.update(status="failed")
         result["issues"].append(str(error))
     finally:
-        if not dry_run and manifest_path is not None:
-            # New-only provenance on disk, so a blocked or failed execution keeps its reason
-            # next to the raw response instead of leaving no trace.
-            result["created_files"]["manifest"] = {"name": manifest_path.name}
-            try:
-                _bounded_write(manifest_path, json.dumps(result, indent=2, ensure_ascii=True,
-                                                         allow_nan=False))
-            except (OSError, ValueError) as error:
-                result["created_files"].pop("manifest", None)
-                result["issues"].append("manifest write failed: " + str(error))
-                if result["status"] == "prepared":
-                    result.update(status="failed", stage="manifest")
+        _write_manifest_checkpoint(manifest_path, result, dry_run=dry_run)
     return result

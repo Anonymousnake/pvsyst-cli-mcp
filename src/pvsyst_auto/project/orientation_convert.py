@@ -8,6 +8,7 @@ from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.variant_writer import run_new_variant_transaction
 from pvsyst_auto.validation import bounded_number as _finite
+from pvsyst_auto.versions import SYNTH_VERSION
 
 TARGET_TYPES = {
     "fixed": "FixedPlane",
@@ -41,7 +42,7 @@ def _build_orientation_block(
     params: dict[str, Any],
     *,
     eol: str,
-    version: str = "8.1.7",
+    version: str = SYNTH_VERSION,
 ) -> tuple[list[str], dict[str, Any]]:
     ft = TARGET_TYPES[target_type]
     if target_type == "fixed":

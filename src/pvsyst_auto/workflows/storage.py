@@ -13,7 +13,7 @@ from pvsyst_auto.components.editor import objects
 from pvsyst_auto.energy.storage import create_grid_storage_variant, storage_state, validate_storage
 from pvsyst_auto.energy.load import hourly_load_block, load_snapshot
 from pvsyst_auto.project.paths import workspace_file
-from pvsyst_auto.results import fingerprint
+from pvsyst_auto.results import POWER_TO_KW, fingerprint
 
 
 def _load_signature(text):
@@ -139,7 +139,7 @@ def read_storage_year(csv_path, pdf_path, year, load_record, load_values, state)
         raise ValueError("Every actual storage result column requires an explicit unit")
     power_names = {"E_User", "EFrGrid", "E_Grid", "E_Miss", "E_Avail", "EBatCh", "EBatDis",
                    "CL_Chrg", "CL_InvB", "CL_Over", "EUnused", "EArray", "IL_Pmax"}
-    power_scales = {name: {"W": 0.001, "kW": 1}.get(units[name]) for name in power_names & set(units)}
+    power_scales = {name: POWER_TO_KW.get(units[name]) for name in power_names & set(units)}
     soc_scales = {name: {"ratio": 1, "%": 0.01}.get(units[name]) for name in ("SOC_Beg", "SOC_End")}
     if any(scale is None for scale in (*power_scales.values(), *soc_scales.values())):
         raise ValueError("Storage power columns require W/kW and SOC requires ratio or percent")
