@@ -777,8 +777,8 @@ def _record_weather_exception(result: dict, error: Exception) -> None:
 def _blocked_preflight_result(provider, *, dry_run, year, issue_msg: str) -> dict:
     return {
         "status": "blocked", "stage": "preflight", "dry_run": dry_run, "year": year,
-        "provider": {"name": str(provider)}, "issues": [issue_msg],
-        "warnings": [], "artifacts": {}, "created_files": {},
+        "provider": {"name": provider if provider in PROVIDERS else str(provider)},
+        "issues": [issue_msg], "warnings": [], "artifacts": {}, "created_files": {},
     }
 
 

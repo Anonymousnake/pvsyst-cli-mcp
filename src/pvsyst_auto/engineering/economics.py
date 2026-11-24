@@ -536,6 +536,7 @@ def _settle_multi_csv_year1(csv_paths: list[Path], weights: list[float], tariff:
     for stamp, dt_hours, items in iter_aligned_result_rows(
         readers,
         count_mismatch_message="Merged result CSVs have different row counts; all portfolio CSVs must span identical timestamps",
+        detailed_timestamp_error=True,
     ):
         if not per_meta:
             for r in readers:

@@ -172,6 +172,7 @@ def iter_aligned_result_rows(
     readers: list[RegularResultCsv],
     *,
     count_mismatch_message: str = "Merged result CSVs have different row counts; all portfolio CSVs must align",
+    detailed_timestamp_error: bool = False,
 ):
     """Yield ``(timestamp, dt_hours, per_reader_items)`` across aligned ``RegularResultCsv`` readers."""
     sentinel = object()
@@ -181,10 +182,10 @@ def iter_aligned_result_rows(
         stamp, _, dt_hours = items[0]
         for k, (st_k, _, dt_k) in enumerate(items[1:], start=1):
             if st_k != stamp or abs(dt_k - dt_hours) > 1e-6:
-                raise ValueError(
-                    f"Merged result CSV {readers[k].csv_path.name} timestamp mismatch at row {row_idx + 1}: "
-                    f"expected {stamp.isoformat()} (dt={dt_hours:g}h), got {st_k.isoformat()} (dt={dt_k:g}h)"
-                )
+                msg = f"Merged result CSV {readers[k].csv_path.name} timestamp mismatch at row {row_idx + 1}"
+                if detailed_timestamp_error:
+                    msg += f": expected {stamp.isoformat()} (dt={dt_hours:g}h), got {st_k.isoformat()} (dt={dt_k:g}h)"
+                raise ValueError(msg)
         yield stamp, dt_hours, items
 
 
