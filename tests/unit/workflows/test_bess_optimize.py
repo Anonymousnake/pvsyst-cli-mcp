@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from pvsyst_auto.api.schemas import GridStorageUpdates
-from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule
+from pvsyst_auto.energy.storage import plan_tou_storage_schedule
 from pvsyst_auto.workflows.bess_optimize import optimize_bess_sizing
 
 

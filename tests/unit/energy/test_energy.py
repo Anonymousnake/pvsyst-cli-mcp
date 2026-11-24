@@ -1,4 +1,6 @@
-"""Tests for energy loss blocks, hourly load snapshots, and grid storage builders."""
+"""Tests for energy loss blocks, DC cabling, hourly loads, outages, and grid storage."""
+from __future__ import annotations
+
 import calendar
 import functools
 import shutil
@@ -8,11 +10,10 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-
 from pvsyst_auto.components.store import ComponentStore
-from pvsyst_auto.energy import auxiliaries, iam, inverter_temperature, soiling
-from pvsyst_auto.energy.load import create_load_variant
-from pvsyst_auto.energy.peak import peak_shaving_state
+from pvsyst_auto.energy import dc as iam, dc as soiling, system as auxiliaries, system as inverter_temperature
+from pvsyst_auto.energy.profiles import create_load_variant
+from pvsyst_auto.energy.storage import peak_shaving_state
 from pvsyst_auto.energy.profiles import prepare_load_profile
 from pvsyst_auto.energy.storage import (
     create_grid_storage_variant,
@@ -20,9 +21,13 @@ from pvsyst_auto.energy.storage import (
     encode_subhour_schedule,
 )
 from pvsyst_auto.energy.system import create_grid_storage_system
-from pvsyst_auto.energy.unavailability import system_unavail_state
+from pvsyst_auto.energy.profiles import system_unavail_state
 from pvsyst_auto.project.variants import VariantStore
-
+from decimal import Decimal
+from pvsyst_auto.energy.dc import create_dc_cabling_variant, dc_cabling_state
+from pvsyst_auto.energy.profiles import native_availability
+from pvsyst_auto.energy.profiles import replace_system_unavailability
+from pvsyst_auto.native.load import flat_load, native_load_block
 
 def crlf(text):
     return text.replace("\n", "\r\n").splitlines(keepends=True)
@@ -34,10 +39,16 @@ MAIN = """PVObject_PVMainArray=pvMainArray
 End of PVObject pvCircuit
 End of PVObject pvMainArray
 """
+
+
 NONE_SOILING = ("Soiling=Soiling\n  IsYearly=False\n  IsMonthly=False\n  IsFromFile=False\n"
                 "  YearlyValue=0.020\nEndTags\n")
+
+
 CACHED_SOILING = ("Soiling=Soiling\n  IsYearly=True\n  IsMonthly=False\n  IsFromFile=False\n"
                   "  YearlyValue=0.025\n  MonthlyValue=" + "0.010," * 12 + "\nEndTags\n")
+
+
 SYSTEM = """PVObject_=pvVCalcul
   Version=8.1.6
   PVObject_System=pvSystem
@@ -46,41 +57,68 @@ SYSTEM = """PVObject_=pvVCalcul
   End of PVObject pvSystem
 End of PVObject pvVCalcul
 """
+
+
 SUBARRAY = """PVObject_=pvSubArray
   Version=8.1.6
   Flags2={flags2}
 {iam}End of PVObject pvSubArray
 """
+
+
 ASHRAE = ("  PVObject_IAM=pvIAM\n    Flags=$00\n    IAMMode=Ashrae\n    B0_IAM=0.050\n"
           "  End of PVObject pvIAM\n")
+
+
 ROOT = "PVObject_=pvVCalcul\n  Comment=Fixture\n  Version=8.1.6\n  Flags={root_flags}\n"
+
+
 ARRAY = "  PVObject_=pvSubArray\n    SubArrayId=1\n    NModSerie=10\n  End of PVObject pvSubArray\n"
+
+
 PV_SYSTEM = "  PVObject_System=pvSystem\n    Flags=$00\n    SystemType=Grid\n  End of PVObject pvSystem\n"
+
+
 STORAGE_SYSTEM = ("  PVObject_System=pvSystem\n    Flags=$10010040\n    SystemType=Grid\n"
                   "    BatteryFile=Fixture.BTR\n    NBattSerie=1\n    NBattParall=2\n  End of PVObject pvSystem\n")
+
+
 OLD_LOAD = ("  PVObject_UserNeeds=pvLoad\n    Flags=$4000\n    LoadType=HourlyFile\n"
             "    Day_0101=+oldcache\n  End of PVObject pvLoad\n")
+
+
 SNAPSHOT_LOAD = ("  PVObject_UserNeeds=pvLoad\n    Flags=$4000\n    DateBeg=01/01/23 00:00\n"
                  "    DateEnd=31/12/23 23:00\n  End of PVObject pvLoad\n")
+
+
 GRID_STORAGE = ("  PVObject_GridStorage=pvGridStorage\n    Flags=$00\n    Strategy={strategy}\n"
                 "    ChargingStrategy=PVAvailable\n    DischStrategy=Immediate\n    BattSoCInit=0.6\n"
                 "    SOCChDecl=0.95\n    SOCDischDecl=0.2\n    SOCDischSelf=0.5\n    PMaxCharge=380\n"
                 "    PMaxDisch=170\n    BattRectMaxEffic=97\n    BattRectEuroEffic=95\n    BattInvMaxEffic=97\n"
                 "    BattInvEuroEffic=95\n{unavail}  End of PVObject pvGridStorage\n")
+
+
 OLD_UNAVAIL = "    PVObject_GridUnavail=pvUnavail\n      Comment=old\n      Flags=$00\n    End of PVObject pvUnavail\n"
+
+
 CLOSE = "End of PVObject pvVCalcul\n"
+
+
 BTR = ("PVObject_=pvBattery\n  Version=8.1.6\n  Flags=$00\n  BattTechnol=Pb_Sealed_AGM\n  CapNomC10=160\n"
        "  AlphaSOC=0.2\n  PVObject_Commercial=pvCommercial\n    Manufacturer=Fixture\n    Model=12V160Ah\n"
        "  End of PVObject pvCommercial\nEnd of PVObject pvBattery\n")
+
+
 BATTERY = {"file_name": "Fixture.BTR", "series_count": 4, "parallel_count": 4,
            "monthly_temperature_c": [20] * 12, "cycle_sow": 1, "static_sow": 1}
+
+
 STORAGE = {"strategy": "self_consumption", "soc_min": 0.2, "soc_max": 0.9, "initial_soc": 0.5, "reserve_soc": 0.2,
            "max_charge_ac_kw": 3, "max_discharge_ac_kw": 5, "charger_max_efficiency_pct": 97,
            "charger_euro_efficiency_pct": 95, "battery_inverter_max_efficiency_pct": 97,
            "battery_inverter_euro_efficiency_pct": 95}
 
 
-@functools.lru_cache(maxsize=8)
 def hourly(header, unit, value, year=2023, first=None):
     start = datetime(year, 1, 1)
     hours = 24 * (366 if calendar.isleap(year) else 365)
@@ -272,7 +310,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(text.endswith("    End of PVObject pvUnavail\r\n  End of PVObject pvGridStorage\r\n" + CLOSE.replace("\n", "\r\n")))
 
     def test_new_storage_preserves_owning_system_unavailability_bit(self):
-        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+        from pvsyst_auto.energy.profiles import replace_system_unavailability
 
         for source_flags, has_outage, controls in (
             ("$00", False, {"strategy": "peak_shaving", "grid_limit_kw": 6000.0}),
@@ -383,7 +421,7 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), original)
 
     def test_system_unavailability_rejects_duration_rounding_to_zero(self):
-        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+        from pvsyst_auto.energy.profiles import replace_system_unavailability
 
         lines = crlf(SYSTEM)
         original = list(lines)
@@ -399,7 +437,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("        Duration=0.001\r\n", lines)
 
     def test_system_unavailability_authoring_and_geometry_combo(self):
-        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+        from pvsyst_auto.energy.profiles import replace_system_unavailability
         from pvsyst_auto.native.load import create_native_load_variant
 
         lines = crlf(SYSTEM)
@@ -692,11 +730,11 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("Common AC Bus", bad_dc_upd["issues"][0])
 
     def test_omitted_inverter_nelements_and_system_unavail_direct_fields(self):
-        from pvsyst_auto.components.generator import direct_fields
-        from pvsyst_auto.energy.ac import ac_cabling_state
+        from pvsyst_auto.components.editor import direct_fields
+        from pvsyst_auto.energy.system import ac_cabling_state
         from pvsyst_auto.energy.dc import create_dc_cabling_variant
         from pvsyst_auto.energy.system import create_grid_storage_system
-        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+        from pvsyst_auto.energy.profiles import replace_system_unavailability
 
         # 8.1.0 style: omit NElements=1 on InverterNode and StringNode
         vc_no_nel = (
@@ -782,9 +820,9 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(ps_res["status"], "created", ps_res)
 
     def test_storage_revision_unpack_grid_limit_bitmask_ac_no_nelements_and_random_unavail(self):
-        from pvsyst_auto.energy.ac import create_ac_cabling_variant
+        from pvsyst_auto.energy.system import create_ac_cabling_variant
         from pvsyst_auto.energy.storage import grid_storage_state
-        from pvsyst_auto.energy.unavailability import replace_system_unavailability
+        from pvsyst_auto.energy.profiles import replace_system_unavailability
         from pvsyst_auto.workflows.storage import prepare_storage_revision
 
         # 1. prepare_storage_revision succeeds with 3-tuple load_snapshot (no unpack error)
@@ -1147,6 +1185,470 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(res_kva["status"], "blocked", res_kva)
         self.assertRegex(res_kva["issues"][0], r"apparent.*kVA.*grid_limit_kw")
         self.assertFalse(target.exists())
+
+
+JKM600_PAN = """PVObject_=pvModule
+  Version=7.2
+  Flags=$00900043
+  PVObject_Commercial=pvCommercial
+    Flags=$0041
+    Manufacturer=Jinkosolar
+    Model=JKM600N-78HL4-BDV
+    Width=1.134
+    Height=2.465
+    Depth=0.030
+  End of PVObject pvCommercial
+  Technol=mtSiMono
+  NCelS=78
+  NCelP=2
+  NDiode=3
+  SubModuleLayout=slTwinHalfCells
+  GRef=1000
+  TRef=25.0
+  PNom=600
+  Isc=13.87
+  Voc=55.03
+  Imp=13.26
+  Vmp=45.25
+  RShunt=1100
+  RSerie=0.255
+  PVObject_IAM=pvIAM
+    Flags=$00
+  End of PVObject pvIAM
+End of PVObject pvModule
+"""
+
+
+OND = """PVObject_=pvOnduleur
+  Version=8.1.6
+  Flags=$00
+  PVObject_Commercial=pvCommercial
+    Flags=$0041
+    Manufacturer=Solis
+    Model=Solis-50K
+  End of PVObject pvCommercial
+  PNomConv=50.0
+End of PVObject pvOnduleur
+"""
+
+
+VC_COLD = """PVObject_=pvVCalcul
+  Comment=Base
+  Version=8.1.6
+  Flags=$00
+  Orientations, list of=1 TOrientGroup
+    PVObject_=pvOrient
+      Version=8.1.6
+      Flags=$00
+      NoOrient=1
+      FieldType=FixedPlane
+      FieldTilt=25.0
+      FieldAzim=20.0
+      BaseSlope=0.0
+      UsesTiltAver=False
+      UsesAzimAver=False
+      UsesSlopeAver=False
+    End of TOrientGroup
+  End of Orientations
+  PVObject_PVMainArray=pvMainArray
+    Flags=$00100400
+    Flags2=$082A
+    MVNbTransfos=0
+    PVObject_SystemCircuit=pvCircuit
+      Version=8.1.6
+      Flags=$00
+      InjectionPointNode Start;
+        Children=Start
+          InverterNode Start;
+            NElements=1
+            SubArrayId=1
+            SubArrayName=PV Array
+            Children=Start
+              MPPTNode Start;
+                NElements=4
+                SubArrayId=1
+                SubArrayName=PV Array
+                Children=Start
+                  StringNode Start;
+                    NElements=1
+                    SubArrayId=1
+                    SubArrayName=PV Array
+                  StringNode End;
+                Children=End
+              MPPTNode End;
+            Children=End
+          InverterNode End;
+        Children=End
+      InjectionPointNode End;
+    End of PVObject pvCircuit
+    SubArrays=Start
+      PVObject_=pvSubArray
+        Comment=PV Array
+        Version=8.1.6
+        Flags=$001E0402
+        Flags2=$20
+        SubArrayId=1
+        PVModule={pan}
+        GInverter=Solis50.OND
+        NoOrientation=1
+        NModSerie=15
+        NStringCh=4
+        NStrOrient1=4
+        NInverter=1
+        NInvMPPT=4
+        RSCablageCh=378.105
+        RSCablagePC=1.50
+        ACWireLength=0.0
+      End of PVObject pvSubArray
+    EndTags
+  End of PVObject pvMainArray
+  PVObject_System=pvSystem
+    Flags=$00
+    SystemType=Grid
+  End of PVObject pvSystem
+End of PVObject pvVCalcul
+"""
+
+
+class HeadlessDCCablingTests(unittest.TestCase):
+    def _setup_ws(self, *, pan_name="JKM600.PAN", pan_bytes=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ws = Path(tmp.name) / "ws"
+        (ws / "Projects").mkdir(parents=True)
+        (ws / "ComposPV" / "PVmodules").mkdir(parents=True)
+        (ws / "ComposPV" / "Inverters").mkdir(parents=True)
+        (ws / "Projects" / "Demo.PRJ").write_text("PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
+        (ws / "Projects" / "Demo.VC0").write_bytes(
+            VC_COLD.format(pan=pan_name).replace("\n", "\r\n").encode("utf-8")
+        )
+        if pan_bytes is not None:
+            (ws / "ComposPV" / "PVmodules" / pan_name).write_bytes(pan_bytes)
+        (ws / "ComposPV" / "Inverters" / "Solis50.OND").write_text(OND.replace("\n", "\r\n"), encoding="utf-8")
+        comps = ComponentStore(ws)
+        return ws, VariantStore(ws, comps)
+
+    def test_percent_mode_computes_one_diode_resistance_and_inserts_cable_definition(self):
+        ws, store = self._setup_ws(pan_bytes=JKM600_PAN.encode("utf-8"))
+        preview = create_dc_cabling_variant(
+            store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+            dc={"mode": "percent", "value": 1.5}, dry_run=True, variant_name="DC 1.50pct",
+        )
+        self.assertEqual(preview["status"], "ready")
+        self.assertFalse((ws / "Projects" / "Demo.VC1").exists())
+
+        res = create_dc_cabling_variant(
+            store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+            dc={"mode": "percent", "value": 1.5}, dry_run=False, variant_name="DC 1.50pct",
+        )
+        self.assertEqual(res["status"], "created")
+        self.assertEqual(res["dc"]["mode"], "percent")
+        self.assertEqual(res["dc"]["loss_percent"], "1.50")
+        self.assertTrue(res["dc"]["cable_definition_present"])
+        # 1-diode R_array(1.5%) for JKM600 (Ns=15, Nstr=4) is ~193.7 mOhm (within 0.6% of PVsyst 192.688 mOhm)
+        r_val = float(res["dc"]["resistance_mohm"])
+        self.assertAlmostEqual(r_val, 193.699, delta=1.5)
+        self.assertEqual(res["pan_stc"]["source"], "one_diode_stc")
+
+        # Update VC1 -> VC2 switching to resistance=500 mOhm
+        res2 = create_dc_cabling_variant(
+            store, project="Demo.PRJ", source_variant="VC1", new_variant="VC2",
+            dc={"mode": "resistance", "value": 500}, dry_run=False, variant_name="DC 500mOhm",
+        )
+        self.assertEqual(res2["status"], "created")
+        self.assertEqual(res2["dc"]["mode"], "resistance")
+        self.assertEqual(res2["dc"]["resistance_mohm"], "500.000")
+        self.assertAlmostEqual(float(res2["dc"]["loss_percent"]), 3.87, delta=0.05)
+
+        txt2 = (ws / "Projects" / "Demo.VC2").read_text(encoding="utf-8-sig")
+        self.assertIn("Flags=$01900400", txt2)
+        self.assertIn("Flags=$019E0402", txt2)
+        self.assertIn("Resistance=500 m\u03a9", txt2)
+        self.assertEqual(dc_cabling_state(txt2.splitlines(True))["mode"], "resistance")
+
+    def test_builtin_unreadable_pan_allows_resistance_and_rejects_percent(self):
+        # Legacy binary PAN or missing built-in DB PAN
+        for pan_bytes in (b"pvModule;binary-unreadable", None):
+            ws, store = self._setup_ws(pan_name="BuiltinOnly.PAN", pan_bytes=pan_bytes)
+            bad = create_dc_cabling_variant(
+                store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+                dc={"mode": "percent", "value": 1.5}, dry_run=True,
+            )
+            self.assertEqual(bad["status"], "blocked")
+            self.assertIn("mode='resistance'", bad["issues"][0])
+
+            good = create_dc_cabling_variant(
+                store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+                dc={"mode": "resistance", "value": 500}, dry_run=False, variant_name="Builtin Res",
+            )
+            self.assertEqual(good["status"], "created")
+            self.assertEqual(good["dc"]["resistance_mohm"], "500.000")
+            self.assertEqual(good["dc"]["loss_percent"], "0.00")
+            self.assertIsNone(good["pan_stc"])
+            self.assertTrue(any("0.00" in w for w in good["warnings"]))
+
+    def test_rejects_excessive_resistance_when_loss_hits_99_percent(self):
+        _, store = self._setup_ws(pan_bytes=JKM600_PAN.encode("utf-8"))
+        res = create_dc_cabling_variant(
+            store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+            dc={"mode": "resistance", "value": 15000}, dry_run=False,
+        )
+        self.assertEqual(res["status"], "blocked")
+        self.assertIn("99%", res["issues"][0])
+
+        for pct in (99.0, 99.5, 100.0):
+            bad_pct = create_dc_cabling_variant(
+                store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+                dc={"mode": "percent", "value": pct}, dry_run=True,
+            )
+            self.assertEqual(bad_pct["status"], "blocked")
+            self.assertIn("99", bad_pct["issues"][0])
+
+    def test_resistance_rejects_loss_that_rounds_up_to_99_percent(self):
+        ws, store = self._setup_ws(pan_bytes=JKM600_PAN.encode("utf-8"))
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                result = create_dc_cabling_variant(
+                    store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+                    dc={"mode": "resistance", "value": 12783.754}, dry_run=dry_run,
+                )
+                self.assertEqual(result["status"], "blocked", result)
+                self.assertIn("99.00%", result["issues"][0])
+                self.assertFalse((ws / "Projects" / "Demo.VC1").exists())
+
+        result = create_dc_cabling_variant(
+            store, project="Demo.PRJ", source_variant="VC0", new_variant="VC2",
+            dc={"mode": "resistance", "value": 12783.300}, dry_run=False,
+        )
+        self.assertEqual(result["status"], "created", result)
+        self.assertEqual(result["dc"]["loss_percent"], "98.99")
+
+    def test_resistance_disagreement_is_readable_but_not_editable(self):
+        ws, store = self._setup_ws()
+        source = ws / "Projects/Demo.VC0"
+        text = source.read_text(encoding="utf-8").replace(
+            "                    SubArrayId=1\n",
+            "                    CableDefinition=Start\n"
+            "                      Resistance=206.577633418868 m\u03a9\n"
+            "                    CableDefinition=End\n"
+            "                    SubArrayId=1\n",
+        )
+        rounded = dc_cabling_state(text.replace("378.105", "206.578").splitlines(True))
+        self.assertNotIn("issues", rounded)
+        original = text.replace("378.105", "13.621").encode("utf-8")
+        source.write_bytes(original)
+        state = store.inspect_parameters("Demo.PRJ", "VC0")["dc_cabling"]
+        self.assertEqual((state["mode"], state["resistance_mohm"], state["circuit_resistance_mohm"],
+                          state["resistance_difference_mohm"]),
+                         ("resistance", "13.621", "206.577633418868", "192.956633418868"))
+        blocked = create_dc_cabling_variant(
+            store, project="Demo.PRJ", source_variant="VC0", new_variant="VC1",
+            dc={"mode": "resistance", "value": 500}, dry_run=False,
+        )
+        self.assertEqual(blocked["status"], "blocked", blocked)
+        self.assertEqual(blocked["issues"], state["issues"])
+        self.assertFalse((source.parent / "Demo.VC1").exists())
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_cold_and_legacy_flag_readback_supported(self):
+        ws, _ = self._setup_ws(pan_bytes=JKM600_PAN.encode("utf-8"))
+        lines = (ws / "Projects" / "Demo.VC0").read_text(encoding="utf-8-sig").splitlines(True)
+        cold = dc_cabling_state(lines)
+        self.assertEqual(cold["mode"], "resistance")
+        self.assertFalse(cold["cable_definition_present"])
+        self.assertIsNone(cold["circuit_resistance_mohm"])
+        self.assertEqual(Decimal(cold["resistance_mohm"]), Decimal("378.105"))
+
+
+class SpecialLoadsAndOutagesTests(unittest.TestCase):
+    def test_household_schema_default_slot(self) -> None:
+        from pvsyst_auto.api.schemas import HouseholdNativeLoad
+        load = HouseholdNativeLoad(mode="household", appliances=[{"name": "Lamp", "power_w": 20, "hours": [18]}])
+        self.assertIn("HouseAppliance, NoApp=1", native_load_block(load.model_dump(), "\n"))
+
+    def test_household_and_probability_load_serialization_and_roundtrip(self) -> None:
+        # 1. Yearly HouseHold load
+        hh_yearly = native_load_block({
+            "mode": "household",
+            "modulation": "yearly",
+            "appliances": [
+                {"name": "LED Lighting", "count": 8, "power_w": 15.0, "hours": [18, 19, 20, 21, 22]},
+                {"name": "Fridge", "count": 1, "power_w": 120.0, "hours": list(range(24))},
+            ],
+        }, "\r\n")
+        self.assertIn("LoadType=HouseHold", hh_yearly)
+        self.assertIn("UsesModul=Yearly", hh_yearly)
+        self.assertIn("HoursDefined=16777215,16777215,", hh_yearly)
+        # Verify flat_load round-trip recognizes HouseHold inside a root pvVCalcul wrapper
+        wrapped_hh = f"PVObject_=pvVCalcul\r\n{hh_yearly}End of PVObject pvVCalcul\r\n"
+        parsed_hh = flat_load(wrapped_hh.splitlines(keepends=True))
+        self.assertIsNotNone(parsed_hh)
+        self.assertEqual(parsed_hh[2], "HouseHold")
+
+        # 2. Seasonal HouseHold load
+        app = [{"name": "Lamp", "count": 2, "power_w": 20.0, "half_hours": [36, 37, 38, 39]}]
+        hh_seas = native_load_block({
+            "mode": "household",
+            "modulation": "seasonal",
+            "seasons": {"Summer": app, "Autumn": app, "Winter": app, "Spring": app},
+        }, "\n")
+        self.assertIn("UsesModul=Seasonal", hh_seas)
+        self.assertIn("Appliances for period=Winter", hh_seas)
+
+        # 3. Probability load (deterministically sampled into native embedded HourlyFile snapshot)
+        prob_text = native_load_block({
+            "mode": "probability",
+            "power_step_kw": 2.5,
+            "probabilities_pct": [10.0, 25.0, 35.0, 20.0, 10.0],
+            "seed": 42,
+        }, "\r\n")
+        self.assertIn("LoadType=HourlyFile", prob_text)
+        self.assertIn("Day_0101=", prob_text)
+        wrapped_pr = f"PVObject_=pvVCalcul\r\n{prob_text}End of PVObject pvVCalcul\r\n"
+        parsed_pr = flat_load(wrapped_pr.splitlines(keepends=True))
+        self.assertIsNotNone(parsed_pr)
+        self.assertEqual(parsed_pr[2], "HourlyFile")
+
+        with self.assertRaisesRegex(ValueError, "sum to 100.0%"):
+            native_load_block({"mode": "probability", "power_step_kw": 2.0, "probabilities_pct": [30.0, 30.0]}, "\n")
+
+    def test_generated_defaults_pass_through_storage_api(self) -> None:
+        import os
+        from pathlib import Path
+        import tempfile
+        from unittest.mock import patch
+        from pvsyst_auto.api import context as api_context
+        from pvsyst_auto.api.schemas import GridAvailabilityProfile, GridStorageUpdates
+        from pvsyst_auto.api.storage import pvsyst_create_grid_storage_variant
+
+        with tempfile.TemporaryDirectory() as td:
+            ws = Path(td) / "ws"
+            (ws / "Projects").mkdir(parents=True)
+            (ws / "ComposPV" / "Batteries").mkdir(parents=True)
+            (ws / "Projects" / "Fixture.PRJ").write_text(
+                "PVObject_=pvProject\n  Comment=Fixture\nEnd of PVObject pvProject\n", encoding="utf-8",
+            )
+            (ws / "Projects" / "Fixture.VC0").write_bytes(
+                (ROOT.format(root_flags="$00080000") + ARRAY + STORAGE_SYSTEM + SNAPSHOT_LOAD
+                 + GRID_STORAGE.format(strategy="WeakGrid", unavail=OLD_UNAVAIL) + CLOSE)
+                .replace("\n", "\r\n").encode("utf-8")
+            )
+            (ws / "ComposPV" / "Batteries" / "Fixture.BTR").write_text(BTR, encoding="utf-8", newline="")
+            stub_cli = Path(td) / "PVsystCLI.exe"
+            stub_cli.write_bytes(b"stub")
+            declaration = GridAvailabilityProfile(mode="generated", year=2023, outage_count=4)
+            api_context._cli = None
+            try:
+                with patch.dict(os.environ, {"PVSYST_WORKSPACE": str(ws), "PVSYST_CLI": str(stub_cli)}):
+                    result = pvsyst_create_grid_storage_variant(
+                        "Fixture.PRJ", "VC0", "VC1", GridStorageUpdates(strategy="weak_grid"),
+                        dry_run=False, availability=declaration,
+                    )
+            finally:
+                api_context._cli = None
+        self.assertEqual(
+            (result["status"], result["grid_availability"]["outage_count"], result["grid_availability"]["seed"]),
+            ("created", 4, 42),
+        )
+
+    def test_generated_weak_grid_outage_availability_is_deterministic(self) -> None:
+        decl = {
+            "mode": "generated",
+            "year": 2024,
+            "outage_count": 20,
+            "min_duration_hours": 3,
+            "max_duration_hours": 6,
+            "peak_hours": [18, 19, 20],
+            "seed": 123,
+        }
+        txt1, meta1 = native_availability(None, decl, "\r\n")
+        txt2, meta2 = native_availability(None, decl, "\r\n")
+        self.assertEqual(txt1, txt2)
+        self.assertEqual(meta1["rows"], 8784)  # 2024 leap year
+        self.assertGreater(meta1["unavailable_hours"], 40)
+        self.assertIn("PVObject_GridUnavail=pvUnavail", txt1)
+        self.assertIn("+0", txt1)
+        self.assertIn("+G8", txt1)
+
+    def test_generated_availability_preserves_declared_standard_offset(self) -> None:
+        from pvsyst_auto.energy.profiles import TIME_BASIS
+        decl = {'mode': 'generated', 'year': 2023, 'outage_count': 4, 'utc_offset_hours': 8}
+        _, metadata = native_availability(None, decl, '\n')
+        self.assertEqual(metadata['utc_offset_hours'], 8)
+        self.assertEqual(metadata['time_basis'], TIME_BASIS)
+
+    def test_random_system_unavailability_roundtrip(self) -> None:
+        lines = [
+            "PVObject_System=pvSystem\r\n",
+            "  Flags=$00\r\n",
+            "  SystemType=Grid\r\n",
+            "End of PVObject pvSystem\r\n",
+        ]
+        res = replace_system_unavailability(
+            lines, (0, 3),
+            {
+                "mode": "random",
+                "time_fraction_pct": 1.0,
+                "period_count": 6,
+                "min_duration_hours": 4,
+                "max_duration_hours": 24,
+                "random_seed": 42,
+            },
+        )
+        self.assertEqual(res["after"]["mode"], "Periods")
+        self.assertEqual(res["after"]["period_count"], 6)
+        self.assertEqual(res["after"]["settings"]["NbPeriods"], "6")
+        self.assertEqual(res["after"]["settings"]["TimeFraction"], "0.0100")
+        self.assertAlmostEqual(sum(float(p['duration']) for p in res['after']['periods']), 87.6, places=1)
+        joined = "".join(lines)
+        self.assertIn("UnavailPeriods=Start", joined)
+        self.assertIn("RandomInit =42", joined)
+        self.assertIn("Flags=$00010000", joined)
+        # Removal cleanly restores state
+        rm = replace_system_unavailability(lines, (0, len(lines) - 1), {"mode": "none"})
+        self.assertFalse(rm["after"]["configured"])
+
+    def test_random_system_unavailability_rejects_infeasible_total(self) -> None:
+        lines = ['PVObject_System=pvSystem\n', '  Flags=$00\n', '  SystemType=Grid\n',
+                 'End of PVObject pvSystem\n']
+        original = list(lines)
+        with self.assertRaisesRegex(ValueError, 'time_fraction_pct'):
+            replace_system_unavailability(lines, (0, 3), {
+                'mode': 'random', 'time_fraction_pct': 10, 'period_count': 2,
+                'min_duration_hours': 1, 'max_duration_hours': 5,
+            })
+        self.assertEqual(lines, original)
+
+    def test_unavailability_exact_boundary_and_availability_guards(self) -> None:
+        # 1. Exact feasible boundary (5 * 5h = 25h) survives IEEE-754 float rounding
+        lines = ['PVObject_System=pvSystem\n', '  Flags=$00\n', '  SystemType=Grid\n',
+                 'End of PVObject pvSystem\n']
+        res = replace_system_unavailability(lines, (0, 3), {
+            'mode': 'random',
+            'time_fraction_pct': 100.0 * 25.0 / 8760.0,
+            'period_count': 5,
+            'min_duration_hours': 5,
+            'max_duration_hours': 10,
+            'random_seed': 7,
+        })
+        self.assertEqual(res['after']['period_count'], 5)
+
+        # 2. Generated availability rejects out-of-range utc_offset_hours and unsupported time_basis
+        with self.assertRaisesRegex(ValueError, 'utc_offset_hours'):
+            native_availability(None, {'mode': 'generated', 'year': 2024, 'outage_count': 2, 'utc_offset_hours': 999}, '\n')
+        with self.assertRaisesRegex(ValueError, 'time_basis'):
+            native_availability(None, {'mode': 'generated', 'year': 2024, 'outage_count': 2, 'time_basis': 'dst_local'}, '\n')
+
+        # 3. Explicit mode='csv' must not fall back to generated mode or raise KeyError when csv_name is missing
+        with self.assertRaisesRegex(ValueError, 'csv_name'):
+            native_availability(
+                None,
+                {
+                    'mode': 'csv', 'year': 2024, 'utc_offset_hours': 0,
+                    'time_basis': 'local_standard_interval_start', 'outage_count': 4,
+                },
+                '\n',
+            )
 
 
 if __name__ == "__main__":

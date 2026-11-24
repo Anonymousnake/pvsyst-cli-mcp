@@ -5,7 +5,7 @@ import math
 import subprocess
 from pathlib import Path
 
-from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
+from pvsyst_auto.components.editor import pan_validation_fields
 from pvsyst_auto.engineering.sizing import plan_capacity
 from pvsyst_auto.native.cli import (
     PVsystError,
@@ -17,7 +17,8 @@ from pvsyst_auto.native.cli import (
 )
 from pvsyst_auto.project.bifacial import normalize_bifacial_spec
 from pvsyst_auto.project.paths import project_path, workspace_file, write_json
-from pvsyst_auto.project.synthesize import synthesize_project_and_variant, synthesize_utility_project
+from pvsyst_auto.project.synthesize import synthesize_project_and_variant
+from pvsyst_auto.project.template import synthesize_utility_project
 from pvsyst_auto.project.template import _mppt_inputs
 from pvsyst_auto.results import IRRAD_UNIT_KIND, POWER_UNIT_KIND, fingerprint
 from pvsyst_auto.validation import is_finite_number as _is_number, is_strict_int as _is_int

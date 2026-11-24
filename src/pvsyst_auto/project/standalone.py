@@ -62,46 +62,23 @@ def _run_standalone_economics(energy_balance: dict, eco_spec: dict) -> dict:
     )
 
 
-def generate_genset_text(
-    *,
-    model: str,
-    nominal_power_kw: float,
-    fuel_consumption_l_per_h: float,
-    manufacturer: str = "Generic",
-    fuel_type: str = "Diesel",
-    comment: str | None = None,
-    version: str = SYNTH_VERSION,
-) -> str:
+def generate_genset_text(*, model: str, nominal_power_kw: float, fuel_consumption_l_per_h: float,
+                         manufacturer: str = "Generic", fuel_type: str = "Diesel",
+                         comment: str | None = None, version: str = SYNTH_VERSION) -> str:
     """Generate a complete PVsyst 8.1.7 UTF-8 CRLF .GEN backup generator component file."""
-    clean_model = _clean_text(model, "genset.model")
-    clean_mfg = _clean_text(manufacturer, "genset.manufacturer")
+    clean_model, clean_mfg = _clean_text(model, "genset.model"), _clean_text(manufacturer, "genset.manufacturer")
     if fuel_type not in VALID_GENSET_TYPES:
         raise ValueError(f"genset.fuel_type must be one of {VALID_GENSET_TYPES}")
     p_nom = _finite(nominal_power_kw, "genset.nominal_power_kw", lo=0.1, hi=100000.0)
     c_fuel = _finite(fuel_consumption_l_per_h, "genset.fuel_consumption_l_per_h", lo=0.01, hi=50000.0)
     note = _clean_text(comment or f"Backup {fuel_type} {p_nom:.1f} kW", "genset.comment")
     lines = [
-        "PVObject_=pvGenerator",
-        f"  Comment={note}",
-        f"  Version={version}",
-        "  Flags=$00",
-        "  PVObject_Commercial=pvCommercial",
-        "    Flags=$0041",
-        f"    Manufacturer={clean_mfg}",
-        f"    Model={clean_model}",
-        "    DataSource=User",
-        "    YearBeg=2025",
-        "    Width=0.600",
-        "    Height=0.800",
-        "    Depth=0.500",
-        "    Weight=85.00",
-        "    NPieces=1",
-        "  End of PVObject pvCommercial",
-        f"  TypeGen={fuel_type}",
-        f"  PNomGen={p_nom:.3f}",
-        f"  CFuelHor={c_fuel:.3f}",
-        "End of PVObject pvGenerator",
-        "",
+        "PVObject_=pvGenerator", f"  Comment={note}", f"  Version={version}", "  Flags=$00",
+        "  PVObject_Commercial=pvCommercial", "    Flags=$0041", f"    Manufacturer={clean_mfg}",
+        f"    Model={clean_model}", "    DataSource=User", "    YearBeg=2025", "    Width=0.600",
+        "    Height=0.800", "    Depth=0.500", "    Weight=85.00", "    NPieces=1",
+        "  End of PVObject pvCommercial", f"  TypeGen={fuel_type}", f"  PNomGen={p_nom:.3f}",
+        f"  CFuelHor={c_fuel:.3f}", "End of PVObject pvGenerator", "",
     ]
     return "\ufeff" + "\r\n".join(lines)
 
@@ -367,26 +344,12 @@ def synthesize_standalone_project(
 
     body_text = "\r\n".join(vc_lines)
     vc0_text = ("\ufeff" + body_text) if with_bom else body_text
-    prj_text = synthesize_project_text(
-        project_comment=project_comment,
-        site_body=site_body,
-        met_name=resolved_met,
-        version=version,
-        with_bom=with_bom,
-    )
+    prj_text = synthesize_project_text(project_comment=project_comment, site_body=site_body, met_name=resolved_met, version=version, with_bom=with_bom)
     return {
-        "prj_text": prj_text,
-        "vc0_text": vc0_text,
-        "system_type": "Battery",
-        "controller_file": resolved_ctrl,
-        "controller_type": controller_type,
-        "battery_file": battery_file,
-        "genset_file": genset_file,
-        "backup_operating_power_kw": p_bkup,
-        "n_mod_serie": nms,
-        "n_string_ch": nsc,
-        "n_batt_serie": nbs,
-        "n_batt_parall": nbp,
+        "prj_text": prj_text, "vc0_text": vc0_text, "system_type": "Battery",
+        "controller_file": resolved_ctrl, "controller_type": controller_type,
+        "battery_file": battery_file, "genset_file": genset_file, "backup_operating_power_kw": p_bkup,
+        "n_mod_serie": nms, "n_string_ch": nsc, "n_batt_serie": nbs, "n_batt_parall": nbp,
         "presizing_warnings": warnings,
     }
 
@@ -610,65 +573,29 @@ def run_standalone_design(
             return 0.0
         return float(entry["mean"])
 
-    e_user = _sum_energy_kwh("E_User")
-    e_solar = _sum_energy_kwh("E_Solar")
-    e_bkup = _sum_energy_kwh("E_BkUp")
-    e_miss = _sum_energy_kwh("E_Miss")
-    e_avail = _sum_energy_kwh("E_Avail")
-    e_unused = _sum_energy_kwh("EUnused")
-    e_array = _sum_energy_kwh("EArray")
-    t_lol = _sum_raw("T_LOL", allowed_units=("h", "hr", "hour", "hours"))
-    bkup_h = _sum_raw("BkUp_ON", allowed_units=("h", "hr", "hour", "hours"))
-    fuel_l = _sum_raw("FuelBU")
-    soc_mean = _mean("SOCmean")
+    e_user, e_solar, e_bkup, e_miss = _sum_energy_kwh("E_User"), _sum_energy_kwh("E_Solar"), _sum_energy_kwh("E_BkUp"), _sum_energy_kwh("E_Miss")
+    e_avail, e_unused, e_array = _sum_energy_kwh("E_Avail"), _sum_energy_kwh("EUnused"), _sum_energy_kwh("EArray")
+    t_lol, bkup_h = _sum_raw("T_LOL", allowed_units=("h", "hr", "hour", "hours")), _sum_raw("BkUp_ON", allowed_units=("h", "hr", "hour", "hours"))
+    fuel_l, soc_mean = _sum_raw("FuelBU"), _mean("SOCmean")
     e_load_total = e_user + e_miss
-    solar_frac = (e_solar / e_load_total) if e_load_total > 0 else 0.0
-    lol_pct_actual = (t_lol / results["rows"]) * 100.0
-
     energy_balance = {
-        "e_array_kwh": round(e_array, 2),
-        "e_avail_kwh": round(e_avail, 2),
-        "e_unused_kwh": round(e_unused, 2),
-        "e_user_kwh": round(e_user, 2),
-        "e_solar_kwh": round(e_solar, 2),
-        "e_backup_kwh": round(e_bkup, 2),
-        "e_missing_kwh": round(e_miss, 2),
-        "solar_fraction": round(solar_frac, 4),
-        "soc_mean": round(soc_mean, 4),
-        "t_lol_hours": round(t_lol, 2),
-        "lol_pct": round(lol_pct_actual, 3),
-        "backup_runtime_hours": round(bkup_h, 2),
-        "backup_fuel_liters": round(fuel_l, 2),
+        "e_array_kwh": round(e_array, 2), "e_avail_kwh": round(e_avail, 2), "e_unused_kwh": round(e_unused, 2),
+        "e_user_kwh": round(e_user, 2), "e_solar_kwh": round(e_solar, 2), "e_backup_kwh": round(e_bkup, 2),
+        "e_missing_kwh": round(e_miss, 2), "solar_fraction": round((e_solar / e_load_total) if e_load_total > 0 else 0.0, 4),
+        "soc_mean": round(soc_mean, 4), "t_lol_hours": round(t_lol, 2), "lol_pct": round((t_lol / results["rows"]) * 100.0, 3),
+        "backup_runtime_hours": round(bkup_h, 2), "backup_fuel_liters": round(fuel_l, 2),
     }
 
     from pvsyst_auto.engineering.diagnostics import diagnose_standalone
 
-    diagnostics = diagnose_standalone(
-        energy_balance,
-        target_lol_pct=float(sa.get("target_lol_pct", 5.0)),
-        has_genset=genset_file is not None,
-    )
-
-    eco_summary = None
-    eco_spec = sa.get("economics")
-    if isinstance(eco_spec, dict) and eco_spec.get("capex_total") is not None:
-        eco_summary = _run_standalone_economics(energy_balance, eco_spec)
-
+    diagnostics = diagnose_standalone(energy_balance, target_lol_pct=float(sa.get("target_lol_pct", 5.0)), has_genset=genset_file is not None)
+    eco_summary = _run_standalone_economics(energy_balance, eco_spec) if (isinstance(eco_spec := sa.get("economics"), dict) and eco_spec.get("capex_total") is not None) else None
     out_result: dict[str, Any] = {
-        "status": "needs_review" if diagnostics["needs_review"] else "completed",
-        "scope": STANDALONE_SCOPE,
-        "dry_run": False,
-        "project": prj,
-        "variant": "VC0",
-        "warnings": sim.get("warnings", []),
-        "artifacts": {
-            "csv": str(out_csv),
-            "sfi": str(sfi_path),
-            "report_pdf": str(report_pdf_path) if report_pdf_path else None,
-            "generated_genset": str(generated_gen_path) if generated_gen_path else None,
-        },
-        "energy_balance": energy_balance,
-        "diagnostics": diagnostics,
+        "status": "needs_review" if diagnostics["needs_review"] else "completed", "scope": STANDALONE_SCOPE,
+        "dry_run": False, "project": prj, "variant": "VC0", "warnings": sim.get("warnings", []),
+        "artifacts": {"csv": str(out_csv), "sfi": str(sfi_path), "report_pdf": str(report_pdf_path) if report_pdf_path else None,
+                      "generated_genset": str(generated_gen_path) if generated_gen_path else None},
+        "energy_balance": energy_balance, "diagnostics": diagnostics,
     }
     if eco_summary is not None:
         out_result["economics"] = eco_summary

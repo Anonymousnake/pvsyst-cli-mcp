@@ -1,4 +1,4 @@
-"""Guarded project copies, lifecycle operations, and PVsyst variant storage."""
+"""Guarded project copies, lifecycle operations, validation, saved-result readers, and PVsyst variant storage."""
 from __future__ import annotations
 
 import difflib
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.components.store import ComponentStore, FIELD, MAX_PROJECT_BYTES
-from pvsyst_auto.project import fileio, variant_readback, variant_topology, variant_updates
+from pvsyst_auto.project import circuit, paths, variant_updates
 from pvsyst_auto.project.paths import battery_reference_name, project_path, project_root
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
@@ -21,14 +21,138 @@ FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "G
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
 MAX_ARCHIVE_MEMBERS = 128
 EMPTY_SHADING_FLAGS = ("$00", "$00020000", "$00080000")
+VAR_LIST_HEADER = re.compile(r"^\s*VarList,\s*list of=([0-9]+)\s+TVarSimul\s*$")
+VAR_SIMUL_OPEN = re.compile(r"^\s*VarSimul_([0-9]+)=(.*?)\s*$")
+VAR_SIMUL_CLOSE = re.compile(r"^\s*End of VarSimul=(.*?)\s*$")
+
+
+def _declared_numbers(text: str) -> list[float] | None:
+    values = []
+    for item in text.split(","):
+        if not (item := item.strip()):
+            continue
+        try:
+            values.append(float(item))
+        except ValueError:
+            return None
+    return values or None
+
+
+def saved_results(text: str, lines: list[str]) -> dict:
+    """Read recognized saved-result records and the separate output-file configuration."""
+    from pvsyst_auto.native.headless import _PLOT_SAMPLES, _result_histograms, _simul_plots
+
+    issues = []
+    try:
+        blocks = objects(text, include_private=True)
+    except ValueError as exc:
+        blocks, issues = [], [f"native result-cache objects unreadable: {exc}"]
+    root = next((b for b in blocks if not b.path), None)
+    root_flags = root.fields["Flags"][0][1] if root and len(root.fields.get("Flags", [])) == 1 else None
+    if root_flags is None:
+        issues.append("root Flags missing or duplicated")
+    pv_simul_file = None
+    if (simul := next((b for b in blocks if b.object_type == "pvSimulFile"), None)) is not None:
+        pv_simul_file = {
+            "file_name_written": simul.fields.get("FileNameWr", [[None, None]])[0][1],
+            "var_idents_written": [x.strip() for x in simul.fields.get("VarIdentWr", [[None, ""]])[0][1].split(",") if x.strip()],
+            "native_unit_codes": [x.strip() for x in simul.fields.get("Units", [[None, ""]])[0][1].split(",") if x.strip()],
+            "type_val_written": simul.fields.get("TypeValW", [[None, None]])[0][1],
+        }
+    var_list_start = next((i for i, ln in enumerate(lines) if VAR_LIST_HEADER.match(ln)), None)
+    declared_count, var_list_closed, entries = None, False, []
+    if var_list_start is not None:
+        declared_count = int(VAR_LIST_HEADER.match(lines[var_list_start])[1])
+        var_list_end = next((i for i in range(var_list_start + 1, len(lines)) if lines[i].strip() == "End of the List VarList"), None)
+        if var_list_end is None:
+            issues.append("VarList missing 'End of the List VarList'")
+        var_list_closed, end_scan, i = var_list_end is not None, (len(lines) if var_list_end is None else var_list_end), var_list_start + 1
+        while i < end_scan:
+            if not (m := VAR_SIMUL_OPEN.match(lines[i])):
+                i += 1
+                continue
+            index, ident, close_line, fields, day_lines, j = int(m[1]), m[2], None, {}, [], i + 1
+            while j < end_scan:
+                stripped = lines[j].strip()
+                if close_m := VAR_SIMUL_CLOSE.match(stripped):
+                    close_line = j
+                    break
+                if VAR_SIMUL_OPEN.match(lines[j]):
+                    break
+                if f := FIELD.fullmatch(stripped):
+                    (day_lines.append((f[1], f[2])) if f[1].startswith("Day_") else fields.setdefault(f[1], []).append(f[2]))
+                j += 1
+            if close_line is None:
+                issues.append(f"VarSimul_{index}={ident} missing closing tag")
+                i = j
+                continue
+            if close_m[1] != ident:
+                issues.append(f"VarSimul_{index}={ident} closed as {close_m[1]}")
+            one = lambda k: (fields.get(k, [])[0] if len(fields.get(k, [])) == 1 else None)
+            raw_months, raw_factor = one("ValMonth"), one("StoredWeighted")
+            values = _declared_numbers(raw_months) if raw_months is not None else None
+            try:
+                stored_factor = float(raw_factor) if raw_factor is not None else None
+            except ValueError:
+                stored_factor = None
+            entries.append({
+                "index": index, "ident": ident, "native_ident": one("VarIdent"), "declared_type": one("VarType"),
+                "accumulator": one("TypeAccum"), "mode_ss": one("ModeSS"), "date_beg": one("DateBeg"), "unit": None,
+                "unit_source": "not_declared_in_varlist", "values": values, "values_scope": "month" if values is not None else None,
+                "day_rows": len(day_lines), "stored_weighted_factor": stored_factor,
+                "value_declaration": ("\n".join(f"{k}={v}" for k, v in day_lines) if day_lines else (raw_months if values is None else None)),
+            })
+            i = close_line + 1
+    if declared_count is not None and len(entries) != declared_count:
+        issues.append(f"VarList declares {declared_count} TVarSimul but {len(entries)} parsed")
+    missing_indices = sorted(set(range(1, declared_count + 1)) - {e["index"] for e in entries}) if declared_count is not None else []
+    plots = []
+    if root is not None:
+        try:
+            plots = list(_simul_plots(lines, root, blocks))
+        except ValueError as exc:
+            issues.append(str(exc))
+    histograms = len(_result_histograms([root, *plots], blocks)) if root else 0
+    return {
+        "present": var_list_start is not None or histograms > 0 or any(_PLOT_SAMPLES & p.fields.keys() for p in plots),
+        "root_flags": root_flags, "pv_simul_file": pv_simul_file,
+        "var_list": {"present": var_list_start is not None, "closed": var_list_closed, "declared_count": declared_count,
+                     "parsed_count": len(entries), "missing_indices": missing_indices, "entries": entries},
+        "histogram_count": histograms, "issues": issues,
+    }
+
+
+def economic_block(lines: list[str]) -> dict:
+    """Read an optional root ``EconomicEval=TEcoEvaluation`` block."""
+    starts = [i for i, line in enumerate(lines) if line.strip() == "EconomicEval=TEcoEvaluation"]
+    if not starts:
+        return {"present": False}
+    if len(starts) != 1:
+        raise ValueError("Multiple EconomicEval sections")
+    terminator = "End of TEcoEvaluation"
+    if (end := next((i for i in range(starts[0] + 1, len(lines)) if lines[i].strip() == terminator), None)) is None:
+        raise ValueError("Unclosed EconomicEval section")
+    block, opens, closes, lists, scalars = lines[starts[0] + 1:end], 0, 0, {}, {}
+    list_open, list_close = re.compile(r"^\s*([A-Za-z0-9_]+),\s*list of=([0-9]+)\s+([A-Za-z0-9_]+)\s*$"), re.compile(r"^\s*End of List\b")
+    for line in block:
+        stripped = line.strip()
+        if list_close.match(stripped):
+            closes += 1
+        elif lst := list_open.match(stripped):
+            opens += 1
+            if opens == 1:
+                lists[lst.group(1)] = {"type": lst.group(3), "declared_count": int(lst.group(2))}
+        elif opens == closes and (field := FIELD.fullmatch(stripped)):
+            scalars.setdefault(field.group(1), []).append(field.group(2))
+    if opens != closes:
+        raise ValueError(f"EconomicEval list structure is unbalanced: {opens} 'list of=' but {closes} 'End of List'")
+    return {"present": True, "owner": "TEcoEvaluation", "terminator": terminator, "native_type": "TEcoEvaluation",
+            "raw": "".join(block), "scalars": scalars, "lists": lists, "native_consumption_verified": False}
 
 
 class VariantStore:
-    def __init__(self, workspace: str | os.PathLike, components: ComponentStore,
-                 lock: threading.RLock | None = None):
-        self.workspace = Path(workspace).resolve(strict=True)
-        self.components = components
-        self.lock = lock or threading.RLock()
+    def __init__(self, workspace: str | os.PathLike, components: ComponentStore, lock: threading.RLock | None = None):
+        self.workspace, self.components, self.lock = Path(workspace).resolve(strict=True), components, lock or threading.RLock()
 
     def _root(self) -> Path:
         return project_root(self.workspace)
@@ -43,14 +167,12 @@ class VariantStore:
 
     @staticmethod
     def _belongs_to_project(path: Path, project: str) -> bool:
-        """Exact stems plus attached PRJ/VC sidecars, excluding other dotted projects."""
         stem = project[:-4].casefold()
         if path.stem.casefold() == stem:
             return True
         if re.fullmatch(r"\.(?:PRJ|VC[A-Za-z0-9]+)", path.suffix, re.I):
             return False
-        return bool(path.name.casefold().startswith(stem + ".") and re.fullmatch(
-            r"(?:PRJ|VC[A-Za-z0-9]+)\..+", path.name[len(project[:-4]) + 1:], re.I))
+        return bool(path.name.casefold().startswith(stem + ".") and re.fullmatch(r"(?:PRJ|VC[A-Za-z0-9]+)\..+", path.name[len(project[:-4]) + 1:], re.I))
 
     @staticmethod
     def _read(path: Path) -> bytes:
@@ -58,8 +180,7 @@ class VariantStore:
             raise FileNotFoundError(path.name)
         if path.stat().st_size > MAX_PROJECT_BYTES:
             raise ValueError("Project or variant exceeds 32 MB")
-        data = path.read_bytes()
-        VariantStore._check_size(data)
+        VariantStore._check_size(data := path.read_bytes())
         return data
 
     def _check_project(self, project: str) -> None:
@@ -72,9 +193,7 @@ class VariantStore:
             lines = data.decode("utf-8-sig").splitlines()
         except UnicodeDecodeError as exc:
             raise ValueError("Project must be UTF-8 text") from exc
-        if (not lines or lines[0].strip() != "PVObject_=pvProject"
-                or lines[-1].strip() != "End of PVObject pvProject"
-                or "\x00" in "".join(lines)):
+        if not lines or lines[0].strip() != "PVObject_=pvProject" or lines[-1].strip() != "End of PVObject pvProject" or "\x00" in "".join(lines):
             raise ValueError("Project is not a supported pvProject file")
 
     @staticmethod
@@ -93,9 +212,7 @@ class VariantStore:
 
     @staticmethod
     def _sections(lines: list[str]) -> tuple[dict[int, tuple[int, int]], tuple[int, int] | None]:
-        arrays = {}
-        system = None
-        active = None
+        arrays, system, active = {}, None, None
         for index, line in enumerate(lines):
             value = line.strip()
             if value in STARTS.values():
@@ -138,29 +255,24 @@ class VariantStore:
     def _field_indices(lines: list[str], bounds: tuple[int, int], key: str) -> list[int]:
         first = lines[bounds[0]].strip()
         if first in (*STARTS.values(), "PVObject_PVMainArray=pvMainArray"):
-            root = next(block for block in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not block.path)
-            return [bounds[0] + index for index, _ in root.fields.get(key, [])]
+            root = next(b for b in objects("".join(lines[bounds[0]:bounds[1] + 1])) if not b.path)
+            return [bounds[0] + idx for idx, _ in root.fields.get(key, [])]
         if first == "PVObject_=pvOrient":
-            depth = 0
-            found: list[int] = []
+            depth, found = 0, []
             for index in range(bounds[0] + 1, bounds[1]):
                 stripped = lines[index].strip()
                 if stripped.startswith("PVObject_"):
                     depth += 1
-                    continue
-                if stripped.startswith("End of PVObject "):
+                elif stripped.startswith("End of PVObject "):
                     depth = max(0, depth - 1)
-                    continue
-                if depth == 0 and (match := FIELD.fullmatch(lines[index].rstrip("\r\n"))) and match[1] == key:
+                elif depth == 0 and (m := FIELD.fullmatch(lines[index].rstrip("\r\n"))) and m[1] == key:
                     found.append(index)
             return found
-        return [index for index in range(bounds[0] + 1, bounds[1])
-                if (match := FIELD.fullmatch(lines[index].rstrip("\r\n"))) and match[1] == key]
+        return [i for i in range(bounds[0] + 1, bounds[1]) if (m := FIELD.fullmatch(lines[i].rstrip("\r\n"))) and m[1] == key]
 
     @staticmethod
     def _display_name_fields(lines: list[str], complete: bool = False) -> list[int]:
-        child = next((i for i in range(1, len(lines)) if lines[i].strip().startswith("PVObject_")
-                      or re.match(r"\s*PrintSettings\s*=", lines[i])), len(lines) - 1)
+        child = next((i for i in range(1, len(lines)) if lines[i].strip().startswith("PVObject_") or re.match(r"\s*PrintSettings\s*=", lines[i])), len(lines) - 1)
         indices = VariantStore._field_indices(lines, (0, child), "Comment")
         if complete:
             root = root_block(lines)
@@ -170,13 +282,11 @@ class VariantStore:
 
     @staticmethod
     def _validate_display_name(value: str, field: str) -> None:
-        if (not isinstance(value, str) or not value or value != value.strip()
-                or not value.isprintable() or len(value.encode("utf-8")) > 80):
+        if not isinstance(value, str) or not value or value != value.strip() or not value.isprintable() or len(value.encode("utf-8")) > 80:
             raise ValueError(f"Invalid {field}: require 1..80 UTF-8 bytes of printable text without surrounding whitespace")
 
     @staticmethod
-    def _display_name_prefix(data: bytes, name: str, add_utf8_bom: bool, field: str,
-                             content: str | None = None) -> bytes:
+    def _display_name_prefix(data: bytes, name: str, add_utf8_bom: bool, field: str, content: str | None = None) -> bytes:
         bom = data.startswith(b"\xef\xbb\xbf")
         if not name.isascii() and not bom and not add_utf8_bom:
             raise ValueError(f"Non-ASCII {field} values require UTF-8 BOM; use add_utf8_bom=true explicitly")
@@ -186,10 +296,7 @@ class VariantStore:
 
     @staticmethod
     def _check_hash(data: bytes, expected: str | None) -> None:
-        if expected is None:
-            return
-        if (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected)
-                or hashlib.sha256(data).hexdigest() != expected.lower()):
+        if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected) or hashlib.sha256(data).hexdigest() != expected.lower()):
             raise ValueError("Variant changed since inspection; provide current sha256")
 
     def inspect(self, project: str, variant: str) -> dict:
@@ -198,21 +305,15 @@ class VariantStore:
             data = self._read(self._path(project, variant))
             _, lines = self._text(data)
             arrays, system = self._sections(lines)
-
-            def values(bounds, types):
-                return {kind: [FIELD.fullmatch(lines[i].rstrip("\r\n"))[2]
-                               for i in self._field_indices(lines, bounds, FIELDS[kind])]
-                        for kind in types}
-
-            return {"project": project, "variant": variant.upper(),
-                    "sha256": hashlib.sha256(data).hexdigest(),
-                    "subarrays": [{"id": identifier, "references": values(bounds, ("PAN", "OND"))}
-                                  for identifier, bounds in sorted(arrays.items())],
-                    "system_references": values(system, ("BTR", "GEN")) if system else {}}
+            values = lambda b, types: {k: [FIELD.fullmatch(lines[i].rstrip("\r\n"))[2] for i in self._field_indices(lines, b, FIELDS[k])] for k in types}
+            return {
+                "project": project, "variant": variant.upper(), "sha256": hashlib.sha256(data).hexdigest(),
+                "subarrays": [{"id": i, "references": values(b, ("PAN", "OND"))} for i, b in sorted(arrays.items())],
+                "system_references": values(system, ("BTR", "GEN")) if system else {},
+            }
 
     def _replace(self, data: bytes, updates: dict[str, str], subarray_id: int) -> bytes:
-        if (not isinstance(updates, dict) or not updates
-                or any(kind not in FIELDS for kind in updates)):
+        if not isinstance(updates, dict) or not updates or any(k not in FIELDS for k in updates):
             raise ValueError("Choose one or more of PAN, OND, BTR, GEN")
         if not isinstance(subarray_id, int) or isinstance(subarray_id, bool) or subarray_id < 1:
             raise ValueError("subarray_id must be a positive integer")
@@ -234,17 +335,15 @@ class VariantStore:
             indices = self._field_indices(lines, bounds, FIELDS[kind])
             if len(indices) != 1:
                 raise ValueError(f"{FIELDS[kind]} must occur exactly once in its section")
-            index = indices[0]
-            line = lines[index]
+            idx = indices[0]
+            line = lines[idx]
             if kind == "BTR":
-                key, equals, old = line.partition("=")
-                line = key + equals + old.lstrip(" \t")
-            lines[index] = replace_value(line, filename)
+                key, eq, old = line.partition("=")
+                line = key + eq + old.lstrip(" \t")
+            lines[idx] = replace_value(line, filename)
         if "".join(lines) == text:
             return data
-
         from pvsyst_auto.native.headless import strip_result_cache
-
         lines, _ = strip_result_cache(lines)
         candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
         self._text(candidate)
@@ -254,8 +353,7 @@ class VariantStore:
     def _orientation(lines: list[str], number: int) -> tuple[int, int]:
         if not isinstance(number, int) or isinstance(number, bool) or number < 1:
             raise ValueError("orientation_id must be a positive integer")
-        groups = []
-        start = None
+        groups, start = [], None
         for index, line in enumerate(lines):
             value = line.strip()
             if value == "PVObject_=pvOrient":
@@ -267,47 +365,38 @@ class VariantStore:
                 start = None
         if start is not None:
             raise ValueError("Unclosed orientation")
-        matches = [bounds for bounds in groups if any(
-            (match := FIELD.fullmatch(lines[i].rstrip("\r\n")))
-            and match[1] == "NoOrient" and match[2] == str(number)
-            for i in range(bounds[0] + 1, bounds[1]))]
+        matches = [b for b in groups if any((m := FIELD.fullmatch(lines[i].rstrip("\r\n"))) and m[1] == "NoOrient" and m[2] == str(number) for i in range(b[0] + 1, b[1]))]
         if len(matches) != 1:
             raise ValueError("Orientation ID must occur exactly once")
         return matches[0]
 
     def _orientation_list(self, lines):
-        headers = [(i, re.fullmatch(r"Orientations, list of=([0-9]+) TOrientGroup", line.strip()))
-                   for i, line in enumerate(lines) if line.strip().startswith("Orientations, list of=")]
+        headers = [(i, re.fullmatch(r"Orientations, list of=([0-9]+) TOrientGroup", line.strip())) for i, line in enumerate(lines) if line.strip().startswith("Orientations, list of=")]
         ends = [i for i, line in enumerate(lines) if line.strip() == "End of Orientations"]
         if len(headers) != 1 or not headers[0][1] or len(ends) != 1 or headers[0][0] >= ends[0]:
             raise ValueError("Expected one counted TOrientGroup orientation list")
         header, match = headers[0]
         starts = [i for i in range(header + 1, ends[0]) if lines[i].strip() == "PVObject_=pvOrient"]
         closings = [i for i in range(header + 1, ends[0]) if lines[i].strip() == "End of TOrientGroup"]
-        if (len(starts) != sum(line.strip() == "PVObject_=pvOrient" for line in lines)
-                or any(line.strip() == "PVObject_=pvDomeOrient" for line in lines)):
+        if len(starts) != sum(line.strip() == "PVObject_=pvOrient" for line in lines) or any(line.strip() == "PVObject_=pvDomeOrient" for line in lines):
             raise ValueError("Only listed TOrientGroup orientation records are supported")
         if not starts or len(starts) != len(closings) or int(match[1]) != len(starts):
             raise ValueError("Orientation list count differs from its records")
         groups = []
-        for position, (first, last) in enumerate(zip(starts, closings)):
-            if first >= last or position and closings[position - 1] >= first:
+        for pos, (first, last) in enumerate(zip(starts, closings)):
+            if first >= last or (pos and closings[pos - 1] >= first):
                 raise ValueError("Overlapping orientation records")
-            ids = self._field_indices(lines, (first, last), "NoOrient")
-            if len(ids) != 1:
+            if len(ids := self._field_indices(lines, (first, last), "NoOrient")) != 1:
                 raise ValueError("Orientation requires one ID")
-            raw = FIELD.fullmatch(lines[ids[0]].rstrip("\r\n"))[2]
-            if not raw.isdigit() or not 1 <= int(raw) <= 2147483647:
+            if not (raw := FIELD.fullmatch(lines[ids[0]].rstrip("\r\n"))[2]).isdigit() or not 1 <= int(raw) <= 2147483647:
                 raise ValueError("Orientation ID must be a positive 32-bit integer")
             if self._orientation(lines, int(raw)) != (first, last):
                 raise ValueError("Orientation is outside its declared list")
             groups.append((first, last, int(raw)))
         arrays, _ = self._sections(lines)
-        identifiers = {identifier for _, _, identifier in groups}
-        referenced = set()
+        identifiers, referenced = {gid for _, _, gid in groups}, set()
         for first, last in arrays.values():
-            root = next(block for block in objects("".join(lines[first:last + 1])) if not block.path)
-            raw = root.one("NoOrientation")[1]
+            raw = next(b for b in objects("".join(lines[first:last + 1])) if not b.path).one("NoOrientation")[1]
             if not raw.isdigit() or int(raw) not in identifiers:
                 raise ValueError("Subarray references an orientation outside its declared list")
             referenced.add(int(raw))
@@ -315,135 +404,85 @@ class VariantStore:
             raise ValueError(f"Orientation has no assigned subarray: {sorted(unused)}")
         return header, groups
 
-    # Documented pvMainArray.Flags bits toggled by MV/HV transformers, AC cabling, and default-loss overrides
     _VERIFIED_MAIN_FLAG_MASK = 0x21EC0000
 
     @classmethod
     def _is_verified_main_flags(cls, raw: str) -> bool:
-        if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", raw):
-            return False
-        return (int(raw[1:], 16) & ~cls._VERIFIED_MAIN_FLAG_MASK) in (0x00100400, 0x00000400)
+        return bool(re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", raw)) and (int(raw[1:], 16) & ~cls._VERIFIED_MAIN_FLAG_MASK) in (0x00100400, 0x00000400)
 
     @staticmethod
     def _ordinary_fixed_plane(lines, bounds, allow_missing_flags=False, allow_sheds=False):
         _allowed_nested = ("PVObject_Bifacial=", "PVObject_BiFacialShedModel=", "PVObject_BiFacialTrackerModel=")
-        if any((line.strip().startswith("PVObject_") and not line.strip().startswith(_allowed_nested))
-               or line.strip().endswith("=Start")
-               for line in lines[bounds[0] + 1:bounds[1]]):
+        if any((line.strip().startswith("PVObject_") and not line.strip().startswith(_allowed_nested)) or line.strip().endswith("=Start") for line in lines[bounds[0] + 1:bounds[1]]):
             raise ValueError("Operation requires a flat fixed-plane record")
         allowed_types = ("FixedPlane", "Sheds") if allow_sheds else ("FixedPlane",)
-        ft_indices = VariantStore._field_indices(lines, bounds, "FieldType")
-        if len(ft_indices) != 1 or FIELD.fullmatch(lines[ft_indices[0]].rstrip("\r\n"))[2] not in allowed_types:
+        if len(ft := VariantStore._field_indices(lines, bounds, "FieldType")) != 1 or FIELD.fullmatch(lines[ft[0]].rstrip("\r\n"))[2] not in allowed_types:
             raise ValueError("Operation requires ordinary FieldType=FixedPlane" + (" or Sheds" if allow_sheds else ""))
-        fl_indices = VariantStore._field_indices(lines, bounds, "Flags")
-        if fl_indices or not allow_missing_flags:
-            if len(fl_indices) != 1 or FIELD.fullmatch(lines[fl_indices[0]].rstrip("\r\n"))[2] != "$00":
-                raise ValueError("Operation requires ordinary Flags=$00")
+        if ((fl := VariantStore._field_indices(lines, bounds, "Flags")) or not allow_missing_flags) and (len(fl) != 1 or FIELD.fullmatch(lines[fl[0]].rstrip("\r\n"))[2] != "$00"):
+            raise ValueError("Operation requires ordinary Flags=$00")
         for key in ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"):
-            indices = VariantStore._field_indices(lines, bounds, key)
-            if indices and (len(indices) != 1 or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] != "False"):
+            if (idx := VariantStore._field_indices(lines, bounds, key)) and (len(idx) != 1 or FIELD.fullmatch(lines[idx[0]].rstrip("\r\n"))[2] != "False"):
                 raise ValueError("Averaged orientations require separate geometry handling")
 
     @staticmethod
     def _require_no_geometry(lines, require_shading_section=False):
-        if any("PVObject_ShdTable" in line or "ListeObjets, list of=" in line
-               or "PVObject_ModuleLayout" in line for line in lines):
+        if any("PVObject_ShdTable" in ln or "ListeObjets, list of=" in ln or "PVObject_ModuleLayout" in ln for ln in lines):
             raise ValueError("Operation has an active shading scene, dependent shading table or module layout")
-        shade = [i for i, line in enumerate(lines) if line.strip() == "PVObject_Ombrage=pvShading"]
+        shade = [i for i, ln in enumerate(lines) if ln.strip() == "PVObject_Ombrage=pvShading"]
         if not shade and not require_shading_section:
             return
         if len(shade) != 1:
             raise ValueError("Expected one empty shading section")
-        end = next((i for i in range(shade[0] + 1, len(lines))
-                    if lines[i].strip() == "End of PVObject pvShading"), None)
-        if end is None or any(line.strip().startswith("PVObject_") for line in lines[shade[0] + 1:end]):
+        end = next((i for i in range(shade[0] + 1, len(lines)) if lines[i].strip() == "End of PVObject pvShading"), None)
+        if end is None or any(ln.strip().startswith("PVObject_") for ln in lines[shade[0] + 1:end]):
             raise ValueError("Operation has an active shading scene")
-        flags = VariantStore._field_indices(lines, (shade[0], end), "Flags")
-        if len(flags) != 1 or FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2] not in EMPTY_SHADING_FLAGS:
+        if len(flags := VariantStore._field_indices(lines, (shade[0], end), "Flags")) != 1 or FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2] not in EMPTY_SHADING_FLAGS:
             raise ValueError("Shading is active or unrecognized: active shading scene")
 
     @staticmethod
     def _uv_edit_gate(lines, system, arrays, main_array) -> None:
         kinds = VariantStore._field_indices(lines, system, "SystemType") if system is not None else []
         versions = [VariantStore._field_indices(lines, bounds, "Version") for bounds in arrays.values()]
-        if (main_array is None or len(kinds) != 1
-                or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
-                or not versions or any(len(indices) != 1
-                                       or FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT_OR_SEED
-                                       for indices in versions)):
+        if (main_array is None or len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
+                or not versions or any(len(idx) != 1 or FIELD.fullmatch(lines[idx[0]].rstrip("\r\n"))[2] not in NATIVE_TEXT_OR_SEED for idx in versions)):
             raise ValueError(f"UVFactor editing requires a verified {SEED_LABEL} grid main array")
-        flags = VariantStore._field_indices(lines, main_array, "Flags")
-        flags2 = VariantStore._field_indices(lines, main_array, "Flags2")
+        flags, flags2 = VariantStore._field_indices(lines, main_array, "Flags"), VariantStore._field_indices(lines, main_array, "Flags2")
         if (len(flags) != 1 or not VariantStore._is_verified_main_flags(FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2])
                 or len(flags2) != 1 or FIELD.fullmatch(lines[flags2[0]].rstrip("\r\n"))[2] != "$082A"):
             raise ValueError("UVFactor editing requires verified main-array Flags/Flags2")
         if len(VariantStore._field_indices(lines, main_array, "UVFactor")) != 1:
             raise ValueError("UVFactor must occur exactly once directly on the main array")
 
-    def inspect_parameters(self, project: str, variant: str,
-                           include_saved_results: bool = False,
-                           include_economics: bool = False,
-                           include_topology: bool = False) -> dict:
-        return variant_readback.inspect_parameters(
-            self, project, variant,
-            include_saved_results=include_saved_results,
-            include_economics=include_economics,
-            include_topology=include_topology,
-        )
+    def inspect_parameters(self, project: str, variant: str, include_saved_results: bool = False,
+                           include_economics: bool = False, include_topology: bool = False) -> dict:
+        return variant_updates.inspect_parameters(self, project, variant, include_saved_results=include_saved_results, include_economics=include_economics, include_topology=include_topology)
 
-    def update_parameters(self, project: str, variant: str, expected_sha256: str | None = None,
-                          subarray_id: int = 1, orientation_id: int = 1,
-                          subarray_updates: dict[str, float] | None = None,
-                          orientation_updates: dict[str, float] | None = None,
-                          generator_updates: dict | None = None,
-                          dry_run: bool = False, power_sharing_enabled: bool | None = None,
-                          independent_mppt_enabled: bool | None = None,
-                          main_array_updates: dict[str, float] | None = None,
+    def update_parameters(self, project: str, variant: str, expected_sha256: str | None = None, subarray_id: int = 1, orientation_id: int = 1,
+                          subarray_updates: dict[str, float] | None = None, orientation_updates: dict[str, float] | None = None,
+                          generator_updates: dict | None = None, dry_run: bool = False, power_sharing_enabled: bool | None = None,
+                          independent_mppt_enabled: bool | None = None, main_array_updates: dict[str, float] | None = None,
                           variant_name: str | None = None, add_utf8_bom: bool = False,
-                          soiling_updates: dict | None = None,
-                          grid_limit_updates: dict | None = None,
-                          auxiliary_updates: dict | None = None,
-                          seasonal_updates: dict | None = None,
-                          horizon_updates: dict | None = None,
-                          inverter_temperature_updates: dict | None = None,
-                          power_factor_updates: dict | None = None,
-                          p50_p90_updates: dict | None = None,
-                          power_controls_updates: dict | None = None,
-                          string_mismatch_updates: dict | None = None,
-                          ageing_updates: dict | None = None,
-                          iam_updates: dict | None = None,
-                          ageing_enabled: bool | None = None,
-                          system_unavailability_updates: dict | None = None,
-                          bifacial_updates: dict | None = None,
-                          spectral_updates: dict | None = None,
+                          soiling_updates: dict | None = None, grid_limit_updates: dict | None = None,
+                          auxiliary_updates: dict | None = None, seasonal_updates: dict | None = None,
+                          horizon_updates: dict | None = None, inverter_temperature_updates: dict | None = None,
+                          power_factor_updates: dict | None = None, p50_p90_updates: dict | None = None,
+                          power_controls_updates: dict | None = None, string_mismatch_updates: dict | None = None,
+                          ageing_updates: dict | None = None, iam_updates: dict | None = None,
+                          ageing_enabled: bool | None = None, system_unavailability_updates: dict | None = None,
+                          bifacial_updates: dict | None = None, spectral_updates: dict | None = None,
                           native_economics_updates: dict | None = None) -> dict:
         return variant_updates.update_parameters(
-            self, project, variant, expected_sha256, subarray_id, orientation_id,
-            subarray_updates=subarray_updates,
-            orientation_updates=orientation_updates,
-            generator_updates=generator_updates,
-            dry_run=dry_run,
-            power_sharing_enabled=power_sharing_enabled,
-            independent_mppt_enabled=independent_mppt_enabled,
-            main_array_updates=main_array_updates,
-            variant_name=variant_name,
-            add_utf8_bom=add_utf8_bom,
-            soiling_updates=soiling_updates,
-            grid_limit_updates=grid_limit_updates,
-            auxiliary_updates=auxiliary_updates,
-            seasonal_updates=seasonal_updates,
-            horizon_updates=horizon_updates,
-            inverter_temperature_updates=inverter_temperature_updates,
-            power_factor_updates=power_factor_updates,
-            p50_p90_updates=p50_p90_updates,
-            power_controls_updates=power_controls_updates,
-            string_mismatch_updates=string_mismatch_updates,
-            ageing_updates=ageing_updates,
-            iam_updates=iam_updates,
-            ageing_enabled=ageing_enabled,
-            system_unavailability_updates=system_unavailability_updates,
-            bifacial_updates=bifacial_updates,
-            spectral_updates=spectral_updates,
+            self, project, variant, expected_sha256, subarray_id, orientation_id, subarray_updates=subarray_updates,
+            orientation_updates=orientation_updates, generator_updates=generator_updates, dry_run=dry_run,
+            power_sharing_enabled=power_sharing_enabled, independent_mppt_enabled=independent_mppt_enabled,
+            main_array_updates=main_array_updates, variant_name=variant_name, add_utf8_bom=add_utf8_bom,
+            soiling_updates=soiling_updates, grid_limit_updates=grid_limit_updates, auxiliary_updates=auxiliary_updates,
+            seasonal_updates=seasonal_updates, horizon_updates=horizon_updates,
+            inverter_temperature_updates=inverter_temperature_updates, power_factor_updates=power_factor_updates,
+            p50_p90_updates=p50_p90_updates, power_controls_updates=power_controls_updates,
+            string_mismatch_updates=string_mismatch_updates, ageing_updates=ageing_updates, iam_updates=iam_updates,
+            ageing_enabled=ageing_enabled, system_unavailability_updates=system_unavailability_updates,
+            bifacial_updates=bifacial_updates, spectral_updates=spectral_updates,
             native_economics_updates=native_economics_updates,
         )
 
@@ -462,9 +501,7 @@ class VariantStore:
         return name
 
     def _replace_checked(self, path: Path, data: bytes, candidate: bytes, *, prepare=None, verify=None):
-        return fileio.replace_checked(path, data, candidate, self._read,
-                                      "Variant changed while preparing the edit",
-                                      prepare=prepare, verify=verify)
+        return paths.replace_checked(path, data, candidate, self._read, "Variant changed while preparing the edit", prepare=prepare, verify=verify)
 
     @staticmethod
     def _rollback(error: BaseException, steps, recovery: str) -> None:
@@ -475,8 +512,7 @@ class VariantStore:
             except Exception as exc:
                 failed.append(f"{name} ({type(exc).__name__})")
         if failed and isinstance(error, Exception):
-            raise OSError(f"{type(error).__name__}: {error}; rollback incomplete for "
-                          f"{', '.join(failed)}; {recovery}") from error
+            raise OSError(f"{type(error).__name__}: {error}; rollback incomplete for {', '.join(failed)}; {recovery}") from error
 
     def _create_project_files(self, project, snapshots):
         if len(snapshots) > MAX_ARCHIVE_MEMBERS:
@@ -492,138 +528,150 @@ class VariantStore:
                     created.append(target)
                     stream.write(data)
         except BaseException as exc:
-            self._rollback(exc, [(target.name, target.unlink, True) for target in reversed(created)],
-                           "delete those partial files before retrying")
+            self._rollback(exc, [(t.name, t.unlink, True) for t in reversed(created)], "delete those partial files before retrying")
             raise
-        return {"project": project, "variants": [path.suffix[1:] for path, _ in snapshots[1:]],
-                "sha256": hashlib.sha256(snapshots[0][1]).hexdigest(),
-                "files": {path.name: hashlib.sha256(data).hexdigest() for path, data in snapshots}}
+        return {"project": project, "variants": [p.suffix[1:] for p, _ in snapshots[1:]], "sha256": hashlib.sha256(snapshots[0][1]).hexdigest(), "files": {p.name: hashlib.sha256(d).hexdigest() for p, d in snapshots}}
 
     def create_project(self, project: str, project_content: str, variants: dict[str, str]) -> dict:
-        if (not isinstance(project_content, str) or not isinstance(variants, dict) or not variants
-                or any(not isinstance(content, str) for content in variants.values())):
+        if not isinstance(project_content, str) or not isinstance(variants, dict) or not variants or any(not isinstance(c, str) for c in variants.values()):
             raise ValueError("Supply PRJ text and a nonempty VC identifier-to-text map")
         if len(variants) >= MAX_ARCHIVE_MEMBERS:
             raise ValueError("Project exceeds 128 PRJ/VC members")
         with self.lock:
-            data = project_content.encode("utf-8")
-            self._project_text(data)
+            self._project_text(data := project_content.encode("utf-8"))
             snapshots = [(self._path(project), data)]
             for identifier, content in variants.items():
-                path = self._path(project, identifier)
-                data = content.encode("utf-8")
-                _, lines = self._text(data)
-                self._sections(lines)
-                snapshots.append((path, data))
+                self._sections(self._text(vdata := content.encode("utf-8"))[1])
+                snapshots.append((self._path(project, identifier), vdata))
             return self._create_project_files(project, snapshots)
 
     def clone_project(self, source_project: str, new_project: str) -> dict:
         with self.lock:
             self._check_project(source_project)
-            source_root = self._root()
-            target_prj = self._path(new_project)
-            sources = [self._path(source_project)]
-            for path in list(source_root.iterdir()):
-                if path.name.casefold() == source_project.casefold():
-                    continue
-                if self._belongs_to_project(path, source_project):
-                    extension = path.suffix[1:]
-                    if not re.fullmatch(r"VC[A-Za-z0-9]+", extension, re.I):
+            target_prj, sources = self._path(new_project), [self._path(source_project)]
+            for path in list(self._root().iterdir()):
+                if path.name.casefold() != source_project.casefold() and self._belongs_to_project(path, source_project):
+                    if not re.fullmatch(r"VC[A-Za-z0-9]+", ext := path.suffix[1:], re.I):
                         raise ValueError(f"Unrecognized project sidecar: {path.name}")
-                    sources.append(self._path(source_project, extension))
+                    sources.append(self._path(source_project, ext))
             if len(sources) == 1:
                 raise ValueError("Source project has no variants")
             snapshots = []
             for source in sources:
                 data = self._read(source)
-                if source == sources[0]:
-                    self._project_text(data)
-                else:
-                    _, lines = self._text(data)
-                    self._sections(lines)
-                target = target_prj if source == sources[0] else self._path(new_project, source.suffix[1:])
-                snapshots.append((target, data))
+                self._project_text(data) if source == sources[0] else self._sections(self._text(data)[1])
+                snapshots.append((target_prj if source == sources[0] else self._path(new_project, source.suffix[1:]), data))
             return {**self._create_project_files(new_project, snapshots), "source_project": source_project}
 
-    def clone(self, project: str, source_variant: str, new_variant: str,
-              updates: dict[str, str] | None = None, subarray_id: int = 1,
-              source_project: str | None = None) -> dict:
+    def clone(self, project: str, source_variant: str, new_variant: str, updates: dict[str, str] | None = None,
+              subarray_id: int = 1, source_project: str | None = None) -> dict:
         with self.lock:
             self._check_project(project)
             source_project = project if source_project is None else source_project
             self._check_project(source_project)
-            source = self._path(source_project, source_variant)
-            target = self._path(project, new_variant)
-            data = self._read(source)
-            _, lines = self._text(data)
-            self._sections(lines)
+            target, data = self._path(project, new_variant), self._read(self._path(source_project, source_variant))
+            self._sections(self._text(data)[1])
             candidate = self._replace(data, updates, subarray_id) if updates else data
-            if any(path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
+            if any(p.name.casefold() == target.name.casefold() for p in target.parent.iterdir()):
                 raise FileExistsError(target.name)
-            fileio.publish_new(target, candidate)
-            return {"project": project, "variant": new_variant.upper(),
-                    "source_project": source_project, "source_variant": source_variant.upper(),
-                    "sha256": hashlib.sha256(candidate).hexdigest()}
+            paths.publish_new(target, candidate)
+            return {"project": project, "variant": new_variant.upper(), "source_project": source_project, "source_variant": source_variant.upper(), "sha256": hashlib.sha256(candidate).hexdigest()}
 
-    def update(self, project: str, variant: str, updates: dict[str, str],
-               expected_sha256: str | None = None, subarray_id: int = 1) -> dict:
+    def update(self, project: str, variant: str, updates: dict[str, str], expected_sha256: str | None = None, subarray_id: int = 1) -> dict:
         with self.lock:
             self._check_project(project)
-            path = self._path(project, variant)
-            data = self._read(path)
-            self._check_hash(data, expected_sha256)
+            self._check_hash(data := self._read(path := self._path(project, variant)), expected_sha256)
             candidate = self._replace(data, updates, subarray_id)
             backup = self._backup(path, data)
             self._replace_checked(path, data, candidate)
-            return {"project": project, "variant": variant.upper(), "backup_name": backup,
-                    "sha256": hashlib.sha256(candidate).hexdigest()}
+            return {"project": project, "variant": variant.upper(), "backup_name": backup, "sha256": hashlib.sha256(candidate).hexdigest()}
 
-    _subarray_branches = staticmethod(variant_topology.subarray_branches)
-    _require_plane_branch_mode = staticmethod(variant_topology.require_plane_branch_mode)
+    _subarray_branches = staticmethod(circuit.subarray_branches)
+    _require_plane_branch_mode = staticmethod(circuit.require_plane_branch_mode)
 
     def validate_structure(self, project: str, variant: str) -> dict:
-        return variant_topology.validate_structure(self, project, variant)
+        """Check cross-object references inside a variant."""
+        with self.lock:
+            self._check_project(project)
+            arrays, system = self._sections(lines := self._text(data := self._read(self._path(project, variant)))[1])
+            issues, warnings, orientation_ids = [], [], set()
+            for index, line in enumerate(lines):
+                if line.strip() not in ("PVObject_=pvOrient", "PVObject_=pvDomeOrient"):
+                    continue
+                closing = "End of TOrientGroup" if line.strip() == "PVObject_=pvOrient" else "End of TDomeOrientGroup"
+                if (end := next((i for i in range(index + 1, len(lines)) if lines[i].strip() == closing), None)) is None:
+                    issues.append("Unclosed orientation")
+                elif len(identifiers := self._field_indices(lines, (index, end), "NoOrient")) != 1:
+                    issues.append("Orientation needs one NoOrient")
+                elif not (raw := FIELD.fullmatch(lines[identifiers[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) in orientation_ids:
+                    issues.append(f"Duplicate or invalid orientation ID: {raw}")
+                else:
+                    orientation_ids.add(int(raw))
+            list_headers, list_unchecked = [ln.strip() for ln in lines if ln.strip().startswith("Orientations, list of=")], []
+            if list_headers:
+                if any(not ln.endswith(" TOrientGroup") for ln in list_headers) or any(ln.strip() == "PVObject_=pvDomeOrient" for ln in lines):
+                    list_unchecked.append("orientation list counts for dome/unknown list types")
+                else:
+                    try:
+                        self._orientation_list(lines)
+                    except ValueError as exc:
+                        issues.append(str(exc))
+            for identifier, bounds in arrays.items():
+                if len(indices := self._field_indices(lines, bounds, "NoOrientation")) != 1:
+                    issues.append(f"Subarray {identifier} needs one NoOrientation")
+                elif not (raw := FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) not in orientation_ids:
+                    issues.append(f"Subarray {identifier} references unknown orientation {raw}")
+            system_type, unchecked, circuit_res = None, list_unchecked, None
+            if system is None:
+                issues.append("Missing pvSystem section")
+                unchecked.append("system circuit references")
+            elif len(kinds := self._field_indices(lines, system, "SystemType")) != 1:
+                issues.append("System needs exactly one SystemType")
+                unchecked.append("system circuit references")
+            else:
+                if not (system_type := FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2]):
+                    issues.append("SystemType must not be empty")
+                if system_type == "Grid":
+                    circuit_res = circuit.inventory(lines, arrays)
+                    issues.extend(circuit_res["issues"])
+                    unchecked.extend(circuit_res["unchecked_checks"])
+                else:
+                    unchecked.append("system circuit references")
+                    warnings.append(f"Circuit checks are not implemented for SystemType={system_type!r}")
+            if any("PVObject_ShdTable" in ln or "ListeObjets, list of=" in ln for ln in lines):
+                warnings.append("Shading geometry and derived factor tables require simulation verification")
+            return {
+                "project": project, "variant": variant.upper(), "sha256": hashlib.sha256(data).hexdigest(),
+                "valid": False if issues else None if unchecked else True, "checks_complete": not unchecked,
+                "unchecked_checks": unchecked, "system_type": system_type, "grid_circuit": circuit_res,
+                "issues": issues, "warnings": warnings, "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids),
+            }
 
-    def _clone_subarray_data(self, data, source_subarray_id, *, clone_orientation=False,
-                             share_inverter=False, reserved_ids=()):
-        return variant_topology.clone_subarray_data(
-            self, data, source_subarray_id,
-            clone_orientation=clone_orientation,
-            share_inverter=share_inverter,
-            reserved_ids=reserved_ids,
-        )
+    def _clone_subarray_data(self, data, source_subarray_id, *, clone_orientation=False, share_inverter=False, reserved_ids=()):
+        return circuit.clone_subarray_data(self, data, source_subarray_id, clone_orientation=clone_orientation, share_inverter=share_inverter, reserved_ids=reserved_ids)
 
-    def clone_subarray(self, project: str, variant: str, source_subarray_id: int,
-                       expected_sha256: str | None = None, clone_orientation: bool = False,
-                       share_inverter: bool = False) -> dict:
-        return variant_topology.clone_subarray(
-            self, project, variant, source_subarray_id, expected_sha256,
-            clone_orientation=clone_orientation, share_inverter=share_inverter,
-        )
+    def clone_subarray(self, project: str, variant: str, source_subarray_id: int, expected_sha256: str | None = None, clone_orientation: bool = False, share_inverter: bool = False) -> dict:
+        return circuit.clone_subarray(self, project, variant, source_subarray_id, expected_sha256, clone_orientation=clone_orientation, share_inverter=share_inverter)
 
-    def remove_subarray(self, project: str, variant: str, subarray_id: int,
-                        expected_sha256: str | None = None, remove_orientation: bool = False,
-                        shared_member: bool = False) -> dict:
-        return variant_topology.remove_subarray(
-            self, project, variant, subarray_id, expected_sha256,
-            remove_orientation=remove_orientation, shared_member=shared_member,
-        )
+    def remove_subarray(self, project: str, variant: str, subarray_id: int, expected_sha256: str | None = None, remove_orientation: bool = False, shared_member: bool = False) -> dict:
+        return circuit.remove_subarray(self, project, variant, subarray_id, expected_sha256, remove_orientation=remove_orientation, shared_member=shared_member)
 
     @staticmethod
-    def _embedded_reference(lines: list[str], header: str, closing: str,
-                            field_name: str = "NomF") -> str | None:
-        starts = [i for i, line in enumerate(lines) if line.strip() == header]
-        if not starts:
-            return None
+    def _section_bounds(lines: list[str], header: str, closing: str, *, multiple_err: str | None = None) -> tuple[int, int]:
+        starts = [i for i, ln in enumerate(lines) if ln.strip() == header]
         if len(starts) != 1:
-            raise ValueError(f"Multiple {header} sections")
-        end = next((i for i in range(starts[0] + 1, len(lines))
-                    if lines[i].strip() == closing), None)
-        if end is None:
+            raise ValueError(multiple_err if len(starts) > 1 and multiple_err else f"Expected one {header} section")
+        if (end := next((i for i in range(starts[0] + 1, len(lines)) if lines[i].strip() == closing), None)) is None:
             raise ValueError(f"Unclosed {header} section")
-        child = next((i for i in range(starts[0] + 1, end)
-                      if lines[i].strip().startswith("PVObject_")), end)
-        indices = VariantStore._field_indices(lines, (starts[0], child), field_name)
+        return starts[0], end
+
+    @staticmethod
+    def _embedded_reference(lines: list[str], header: str, closing: str, field_name: str = "NomF") -> str | None:
+        if not any(line.strip() == header for line in lines):
+            return None
+        start, end = VariantStore._section_bounds(lines, header, closing, multiple_err=f"Multiple {header} sections")
+        child = next((i for i in range(start + 1, end) if lines[i].strip().startswith("PVObject_")), end)
+        indices = VariantStore._field_indices(lines, (start, child), field_name)
         if len(indices) != 1:
             raise ValueError(f"{header} requires one {field_name}")
         return FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]
@@ -631,14 +679,10 @@ class VariantStore:
     def _workspace_asset(self, directory: str, name: str | None) -> dict:
         if name is None:
             return {"name": None, "workspace_file": False}
-        if (not name or Path(name).name != name or "\\" in name or "/" in name
-                or not name.lower().endswith({"Sites": ".sit", "Meteo": ".met"}[directory])):
+        if not name or Path(name).name != name or "\\" in name or "/" in name or not name.lower().endswith({"Sites": ".sit", "Meteo": ".met"}[directory]):
             return {"name": name, "workspace_file": False}
-        base = self.workspace / directory
-        path = base / name
-        found = (base.is_dir() and not base.is_symlink() and base.resolve().parent == self.workspace
-                 and not path.is_symlink()
-                 and path.is_file() and path.resolve().parent == base.resolve())
+        base, path = self.workspace / directory, self.workspace / directory / name
+        found = base.is_dir() and not base.is_symlink() and base.resolve().parent == self.workspace and not path.is_symlink() and path.is_file() and path.resolve().parent == base.resolve()
         return {"name": name, "workspace_file": found}
 
     def inspect_project(self, project: str) -> dict:
@@ -646,272 +690,179 @@ class VariantStore:
             self._check_project(project)
             members = [self._path(project)]
             for path in self._root().iterdir():
-                if path.name.casefold() == project.casefold():
-                    continue
-                if self._belongs_to_project(path, project):
+                if path.name.casefold() != project.casefold() and self._belongs_to_project(path, project):
                     if not re.fullmatch(r"VC[A-Za-z0-9]+", path.suffix[1:], re.I):
                         raise ValueError(f"Unrecognized project sidecar: {path.name}")
                     members.append(self._path(project, path.suffix[1:]))
-            hashes = {}
-            sources = {}
-            warnings = []
+            hashes, sources, warnings = {}, {}, []
             for path in members:
                 data = self._read(path)
                 if path.suffix.lower() == ".prj":
                     lines = data.decode("utf-8-sig").splitlines()
                     names = self._display_name_fields(lines)
-                    project_name = FIELD.fullmatch(lines[names[0]])[2] if len(names) == 1 else None
-                    project_bom = data.startswith(b"\xef\xbb\xbf")
-                    meteo_fields = [field[2] for line in lines
-                                    if (field := FIELD.fullmatch(line)) and field[1] == "MeteoFileName"]
+                    project_name, project_bom = (FIELD.fullmatch(lines[names[0]])[2] if len(names) == 1 else None), data.startswith(b"\xef\xbb\xbf")
+                    meteo_fields = [f[2] for ln in lines if (f := FIELD.fullmatch(ln)) and f[1] == "MeteoFileName"]
                     if len(meteo_fields) > 1:
                         raise ValueError("Project has multiple MeteoFileName fields")
-                    site = self._embedded_reference(lines, "PVObject_SitePrj=pvSite",
-                                                    "End of PVObject pvSite")
-                    meteo = meteo_fields[0] if meteo_fields else None
+                    site, meteo = self._embedded_reference(lines, "PVObject_SitePrj=pvSite", "End of PVObject pvSite"), (meteo_fields[0] if meteo_fields else None)
                 else:
-                    _, lines = self._text(data)
-                    self._sections(lines)
-                    site = self._embedded_reference(lines, "PVObject_SiteSimul=pvSite",
-                                                    "End of PVObject pvSite")
-                    meteo = self._embedded_reference(lines, "PVObject_MeteoSimul=pvMeteo",
-                                                     "End of PVObject pvMeteo")
+                    self._sections(lines := self._text(data)[1])
+                    site, meteo = self._embedded_reference(lines, "PVObject_SiteSimul=pvSite", "End of PVObject pvSite"), self._embedded_reference(lines, "PVObject_MeteoSimul=pvMeteo", "End of PVObject pvMeteo")
                 hashes[path.name] = hashlib.sha256(data).hexdigest()
-                sources[path.name] = {"site": self._workspace_asset("Sites", site),
-                                      "meteo": self._workspace_asset("Meteo", meteo)}
-                for kind, asset in sources[path.name].items():
-                    if asset["name"] and not asset["workspace_file"]:
-                        warnings.append(f"{path.name}: {kind} {asset['name']} is not a workspace file")
+                sources[path.name] = {"site": self._workspace_asset("Sites", site), "meteo": self._workspace_asset("Meteo", meteo)}
+                warnings.extend(f"{path.name}: {kind} {asset['name']} is not a workspace file" for kind, asset in sources[path.name].items() if asset["name"] and not asset["workspace_file"])
             project_refs = sources[members[0].name]
             for path in members[1:]:
-                refs = sources[path.name]
                 for kind in ("site", "meteo"):
-                    expected, actual = project_refs[kind]["name"], refs[kind]["name"]
+                    expected, actual = project_refs[kind]["name"], sources[path.name][kind]["name"]
                     if expected and actual and expected.casefold() != actual.casefold():
                         warnings.append(f"{path.name}: {kind} differs from {members[0].name}")
             return {"project": project, "project_name": project_name, "utf8_bom": project_bom, "files": hashes,
-                    "variants": [path.suffix[1:] for path in members[1:]],
-                    "sources": sources, "warnings": warnings}
+                    "variants": [p.suffix[1:] for p in members[1:]], "sources": sources, "warnings": warnings}
 
     @staticmethod
     def _replace_site_block(lines: list[str], role: str, site_lines: list[str]) -> None:
-        header = f"PVObject_{role}=pvSite"
-        starts = [i for i, line in enumerate(lines) if line.strip() == header]
-        if len(starts) != 1:
-            raise ValueError(f"Expected one {header} section")
-        start = starts[0]
-        end = next((i for i in range(start + 1, len(lines))
-                    if lines[i].strip() == "End of PVObject pvSite"), None)
-        if end is None or any(line.strip().startswith("PVObject_")
-                              for line in lines[start + 1:end]):
+        start, end = VariantStore._section_bounds(lines, header := f"PVObject_{role}=pvSite", "End of PVObject pvSite")
+        if any(ln.strip().startswith("PVObject_") for ln in lines[start + 1:end]):
             raise ValueError(f"Unsupported nested {header} section")
-        prefix = lines[start][:len(lines[start]) - len(lines[start].lstrip())]
-        ending = "\r\n" if lines[start].endswith("\r\n") else "\n"
-        lines[start:end + 1] = [prefix + header + ending] + [
-            prefix + line.rstrip("\r\n") + ending for line in site_lines[1:-1]
-        ] + [prefix + "End of PVObject pvSite" + ending]
+        prefix, ending = lines[start][:len(lines[start]) - len(lines[start].lstrip())], ("\r\n" if lines[start].endswith("\r\n") else "\n")
+        lines[start:end + 1] = [prefix + header + ending] + [prefix + ln.rstrip("\r\n") + ending for ln in site_lines[1:-1]] + [prefix + "End of PVObject pvSite" + ending]
 
     @staticmethod
-    def _replace_unique_field(lines: list[str], key: str, value: str,
-                              bounds: tuple[int, int]) -> None:
-        indices = [i for i in range(bounds[0], bounds[1])
-                   if (field := FIELD.fullmatch(lines[i].rstrip("\r\n"))) and field[1] == key]
+    def _replace_unique_field(lines: list[str], key: str, value: str, bounds: tuple[int, int]) -> None:
+        indices = [i for i in range(bounds[0], bounds[1]) if (f := FIELD.fullmatch(lines[i].rstrip("\r\n"))) and f[1] == key]
         if len(indices) != 1:
             raise ValueError(f"Expected one {key} in target section")
-        index = indices[0]
-        original = lines[index]
-        ending = "\r\n" if original.endswith("\r\n") else "\n" if original.endswith("\n") else ""
-        lines[index] = original[:original.index("=") + 1] + value + ending
+        orig = lines[indices[0]]
+        lines[indices[0]] = orig[:orig.index("=") + 1] + value + ("\r\n" if orig.endswith("\r\n") else "\n" if orig.endswith("\n") else "")
 
-    @staticmethod
-    def _section_bounds(lines: list[str], header: str, closing: str) -> tuple[int, int]:
-        starts = [i for i, line in enumerate(lines) if line.strip() == header]
-        if len(starts) != 1:
-            raise ValueError(f"Expected one {header} section")
-        end = next((i for i in range(starts[0] + 1, len(lines))
-                    if lines[i].strip() == closing), None)
-        if end is None:
-            raise ValueError(f"Unclosed {header} section")
-        return starts[0], end
+    def _project_files_snapshot(self, project: str, expected_files: dict[str, str] | None,
+                                mismatch_err: str = "Project files changed since inspection") -> tuple[dict, dict[Path, bytes]]:
+        inventory = self.inspect_project(project)
+        if expected_files is not None and inventory["files"] != expected_files:
+            raise ValueError(mismatch_err)
+        originals = {}
+        for name, digest in (inventory["files"] if expected_files is None else expected_files).items():
+            path = self._path(project) if name == project else self._path(project, name[len(project[:-4]) + 1:])
+            self._check_hash(data := self._read(path), digest)
+            originals[path] = data
+        return inventory, originals
 
-    def _commit_project_files(self, project: str, originals: dict[Path, bytes],
-                              candidates: dict[Path, bytes]) -> dict:
+    def _commit_project_files(self, project: str, originals: dict[Path, bytes], candidates: dict[Path, bytes]) -> dict:
         if not originals or originals.keys() != candidates.keys():
             raise ValueError("Project transaction must contain the same complete file set")
         for data in (*originals.values(), *candidates.values()):
             self._check_size(data)
-        transaction_id = uuid.uuid4().hex
-        manifest_name = f"transaction.{transaction_id}.json"
-        backups = {}
-        staged = {}
-        written = []
+        tid, backups, staged, written = uuid.uuid4().hex, {}, {}, []
+        manifest_name = f"transaction.{tid}.json"
         try:
             for path, data in originals.items():
-                backups[path.name] = self._backup(path, data, transaction_id)
+                backups[path.name] = self._backup(path, data, tid)
             with (self._backup_folder() / manifest_name).open("x", encoding="utf-8") as stream:
-                json.dump({"version": 1, "transaction_id": transaction_id, "project": project,
-                           "backups": backups, "original_files": {
-                               path.name: hashlib.sha256(data).hexdigest()
-                               for path, data in originals.items()}}, stream)
+                json.dump({"version": 1, "transaction_id": tid, "project": project, "backups": backups,
+                           "original_files": {p.name: hashlib.sha256(d).hexdigest() for p, d in originals.items()}}, stream)
             for path, data in candidates.items():
-                if data == originals[path]:
-                    continue
-                staged[path] = fileio.stage(path, data)
-            expected = {path.name: hashlib.sha256(data).hexdigest()
-                        for path, data in originals.items()}
-            if self.inspect_project(project)["files"] != expected:
+                if data != originals[path]:
+                    staged[path] = paths.stage(path, data)
+            if self.inspect_project(project)["files"] != {p.name: hashlib.sha256(d).hexdigest() for p, d in originals.items()}:
                 raise ValueError("Project files changed while preparing the transaction")
             for path, temporary in staged.items():
                 os.replace(temporary, path)
                 written.append(path)
         except BaseException as exc:
-            self._rollback(exc, [(path.name, self._replace_checked, path, candidates[path], originals[path])
-                                 for path in reversed(written)],
-                           f"restore the originals from backup transaction {transaction_id}")
+            self._rollback(exc, [(p.name, self._replace_checked, p, candidates[p], originals[p]) for p in reversed(written)], f"restore the originals from backup transaction {tid}")
             raise
         finally:
             for temporary in staged.values():
                 temporary.unlink(missing_ok=True)
-        return {"backups": backups, "transaction_id": transaction_id,
-                "transaction_manifest": manifest_name,
-                "files": {path.name: hashlib.sha256(data).hexdigest()
-                          for path, data in candidates.items()}}
+        return {"backups": backups, "transaction_id": tid, "transaction_manifest": manifest_name,
+                "files": {p.name: hashlib.sha256(d).hexdigest() for p, d in candidates.items()}}
 
-    def update_project_parameters(self, project: str, expected_files: dict[str, str] | None = None,
-                                  project_name: str | None = None, dry_run: bool = False,
-                                  add_utf8_bom: bool = False) -> dict:
+    def update_project_parameters(self, project: str, expected_files: dict[str, str] | None = None, project_name: str | None = None,
+                                  dry_run: bool = False, add_utf8_bom: bool = False) -> dict:
         if project_name is None:
             raise ValueError("project_name is required")
         self._validate_display_name(project_name, "project_name")
         if not isinstance(dry_run, bool) or not isinstance(add_utf8_bom, bool):
             raise ValueError("dry_run and add_utf8_bom must be booleans")
         with self.lock:
-            inventory = self.inspect_project(project)
-            if expected_files is not None and inventory["files"] != expected_files:
-                raise ValueError("Project files changed since inspection")
-            files_to_read = inventory["files"] if expected_files is None else expected_files
-            originals = {}
-            for name, digest in files_to_read.items():
-                path = self._path(project) if name == project else self._path(project, name[len(project[:-4]) + 1:])
-                data = self._read(path)
-                self._check_hash(data, digest)
-                originals[path] = data
+            inventory, originals = self._project_files_snapshot(project, expected_files)
             path = self._path(project)
             data = originals[path]
-            bom = data.startswith(b"\xef\xbb\xbf")
             prefix = self._display_name_prefix(data, project_name, add_utf8_bom, "project_name")
-            text = data.decode("utf-8-sig")
-            lines = text.splitlines(keepends=True)
+            lines = (text := data.decode("utf-8-sig")).splitlines(keepends=True)
             index, = self._display_name_fields(lines, complete=True)
             name_before = FIELD.fullmatch(lines[index].rstrip("\r\n"))[2]
             lines[index] = replace_value(lines[index], project_name)
-            candidate = prefix + "".join(lines).encode("utf-8")
-            self._project_text(candidate)
+            self._project_text(candidate := prefix + "".join(lines).encode("utf-8"))
             candidates = {**originals, path: candidate}
-            diff = "".join(itertools.islice(difflib.unified_diff(text.splitlines(keepends=True), lines,
-                fromfile=path.name, tofile=path.name + " (candidate)"), 501))
-            result = {"project": project, "before_files": inventory["files"],
-                "files": {p.name: hashlib.sha256(value).hexdigest() for p, value in candidates.items()},
-                "changed": candidate != data, "dry_run": dry_run,
-                "diff": diff[:32000], "diff_truncated": len(diff) > 32000 or len(diff.splitlines()) > 500,
-                "name_change": {"before": name_before, "after": project_name},
-                "bom_added": add_utf8_bom and not bom}
-            if dry_run or candidate == data:
-                return result
-            return {**result, **self._commit_project_files(project, originals, candidates)}
+            diff = "".join(itertools.islice(difflib.unified_diff(text.splitlines(keepends=True), lines, fromfile=path.name, tofile=path.name + " (candidate)"), 501))
+            result = {
+                "project": project, "before_files": inventory["files"],
+                "files": {p.name: hashlib.sha256(v).hexdigest() for p, v in candidates.items()},
+                "changed": candidate != data, "dry_run": dry_run, "diff": diff[:32000],
+                "diff_truncated": len(diff) > 32000 or len(diff.splitlines()) > 500,
+                "name_change": {"before": name_before, "after": project_name}, "bom_added": add_utf8_bom and not data.startswith(b"\xef\xbb\xbf"),
+            }
+            return result if (dry_run or candidate == data) else {**result, **self._commit_project_files(project, originals, candidates)}
 
-    def update_project_sources(self, project: str, site_name: str, met_name: str,
-                               expected_files: dict[str, str] | None = None,
+    def update_project_sources(self, project: str, site_name: str, met_name: str, expected_files: dict[str, str] | None = None,
                                *, allow_synthetic_met: bool = False) -> dict:
         with self.lock:
-            inventory = self.inspect_project(project)
-            if expected_files is not None and inventory["files"] != expected_files:
-                raise ValueError("Project files changed since inspection or has no variants")
-            files_to_read = inventory["files"] if expected_files is None else expected_files
-            if len(files_to_read) < 2:
+            _, originals = self._project_files_snapshot(project, expected_files, "Project files changed since inspection or has no variants")
+            if len(originals) < 2:
                 raise ValueError("Project files changed since inspection or has no variants")
             site_ref = self._workspace_asset("Sites", site_name)
             if allow_synthetic_met and not met_name:
                 if not site_ref["workspace_file"]:
                     raise ValueError("SIT must be an existing workspace file")
-                effective_met_name = f"{Path(site_name).stem}_Synthetic.MET"
-                met_exists = False
+                effective_met_name, met_exists = f"{Path(site_name).stem}_Synthetic.MET", False
             else:
-                met_ref = self._workspace_asset("Meteo", met_name)
-                if not site_ref["workspace_file"] or not met_ref["workspace_file"]:
+                if not site_ref["workspace_file"] or not self._workspace_asset("Meteo", met_name)["workspace_file"]:
                     raise ValueError("SIT and MET must be existing workspace files")
-                effective_met_name = met_name
-                met_exists = True
-            site_path = self.workspace / "Sites" / site_name
-            site_bytes = self._read(site_path)
+                effective_met_name, met_exists = met_name, True
             try:
-                site_text = site_bytes.decode("utf-8-sig")
+                site_text = self._read(self.workspace / "Sites" / site_name).decode("utf-8-sig")
             except UnicodeDecodeError as exc:
                 raise ValueError("SIT must be UTF-8 text") from exc
             if "\x00" in site_text:
                 raise ValueError("SIT contains NUL bytes")
             site_lines = site_text.splitlines(keepends=True)
-            if (len(site_lines) < 3 or site_lines[0].strip() != "PVObject_=pvSite"
-                    or site_lines[-1].strip() != "End of PVObject pvSite"):
+            if len(site_lines) < 3 or site_lines[0].strip() != "PVObject_=pvSite" or site_lines[-1].strip() != "End of PVObject pvSite":
                 raise ValueError("SIT is not a supported pvSite object")
-            if any(line.strip().startswith(("PVObject_", "End of PVObject"))
-                   for line in site_lines[1:-1]):
+            if any(ln.strip().startswith(("PVObject_", "End of PVObject")) for ln in site_lines[1:-1]):
                 raise ValueError("SIT must contain one non-nested pvSite object")
-            identifiers = [field[2] for line in site_lines
-                           if (field := FIELD.fullmatch(line.rstrip("\r\n"))) and field[1] == "Site"]
-            filenames = [field[2] for line in site_lines
-                         if (field := FIELD.fullmatch(line.rstrip("\r\n"))) and field[1] == "NomF"]
+            identifiers = [f[2] for ln in site_lines if (f := FIELD.fullmatch(ln.rstrip("\r\n"))) and f[1] == "Site"]
+            filenames = [f[2] for ln in site_lines if (f := FIELD.fullmatch(ln.rstrip("\r\n"))) and f[1] == "NomF"]
             if len(identifiers) != 1 or not identifiers[0] or filenames != [site_name]:
                 raise ValueError("SIT site identity or filename does not match")
             site_identity = identifiers[0]
             from pvsyst_auto.project.synthesize import _is_pvmeteo_file, load_meteo_header
-
             met_path = self.workspace / "Meteo" / effective_met_name
-            site_body = [line.strip() for line in site_lines[1:-1] if line.strip()]
-            meteo_block_lines = (
-                load_meteo_header(met_path, site_identity, site_body)[1]
-                if met_exists and _is_pvmeteo_file(met_path) else None
-            )
-            originals = {}
+            meteo_block_lines = load_meteo_header(met_path, site_identity, [ln.strip() for ln in site_lines[1:-1] if ln.strip()])[1] if met_exists and _is_pvmeteo_file(met_path) else None
             candidates = {}
-            for name, digest in files_to_read.items():
-                path = self._path(project) if name == project else self._path(project, name[len(project[:-4]) + 1:])
-                data = self._read(path)
-                self._check_hash(data, digest)
-                text = data.decode("utf-8-sig")
-                lines = text.splitlines(keepends=True)
-                if name == project:
+            for path, data in originals.items():
+                lines = (text := data.decode("utf-8-sig")).splitlines(keepends=True)
+                if path.name == project:
                     self._replace_site_block(lines, "SitePrj", site_lines)
                     self._replace_unique_field(lines, "MeteoFileName", effective_met_name, (0, len(lines)))
                 else:
                     self._text(data)
                     self._replace_site_block(lines, "SiteSimul", site_lines)
-                    start, end = self._section_bounds(lines, "PVObject_MeteoSimul=pvMeteo",
-                                                      "End of PVObject pvMeteo")
-                    child = next((i for i in range(start + 1, end)
-                                  if lines[i].strip().startswith("PVObject_")), end)
+                    start, end = self._section_bounds(lines, "PVObject_MeteoSimul=pvMeteo", "End of PVObject pvMeteo")
+                    child = next((i for i in range(start + 1, end) if lines[i].strip().startswith("PVObject_")), end)
                     self._replace_unique_field(lines, "NomF", effective_met_name, (start + 1, child))
                     self._replace_unique_field(lines, "SiteM", site_identity, (start + 1, child))
                     if meteo_block_lines is not None:
                         self._section_bounds(lines, "PVObject_SiteMet=pvSite", "End of PVObject pvSite")
-                        indent = lines[start][:len(lines[start]) - len(lines[start].lstrip(" \t"))]
-                        eol = "\r\n" if "\r\n" in lines[start] else "\n"
-                        lines[start:end + 1] = [
-                            eol if not raw_ln else (indent + (raw_ln[2:] if raw_ln.startswith("  ") else raw_ln) + eol)
-                            for raw_ln in meteo_block_lines
-                        ]
+                        indent, eol = lines[start][:len(lines[start]) - len(lines[start].lstrip(" \t"))], ("\r\n" if "\r\n" in lines[start] else "\n")
+                        lines[start:end + 1] = [eol if not raw_ln else (indent + (raw_ln[2:] if raw_ln.startswith("  ") else raw_ln) + eol) for raw_ln in meteo_block_lines]
                     else:
                         self._replace_site_block(lines, "SiteMet", site_lines)
                     if "".join(lines) != text:
                         from pvsyst_auto.native.headless import strip_result_cache
-
                         lines, _ = strip_result_cache(lines)
                 candidate = (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
-                if name == project:
-                    self._project_text(candidate)
-                else:
-                    self._sections(self._text(candidate)[1])
-                originals[path] = data
+                self._project_text(candidate) if path.name == project else self._sections(self._text(candidate)[1])
                 candidates[path] = candidate
-            transaction = self._commit_project_files(project, originals, candidates)
-            return {"project": project, "site": site_name, "meteo": met_name, **transaction}
+            return {"project": project, "site": site_name, "meteo": met_name, **self._commit_project_files(project, originals, candidates)}

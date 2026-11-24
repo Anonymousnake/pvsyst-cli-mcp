@@ -10,7 +10,7 @@ from pvsyst_auto.components.store import electrical_inventory
 from pvsyst_auto.engineering.diagnostics import compact_diagnostics_summary, diagnose_simulation_csv
 from pvsyst_auto.engineering.sizing import plan_capacity
 from pvsyst_auto.project.paths import project_path, variant_id, workspace_file, write_json
-from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
+from pvsyst_auto.components.editor import pan_validation_fields
 from pvsyst_auto.weather.preparation import load_weather_manifest, compare_native_weather, inspect_met_calendar
 from pvsyst_auto.results import annual_summary, fingerprint, verify_native_csv_context, verify_pdf_header
 from pvsyst_auto.project.tracking import create_tracking_variant

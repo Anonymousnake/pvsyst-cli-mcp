@@ -1,9 +1,4 @@
-"""Pure-text zero-template synthesizer for PVsyst 8.1.7 .PRJ and .VC0 files.
-
-Generates complete, valid UTF-8 BOM + CRLF project and calculation-variant text
-directly from structured site, meteo, component, orientation, subarray, and
-circuit inputs without reading any DataRO _DEMO_* seed files.
-"""
+"""Pure-text zero-template synthesizer for PVsyst 8.1.7 .PRJ and .VC0 files."""
 from __future__ import annotations
 
 import math
@@ -14,69 +9,34 @@ from pvsyst_auto.components.store import FIELD
 from pvsyst_auto.project.bifacial import render_bifacial_block
 from pvsyst_auto.project.circuit import MAX_COUNT, inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
-from pvsyst_auto.scene.ground import pv_shading_header
 from pvsyst_auto.validation import finite_number as _finite
 from pvsyst_auto.versions import SYNTH_VERSION
 from pvsyst_auto.weather.preparation import read_object_prefix
 
-DEFAULT_PAN_NAME = "Generic_Mono_300W.PAN"
-DEFAULT_OND_NAME = "Generic_7.5kW.OND"
-DEFAULT_PROJECT_SITE = "TemplateSite.SIT"
-DEFAULT_PROJECT_SITE_NAME = "TemplateSite"
-DEFAULT_PROJECT_MET = "TemplateMeteo.MET"
+DEFAULT_PAN_NAME, DEFAULT_OND_NAME = "Generic_Mono_300W.PAN", "Generic_7.5kW.OND"
+DEFAULT_PROJECT_SITE, DEFAULT_PROJECT_SITE_NAME, DEFAULT_PROJECT_MET = "TemplateSite.SIT", "TemplateSite", "TemplateMeteo.MET"
 _NORMAL_TOL = 1e-6
 
 # Standard Fresnel AR IAM 9-point cubic profile used by PVsyst 8.1 grid variants.
 _DEFAULT_IAM_LINES = (
-    "      PVObject_IAM=pvIAM",
-    "        Flags=$00",
-    "        IAMMode=FresnelAR",
-    "        N_Glass=1.526",
-    "        N_EVA=1.490",
-    "        N_ARCoating=1.290",
-    "        DGlass=4.00",
-    "        DArCoating=0.100",
-    "        IAMProfile=TCubicProfile",
-    "          NPtsMax=9",
-    "          NPtsEff=9",
-    "          LastCompile=$B18D",
-    "          Mode=3",
-    "          Point_1=0.0,1.00000",
-    "          Point_2=30.0,0.99896",
-    "          Point_3=50.0,0.98727",
-    "          Point_4=60.0,0.96252",
-    "          Point_5=70.0,0.89160",
-    "          Point_6=75.0,0.81433",
-    "          Point_7=80.0,0.67885",
-    "          Point_8=85.0,0.43754",
-    "          Point_9=90.0,0.00000",
-    "        End of TCubicProfile",
-    "      End of PVObject pvIAM",
+    "      PVObject_IAM=pvIAM", "        Flags=$00", "        IAMMode=FresnelAR",
+    "        N_Glass=1.526", "        N_EVA=1.490", "        N_ARCoating=1.290",
+    "        DGlass=4.00", "        DArCoating=0.100", "        IAMProfile=TCubicProfile",
+    "          NPtsMax=9", "          NPtsEff=9", "          LastCompile=$B18D", "          Mode=3",
+    "          Point_1=0.0,1.00000", "          Point_2=30.0,0.99896", "          Point_3=50.0,0.98727",
+    "          Point_4=60.0,0.96252", "          Point_5=70.0,0.89160", "          Point_6=75.0,0.81433",
+    "          Point_7=80.0,0.67885", "          Point_8=85.0,0.43754", "          Point_9=90.0,0.00000",
+    "        End of TCubicProfile", "      End of PVObject pvIAM",
 )
-
 _DEFAULT_WIRING_LINES = (
-    "      WiringResistance=TWiringResistance",
-    "        TypeLayout=1",
-    "        TypeMetal=1",
-    "        NGroupS=1",
-    "        NGroupP=1",
-    "        NChamp=1",
-    "        Resistivity=18.800",
-    "        TargetLoss=0.015",
-    "        NoSect=1,1,1,",
-    "      EndTags",
+    "      WiringResistance=TWiringResistance", "        TypeLayout=1", "        TypeMetal=1",
+    "        NGroupS=1", "        NGroupP=1", "        NChamp=1", "        Resistivity=18.800",
+    "        TargetLoss=0.015", "        NoSect=1,1,1,", "      EndTags",
 )
-
 _DEFAULT_SHADING_LINES = (
-    "  PVObject_Ombrage=pvShading",
-    "    Comment=No shading scene defined",
-    "    Flags=$00080000",
-    "    Precision=1",
-    "    FracOmbreMod=1.000",
-    "    FracOmbreThin=0.400",
-    "    GCROffset=1.0",
-    "    DisplayedRef=refGeographical",
-    "  End of PVObject pvShading",
+    "  PVObject_Ombrage=pvShading", "    Comment=No shading scene defined", "    Flags=$00080000",
+    "    Precision=1", "    FracOmbreMod=1.000", "    FracOmbreThin=0.400", "    GCROffset=1.0",
+    "    DisplayedRef=refGeographical", "  End of PVObject pvShading",
 )
 
 
@@ -89,8 +49,7 @@ def _pos_int(value, context: str) -> int:
 def _fmt_angle(value: float, max_decimals: int = 3) -> str:
     """Format an angle preserving up to 3 decimal places while keeping exact 0.1-step values compact."""
     number = 0.0 if abs(value) < 1e-9 else round(float(value), max_decimals)
-    if abs(number) < 1e-9:
-        number = 0.0
+    number = 0.0 if abs(number) < 1e-9 else number
     text = f"{number:.{max_decimals}f}".rstrip("0")
     return text + "0" if text.endswith(".") else text
 
@@ -104,8 +63,7 @@ def _clean_text(value: str, label: str) -> str:
 def _normalize_azimuth(degrees: float) -> float:
     """Normalize PVsyst azimuth into [-180, 180] degrees (0 = south, west positive)."""
     value = ((degrees + 180.0) % 360.0) - 180.0
-    if abs(value + 180.0) < 1e-9:
-        value = 180.0
+    value = 180.0 if abs(value + 180.0) < 1e-9 else value
     return 0.0 if abs(value) < 1e-9 else value
 
 
@@ -115,26 +73,16 @@ def placeholder_site_block(site_name: str = DEFAULT_PROJECT_SITE,
     safe_filename(site_name, ".SIT")
     ident = _clean_text(site_identity, "site_identity")
     return ident, [
-        f"Comment={ident};;",
-        f"Version={SYNTH_VERSION}",
-        "Flags=$0006083F",
-        f"NomF={site_name}",
-        f"Site={ident}",
-        "Latitude=46.2400",
-        "Longitude=6.1100",
-        "Altitude=425",
-        "TimeZone=1.0",
-        "HLeg=True",
-        "UnitsDisp=kWh_m2_m",
-        "Albedo=0.20",
+        f"Comment={ident};;", f"Version={SYNTH_VERSION}", "Flags=$0006083F", f"NomF={site_name}",
+        f"Site={ident}", "Latitude=46.2400", "Longitude=6.1100", "Altitude=425",
+        "TimeZone=1.0", "HLeg=True", "UnitsDisp=kWh_m2_m", "Albedo=0.20",
     ]
 
 
 def load_site_block(site_path: Path) -> tuple[str, str, list[str]]:
     """Parse a workspace .SIT file into (nom_f, site_identity, body_lines)."""
-    raw = site_path.read_bytes()
     try:
-        text = raw.decode("utf-8-sig")
+        text = site_path.read_bytes().decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise ValueError(f"SIT file {site_path.name} must be UTF-8 text") from exc
     if "\x00" in text:
@@ -147,12 +95,9 @@ def load_site_block(site_path: Path) -> tuple[str, str, list[str]]:
     body = [line.strip() for line in lines[1:-1] if line.strip()]
     if any(line.startswith(("PVObject_", "End of PVObject")) for line in body):
         raise ValueError(f"SIT file {site_path.name} must contain one non-nested pvSite object")
-    nom_f = None
-    site_identity = None
-    updated_body = []
+    nom_f, site_identity, updated_body = None, None, []
     for line in body:
-        match = FIELD.fullmatch(line)
-        if match:
+        if match := FIELD.fullmatch(line):
             if match[1] == "NomF":
                 nom_f = match[2]
                 updated_body.append(f"NomF={site_path.name}")
@@ -162,7 +107,6 @@ def load_site_block(site_path: Path) -> tuple[str, str, list[str]]:
         updated_body.append(line)
     if nom_f is None:
         updated_body.insert(0, f"NomF={site_path.name}")
-        nom_f = site_path.name
     if not site_identity:
         site_identity = site_path.stem
         updated_body.insert(1, f"Site={site_identity}")
@@ -177,94 +121,58 @@ def _is_pvmeteo_file(met_path: Path) -> bool:
         line = raw_line.rstrip(b"\r")
         if index == 1 and line.startswith(b"\xef\xbb\xbf"):
             line = line[3:]
-        try:
-            text = line.decode("utf-8")
-        except UnicodeDecodeError:
+        for enc in ("utf-8", "cp1252"):
             try:
-                text = line.decode("cp1252")
+                text = line.decode(enc)
+                break
             except UnicodeDecodeError:
-                return False
-        stripped = text.strip()
-        if stripped:
+                text = None
+        if text is None:
+            return False
+        if stripped := text.strip():
             return stripped == "PVObject_=pvMeteo"
     return False
 
 
 def load_meteo_header(met_path: Path, site_identity: str, site_body: list[str]) -> tuple[str, list[str]]:
     """Build PVObject_MeteoSimul=pvMeteo block lines from a workspace .MET header."""
-    header_fields: list[tuple[str, str]] = []
-    embedded_site: list[str] = []
-
+    header_fields, embedded_site = [], []
     if _is_pvmeteo_file(met_path):
         segments, _ = read_object_prefix(met_path)
-        root_entries = sorted(
-            ((entry["line"], key, entry["value"])
-             for key, items in segments.get("root", {}).items()
-             for entry in items),
+        sorted_entries = lambda sec: sorted(
+            ((entry["line"], key, entry["value"]) for key, items in segments.get(sec, {}).items() for entry in items),
             key=lambda item: item[0],
         )
-        for _, key, value in root_entries:
-            if key not in ("Comment", "Version"):
-                header_fields.append((key, value))
-        site_entries = sorted(
-            ((entry["line"], key, entry["value"])
-             for key, items in segments.get("SiteMet", {}).items()
-             for entry in items),
-            key=lambda item: item[0],
-        )
-        embedded_site = [f"{key}={value}" for _, key, value in site_entries]
+        header_fields = [(k, v) for _, k, v in sorted_entries("root") if k not in ("Comment", "Version")]
+        embedded_site = [f"{k}={v}" for _, k, v in sorted_entries("SiteMet")]
 
     field_map = dict(header_fields)
     ordered_keys = [
         ("Flags", field_map.get("Flags", "$010084E1")),
         ("NomF", met_path.name),
         ("SiteM", field_map.get("SiteM") or site_identity),
+        *((k, v) for k, v in header_fields if k not in ("Flags", "NomF", "SiteM")),
     ]
-    for key, value in header_fields:
-        if key in ("Flags", "NomF", "SiteM"):
-            continue
-        ordered_keys.append((key, value))
-
-    # Preserve the MET file's own embedded PVObject_SiteMet declarations when present;
-    # fall back to the project site_body only if the MET header has no embedded site block.
     site_lines = list(embedded_site) if embedded_site else list(site_body)
-
-    meteo_lines = ["  PVObject_MeteoSimul=pvMeteo"]
-    for key, value in ordered_keys:
-        meteo_lines.append(f"    {key}={value}")
-    meteo_lines.append("")
-    meteo_lines.append("    PVObject_SiteMet=pvSite")
-    for line in site_lines:
-        meteo_lines.append(f"      {line}")
-    meteo_lines.append("    End of PVObject pvSite")
-    meteo_lines.append("  End of PVObject pvMeteo")
-    return met_path.name, meteo_lines
+    return met_path.name, [
+        "  PVObject_MeteoSimul=pvMeteo",
+        *(f"    {k}={v}" for k, v in ordered_keys),
+        "", "    PVObject_SiteMet=pvSite",
+        *(f"      {line}" for line in site_lines),
+        "    End of PVObject pvSite", "  End of PVObject pvMeteo",
+    ]
 
 
-def synthesize_meteo_from_site(met_name: str, site_identity: str, site_body: list[str],
-                               *, pas_accum: int = 60) -> list[str]:
+def synthesize_meteo_from_site(met_name: str, site_identity: str, site_body: list[str], *, pas_accum: int = 60) -> list[str]:
     """Build PVObject_MeteoSimul=pvMeteo lines when no workspace .MET header is parsed yet."""
     safe_filename(met_name, ".MET")
     ident = _clean_text(site_identity, "site_identity")
-    lines = [
-        "  PVObject_MeteoSimul=pvMeteo",
-        "    Flags=$010084E1",
-        f"    NomF={met_name}",
-        f"    SiteM={ident}",
-        "    UsesPerez=True",
-        "    IsSourceUt=False",
-        "    HourShift=0",
-        "    TimeShift=0",
-        "    TimeShiftTotalMin=0",
-        f"    PasAccum={pas_accum}",
-        "",
-        "    PVObject_SiteMet=pvSite",
+    return [
+        "  PVObject_MeteoSimul=pvMeteo", "    Flags=$010084E1", f"    NomF={met_name}", f"    SiteM={ident}",
+        "    UsesPerez=True", "    IsSourceUt=False", "    HourShift=0", "    TimeShift=0",
+        "    TimeShiftTotalMin=0", f"    PasAccum={pas_accum}", "", "    PVObject_SiteMet=pvSite",
+        *(f"      {line}" for line in site_body), "    End of PVObject pvSite", "  End of PVObject pvMeteo",
     ]
-    for line in site_body:
-        lines.append(f"      {line}")
-    lines.append("    End of PVObject pvSite")
-    lines.append("  End of PVObject pvMeteo")
-    return lines
 
 
 def _normalize_orientation(item: dict) -> dict:
@@ -272,36 +180,22 @@ def _normalize_orientation(item: dict) -> dict:
         raise ValueError("Each orientation specification must be an object")
     oid = _pos_int(item.get("id", 1), "orientation.id")
     raw_ft = item.get("field_type", "FixedPlane")
-    # Map friendly aliases to native PVsyst 8.1 FieldType tokens.
-    if raw_ft == "UnlimSheds":
-        field_type = "Sheds"
-    elif raw_ft == "RegularSheds":
-        field_type = "FixedPlane"
-    else:
-        field_type = raw_ft
+    field_type = {"UnlimSheds": "Sheds", "RegularSheds": "FixedPlane"}.get(raw_ft, raw_ft)
     if field_type not in ("FixedPlane", "Sheds", "UnlimTracking", "TrackHorizNSAxis"):
         raise ValueError(f"Unsupported orientation field_type: {raw_ft!r}")
     tilt = _finite(item.get("tilt_deg", 25.0), "orientation.tilt_deg", minimum=0.0, maximum=90.0)
     azim = _finite(item.get("azimuth_deg", 0.0), "orientation.azimuth_deg", minimum=-180.0, maximum=180.0)
     base_slope = _finite(item.get("base_slope_deg", 0.0), "orientation.base_slope_deg", minimum=-90.0, maximum=90.0)
-    extra = dict(item.get("extra_fields") or {})
-
     default_comment = {
         "FixedPlane": f"Fixed, Tilt {_fmt_angle(tilt)} deg, Azim. {_fmt_angle(azim)} deg",
         "Sheds": f"Unlimited sheds, Tilt {_fmt_angle(tilt)} deg, Azim. {_fmt_angle(azim)} deg",
         "UnlimTracking": "Unlimited trackers, horizontal axis N-S",
         "TrackHorizNSAxis": "Tracking, horizontal axis N-S",
     }[field_type]
-
     spec = {
-        "id": oid,
-        "field_type": field_type,
-        "tilt_deg": tilt,
-        "azimuth_deg": azim,
-        "base_slope_deg": base_slope,
-        "comment": item.get("comment") or default_comment,
-        "extra_fields": extra,
-        "bifacial": item.get("bifacial"),
+        "id": oid, "field_type": field_type, "tilt_deg": tilt, "azimuth_deg": azim,
+        "base_slope_deg": base_slope, "comment": item.get("comment") or default_comment,
+        "extra_fields": dict(item.get("extra_fields") or {}), "bifacial": item.get("bifacial"),
     }
     if field_type == "Sheds":
         spec.update({
@@ -320,18 +214,17 @@ def _normalize_orientation(item: dict) -> dict:
         max_phi = _finite(item.get("max_phi_deg", 60.0), "orientation.max_phi_deg", minimum=0.0, maximum=90.0)
         if not min_phi < max_phi:
             raise ValueError("orientation.min_phi_deg must be less than max_phi_deg")
+        unlim = field_type == "UnlimTracking"
         spec.update({
             "axis_azimuth_deg": _finite(item.get("axis_azimuth_deg", 0.0), "orientation.axis_azimuth_deg", minimum=-180.0, maximum=180.0),
-            "min_phi_deg": min_phi,
-            "max_phi_deg": max_phi,
-            "backtracking": bool(item.get("backtracking", True)),
-            "irrad_optimiz": bool(item.get("irrad_optimiz", False)),
+            "min_phi_deg": min_phi, "max_phi_deg": max_phi,
+            "backtracking": bool(item.get("backtracking", True)), "irrad_optimiz": bool(item.get("irrad_optimiz", False)),
             "pitch_m": _finite(item.get("pitch_m", 12.0), "orientation.pitch_m", minimum=0.1),
             "collector_width_m": _finite(item.get("collector_width_m", 4.282), "orientation.collector_width_m", minimum=0.1),
-            "inactive_band_width_1_m": _finite(item.get("inactive_band_width_1_m", 0.02 if field_type == "UnlimTracking" else 0.0), "orientation.inactive_band_width_1_m", minimum=0.0),
-            "inactive_band_width_2_m": _finite(item.get("inactive_band_width_2_m", 0.02 if field_type == "UnlimTracking" else 0.0), "orientation.inactive_band_width_2_m", minimum=0.0),
+            "inactive_band_width_1_m": _finite(item.get("inactive_band_width_1_m", 0.02 if unlim else 0.0), "orientation.inactive_band_width_1_m", minimum=0.0),
+            "inactive_band_width_2_m": _finite(item.get("inactive_band_width_2_m", 0.02 if unlim else 0.0), "orientation.inactive_band_width_2_m", minimum=0.0),
         })
-        if field_type == "UnlimTracking":
+        if unlim:
             spec.update({
                 "shed_count": _pos_int(item.get("shed_count", 10), "orientation.shed_count"),
                 "electrical_effect": bool(item.get("electrical_effect", False)),
@@ -352,8 +245,7 @@ def _normalize_orientation(item: dict) -> dict:
 
 def _orient_shelf_lines(spec: dict) -> list[str]:
     return [
-        f"    Pitch={spec['pitch_m']:.3f}",
-        f"    CollectorWidth={spec['collector_width_m']:.3f}",
+        f"    Pitch={spec['pitch_m']:.3f}", f"    CollectorWidth={spec['collector_width_m']:.3f}",
         f"    InactiveBandWidth1={spec['inactive_band_width_1_m']:.3f}",
         f"    InactiveBandWidth2={spec['inactive_band_width_2_m']:.3f}",
     ]
@@ -361,11 +253,9 @@ def _orient_shelf_lines(spec: dict) -> list[str]:
 
 def _orient_shed_geometry_lines(spec: dict) -> list[str]:
     return [
-        *_orient_shelf_lines(spec),
-        f"    NSheds={spec['shed_count']}",
+        *_orient_shelf_lines(spec), f"    NSheds={spec['shed_count']}",
         f"    UsesElectricalEffect={'True' if spec['electrical_effect'] else 'False'}",
-        f"    FracShadingFactor={spec['shading_factor']:.3f}",
-        f"    NModInWidth={spec['module_columns']}",
+        f"    FracShadingFactor={spec['shading_factor']:.3f}", f"    NModInWidth={spec['module_columns']}",
         f"    CellWidth={spec['cell_width_m']:.3f}",
     ]
 
@@ -375,61 +265,30 @@ def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) 
     spec = _normalize_orientation(orient)
     ft = spec["field_type"]
     lines = [
-        "    PVObject_=pvOrient",
-        f"      Comment={_clean_text(spec['comment'], 'orientation.comment')}",
-        f"      Version={version}",
-        "      Flags=$00",
-        f"    NoOrient={spec['id']}",
-        f"    FieldType={ft}",
+        "    PVObject_=pvOrient", f"      Comment={_clean_text(spec['comment'], 'orientation.comment')}",
+        f"      Version={version}", "      Flags=$00", f"    NoOrient={spec['id']}", f"    FieldType={ft}",
     ]
-    if ft == "FixedPlane":
-        lines.extend([
-            f"    FieldTilt={_fmt_angle(spec['tilt_deg'])}",
-            f"    FieldAzim={_fmt_angle(spec['azimuth_deg'])}",
-            f"    BaseSlope={_fmt_angle(spec['base_slope_deg'])}",
-        ])
-    elif ft == "Sheds":
-        lines.extend([
-            f"    FieldTilt={_fmt_angle(spec['tilt_deg'])}",
-            f"    FieldAzim={_fmt_angle(spec['azimuth_deg'])}",
-            *_orient_shed_geometry_lines(spec),
-        ])
+    if ft in ("FixedPlane", "Sheds"):
+        lines.extend([f"    FieldTilt={_fmt_angle(spec['tilt_deg'])}", f"    FieldAzim={_fmt_angle(spec['azimuth_deg'])}"])
+        lines.extend([f"    BaseSlope={_fmt_angle(spec['base_slope_deg'])}"] if ft == "FixedPlane" else _orient_shed_geometry_lines(spec))
     elif ft == "UnlimTracking":
         lines.extend([
-            f"    AxisAzim={_fmt_angle(spec['axis_azimuth_deg'])}",
-            f"    MinPhi={_fmt_angle(spec['min_phi_deg'])}",
-            f"    MaxPhi={_fmt_angle(spec['max_phi_deg'])}",
-            f"    UsesBacktracking={'True' if spec['backtracking'] else 'False'}",
-            f"    UsesIrradOptimiz={'True' if spec['irrad_optimiz'] else 'False'}",
-            *_orient_shed_geometry_lines(spec),
+            f"    AxisAzim={_fmt_angle(spec['axis_azimuth_deg'])}", f"    MinPhi={_fmt_angle(spec['min_phi_deg'])}",
+            f"    MaxPhi={_fmt_angle(spec['max_phi_deg'])}", f"    UsesBacktracking={'True' if spec['backtracking'] else 'False'}",
+            f"    UsesIrradOptimiz={'True' if spec['irrad_optimiz'] else 'False'}", *_orient_shed_geometry_lines(spec),
         ])
     elif ft == "TrackHorizNSAxis":
         lines.extend([
-            f"    AxisAzim={_fmt_angle(spec['axis_azimuth_deg'])}",
-            f"    MinPhi={_fmt_angle(spec['min_phi_deg'])}",
-            f"    MaxPhi={_fmt_angle(spec['max_phi_deg'])}",
-            f"    CentralGap={spec['central_gap_m']:.2f}",
-            f"    PitchSlope={_fmt_angle(spec['pitch_slope_deg'])}",
-            f"    UsesBacktracking={'True' if spec['backtracking'] else 'False'}",
-            "    PartialSystemNoRefField=-1",
-            "    PartialSystemNoSubField=1",
-            "    PartialSystemMode=psmUserAll",
-            "    PartialSystemInclObj=True",
-            f"    UsesIrradOptimiz={'True' if spec['irrad_optimiz'] else 'False'}",
-            f"    UsesWindStow={'True' if spec['wind_stow'] else 'False'}",
-            f"    WindStowSpeed={spec['wind_stow_speed_ms']:.3f}",
-            f"    WindStowPosition={spec['wind_stow_position_deg']:.3f}",
-            *_orient_shelf_lines(spec),
+            f"    AxisAzim={_fmt_angle(spec['axis_azimuth_deg'])}", f"    MinPhi={_fmt_angle(spec['min_phi_deg'])}",
+            f"    MaxPhi={_fmt_angle(spec['max_phi_deg'])}", f"    CentralGap={spec['central_gap_m']:.2f}",
+            f"    PitchSlope={_fmt_angle(spec['pitch_slope_deg'])}", f"    UsesBacktracking={'True' if spec['backtracking'] else 'False'}",
+            "    PartialSystemNoRefField=-1", "    PartialSystemNoSubField=1", "    PartialSystemMode=psmUserAll",
+            "    PartialSystemInclObj=True", f"    UsesIrradOptimiz={'True' if spec['irrad_optimiz'] else 'False'}",
+            f"    UsesWindStow={'True' if spec['wind_stow'] else 'False'}", f"    WindStowSpeed={spec['wind_stow_speed_ms']:.3f}",
+            f"    WindStowPosition={spec['wind_stow_position_deg']:.3f}", *_orient_shelf_lines(spec),
         ])
-
-    lines.extend([
-        "    UsesTiltAver=False",
-        "    UsesAzimAver=False",
-        "    UsesSlopeAver=False",
-        "    BTNoTrackers=-1,-1,",
-    ])
-    for key, value in spec["extra_fields"].items():
-        lines.append(f"    {key}={value}")
+    lines.extend(["    UsesTiltAver=False", "    UsesAzimAver=False", "    UsesSlopeAver=False", "    BTNoTrackers=-1,-1,",
+                  *(f"    {k}={v}" for k, v in spec["extra_fields"].items())])
     if spec["bifacial"] is not None:
         lines.extend(render_bifacial_block(spec["bifacial"], field_type=ft, indent="    "))
     lines.append("    End of TOrientGroup")
@@ -441,8 +300,7 @@ def _normalize_subarray(item: dict, *, default_pan: str, default_ond: str) -> di
         raise ValueError("Each subarray specification must be an object")
     sid = _pos_int(item.get("subarray_id", 1), "subarray.subarray_id")
     oid = _pos_int(item.get("orientation_id", 1), "subarray.orientation_id")
-    comment = _clean_text(item.get("comment") or (f"PV Array" if sid == 1 else f"Sub-array #{sid}"),
-                          f"subarray {sid} comment")
+    comment = _clean_text(item.get("comment") or ("PV Array" if sid == 1 else f"Sub-array #{sid}"), f"subarray {sid} comment")
     pan_name = _clean_text(item.get("pan_name") or default_pan, f"subarray {sid} pan_name")
     ond_name = _clean_text(item.get("ond_name") or default_ond, f"subarray {sid} ond_name")
     safe_filename(pan_name, ".PAN")
@@ -461,8 +319,8 @@ def _normalize_subarray(item: dict, *, default_pan: str, default_ond: str) -> di
     if ps_raw >= 0 and not independent_mppt:
         raise ValueError(f"subarray {sid} power_sharing_inverter_id >= 0 requires independent_mppt=True")
     if independent_mppt:
-        n_inv_mppt = _pos_int(item.get("n_inv_mppt", n_string_ch if n_string_ch % n_inverter == 0 else n_inverter),
-                              f"subarray {sid} n_inv_mppt")
+        default_mppt = n_string_ch if n_string_ch % n_inverter == 0 else n_inverter
+        n_inv_mppt = _pos_int(item.get("n_inv_mppt", default_mppt), f"subarray {sid} n_inv_mppt")
         if n_inv_mppt % n_inverter != 0:
             raise ValueError(f"subarray {sid}: n_inv_mppt ({n_inv_mppt}) must be divisible by n_inverter ({n_inverter})")
         if n_string_ch % n_inv_mppt != 0:
@@ -473,47 +331,26 @@ def _normalize_subarray(item: dict, *, default_pan: str, default_ond: str) -> di
             raise ValueError(f"subarray {sid}: ordinary mode (independent_mppt=False) requires n_inv_mppt=1")
         if n_string_ch % n_inverter != 0:
             raise ValueError(f"subarray {sid}: n_string_ch ({n_string_ch}) must be divisible by n_inverter ({n_inverter})")
-    pnom_ac_in_mppt = _finite(item.get("pnom_ac_in_mppt", 7.5), f"subarray {sid} pnom_ac_in_mppt", minimum=0.0)
-    lid_loss = _finite(item.get("lid_loss", 0.0), f"subarray {sid} lid_loss", minimum=0.0, maximum=100.0)
-    pmism_raw = item.get("pmism_mpp")
-    pqual_raw = item.get("module_quality_loss")
-    pmism_explicit = item.get("pmism_mpp_explicit")
-    if pmism_explicit is None:
-        pmism_explicit = pmism_raw is not None
-    pqual_explicit = item.get("module_quality_loss_explicit")
-    if pqual_explicit is None:
-        pqual_explicit = pqual_raw is not None
-    pmism_mpp = _finite(2.0 if pmism_raw is None else pmism_raw, f"subarray {sid} pmism_mpp", minimum=0.0, maximum=100.0)
-    pqual = _finite(3.0 if pqual_raw is None else pqual_raw, f"subarray {sid} module_quality_loss", minimum=-5.0, maximum=20.0)
-    dc_loss_pct = _finite(item.get("dc_wiring_loss_pct", 1.5), f"subarray {sid} dc_wiring_loss_pct", minimum=0.0, maximum=100.0)
-    dc_res_mohm = _finite(item.get("dc_wiring_resistance_mohm", 0.0), f"subarray {sid} dc_wiring_resistance_mohm", minimum=0.0)
+    pmism_raw, pqual_raw = item.get("pmism_mpp"), item.get("module_quality_loss")
+    pmism_explicit = pmism_raw is not None if item.get("pmism_mpp_explicit") is None else item.get("pmism_mpp_explicit")
+    pqual_explicit = pqual_raw is not None if item.get("module_quality_loss_explicit") is None else item.get("module_quality_loss_explicit")
     return {
-        "subarray_id": sid,
-        "orientation_id": oid,
-        "comment": comment,
-        "pan_name": pan_name,
-        "ond_name": ond_name,
-        "n_mod_serie": n_mod_serie,
-        "n_string_ch": n_string_ch,
-        "n_inverter": n_inverter,
-        "n_inv_mppt": n_inv_mppt,
-        "independent_mppt": independent_mppt,
-        "power_sharing_inverter_id": ps_raw,
-        "pnom_ac_in_mppt": pnom_ac_in_mppt,
-        "lid_loss": lid_loss,
-        "pmism_mpp": pmism_mpp,
+        "subarray_id": sid, "orientation_id": oid, "comment": comment, "pan_name": pan_name, "ond_name": ond_name,
+        "n_mod_serie": n_mod_serie, "n_string_ch": n_string_ch, "n_inverter": n_inverter, "n_inv_mppt": n_inv_mppt,
+        "independent_mppt": independent_mppt, "power_sharing_inverter_id": ps_raw,
+        "pnom_ac_in_mppt": _finite(item.get("pnom_ac_in_mppt", 7.5), f"subarray {sid} pnom_ac_in_mppt", minimum=0.0),
+        "lid_loss": _finite(item.get("lid_loss", 0.0), f"subarray {sid} lid_loss", minimum=0.0, maximum=100.0),
+        "pmism_mpp": _finite(2.0 if pmism_raw is None else pmism_raw, f"subarray {sid} pmism_mpp", minimum=0.0, maximum=100.0),
         "pmism_mpp_explicit": bool(pmism_explicit),
-        "module_quality_loss": pqual,
+        "module_quality_loss": _finite(3.0 if pqual_raw is None else pqual_raw, f"subarray {sid} module_quality_loss", minimum=-5.0, maximum=20.0),
         "module_quality_loss_explicit": bool(pqual_explicit),
-        "dc_wiring_loss_pct": dc_loss_pct,
-        "dc_wiring_resistance_mohm": dc_res_mohm,
+        "dc_wiring_loss_pct": _finite(item.get("dc_wiring_loss_pct", 1.5), f"subarray {sid} dc_wiring_loss_pct", minimum=0.0, maximum=100.0),
+        "dc_wiring_resistance_mohm": _finite(item.get("dc_wiring_resistance_mohm", 0.0), f"subarray {sid} dc_wiring_resistance_mohm", minimum=0.0),
     }
 
 
-def synthesize_circuit_and_subarrays(subarrays: list[dict], *,
-                                     default_pan: str = DEFAULT_PAN_NAME,
-                                     default_ond: str = DEFAULT_OND_NAME,
-                                     version: str = SYNTH_VERSION) -> tuple[list[str], list[str], list[dict]]:
+def synthesize_circuit_and_subarrays(subarrays: list[dict], *, default_pan: str = DEFAULT_PAN_NAME,
+                                     default_ond: str = DEFAULT_OND_NAME, version: str = SYNTH_VERSION) -> tuple[list[str], list[str], list[dict]]:
     """Build synchronized PVObject_SystemCircuit and SubArrays blocks."""
     if not isinstance(subarrays, list) or not subarrays:
         raise ValueError("At least one subarray specification is required")
@@ -524,12 +361,10 @@ def synthesize_circuit_and_subarrays(subarrays: list[dict], *,
             raise ValueError(f"Duplicate subarray_id {sub['subarray_id']}")
         seen_ids.add(sub["subarray_id"])
 
-    # Validate PowerSharing groups.
     shared_groups: dict[int, list[dict]] = defaultdict(list)
     for sub in normalized:
-        gid = sub["power_sharing_inverter_id"]
-        if gid >= 0:
-            shared_groups[gid].append(sub)
+        if sub["power_sharing_inverter_id"] >= 0:
+            shared_groups[sub["power_sharing_inverter_id"]].append(sub)
     for gid, members in shared_groups.items():
         if len(members) < 2:
             raise ValueError(f"PowerSharingInverterId={gid} requires at least two member subarrays")
@@ -539,49 +374,12 @@ def synthesize_circuit_and_subarrays(subarrays: list[dict], *,
             raise ValueError(f"PowerSharingInverterId={gid} members must declare the same n_inverter")
 
     circuit_lines = [
-        "  PVObject_SystemCircuit=pvCircuit",
-        f"    Version={version}",
-        "    Flags=$00",
-        "    PaperOrient=poPortrait",
-        "    ShowLegend=True",
-        "    BaseNode=Start",
-        "      InjectionPointNode Start;",
-        "        NElements=1",
-        "        Children=Start",
+        "  PVObject_SystemCircuit=pvCircuit", f"    Version={version}", "    Flags=$00", "    PaperOrient=poPortrait",
+        "    ShowLegend=True", "    BaseNode=Start", "      InjectionPointNode Start;", "        NElements=1", "        Children=Start",
     ]
-
-    def _string_node(str_count: int, sub_id: int, comment: str, indent: str) -> list[str]:
-        return [
-            f"{indent}StringNode Start;",
-            f"{indent}  NElements={str_count}",
-            f"{indent}  SubArrayId={sub_id}",
-            f"{indent}  SubArrayName={comment}",
-            f"{indent}StringNode End;",
-        ]
-
-    def _mppt_node(mppt_count: int, str_per_mppt: int, sub_id: int, comment: str) -> list[str]:
-        return [
-            "              MPPTNode Start;",
-            f"                NElements={mppt_count}",
-            f"                SubArrayId={sub_id}",
-            f"                SubArrayName={comment}",
-            "                Children=Start",
-            *_string_node(str_per_mppt, sub_id, comment, "                  "),
-            "                Children=End",
-            "              MPPTNode End;",
-        ]
-
-    def _inverter_node(inv_count: int, sub_id: int, comment: str, children: list[str]) -> list[str]:
-        return [
-            "          InverterNode Start;",
-            f"            NElements={inv_count}",
-            f"            SubArrayId={sub_id}",
-            f"            SubArrayName={comment}",
-            "            Children=Start",
-            *children,
-            "            Children=End",
-            "          InverterNode End;",
-        ]
+    _str_node = lambda cnt, sid, cmt, ind: [f"{ind}StringNode Start;", f"{ind}  NElements={cnt}", f"{ind}  SubArrayId={sid}", f"{ind}  SubArrayName={cmt}", f"{ind}StringNode End;"]
+    _mppt_node = lambda m_cnt, s_cnt, sid, cmt: ["              MPPTNode Start;", f"                NElements={m_cnt}", f"                SubArrayId={sid}", f"                SubArrayName={cmt}", "                Children=Start", *_str_node(s_cnt, sid, cmt, "                  "), "                Children=End", "              MPPTNode End;"]
+    _inv_node = lambda i_cnt, sid, cmt, ch: ["          InverterNode Start;", f"            NElements={i_cnt}", f"            SubArrayId={sid}", f"            SubArrayName={cmt}", "            Children=Start", *ch, "            Children=End", "          InverterNode End;"]
 
     emitted_groups: set[int] = set()
     for sub in normalized:
@@ -592,88 +390,37 @@ def synthesize_circuit_and_subarrays(subarrays: list[dict], *,
             emitted_groups.add(gid)
             members = shared_groups[gid]
             group_inv = members[0]["n_inverter"]
-            shared_name = "; ".join(m["comment"] for m in members)
-            mppt_children = [
-                line
-                for m in members
-                for line in _mppt_node(
-                    m["n_inv_mppt"] // group_inv,
-                    m["n_string_ch"] // m["n_inv_mppt"],
-                    m["subarray_id"],
-                    m["comment"],
-                )
-            ]
-            circuit_lines.extend(_inverter_node(group_inv, 0, shared_name, mppt_children))
+            mppt_children = [ln for m in members for ln in _mppt_node(m["n_inv_mppt"] // group_inv, m["n_string_ch"] // m["n_inv_mppt"], m["subarray_id"], m["comment"])]
+            circuit_lines.extend(_inv_node(group_inv, 0, "; ".join(m["comment"] for m in members), mppt_children))
         elif sub["independent_mppt"]:
-            mppt_per_inv = sub["n_inv_mppt"] // sub["n_inverter"]
-            str_per_mppt = sub["n_string_ch"] // sub["n_inv_mppt"]
-            circuit_lines.extend(_inverter_node(
-                sub["n_inverter"],
-                sub["subarray_id"],
-                sub["comment"],
-                _mppt_node(mppt_per_inv, str_per_mppt, sub["subarray_id"], sub["comment"]),
-            ))
+            circuit_lines.extend(_inv_node(sub["n_inverter"], sub["subarray_id"], sub["comment"],
+                                           _mppt_node(sub["n_inv_mppt"] // sub["n_inverter"], sub["n_string_ch"] // sub["n_inv_mppt"], sub["subarray_id"], sub["comment"])))
         else:
-            str_per_inv = sub["n_string_ch"] // sub["n_inverter"]
-            circuit_lines.extend(_inverter_node(
-                sub["n_inverter"],
-                sub["subarray_id"],
-                sub["comment"],
-                _string_node(str_per_inv, sub["subarray_id"], sub["comment"], "              "),
-            ))
-
-    circuit_lines.extend([
-        "        Children=End",
-        "      InjectionPointNode End;",
-        "    BaseNode=End",
-        "  End of PVObject pvCircuit",
-    ])
+            circuit_lines.extend(_inv_node(sub["n_inverter"], sub["subarray_id"], sub["comment"],
+                                           _str_node(sub["n_string_ch"] // sub["n_inverter"], sub["subarray_id"], sub["comment"], "              ")))
+    circuit_lines.extend(["        Children=End", "      InjectionPointNode End;", "    BaseNode=End", "  End of PVObject pvCircuit"])
 
     subarray_lines = ["  SubArrays=Start"]
     for sub in normalized:
-        if sub["power_sharing_inverter_id"] >= 0:
-            flags_int = 0x001E0502
-        elif sub["independent_mppt"]:
-            flags_int = 0x001E0402
-        else:
-            flags_int = 0x001E0002
+        flags_int = 0x001E0502 if sub["power_sharing_inverter_id"] >= 0 else (0x001E0402 if sub["independent_mppt"] else 0x001E0002)
         if sub["pmism_mpp_explicit"]:
             flags_int &= ~0x00040000
         if sub["module_quality_loss_explicit"]:
             flags_int &= ~0x00100000
-        flags = f"${flags_int:08X}"
         subarray_lines.extend([
-            "    PVObject_=pvSubArray",
-            f"      Comment={sub['comment']}",
-            f"      Version={version}",
-            f"      Flags={flags}",
-            "      Flags2=$0020",
-            f"      SubArrayId={sub['subarray_id']}",
-            f"      PVModule={sub['pan_name']}",
-            f"      GInverter={sub['ond_name']}",
-            f"      NModSerie={sub['n_mod_serie']}",
-            f"      NStringCh={sub['n_string_ch']}",
-            f"      NStrOrient1={sub['n_string_ch']}",
-            f"      NoOrientation={sub['orientation_id']}",
-            f"      NInverter={sub['n_inverter']}",
-            f"      NInvMPPT={sub['n_inv_mppt']}",
-            "      SEIsHeterogeneousString=False,",
-            f"      PowerSharingInverterId={sub['power_sharing_inverter_id']}",
-            f"      PNomAC_InMPPT={sub['pnom_ac_in_mppt']:.2f}",
-            f"      PQualityModU={sub['module_quality_loss']:.2f}",
-            f"      PQualityModI={sub['module_quality_loss']:.2f}",
-            f"      PQualityModP={sub['module_quality_loss']:.2f}",
-            f"      PMismMPP={sub['pmism_mpp']:.2f}",
-            "      PMismUFixe=2.50",
-            f"      LIDLoss={sub['lid_loss']:.2f}",
-            "      LightSoaking=0.00",
-            f"      RSCablageCh={sub['dc_wiring_resistance_mohm']:.3f}",
-            f"      RSCablagePC={sub['dc_wiring_loss_pct']:.2f}",
-            "      VDiodeSerie=0.00",
-            *_DEFAULT_IAM_LINES,
-            *_DEFAULT_WIRING_LINES,
-            "      ACWireNoSect=0",
-            "      ACWireLength=0.0",
+            "    PVObject_=pvSubArray", f"      Comment={sub['comment']}", f"      Version={version}",
+            f"      Flags=${flags_int:08X}", "      Flags2=$0020", f"      SubArrayId={sub['subarray_id']}",
+            f"      PVModule={sub['pan_name']}", f"      GInverter={sub['ond_name']}",
+            f"      NModSerie={sub['n_mod_serie']}", f"      NStringCh={sub['n_string_ch']}",
+            f"      NStrOrient1={sub['n_string_ch']}", f"      NoOrientation={sub['orientation_id']}",
+            f"      NInverter={sub['n_inverter']}", f"      NInvMPPT={sub['n_inv_mppt']}",
+            "      SEIsHeterogeneousString=False,", f"      PowerSharingInverterId={sub['power_sharing_inverter_id']}",
+            f"      PNomAC_InMPPT={sub['pnom_ac_in_mppt']:.2f}", f"      PQualityModU={sub['module_quality_loss']:.2f}",
+            f"      PQualityModI={sub['module_quality_loss']:.2f}", f"      PQualityModP={sub['module_quality_loss']:.2f}",
+            f"      PMismMPP={sub['pmism_mpp']:.2f}", "      PMismUFixe=2.50", f"      LIDLoss={sub['lid_loss']:.2f}",
+            "      LightSoaking=0.00", f"      RSCablageCh={sub['dc_wiring_resistance_mohm']:.3f}",
+            f"      RSCablagePC={sub['dc_wiring_loss_pct']:.2f}", "      VDiodeSerie=0.00",
+            *_DEFAULT_IAM_LINES, *_DEFAULT_WIRING_LINES, "      ACWireNoSect=0", "      ACWireLength=0.0",
             "    End of PVObject pvSubArray",
         ])
     subarray_lines.append("  EndTags")
@@ -689,39 +436,19 @@ def synthesize_project_text(*, project_comment: str, met_name: str, site_body: l
     comment = _clean_text(project_comment, "project_comment")
     safe_filename(met_name, ".MET")
     alb = _finite(albedo, "albedo", minimum=0.0, maximum=1.0)
-    albedo_row = ",".join(f"{alb:.3f}" for _ in range(12)) + ","
     lines = [
-        "PVObject_=pvProject",
-        f"  Comment={comment}",
-        f"  Version={version}",
-        "  Flags=$00080010",
-        "PrintSettings=TPrintSettings",
-        "  FirstLineOpt=1",
-        "  PrintCoverPage=True",
-        "  ClientDesignation=Client",
-        "  UserDesignation=Author",
-        "  PCNDec=1",
-        "EndTags",
-        f"MeteoFileName={met_name}",
-        "PVObject_SitePrj=pvSite",
-        *(f"  {line}" for line in site_body),
-        "End of PVObject pvSite",
-        f"Albedo={albedo_row}",
+        "PVObject_=pvProject", f"  Comment={comment}", f"  Version={version}", "  Flags=$00080010",
+        "PrintSettings=TPrintSettings", "  FirstLineOpt=1", "  PrintCoverPage=True", "  ClientDesignation=Client",
+        "  UserDesignation=Author", "  PCNDec=1", "EndTags", f"MeteoFileName={met_name}",
+        "PVObject_SitePrj=pvSite", *(f"  {line}" for line in site_body), "End of PVObject pvSite",
+        f"Albedo={','.join(f'{alb:.3f}' for _ in range(12)) + ','}",
         f"DesignTempMin={int(round(_finite(design_temp_min, 'design_temp_min')))}",
         f"TempOper={int(round(_finite(temp_oper, 'temp_oper')))}",
         f"TempOperMin={int(round(_finite(temp_oper_min, 'temp_oper_min')))}",
         f"TempOperMax={int(round(_finite(temp_oper_max, 'temp_oper_max')))}",
-        "LimOverloadLoss=3.00",
-        "DiscrOrientDiff=6.00",
-        "SpreadMaxDiff=3.00",
-        "MaxSystem_ShdRatio=1.50",
-        "RegionMeteo=1",
-        "CorrAlttemp=-0.0055",
-        "SiteMeteoMaxDistForList=10",
-        "TranspositionAlgorithm=CircSolSeparate",
-        "ACLossesRef=STC",
-        "End of PVObject pvProject",
-        "",
+        "LimOverloadLoss=3.00", "DiscrOrientDiff=6.00", "SpreadMaxDiff=3.00", "MaxSystem_ShdRatio=1.50",
+        "RegionMeteo=1", "CorrAlttemp=-0.0055", "SiteMeteoMaxDistForList=10",
+        "TranspositionAlgorithm=CircSolSeparate", "ACLossesRef=STC", "End of PVObject pvProject", "",
     ]
     text = "\r\n".join(lines)
     return ("\ufeff" + text) if with_bom else text
@@ -731,10 +458,8 @@ def synthesize_variant_text(*, variant_comment: str, site_body: list[str], meteo
                             orientations: list[dict], subarrays: list[dict],
                             default_pan: str = DEFAULT_PAN_NAME, default_ond: str = DEFAULT_OND_NAME,
                             version: str = SYNTH_VERSION, u_factor: float = 20.0,
-                            shading_lines: list[str] | None = None,
-                            bifacial_lines: list[str] | None = None,
-                            storage_lines: list[str] | None = None,
-                            with_bom: bool = True) -> str:
+                            shading_lines: list[str] | None = None, bifacial_lines: list[str] | None = None,
+                            storage_lines: list[str] | None = None, with_bom: bool = True) -> str:
     """Synthesize a complete CRLF PVsyst .VC0 calculation variant string."""
     comment = _clean_text(variant_comment, "variant_comment")
     if not isinstance(orientations, list) or not orientations:
@@ -743,10 +468,7 @@ def synthesize_variant_text(*, variant_comment: str, site_body: list[str], meteo
     orient_ids = [item["id"] for item in norm_orients]
     if len(set(orient_ids)) != len(orient_ids):
         raise ValueError("Orientation IDs must be unique")
-
-    circuit_lines, subarray_lines, norm_subs = synthesize_circuit_and_subarrays(
-        subarrays, default_pan=default_pan, default_ond=default_ond, version=version
-    )
+    circuit_lines, subarray_lines, norm_subs = synthesize_circuit_and_subarrays(subarrays, default_pan=default_pan, default_ond=default_ond, version=version)
     referenced_orients = {sub["orientation_id"] for sub in norm_subs}
     if not referenced_orients.issubset(set(orient_ids)):
         raise ValueError("Subarray references an undeclared orientation ID")
@@ -755,50 +477,18 @@ def synthesize_variant_text(*, variant_comment: str, site_body: list[str], meteo
 
     uf = _finite(u_factor, "u_factor", minimum=15.0, maximum=100.0)
     lines = [
-        "PVObject_=pvVCalcul",
-        f"  Comment={comment}",
-        f"  Version={version}",
-        "  Flags=$00100001",
-        "  SystemKindCustom=False",
-        "  PRCorrTemp=False",
-        "",
-        "  PVObject_SiteSimul=pvSite",
-        *(f"    {line}" for line in site_body),
-        "  End of PVObject pvSite",
-        "",
-        *meteo_lines,
-        "",
-        f"  Orientations, list of={len(norm_orients)} TOrientGroup",
-        "",
-    ]
-    for orient in norm_orients:
-        lines.extend(synthesize_orientation_block(orient, version=version))
-    lines.extend([
-        "  End of Orientations",
-        "",
-        "  PerezUsedInSimul=True",
-        "  TranspositionAlgorithm=CircSolSeparate",
-        "  ACLossesRef=STC",
-        "",
-        "  PVObject_PVMainArray=pvMainArray",
-        "    Flags=$00100400",
-        "  Flags2=$082A",
-        f"  UFactor={uf:.1f}",
-        "  Alpha=0.9",
-        "  UFAverEffic=18.4",
-        "  MVNbTransfos=1",
-        "  UseSpectralCorr=False",
-        *circuit_lines,
-        *subarray_lines,
-        "  End of PVObject pvMainArray",
-        "",
-        "  PVObject_System=pvSystem",
-        "    Flags=$00",
-        "    SystemType=Grid",
-        "  End of PVObject pvSystem",
-        "",
+        "PVObject_=pvVCalcul", f"  Comment={comment}", f"  Version={version}", "  Flags=$00100001",
+        "  SystemKindCustom=False", "  PRCorrTemp=False", "",
+        "  PVObject_SiteSimul=pvSite", *(f"    {line}" for line in site_body), "  End of PVObject pvSite", "",
+        *meteo_lines, "", f"  Orientations, list of={len(norm_orients)} TOrientGroup", "",
+        *(ln for orient in norm_orients for ln in synthesize_orientation_block(orient, version=version)),
+        "  End of Orientations", "", "  PerezUsedInSimul=True", "  TranspositionAlgorithm=CircSolSeparate", "  ACLossesRef=STC", "",
+        "  PVObject_PVMainArray=pvMainArray", "    Flags=$00100400", "  Flags2=$082A", f"  UFactor={uf:.1f}",
+        "  Alpha=0.9", "  UFAverEffic=18.4", "  MVNbTransfos=1", "  UseSpectralCorr=False",
+        *circuit_lines, *subarray_lines, "  End of PVObject pvMainArray", "",
+        "  PVObject_System=pvSystem", "    Flags=$00", "    SystemType=Grid", "  End of PVObject pvSystem", "",
         *(list(shading_lines) if shading_lines is not None else list(_DEFAULT_SHADING_LINES)),
-    ])
+    ]
     if bifacial_lines:
         lines.extend(["", *bifacial_lines])
     if storage_lines:
@@ -806,88 +496,51 @@ def synthesize_variant_text(*, variant_comment: str, site_body: list[str], meteo
     lines.extend(["", "End of PVObject pvVCalcul", ""])
 
     body_text = "\r\n".join(lines)
-    # Self-check the synthesized circuit counts before returning.
-    check_lines = body_text.splitlines(keepends=True)
-    arrays: dict[int, tuple[int, int]] = {}
-    i = 0
+    check_lines, arrays, i = body_text.splitlines(keepends=True), {}, 0
     while i < len(check_lines):
         if check_lines[i].strip() == "PVObject_=pvSubArray":
-            end = next(j for j in range(i + 1, len(check_lines))
-                       if check_lines[j].strip() == "End of PVObject pvSubArray")
-            sid = next(int(FIELD.fullmatch(check_lines[k].rstrip("\r\n"))[2])
-                       for k in range(i + 1, end)
-                       if (m := FIELD.fullmatch(check_lines[k].rstrip("\r\n"))) and m[1] == "SubArrayId")
-            arrays[sid] = (i, end)
-            i = end + 1
+            end = next(j for j in range(i + 1, len(check_lines)) if check_lines[j].strip() == "End of PVObject pvSubArray")
+            sid = next(int(m[2]) for k in range(i + 1, end) if (m := FIELD.fullmatch(check_lines[k].rstrip("\r\n"))) and m[1] == "SubArrayId")
+            arrays[sid], i = (i, end), end + 1
             continue
         i += 1
     checked = grid_inventory(check_lines, arrays)
     if checked["counts_valid"] is not True:
-        raise ValueError("Synthesized variant failed circuit count validation: "
-                         + "; ".join(checked["issues"] + checked["unchecked_checks"]))
+        raise ValueError("Synthesized variant failed circuit count validation: " + "; ".join(checked["issues"] + checked["unchecked_checks"]))
     return ("\ufeff" + body_text) if with_bom else body_text
 
 
 def synthesize_project_and_variant(
-    store=None,
-    *,
-    project_comment: str = "Synthesized PV Project",
-    variant_comment: str = "Initial simulation",
-    site_name: str | None = None,
-    met_name: str | None = None,
-    orientations: list[dict] | None = None,
-    subarrays: list[dict] | None = None,
-    pan_name: str | None = None,
-    ond_name: str | None = None,
-    n_mod_serie: int = 15,
-    n_string_ch: int = 2,
-    n_inverter: int = 1,
-    n_inv_mppt: int | None = None,
-    independent_mppt: bool = True,
-    pnom_ac_in_mppt: float = 7.5,
-    tilt_deg: float = 25.0,
-    azimuth_deg: float = 0.0,
-    u_factor: float = 20.0,
-    shading_lines: list[str] | None = None,
-    bifacial_lines: list[str] | None = None,
-    storage_lines: list[str] | None = None,
-    version: str = SYNTH_VERSION,
-    with_bom: bool = True,
+    store=None, *, project_comment: str = "Synthesized PV Project", variant_comment: str = "Initial simulation",
+    site_name: str | None = None, met_name: str | None = None, orientations: list[dict] | None = None,
+    subarrays: list[dict] | None = None, pan_name: str | None = None, ond_name: str | None = None,
+    n_mod_serie: int = 15, n_string_ch: int = 2, n_inverter: int = 1, n_inv_mppt: int | None = None,
+    independent_mppt: bool = True, pnom_ac_in_mppt: float = 7.5, tilt_deg: float = 25.0, azimuth_deg: float = 0.0,
+    u_factor: float = 20.0, shading_lines: list[str] | None = None, bifacial_lines: list[str] | None = None,
+    storage_lines: list[str] | None = None, version: str = SYNTH_VERSION, with_bom: bool = True,
     allow_missing_met: bool = False,
 ) -> dict:
     """Synthesize a matched (.PRJ, .VC0) pair directly in memory with zero demo templates."""
-    resolved_pan = pan_name or DEFAULT_PAN_NAME
-    resolved_ond = ond_name or DEFAULT_OND_NAME
-
+    resolved_pan, resolved_ond = pan_name or DEFAULT_PAN_NAME, ond_name or DEFAULT_OND_NAME
     if site_name is not None:
         safe_filename(site_name, ".SIT")
     if met_name is not None:
         safe_filename(met_name, ".MET")
 
-    site_body: list[str]
-    site_identity: str
-    resolved_site: str
-    resolved_met: str
-    meteo_lines: list[str]
-
     if store is not None and site_name is not None:
-        site_path = workspace_file(store.workspace, "Sites", site_name, ".SIT")
-        if not site_path.is_file():
+        if not (site_path := workspace_file(store.workspace, "Sites", site_name, ".SIT")).is_file():
             raise FileNotFoundError(f"Workspace SIT file is missing: {site_name}")
         resolved_site, site_identity, site_body = load_site_block(site_path)
     else:
         resolved_site = site_name or DEFAULT_PROJECT_SITE
-        site_identity, site_body = placeholder_site_block(
-            resolved_site, Path(resolved_site).stem or DEFAULT_PROJECT_SITE_NAME
-        )
+        site_identity, site_body = placeholder_site_block(resolved_site, Path(resolved_site).stem or DEFAULT_PROJECT_SITE_NAME)
 
     if store is not None and met_name is not None:
         met_path = workspace_file(store.workspace, "Meteo", met_name, ".MET")
         if met_path.is_file():
             resolved_met, meteo_lines = load_meteo_header(met_path, site_identity, site_body)
         elif allow_missing_met:
-            resolved_met = met_name
-            meteo_lines = synthesize_meteo_from_site(resolved_met, site_identity, site_body)
+            resolved_met, meteo_lines = met_name, synthesize_meteo_from_site(met_name, site_identity, site_body)
         else:
             raise FileNotFoundError(f"Workspace MET file is missing: {met_name}")
     else:
@@ -899,106 +552,55 @@ def synthesize_project_and_variant(
     if subarrays is None:
         sub_mppt = n_inv_mppt if n_inv_mppt is not None else (n_string_ch if independent_mppt else 1)
         subarrays = [{
-            "subarray_id": 1,
-            "orientation_id": orientations[0]["id"],
-            "comment": "PV Array",
-            "pan_name": resolved_pan,
-            "ond_name": resolved_ond,
-            "n_mod_serie": n_mod_serie,
-            "n_string_ch": n_string_ch,
-            "n_inverter": n_inverter,
-            "n_inv_mppt": sub_mppt,
-            "independent_mppt": independent_mppt,
-            "pnom_ac_in_mppt": pnom_ac_in_mppt,
+            "subarray_id": 1, "orientation_id": orientations[0]["id"], "comment": "PV Array",
+            "pan_name": resolved_pan, "ond_name": resolved_ond, "n_mod_serie": n_mod_serie,
+            "n_string_ch": n_string_ch, "n_inverter": n_inverter, "n_inv_mppt": sub_mppt,
+            "independent_mppt": independent_mppt, "pnom_ac_in_mppt": pnom_ac_in_mppt,
         }]
 
-    prj_text = synthesize_project_text(
-        project_comment=project_comment,
-        met_name=resolved_met,
-        site_body=site_body,
-        version=version,
-        with_bom=with_bom,
-    )
+    prj_text = synthesize_project_text(project_comment=project_comment, met_name=resolved_met, site_body=site_body, version=version, with_bom=with_bom)
     vc0_text = synthesize_variant_text(
-        variant_comment=variant_comment,
-        site_body=site_body,
-        meteo_lines=meteo_lines,
-        orientations=orientations,
-        subarrays=subarrays,
-        default_pan=resolved_pan,
-        default_ond=resolved_ond,
-        version=version,
-        u_factor=u_factor,
-        shading_lines=shading_lines,
-        bifacial_lines=bifacial_lines,
-        storage_lines=storage_lines,
-        with_bom=with_bom,
+        variant_comment=variant_comment, site_body=site_body, meteo_lines=meteo_lines, orientations=orientations,
+        subarrays=subarrays, default_pan=resolved_pan, default_ond=resolved_ond, version=version, u_factor=u_factor,
+        shading_lines=shading_lines, bifacial_lines=bifacial_lines, storage_lines=storage_lines, with_bom=with_bom,
     )
     return {
-        "prj_text": prj_text,
-        "vc0_text": vc0_text,
-        "site_name": resolved_site,
-        "site_identity": site_identity,
-        "met_name": resolved_met,
+        "prj_text": prj_text, "vc0_text": vc0_text, "site_name": resolved_site, "site_identity": site_identity, "met_name": resolved_met,
         "orientations": [_normalize_orientation(item) for item in orientations],
-        "subarrays": [
-            _normalize_subarray(item, default_pan=resolved_pan, default_ond=resolved_ond)
-            for item in subarrays
-        ],
+        "subarrays": [_normalize_subarray(item, default_pan=resolved_pan, default_ond=resolved_ond) for item in subarrays],
     }
 
 
 def _roof_plane_angles(mesh: dict) -> tuple[float, float]:
-    """Return (tilt_deg, local_rotation_deg) for a planar upward-facing house roof mesh.
-
-    Matches scene/author.py rack_mesh convention: anchor plane (rotation_deg=0)
-    faces -Y with upward normal (0, -sin(tilt), cos(tilt)).
-    """
-    vertices = mesh["vertices"]
-    triangles = mesh["triangles"]
-    normals = []
+    """Return (tilt_deg, local_rotation_deg) for a planar upward-facing house roof mesh."""
+    vertices, triangles, normals = mesh["vertices"], mesh["triangles"], []
     for a, b, c in triangles:
         va, vb, vc = vertices[a], vertices[b], vertices[c]
         ux, uy, uz = vb[0] - va[0], vb[1] - va[1], vb[2] - va[2]
         vx, vy, vz = vc[0] - va[0], vc[1] - va[1], vc[2] - va[2]
-        nx = uy * vz - uz * vy
-        ny = uz * vx - ux * vz
-        nz = ux * vy - uy * vx
-        length = math.hypot(nx, ny, nz)
-        if length <= _NORMAL_TOL:
+        nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+        if (length := math.hypot(nx, ny, nz)) <= _NORMAL_TOL:
             continue
         nx, ny, nz = nx / length, ny / length, nz / length
-        if nz < 0:
-            nx, ny, nz = -nx, -ny, -nz
-        normals.append((nx, ny, nz))
+        normals.append((-nx, -ny, -nz) if nz < 0 else (nx, ny, nz))
     if not normals:
         raise ValueError(f"Roof mesh {mesh['name']!r} has no non-degenerate triangles")
     nx, ny, nz = normals[0]
     if nz <= _NORMAL_TOL:
         raise ValueError(f"Roof mesh {mesh['name']!r} is vertical and cannot host a PV plane")
-    nz = max(-1.0, min(1.0, nz))
-    tilt_deg = round(math.degrees(math.acos(nz)), 6)
-    if tilt_deg < 1e-4:
-        return 0.0, 0.0
-    rot_deg = round(math.degrees(math.atan2(nx, -ny)), 6)
-    return tilt_deg, rot_deg
+    tilt_deg = round(math.degrees(math.acos(max(-1.0, min(1.0, nz)))), 6)
+    return (0.0, 0.0) if tilt_deg < 1e-4 else (tilt_deg, round(math.degrees(math.atan2(nx, -ny)), 6))
 
 
 def _infer_house_orientations_and_subarrays(request: dict, pocket: dict) -> tuple[list[dict], list[dict]]:
     """Derive orientations and subarrays from request + house meshes + layout when omitted."""
-    meshes = {m["name"]: m for m in pocket["meshes"]}
-    layout = request["layout"]
+    meshes, layout = {m["name"]: m for m in pocket["meshes"]}, request["layout"]
     entries = layout.get("tables") if isinstance(layout, dict) and "tables" in layout else [layout]
-    default_pan = request.get("pan_name") or DEFAULT_PAN_NAME
-    default_ond = request.get("ond_name") or DEFAULT_OND_NAME
+    default_pan, default_ond = request.get("pan_name") or DEFAULT_PAN_NAME, request.get("ond_name") or DEFAULT_OND_NAME
     mode = request.get("shading_mode") or "linear"
-
-    explicit_orients = request.get("orientations")
-    explicit_subs = request.get("subarrays")
-
-    # Determine orientation_ids referenced by tables.
     has_explicit_oids = any(isinstance(e, dict) and e.get("orientation_id") is not None for e in entries)
-    if explicit_orients:
+
+    if explicit_orients := request.get("orientations"):
         orientations = [_normalize_orientation(item) for item in explicit_orients]
     else:
         oid_to_mesh: dict[int, dict] = {}
@@ -1006,77 +608,44 @@ def _infer_house_orientations_and_subarrays(request: dict, pocket: dict) -> tupl
             oid = entry.get("orientation_id") if has_explicit_oids else 1
             if type(oid) is not int or oid < 1:
                 raise ValueError("Each table orientation_id must be a positive integer")
-            mesh_name = entry.get("roof_mesh")
-            if mesh_name not in meshes:
+            if (mesh_name := entry.get("roof_mesh")) not in meshes:
                 raise ValueError(f"Unknown roof_mesh {mesh_name!r} in layout")
             oid_to_mesh.setdefault(oid, meshes[mesh_name])
         ordered_oids = sorted(oid_to_mesh)
         anchor_tilt, anchor_rot = _roof_plane_angles(oid_to_mesh[ordered_oids[0]])
-        anchor_azim = _finite(request.get("anchor_azimuth_deg", 0.0), "anchor_azimuth_deg",
-                              minimum=-180.0, maximum=180.0)
+        anchor_azim = _finite(request.get("anchor_azimuth_deg", 0.0), "anchor_azimuth_deg", minimum=-180.0, maximum=180.0)
         orientations = []
         for oid in ordered_oids:
             tilt, rot = _roof_plane_angles(oid_to_mesh[oid])
-            if oid == ordered_oids[0]:
-                azim = anchor_azim
-            else:
-                azim = _normalize_azimuth(anchor_azim - (rot - anchor_rot))
-            orientations.append({
-                "id": oid,
-                "field_type": "FixedPlane",
-                "tilt_deg": tilt,
-                "azimuth_deg": azim,
-            })
+            azim = anchor_azim if oid == ordered_oids[0] else _normalize_azimuth(anchor_azim - (rot - anchor_rot))
+            orientations.append({"id": oid, "field_type": "FixedPlane", "tilt_deg": tilt, "azimuth_deg": azim})
 
-    if explicit_subs:
-        subarrays = [_normalize_subarray(item, default_pan=default_pan, default_ond=default_ond)
-                     for item in explicit_subs]
+    if explicit_subs := request.get("subarrays"):
+        subarrays = [_normalize_subarray(item, default_pan=default_pan, default_ond=default_ond) for item in explicit_subs]
     else:
-        # Group table module counts by (source_subarray_id or orientation_id).
         owner_totals: dict[int, dict] = {}
         for entry in entries:
             oid = entry.get("orientation_id") if has_explicit_oids else orientations[0]["id"]
             owner = entry.get("source_subarray_id") or oid
             total = int(entry["module_rows"]) * int(entry["module_columns"])
-            if owner not in owner_totals:
-                owner_totals[owner] = {
-                    "subarray_id": owner,
-                    "orientation_id": oid,
-                    "module_total": 0,
-                    "table_modules": [],
-                }
-            owner_totals[owner]["module_total"] += total
-            owner_totals[owner]["table_modules"].append(total)
+            slot = owner_totals.setdefault(owner, {"subarray_id": owner, "orientation_id": oid, "module_total": 0, "table_modules": []})
+            slot["module_total"] += total
+            slot["table_modules"].append(total)
 
-        subarrays = []
-        grouped = len(owner_totals) > 1
+        subarrays, grouped = [], len(owner_totals) > 1
         for owner in sorted(owner_totals):
             info = owner_totals[owner]
-            total = info["module_total"]
-            table_mods = info["table_modules"]
-            # Choose stringing that matches headless._support_gate cleanly:
-            # - Single-owner implicit module_layout with 2 equal tables requires 2 strings/2 inv/2 mppt.
-            # - Grouped implicit module_layout (no string_layout) requires 1 string/1 inv/1 mppt per subarray.
-            if (not grouped and mode == "module_layout" and request.get("string_layout") is None
-                    and len(table_mods) == 2 and table_mods[0] == table_mods[1]):
+            total, table_mods = info["module_total"], info["table_modules"]
+            if not grouped and mode == "module_layout" and request.get("string_layout") is None and len(table_mods) == 2 and table_mods[0] == table_mods[1]:
                 n_mod_serie, n_string_ch, n_inverter, n_inv_mppt = table_mods[0], 2, 2, 2
-            elif grouped and mode == "module_layout" and request.get("string_layout") is None:
-                n_mod_serie, n_string_ch, n_inverter, n_inv_mppt = total, 1, 1, 1
             else:
                 n_mod_serie, n_string_ch, n_inverter, n_inv_mppt = total, 1, 1, 1
             subarrays.append({
-                "subarray_id": info["subarray_id"],
-                "orientation_id": info["orientation_id"],
+                "subarray_id": info["subarray_id"], "orientation_id": info["orientation_id"],
                 "comment": "PV Array" if info["subarray_id"] == 1 else f"Sub-array #{info['subarray_id']}",
-                "pan_name": default_pan,
-                "ond_name": default_ond,
-                "n_mod_serie": n_mod_serie,
-                "n_string_ch": n_string_ch,
-                "n_inverter": n_inverter,
-                "n_inv_mppt": n_inv_mppt,
-                "independent_mppt": True,
+                "pan_name": default_pan, "ond_name": default_ond, "n_mod_serie": n_mod_serie,
+                "n_string_ch": n_string_ch, "n_inverter": n_inverter, "n_inv_mppt": n_inv_mppt, "independent_mppt": True,
             })
-
     return orientations, subarrays
 
 
@@ -1084,8 +653,7 @@ def synthesize_house_source(store, components, request: dict) -> dict:
     """Synthesize a clean zero-template (.PRJ, .VC0) source for run_house_task."""
     from pvsyst_auto.scene.author import house_profile
 
-    site_name = request.get("site_name")
-    met_name = request.get("met_name")
+    site_name, met_name = request.get("site_name"), request.get("met_name")
     if not isinstance(site_name, str) or not site_name.strip():
         raise ValueError("Zero-template house task requires an explicit workspace site_name (.SIT)")
     if not isinstance(met_name, str) or not met_name.strip():
@@ -1095,709 +663,24 @@ def synthesize_house_source(store, components, request: dict) -> dict:
         raise ValueError("The house task requires a complete AI/caller-authored mesh house")
     orientations, subarrays = _infer_house_orientations_and_subarrays(request, pocket)
     synth = synthesize_project_and_variant(
-        store,
-        project_comment=f"{Path(request['new_project']).stem} (zero-template)",
-        variant_comment=request["variant_name"],
-        site_name=site_name,
-        met_name=met_name,
-        orientations=orientations,
-        subarrays=subarrays,
-        pan_name=request.get("pan_name"),
-        ond_name=request.get("ond_name"),
-        with_bom=True,
+        store, project_comment=f"{Path(request['new_project']).stem} (zero-template)",
+        variant_comment=request["variant_name"], site_name=site_name, met_name=met_name,
+        orientations=orientations, subarrays=subarrays, pan_name=request.get("pan_name"),
+        ond_name=request.get("ond_name"), with_bom=True,
     )
     synth["synthesized"] = True
     return synth
 
 
-def _validate_ground_array_modules(
-    *,
-    module_rows: int,
-    module_columns: int,
-    module_width_m: float,
-    module_length_m: float,
-    module_name: str,
-    module_orient: str,
-    spacing_x_m: float,
-    spacing_y_m: float,
-) -> tuple[int, int, float, float, float, float, str]:
-    n_rows = _pos_int(module_rows, "module_rows")
-    n_cols = _pos_int(module_columns, "module_columns")
-    mw = _finite(module_width_m, "module_width_m", minimum=0.1)
-    ml = _finite(module_length_m, "module_length_m", minimum=0.1)
-    sx = _finite(spacing_x_m, "spacing_x_m", minimum=0.0)
-    sy = _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
-    if module_orient not in ("moPortrait", "moLandscape"):
-        raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
-    name = _clean_text(module_name, "module_name")
-    return n_rows, n_cols, mw, ml, sx, sy, name
+_MOVED_TO_TEMPLATE = {
+    "_validate_ground_array_modules", "_synthesize_ground_array_shading",
+    "synthesize_ground_shed_shading", "synthesize_ground_tracker_shading",
+    "_resolve_pan_module_dimensions", "synthesize_utility_project",
+}
 
 
-def _synthesize_ground_array_shading(
-    *,
-    obj_type: str,
-    shading_comment: str,
-    obj_comment: str,
-    n_elems: int,
-    origin: tuple[float, float, float],
-    tilt_deg: float,
-    base_slope_deg: float,
-    azimuth_deg: float,
-    orientation_id: int,
-    name: str,
-    mw: float,
-    ml: float,
-    n_rows: int,
-    n_cols: int,
-    module_orient: str,
-    sx: float,
-    sy: float,
-    dx_module: float,
-    dy_module: float,
-    long_shed: float,
-    larg_shed: float,
-    pitch_ns: float,
-    pitch_ew: float,
-    version: str,
-    extra_lines: list[str] = (),
-) -> list[str]:
-    return [
-        *pv_shading_header(shading_comment, 1),
-        f"      PVObject_1={obj_type}",
-        f"        Comment={obj_comment}",
-        f"        Version={version}",
-        "        Flags=$02200074",
-        "        NoObjCreated=1",
-        "        ColorTechn=$00FF0000",
-        "        ColorSurf=$00FF9999",
-        "        ColorBord=$00505050",
-        f"        DOrigine={origin[0]:.6f},{origin[1]:.6f},{origin[2]:.6f}",
-        f"        DInclin={tilt_deg:.6f}",
-        f"        BaseSlope={base_slope_deg:.6f}",
-        f"        DAzimut={azimuth_deg:.6f}",
-        "        Source=osPVsyst",
-        f"      NElemChamps={n_elems}",
-        f"      NoOrient={_pos_int(orientation_id, 'orientation_id')}",
-        f"      PanneauPVName={name};{mw:.3f};{ml:.3f}",
-        f"      ModSpacingX={sx:.3f}",
-        f"      ModSpacingY={sy:.3f}",
-        f"      NModInHeight={n_rows}",
-        f"      NModInWidth={n_cols}",
-        f"      ModuleOrient={module_orient}",
-        f"      DXModule={dx_module:.3f}",
-        f"      DYModule={dy_module:.3f}",
-        f"        LongShed={long_shed:.6f}",
-        f"        LargShed={larg_shed:.6f}",
-        "        Cadre=0.000,0.000,0.000,0.000,",
-        "        TypeOrigine=2",
-        f"        PitchNS={pitch_ns:.3f}",
-        f"        PitchEW={pitch_ew:.3f}",
-        *extra_lines,
-        f"      End of PVObject {obj_type}",
-        "    End of ListeObjets",
-        "  End of PVObject pvShading",
-    ]
-
-
-def synthesize_ground_shed_shading(*, shed_count: int = 10, pitch_m: float = 10.0,
-                                   tilt_deg: float = 20.0, azimuth_deg: float = 0.0,
-                                   base_slope_deg: float = 0.0,
-                                   module_rows: int = 2, module_columns: int = 25,
-                                   module_width_m: float = 1.052, module_length_m: float = 2.131,
-                                   module_name: str = "PV Module",
-                                   module_orient: str = "moPortrait",
-                                   spacing_x_m: float = 0.020, spacing_y_m: float = 0.020,
-                                   origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
-                                   orientation_id: int = 1,
-                                   version: str = SYNTH_VERSION) -> list[str]:
-    """Synthesize a complete 3D PVObject_Ombrage=pvShading containing a pvShdArrayShed field."""
-    n_sheds = _pos_int(shed_count, "shed_count")
-    pitch = _finite(pitch_m, "pitch_m", minimum=0.1)
-    tilt = _finite(tilt_deg, "tilt_deg", minimum=0.0, maximum=90.0)
-    azim = _finite(azimuth_deg, "azimuth_deg", minimum=-180.0, maximum=180.0)
-    slope = _finite(base_slope_deg, "base_slope_deg", minimum=-45.0, maximum=45.0)
-    n_rows, n_cols, mw, ml, sx, sy, name = _validate_ground_array_modules(
-        module_rows=module_rows,
-        module_columns=module_columns,
-        module_width_m=module_width_m,
-        module_length_m=module_length_m,
-        module_name=module_name,
-        module_orient=module_orient,
-        spacing_x_m=spacing_x_m,
-        spacing_y_m=spacing_y_m,
-    )
-    cell_w = mw if module_orient == "moPortrait" else ml
-    cell_h = ml if module_orient == "moPortrait" else mw
-    larg_shed = n_rows * cell_h + max(0, n_rows - 1) * sy
-    long_shed = n_cols * cell_w + max(0, n_cols - 1) * sx
-    return _synthesize_ground_array_shading(
-        obj_type="pvShdArrayShed",
-        shading_comment="Ground shed 3D shading scene",
-        obj_comment="Shed field #1",
-        n_elems=n_sheds,
-        origin=origin,
-        tilt_deg=tilt,
-        base_slope_deg=slope,
-        azimuth_deg=azim,
-        orientation_id=orientation_id,
-        name=name,
-        mw=mw,
-        ml=ml,
-        n_rows=n_rows,
-        n_cols=n_cols,
-        module_orient=module_orient,
-        sx=sx,
-        sy=sy,
-        dx_module=cell_w + sx,
-        dy_module=cell_h + sy,
-        long_shed=long_shed,
-        larg_shed=larg_shed,
-        pitch_ns=pitch,
-        pitch_ew=0.0,
-        version=version,
-    )
-
-
-def synthesize_ground_tracker_shading(*, tracker_count: int = 10, pitch_ew_m: float = 12.0,
-                                      axis_azimuth_deg: float = 0.0,
-                                      module_rows: int = 2, module_columns: int = 25,
-                                      module_width_m: float = 1.052, module_length_m: float = 2.131,
-                                      module_name: str = "PV Module",
-                                      module_orient: str = "moPortrait",
-                                      spacing_x_m: float = 0.020, spacing_y_m: float = 0.020,
-                                      origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
-                                      orientation_id: int = 1,
-                                      version: str = SYNTH_VERSION) -> list[str]:
-    """Synthesize a complete 3D PVObject_Ombrage=pvShading containing a pvShdArrayTracking field."""
-    n_trk = _pos_int(tracker_count, "tracker_count")
-    pitch = _finite(pitch_ew_m, "pitch_ew_m", minimum=0.1)
-    azim = _finite(axis_azimuth_deg, "axis_azimuth_deg", minimum=-180.0, maximum=180.0)
-    n_rows, n_cols, mw, ml, sx, sy, name = _validate_ground_array_modules(
-        module_rows=module_rows,
-        module_columns=module_columns,
-        module_width_m=module_width_m,
-        module_length_m=module_length_m,
-        module_name=module_name,
-        module_orient=module_orient,
-        spacing_x_m=spacing_x_m,
-        spacing_y_m=spacing_y_m,
-    )
-    # In PVsyst pvShdArrayTracking (verified against _DEMO_Utility.VC7):
-    # LongShed = tracker cross-axis chord width (CollectorWidth), LargShed = tracker N-S length.
-    chord_mod = ml if module_orient == "moPortrait" else mw
-    length_mod = mw if module_orient == "moPortrait" else ml
-    long_shed = n_rows * chord_mod + max(0, n_rows - 1) * sy
-    larg_shed = n_cols * length_mod + max(0, n_cols - 1) * sx
-    return _synthesize_ground_array_shading(
-        obj_type="pvShdArrayTracking",
-        shading_comment="Ground tracker 3D shading scene",
-        obj_comment="Array of trackers #1",
-        n_elems=n_trk,
-        origin=origin,
-        tilt_deg=0.0,
-        base_slope_deg=0.0,
-        azimuth_deg=azim,
-        orientation_id=orientation_id,
-        name=name,
-        mw=mw,
-        ml=ml,
-        n_rows=n_rows,
-        n_cols=n_cols,
-        module_orient=module_orient,
-        sx=sx,
-        sy=sy,
-        dx_module=length_mod + sx,
-        dy_module=larg_shed,
-        long_shed=long_shed,
-        larg_shed=larg_shed,
-        pitch_ns=0.0,
-        pitch_ew=pitch,
-        version=version,
-        extra_lines=["        AxisOrig=2"],
-    )
-
-
-def _resolve_pan_module_dimensions(store, pan_name: str) -> dict | None:
-    """Auto-extract (width_m, length_m, model_name) from a readable workspace/builtin .PAN file."""
-    components = getattr(store, "components", None) if store is not None else None
-    if components is None:
-        return None
-    from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
-
-    for library in ("workspace", "builtin"):
-        if library == "builtin" and getattr(components, "builtin", None) is None:
-            continue
-        try:
-            path = components._path("PAN", pan_name, library)
-        except (ValueError, OSError):
-            continue
-        if not path.is_file():
-            continue
-        try:
-            raw = components._read(path)
-            info = components._inspect("PAN", raw)
-            if info.get("format") != "text" or info.get("structural_errors") or info.get("known_value_errors"):
-                continue
-            _, text = components._text("PAN", raw)
-            fields = pan_validation_fields(text)
-            widths = fields.get("Width") or fields.get("LargApp") or []
-            heights = fields.get("Height") or fields.get("LongApp") or []
-            if len(widths) != 1 or len(heights) != 1:
-                continue
-            width_m = float(widths[0])
-            length_m = float(heights[0])
-            if not (math.isfinite(width_m) and width_m > 0 and math.isfinite(length_m) and length_m > 0):
-                continue
-            models = fields.get("Model") or []
-            model_name = models[0].strip() if len(models) == 1 and models[0].strip() else None
-            return {
-                "width_m": width_m,
-                "length_m": length_m,
-                "model_name": model_name,
-                "library": library,
-                "path": str(path),
-            }
-        except (ValueError, OSError, KeyError):
-            continue
-    return None
-
-
-def synthesize_utility_project(
-    store, *,
-    project_comment: str = "Utility PV Project",
-    variant_comment: str = "Utility Variant",
-    site_name: str,
-    met_name: str,
-    field_type: str = "Sheds",
-    pan_name: str = "Generic_Mono_440W_Half_Bifacial.PAN",
-    ond_name: str = "Generic_50kW.OND",
-    n_mod_serie: int = 20,
-    n_string_ch: int = 6,
-    n_inverter: int = 1,
-    n_inv_mppt: int = 1,
-    independent_mppt: bool = False,
-    pnom_ac_in_mppt: float = 50.0,
-    tilt_deg: float = 20.0,
-    azimuth_deg: float = 0.0,
-    axis_azimuth_deg: float = 0.0,
-    min_phi_deg: float = -60.0,
-    max_phi_deg: float = 60.0,
-    backtracking: bool = True,
-    irrad_optimiz: bool = False,
-    central_gap_m: float = 0.0,
-    pitch_slope_deg: float = 0.0,
-    wind_stow: bool = False,
-    wind_stow_speed_ms: float = 12.0,
-    wind_stow_position_deg: float = 0.0,
-    pitch_m: float = 10.0,
-    collector_width_m: float | None = None,
-    shed_count: int = 4,
-    inactive_band_width_1_m: float | None = None,
-    inactive_band_width_2_m: float | None = None,
-    electrical_effect: bool | None = None,
-    shading_factor: float | None = None,
-    cell_width_m: float | None = None,
-    module_rows: int = 2,
-    module_columns: int = 15,
-    module_orient: str = "moPortrait",
-    spacing_x_m: float = 0.020,
-    spacing_y_m: float = 0.020,
-    module_width_m: float | None = None,
-    module_length_m: float | None = None,
-    module_name: str | None = None,
-    bifacial: dict | None = None,
-    include_3d_scene: bool | None = None,
-    site_polygon: list[list[float]] | None = None,
-    setback_m: float = 0.0,
-    ground_clearance_m: float = 0.5,
-    max_table_columns: int | None = None,
-    obstacles: list[dict] | None = None,
-    base_slope_deg: float = 0.0,
-    terrain: dict | None = None,
-    u_factor: float = 29.0,
-    lid_loss: float = 0.0,
-    pmism_mpp: float | None = None,
-    module_quality_loss: float | None = None,
-    dc_wiring_loss_pct: float = 1.5,
-    dc_wiring_resistance_mohm: float = 0.0,
-    sub_orientations: list[dict] | None = None,
-    allow_missing_met: bool = False,
-    version: str = SYNTH_VERSION,
-    with_bom: bool = True,
-) -> dict:
-    """Zero-template synthesizer for utility ground sheds or single-axis trackers (mono or bifacial)."""
-    if field_type not in ("Sheds", "UnlimSheds", "RegularSheds", "UnlimTracking", "TrackHorizNSAxis"):
-        raise ValueError(f"Unsupported utility field_type: {field_type!r}")
-    if module_orient not in ("moPortrait", "moLandscape"):
-        raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
-
-    pan_dims = _resolve_pan_module_dimensions(store, pan_name)
-    if module_width_m is not None and module_length_m is not None:
-        mw = _finite(module_width_m, "module_width_m", minimum=0.1)
-        ml = _finite(module_length_m, "module_length_m", minimum=0.1)
-        dim_source = "caller"
-    elif pan_dims is not None:
-        mw = _finite(module_width_m, "module_width_m", minimum=0.1) if module_width_m is not None else pan_dims["width_m"]
-        ml = _finite(module_length_m, "module_length_m", minimum=0.1) if module_length_m is not None else pan_dims["length_m"]
-        dim_source = f"pan:{pan_dims['library']}"
-    else:
-        mw = _finite(module_width_m, "module_width_m", minimum=0.1) if module_width_m is not None else 1.052
-        ml = _finite(module_length_m, "module_length_m", minimum=0.1) if module_length_m is not None else 2.131
-        dim_source = "default"
-    resolved_mod_name = (
-        module_name
-        or (pan_dims["model_name"] if pan_dims and pan_dims.get("model_name") else None)
-        or "Mono 440 Wp Twin 144 half-cells bifacial"
-    )
-
-    n_rows = _pos_int(module_rows, "module_rows")
-    n_cols = _pos_int(module_columns, "module_columns")
-    sy = _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
-    sx = _finite(spacing_x_m, "spacing_x_m", minimum=0.0)
-    need_3d = (
-        include_3d_scene
-        if include_3d_scene is not None
-        else (field_type in ("RegularSheds", "TrackHorizNSAxis") or site_polygon is not None or bool(obstacles))
-    )
-    chord_mod = ml if module_orient == "moPortrait" else mw
-    scene_collector_width = round(n_rows * chord_mod + max(0, n_rows - 1) * sy, 3)
-    if need_3d:
-        if collector_width_m is not None:
-            override_width = _finite(collector_width_m, "collector_width_m", minimum=0.1)
-            if abs(override_width - scene_collector_width) > 1e-3:
-                raise ValueError(
-                    f"collector_width_m ({override_width:.3f}) disagrees with the 3D scene chord width "
-                    f"({scene_collector_width:.3f}); omit collector_width_m or match the scene dimensions"
-                )
-        resolved_collector_width = scene_collector_width
-    else:
-        resolved_collector_width = (
-            _finite(collector_width_m, "collector_width_m", minimum=0.1)
-            if collector_width_m is not None
-            else scene_collector_width
-        )
-    resolved_pitch = _finite(pitch_m, "pitch_m", minimum=0.1)
-    if resolved_pitch <= resolved_collector_width:
-        raise ValueError(
-            f"pitch_m ({resolved_pitch:.3f}) must exceed collector_width_m ({resolved_collector_width:.3f}) "
-            "so adjacent ground rows do not overlap (GCR < 1.0)"
-        )
-
-    eff_base_slope = _finite(base_slope_deg, "base_slope_deg", minimum=-45.0, maximum=45.0)
-    orient_spec = {
-        "id": 1,
-        "field_type": field_type,
-        "tilt_deg": tilt_deg,
-        "azimuth_deg": azimuth_deg,
-        "base_slope_deg": eff_base_slope,
-        "axis_azimuth_deg": axis_azimuth_deg,
-        "min_phi_deg": min_phi_deg,
-        "max_phi_deg": max_phi_deg,
-        "backtracking": backtracking,
-        "irrad_optimiz": irrad_optimiz,
-        "central_gap_m": central_gap_m,
-        "pitch_slope_deg": pitch_slope_deg,
-        "wind_stow": wind_stow,
-        "wind_stow_speed_ms": wind_stow_speed_ms,
-        "wind_stow_position_deg": wind_stow_position_deg,
-        "pitch_m": resolved_pitch,
-        "collector_width_m": resolved_collector_width,
-        "shed_count": shed_count,
-        "module_columns": n_rows if field_type in ("Sheds", "UnlimSheds", "UnlimTracking") else n_cols,
-        "bifacial": bifacial,
-    }
-    if inactive_band_width_1_m is not None:
-        orient_spec["inactive_band_width_1_m"] = inactive_band_width_1_m
-    if inactive_band_width_2_m is not None:
-        orient_spec["inactive_band_width_2_m"] = inactive_band_width_2_m
-    if electrical_effect is not None:
-        orient_spec["electrical_effect"] = electrical_effect
-    if shading_factor is not None:
-        orient_spec["shading_factor"] = shading_factor
-    if cell_width_m is not None:
-        orient_spec["cell_width_m"] = cell_width_m
-
-    shading_lines = None
-    ground_3d_layout = None
-    terrain_summary = None
-    terrain_mesh = None
-    if terrain is not None:
-        from pvsyst_auto.scene.terrain import build_terrain_mesh
-        terrain_mesh = build_terrain_mesh(terrain, workspace=store.workspace)
-        terrain_summary = terrain_mesh.summary()
-        need_3d = True
-    if need_3d:
-        mod_shading_kwargs = {
-            "module_rows": n_rows,
-            "module_columns": n_cols,
-            "module_width_m": mw,
-            "module_length_m": ml,
-            "module_name": resolved_mod_name,
-            "module_orient": module_orient,
-            "spacing_x_m": sx,
-            "spacing_y_m": sy,
-            "version": version,
-        }
-        if field_type in ("TrackHorizNSAxis", "UnlimTracking"):
-            if terrain_mesh is not None:
-                from pvsyst_auto.scene.terrain import build_terrain_tracker_shading
-                shading_lines, trk_terrain_info = build_terrain_tracker_shading(
-                    terrain_mesh,
-                    tracker_count=shed_count,
-                    pitch_ew_m=resolved_pitch,
-                    axis_azimuth_deg=axis_azimuth_deg,
-                    ground_clearance_m=ground_clearance_m,
-                    follow_slope=bool(terrain.get("follow_slope", True)),
-                    max_axis_tilt_deg=float(terrain.get("max_axis_tilt_deg", 15.0)),
-                    obstacles=obstacles,
-                    **mod_shading_kwargs,
-                )
-                terrain_summary = trk_terrain_info
-            else:
-                shading_lines = synthesize_ground_tracker_shading(
-                    tracker_count=shed_count,
-                    pitch_ew_m=resolved_pitch,
-                    axis_azimuth_deg=axis_azimuth_deg,
-                    **mod_shading_kwargs,
-                )
-        elif site_polygon is not None or terrain_mesh is not None:
-            from pvsyst_auto.scene.ground import build_ground_3d_shading, plan_ground_polygon_layout
-            if site_polygon is not None:
-                ground_3d_layout = plan_ground_polygon_layout(
-                    site_polygon,
-                    tilt_deg=tilt_deg,
-                    azimuth_deg=azimuth_deg,
-                    pitch_m=resolved_pitch,
-                    module_width_m=mw,
-                    module_length_m=ml,
-                    module_rows=n_rows,
-                    module_orientation="landscape" if module_orient == "moLandscape" else "portrait",
-                    spacing_x_m=sx,
-                    spacing_y_m=sy,
-                    setback_m=setback_m,
-                    ground_clearance_m=ground_clearance_m,
-                    max_table_columns=max_table_columns,
-                    base_slope_deg=eff_base_slope,
-                )
-                tables_3d = ground_3d_layout["tables"]
-            else:
-                assert terrain_mesh is not None
-                dim_w = ml if module_orient == "moLandscape" else mw
-                dim_h = mw if module_orient == "moLandscape" else ml
-                long_shed = n_cols * dim_w + max(0, n_cols - 1) * sx
-                larg_shed = n_rows * dim_h + max(0, n_rows - 1) * sy
-                cx0 = 0.5 * (terrain_mesh.bounds["min_x"] + terrain_mesh.bounds["max_x"])
-                cy0 = 0.5 * (terrain_mesh.bounds["min_y"] + terrain_mesh.bounds["max_y"])
-                azimuth_rad = math.radians(azimuth_deg)
-                step_x, step_y = math.sin(azimuth_rad), math.cos(azimuth_rad)
-                start_offset = -0.5 * (shed_count - 1) * resolved_pitch
-                tables_3d = [
-                    {
-                        "name": f"TerrainShed_{r + 1:02d}",
-                        "row_index": r + 1,
-                        "module_rows": n_rows,
-                        "module_columns": n_cols,
-                        "module_count": n_rows * n_cols,
-                        "long_shed_m": round(long_shed, 6),
-                        "larg_shed_m": round(larg_shed, 6),
-                        "origin_m": [round(cx0 + (start_offset + r * resolved_pitch) * step_x, 6),
-                                     round(cy0 + (start_offset + r * resolved_pitch) * step_y, 6),
-                                     round(ground_clearance_m, 6)],
-                        "tilt_deg": tilt_deg,
-                        "azimuth_deg": azimuth_deg,
-                        "base_slope_deg": eff_base_slope,
-                    }
-                    for r in range(shed_count)
-                ]
-            if terrain_mesh is not None and bool(terrain.get("drape_tables", True)):
-                from pvsyst_auto.scene.terrain import drape_shed_tables_on_terrain
-                tables_3d = drape_shed_tables_on_terrain(
-                    tables_3d,
-                    terrain_mesh,
-                    ground_clearance_m=ground_clearance_m,
-                    follow_slope=bool(terrain.get("follow_slope", True)),
-                    max_base_slope_deg=float(terrain.get("max_base_slope_deg", 20.0)),
-                )
-                if ground_3d_layout is not None:
-                    ground_3d_layout["tables"] = tables_3d
-            shading_lines = build_ground_3d_shading(
-                tables_3d,
-                module_name=resolved_mod_name,
-                module_width_m=mw,
-                module_length_m=ml,
-                module_orient=module_orient,
-                spacing_x_m=sx,
-                spacing_y_m=sy,
-                obstacles=obstacles,
-                terrain_mesh=terrain_mesh,
-                version=version,
-            )
-        else:
-            shading_lines = synthesize_ground_shed_shading(
-                shed_count=shed_count,
-                pitch_m=resolved_pitch,
-                tilt_deg=tilt_deg,
-                azimuth_deg=azimuth_deg,
-                base_slope_deg=eff_base_slope,
-                **mod_shading_kwargs,
-            )
-            if obstacles:
-                from pvsyst_auto.scene.author import obstacle_profiles
-                from pvsyst_auto.scene.ground import emit_shading_obstacles
-
-                parsed_obs = obstacle_profiles(obstacles)
-                if parsed_obs:
-                    # Splice 3D obstacles into the ListeObjets of the regular shed shading scene
-                    extra_lines = emit_shading_obstacles(parsed_obs, start_index=2)
-                    shading_lines = [
-                        (f"    ListeObjets, list of={1 + len(parsed_obs)} TShdObject"
-                         if ln.strip() == "ListeObjets, list of=1 TShdObject" else ln)
-                        for ln in shading_lines
-                    ]
-                    end_pos = next(i for i, ln in enumerate(shading_lines) if ln.strip() == "End of ListeObjets")
-                    shading_lines[end_pos:end_pos] = extra_lines
-
-    sub_orient_summaries: list[dict] | None = None
-    def _utility_subarray_entry(sub_id: int, comment: str, n_mod: int, n_str: int, n_inv: int, n_mppt: int) -> dict:
-        return {
-            "subarray_id": sub_id,
-            "orientation_id": sub_id,
-            "comment": comment,
-            "pan_name": pan_name,
-            "ond_name": ond_name,
-            "n_mod_serie": n_mod,
-            "n_string_ch": n_str,
-            "n_inverter": n_inv,
-            "n_inv_mppt": n_mppt,
-            "independent_mppt": independent_mppt,
-            "pnom_ac_in_mppt": pnom_ac_in_mppt,
-            "lid_loss": lid_loss,
-            **({"pmism_mpp": pmism_mpp} if pmism_mpp is not None else {}),
-            **({"module_quality_loss": module_quality_loss} if module_quality_loss is not None else {}),
-            "dc_wiring_loss_pct": dc_wiring_loss_pct,
-            "dc_wiring_resistance_mohm": dc_wiring_resistance_mohm,
-        }
-
-    if sub_orientations:
-        if need_3d or field_type not in ("Sheds", "UnlimSheds"):
-            raise ValueError("sub_orientations is only supported for unlimited ground_sheds (FieldType='Sheds')")
-        orientations_list: list[dict] = []
-        subarrays: list[dict] = []
-        sub_orient_summaries = []
-        total_sub_mods = sum(
-            int(item["n_mod_serie"]) * int(item["n_string_ch"]) for item in sub_orientations
-        )
-        for idx_o, item in enumerate(sub_orientations, start=1):
-            sub_pitch = _finite(item.get("pitch_m", resolved_pitch), f"sub_orientations[{idx_o - 1}].pitch_m", minimum=0.1)
-            sub_cw = _finite(
-                item.get("collector_width_m", resolved_collector_width),
-                f"sub_orientations[{idx_o - 1}].collector_width_m",
-                minimum=0.1,
-            )
-            if sub_pitch <= sub_cw:
-                raise ValueError(
-                    f"sub_orientations[{idx_o - 1}]: pitch_m ({sub_pitch:.3f}) must exceed "
-                    f"collector_width_m ({sub_cw:.3f}) so adjacent ground rows do not overlap (GCR < 1.0)"
-                )
-            sub_tilt = _finite(item["tilt_deg"], f"sub_orientations[{idx_o - 1}].tilt_deg", minimum=0.0, maximum=90.0)
-            sub_azim = _finite(item["azimuth_deg"], f"sub_orientations[{idx_o - 1}].azimuth_deg", minimum=-180.0, maximum=180.0)
-            sub_sheds = _pos_int(item.get("shed_count", shed_count), f"sub_orientations[{idx_o - 1}].shed_count")
-            sub_slope = _finite(
-                item.get("base_slope_deg", eff_base_slope),
-                f"sub_orientations[{idx_o - 1}].base_slope_deg",
-                minimum=-45.0,
-                maximum=45.0,
-            )
-            sub_label = _clean_text(
-                item.get("label") or f"Sub-array #{idx_o} (Tilt {_fmt_angle(sub_tilt)}, Azim {_fmt_angle(sub_azim)})",
-                f"sub_orientations[{idx_o - 1}].label",
-            )
-            o_spec = {
-                "id": idx_o,
-                "field_type": field_type,
-                "tilt_deg": sub_tilt,
-                "azimuth_deg": sub_azim,
-                "base_slope_deg": sub_slope,
-                "comment": f"{sub_label}, Tilt {_fmt_angle(sub_tilt)} deg, Azim. {_fmt_angle(sub_azim)} deg",
-                "pitch_m": sub_pitch,
-                "collector_width_m": sub_cw,
-                "shed_count": sub_sheds,
-                "module_columns": n_rows,
-                "bifacial": bifacial,
-            }
-            for opt_key, default_val in (
-                ("inactive_band_width_1_m", inactive_band_width_1_m),
-                ("inactive_band_width_2_m", inactive_band_width_2_m),
-                ("electrical_effect", electrical_effect),
-                ("shading_factor", shading_factor),
-                ("cell_width_m", cell_width_m),
-            ):
-                val = item.get(opt_key, default_val)
-                if val is not None:
-                    o_spec[opt_key] = val
-            orientations_list.append(o_spec)
-
-            sub_n_mod = _pos_int(item["n_mod_serie"], f"sub_orientations[{idx_o - 1}].n_mod_serie")
-            sub_n_str = _pos_int(item["n_string_ch"], f"sub_orientations[{idx_o - 1}].n_string_ch")
-            sub_n_inv = _pos_int(item["n_inverter"], f"sub_orientations[{idx_o - 1}].n_inverter")
-            sub_n_mppt = _pos_int(item["n_inv_mppt"], f"sub_orientations[{idx_o - 1}].n_inv_mppt")
-            subarrays.append(_utility_subarray_entry(idx_o, sub_label, sub_n_mod, sub_n_str, sub_n_inv, sub_n_mppt))
-            sub_mods = sub_n_mod * sub_n_str
-            sub_orient_summaries.append({
-                "orientation_id": idx_o,
-                "subarray_id": idx_o,
-                "label": sub_label,
-                "tilt_deg": sub_tilt,
-                "azimuth_deg": sub_azim,
-                "pitch_m": sub_pitch,
-                "collector_width_m": sub_cw,
-                "gcr": round(sub_cw / sub_pitch, 4),
-                "shed_count": sub_sheds,
-                "inverter_count": sub_n_inv,
-                "mppt_count": sub_n_mppt,
-                "string_count": sub_n_str,
-                "module_count": sub_mods,
-                "share_pct": round((sub_mods / total_sub_mods) * 100.0, 2) if total_sub_mods > 0 else 0.0,
-            })
-    else:
-        orientations_list = [orient_spec]
-        sub_mppt = n_inv_mppt if n_inv_mppt is not None else (n_string_ch if independent_mppt else 1)
-        subarrays = [_utility_subarray_entry(1, "PV Array", n_mod_serie, n_string_ch, n_inverter, sub_mppt)]
-
-    result = synthesize_project_and_variant(
-        store,
-        project_comment=project_comment,
-        variant_comment=variant_comment,
-        site_name=site_name,
-        met_name=met_name,
-        orientations=orientations_list,
-        subarrays=subarrays,
-        pan_name=pan_name,
-        ond_name=ond_name,
-        u_factor=u_factor,
-        shading_lines=shading_lines,
-        version=version,
-        with_bom=with_bom,
-        allow_missing_met=allow_missing_met,
-    )
-    result["utility_summary"] = {
-        "field_type": field_type,
-        "include_3d_scene": need_3d,
-        "pitch_m": resolved_pitch,
-        "collector_width_m": resolved_collector_width,
-        "gcr": round(resolved_collector_width / resolved_pitch, 4),
-        "shed_count": shed_count,
-        "module_rows": n_rows,
-        "module_columns": n_cols,
-        "module_orient": module_orient,
-        "module_width_m": mw,
-        "module_length_m": ml,
-        "module_dimension_source": dim_source,
-        "bifacial_enabled": bool(bifacial and bifacial.get("enabled", True)),
-        "base_slope_deg": eff_base_slope,
-        "obstacle_count": len(obstacles or ()),
-        **({"sub_orientations": sub_orient_summaries} if sub_orient_summaries is not None else {}),
-        **({"ground_3d_layout": ground_3d_layout} if ground_3d_layout is not None else {}),
-        **({"terrain": terrain_summary} if terrain_summary is not None else {}),
-    }
-    return result
+def __getattr__(name: str):
+    if name in _MOVED_TO_TEMPLATE:
+        from pvsyst_auto.project import template
+        return getattr(template, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

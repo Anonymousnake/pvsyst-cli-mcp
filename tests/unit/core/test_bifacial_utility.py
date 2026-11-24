@@ -14,7 +14,8 @@ from pvsyst_auto.api.schemas import SingleDesignRequest
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
 from pvsyst_auto.project.bifacial import normalize_bifacial_spec, render_bifacial_block
-from pvsyst_auto.project.synthesize import placeholder_site_block, synthesize_utility_project
+from pvsyst_auto.project.synthesize import placeholder_site_block
+from pvsyst_auto.project.template import synthesize_utility_project
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import EXPECTED_WORKSPACE_BASENAME, prepare_design_project, simulate_design
 from pvsyst_auto.workflows.utility import validate_utility_spec

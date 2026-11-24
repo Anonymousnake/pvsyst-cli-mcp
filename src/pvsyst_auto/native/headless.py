@@ -19,7 +19,7 @@ from pathlib import Path
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.native._prep import _prepare_source
 from pvsyst_auto.project.circuit import inventory
-from pvsyst_auto.project.fileio import publish_new
+from pvsyst_auto.project.paths import publish_new
 from pvsyst_auto.scene.author import MAX_TABLES, _num, _rotate_z, house_profile
 from pvsyst_auto.scene.mapping import (
     ANGLE_TOL, COORD_TOL, source_string_ranges, verify_grouped_hardware, verify_house_geometry,

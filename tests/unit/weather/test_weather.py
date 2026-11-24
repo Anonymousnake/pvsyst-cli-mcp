@@ -15,7 +15,7 @@ from unittest.mock import patch
 from mcp.server.mcpserver.exceptions import ToolError
 
 import pvsyst_auto.api.weather as api_weather
-import pvsyst_auto.project.fileio as fileio_module
+import pvsyst_auto.project.paths as fileio_module
 import pvsyst_auto.weather.csv as pvsyst_weather
 import pvsyst_auto.weather.preparation as preparation
 from pvsyst_auto.api import app as _registered_app, context as server

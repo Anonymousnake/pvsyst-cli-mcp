@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from pvsyst_auto.components.editor import ObjectBlock
 from pvsyst_auto.components.store import ComponentStore
-from pvsyst_auto.project import seasonal
-from pvsyst_auto.project.orientation_convert import convert_orientation
+from pvsyst_auto.project import bifacial as seasonal
+from pvsyst_auto.project.tracking import convert_orientation
 from pvsyst_auto.project.synthesize import synthesize_project_and_variant
 from pvsyst_auto.project.tracking import tracking_values
 from pvsyst_auto.project.variants import VariantStore

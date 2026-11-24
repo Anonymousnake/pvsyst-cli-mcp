@@ -4,7 +4,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from pvsyst_auto.components.editor import replace_value
-from pvsyst_auto.components.generator import finite, one, read_flat_grid_system
+from pvsyst_auto.components.editor import finite, one, read_flat_grid_system
 
 
 def _read(lines, system):

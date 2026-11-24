@@ -13,7 +13,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 from pvsyst_auto.native._winlaunch import NativeProcessNotStopped
-from pvsyst_auto.project.fileio import atomic_replace
+from pvsyst_auto.project.paths import atomic_replace
 
 _SUPPORTED = {(8, 1, 6, 49278), (8, 1, 7, 49382)}
 _LOCK_TIMEOUT_MS = 120_000

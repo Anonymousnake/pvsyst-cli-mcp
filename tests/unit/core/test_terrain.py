@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from pvsyst_auto.api.schemas import SingleDesignRequest
 from pvsyst_auto.components.store import ComponentStore
-from pvsyst_auto.project.synthesize import synthesize_utility_project
+from pvsyst_auto.project.template import synthesize_utility_project
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.scene.ground import plan_ground_polygon_layout
 from pvsyst_auto.scene.terrain import (

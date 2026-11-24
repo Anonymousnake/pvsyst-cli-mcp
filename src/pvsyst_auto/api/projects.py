@@ -171,7 +171,7 @@ def pvsyst_convert_orientation(
     """Create a new variant converting an existing variant's orientation type in-place
     (fixed <-> seasonal <-> sheds <-> tracker_ns <-> tracker_2axis), automatically stripping
     incompatible 3D shading and stale simulation caches. Defaults to dry_run=true."""
-    from pvsyst_auto.project.orientation_convert import convert_orientation
+    from pvsyst_auto.project.tracking import convert_orientation
     return convert_orientation(
         variant_store(),
         project=project,
@@ -205,7 +205,7 @@ def pvsyst_create_ac_cabling_variant(project: StrictStr, source_variant: StrictS
                                      add_utf8_bom: StrictBool = False) -> dict:
     """Create a new variant configuring uniform per-inverter AC cable length (0.1 m precision)
     and optional conductor/section."""
-    from pvsyst_auto.energy.ac import create_ac_cabling_variant
+    from pvsyst_auto.energy.system import create_ac_cabling_variant
     return create_ac_cabling_variant(variant_store(), project=project, source_variant=source_variant,
         new_variant=new_variant, ac=ac.model_dump(exclude_none=True), dry_run=dry_run,
         variant_name=variant_name, add_utf8_bom=add_utf8_bom)
@@ -261,7 +261,7 @@ def pvsyst_create_shed_geometry_variant(project: StrictStr, source_variant: Stri
                                         add_utf8_bom: StrictBool = False) -> dict:
     """Create a new variant updating Sheds or SunShields pitch, tilt, count, width,
     inactive bands, shading factor, or electrical shading flag."""
-    from pvsyst_auto.project.sheds import create_shed_variant
+    from pvsyst_auto.project.bifacial import create_shed_variant
     return create_shed_variant(variant_store(), project=project, source_variant=source_variant,
         new_variant=new_variant, geometry=geometry.model_dump(exclude_none=True),
         dry_run=dry_run, variant_name=variant_name, add_utf8_bom=add_utf8_bom)

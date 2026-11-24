@@ -9,7 +9,7 @@ built-in component database is never enumerated.
 from __future__ import annotations
 
 from pvsyst_auto.components.store import electrical_inventory
-from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
+from pvsyst_auto.components.editor import pan_validation_fields
 from pvsyst_auto.project.circuit import positive_integer
 from pvsyst_auto.project.paths import variant_id
 from pvsyst_auto.engineering.sizing import plan_capacity
