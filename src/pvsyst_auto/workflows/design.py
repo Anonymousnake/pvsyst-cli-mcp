@@ -27,6 +27,7 @@ from pvsyst_auto.validation import (
     append_issue as _issue,
     is_finite_number as _is_number,
     is_printable_text as _is_text,
+    is_strict_int as _is_int,
 )
 
 from pvsyst_auto.native.cli import PVsystError, validate_report_pages
@@ -105,10 +106,6 @@ SIMULATE_SUCCESS = ("completed", "needs_review")
 RETAINED_NOTE = ("Produced provider JSON, CSV, preparation artifacts, the working project and the "
                  "recovery steps are retained; no automatic cleanup, overwrite or rollback was "
                  "performed and a documented recovery is never reported as success")
-
-
-def _is_int(value) -> bool:
-    return type(value) is int
 
 
 def _prune_empty(value):

@@ -1115,6 +1115,29 @@ def synthesize_house_source(store, components, request: dict) -> dict:
     return synth
 
 
+def _validate_ground_array_modules(
+    *,
+    module_rows: int,
+    module_columns: int,
+    module_width_m: float,
+    module_length_m: float,
+    module_name: str,
+    module_orient: str,
+    spacing_x_m: float,
+    spacing_y_m: float,
+) -> tuple[int, int, float, float, float, float, str]:
+    n_rows = _pos_int(module_rows, "module_rows")
+    n_cols = _pos_int(module_columns, "module_columns")
+    mw = _finite(module_width_m, "module_width_m", minimum=0.1)
+    ml = _finite(module_length_m, "module_length_m", minimum=0.1)
+    sx = _finite(spacing_x_m, "spacing_x_m", minimum=0.0)
+    sy = _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
+    if module_orient not in ("moPortrait", "moLandscape"):
+        raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
+    name = _clean_text(module_name, "module_name")
+    return n_rows, n_cols, mw, ml, sx, sy, name
+
+
 def synthesize_ground_shed_shading(*, shed_count: int = 10, pitch_m: float = 10.0,
                                    tilt_deg: float = 20.0, azimuth_deg: float = 0.0,
                                    base_slope_deg: float = 0.0,
@@ -1128,22 +1151,23 @@ def synthesize_ground_shed_shading(*, shed_count: int = 10, pitch_m: float = 10.
                                    version: str = SYNTH_VERSION) -> list[str]:
     """Synthesize a complete 3D PVObject_Ombrage=pvShading containing a pvShdArrayShed field."""
     n_sheds = _pos_int(shed_count, "shed_count")
-    n_rows = _pos_int(module_rows, "module_rows")
-    n_cols = _pos_int(module_columns, "module_columns")
     pitch = _finite(pitch_m, "pitch_m", minimum=0.1)
     tilt = _finite(tilt_deg, "tilt_deg", minimum=0.0, maximum=90.0)
     azim = _finite(azimuth_deg, "azimuth_deg", minimum=-180.0, maximum=180.0)
-    mw = _finite(module_width_m, "module_width_m", minimum=0.1)
-    ml = _finite(module_length_m, "module_length_m", minimum=0.1)
-    sx = _finite(spacing_x_m, "spacing_x_m", minimum=0.0)
-    sy = _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
-    if module_orient not in ("moPortrait", "moLandscape"):
-        raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
+    n_rows, n_cols, mw, ml, sx, sy, name = _validate_ground_array_modules(
+        module_rows=module_rows,
+        module_columns=module_columns,
+        module_width_m=module_width_m,
+        module_length_m=module_length_m,
+        module_name=module_name,
+        module_orient=module_orient,
+        spacing_x_m=spacing_x_m,
+        spacing_y_m=spacing_y_m,
+    )
     cell_w = mw if module_orient == "moPortrait" else ml
     cell_h = ml if module_orient == "moPortrait" else mw
     larg_shed = n_rows * cell_h + max(0, n_rows - 1) * sy
     long_shed = n_cols * cell_w + max(0, n_cols - 1) * sx
-    name = _clean_text(module_name, "module_name")
     return [
         "  PVObject_Ombrage=pvShading",
         "    Comment=Ground shed 3D shading scene",
@@ -1203,23 +1227,24 @@ def synthesize_ground_tracker_shading(*, tracker_count: int = 10, pitch_ew_m: fl
                                       version: str = SYNTH_VERSION) -> list[str]:
     """Synthesize a complete 3D PVObject_Ombrage=pvShading containing a pvShdArrayTracking field."""
     n_trk = _pos_int(tracker_count, "tracker_count")
-    n_rows = _pos_int(module_rows, "module_rows")
-    n_cols = _pos_int(module_columns, "module_columns")
     pitch = _finite(pitch_ew_m, "pitch_ew_m", minimum=0.1)
     azim = _finite(axis_azimuth_deg, "axis_azimuth_deg", minimum=-180.0, maximum=180.0)
-    mw = _finite(module_width_m, "module_width_m", minimum=0.1)
-    ml = _finite(module_length_m, "module_length_m", minimum=0.1)
-    sx = _finite(spacing_x_m, "spacing_x_m", minimum=0.0)
-    sy = _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
-    if module_orient not in ("moPortrait", "moLandscape"):
-        raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
+    n_rows, n_cols, mw, ml, sx, sy, name = _validate_ground_array_modules(
+        module_rows=module_rows,
+        module_columns=module_columns,
+        module_width_m=module_width_m,
+        module_length_m=module_length_m,
+        module_name=module_name,
+        module_orient=module_orient,
+        spacing_x_m=spacing_x_m,
+        spacing_y_m=spacing_y_m,
+    )
     # In PVsyst pvShdArrayTracking (verified against _DEMO_Utility.VC7):
     # LongShed = tracker cross-axis chord width (CollectorWidth), LargShed = tracker N-S length.
     chord_mod = ml if module_orient == "moPortrait" else mw
     length_mod = mw if module_orient == "moPortrait" else ml
     long_shed = n_rows * chord_mod + max(0, n_rows - 1) * sy
     larg_shed = n_cols * length_mod + max(0, n_cols - 1) * sx
-    name = _clean_text(module_name, "module_name")
     return [
         "  PVObject_Ombrage=pvShading",
         "    Comment=Ground tracker 3D shading scene",
@@ -1606,18 +1631,13 @@ def synthesize_utility_project(
                 version=version,
             )
             if obstacles:
-                from pvsyst_auto.native.headless import _faces, _shd_object, _shd_tree
                 from pvsyst_auto.scene.author import obstacle_profiles
+                from pvsyst_auto.scene.ground import emit_shading_obstacles
 
                 parsed_obs = obstacle_profiles(obstacles)
                 if parsed_obs:
                     # Splice 3D obstacles into the ListeObjets of the regular shed shading scene
-                    extra_lines: list[str] = []
-                    for idx_o, obs in enumerate(parsed_obs, start=2):
-                        if obs["kind"] == "tree":
-                            extra_lines.extend(_shd_tree(idx_o, idx_o, obs, 0.0, 0.0))
-                        else:
-                            extra_lines.extend(_shd_object(idx_o, idx_o, [tuple(v) for v in obs["vertices"]], _faces(obs)))
+                    extra_lines = emit_shading_obstacles(parsed_obs, start_index=2)
                     shading_lines = [
                         (f"    ListeObjets, list of={1 + len(parsed_obs)} TShdObject"
                          if ln.strip() == "ListeObjets, list of=1 TShdObject" else ln)

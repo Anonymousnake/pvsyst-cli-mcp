@@ -1,7 +1,6 @@
 """Revise an existing native design and bind its annual outputs to the run inputs."""
 from __future__ import annotations
 
-import csv
 import calendar
 import json
 import math
@@ -11,7 +10,7 @@ import subprocess
 from pvsyst_auto.native.cli import PVsystError, VAR_GROUPS, build_sfi, iter_result_csv, result_units, validate_report_pages
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file, write_json
-from pvsyst_auto.results import annual_summary, fingerprint
+from pvsyst_auto.results import annual_summary, fingerprint, verify_native_csv_context, verify_pdf_header
 from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.weather.preparation import inspect_met_calendar
 from pvsyst_auto.versions import CLI_TRACKING_BUILDS
@@ -212,19 +211,11 @@ def load_engineering_run(store, manifest_name, *, project=None, variant=None, cs
 def _context(path, project, variant, site, meteo):
     expected = {"Project": project, "Simulation variant": Path(project).stem + "." + variant,
                 "Geographical Site": site, "Weather data": meteo}
-    context = {}
-    with path.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
-        for row in csv.reader(stream, delimiter=";"):
-            if row and row[0].strip().lower() == "date":
-                break
-            if len(row) > 1 and row[0].strip() in expected:
-                key = row[0].strip()
-                if key in context:
-                    raise ValueError("Duplicate native result context: " + key)
-                context[key] = row[1].strip()
-    if any(context.get(key, "").casefold() != value.casefold() for key, value in expected.items()):
-        raise ValueError("Native output identifies a different project/variant/site/weather")
-    return context
+    return verify_native_csv_context(
+        path,
+        expected,
+        mismatch_message="Native output identifies a different project/variant/site/weather",
+    )
 
 
 def run_engineering_task(cli, store, *, source_project, source_variant, new_project, new_variant,
@@ -480,9 +471,7 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                 count += 1
             if tracking_mode and result_units(paths["csv"], strict=True).get("GlobShd") != "W/m\u00b2":
                 raise ValueError("Tracking output lacks native GlobShd in W/m2")
-            with paths["pdf"].open("rb") as stream:
-                if stream.read(5) != b"%PDF-":
-                    raise ValueError("Native report is not a PDF")
+            verify_pdf_header(paths["pdf"])
             record["result_files"] = {"csv": record["metrics"]["sha256"], "pdf": fingerprint(paths["pdf"])}
             record["warnings"].extend(run.get("warnings", []))
             record["warnings"].extend(record["metrics"].get("diagnostic_flags", []))

@@ -455,8 +455,8 @@ def build_terrain_tracker_shading(
     version: str = SYNTH_VERSION,
 ) -> tuple[list[str], dict[str, Any]]:
     """Build a 3D pvShading scene with per-tracker draped pvShdArrayTracking + pvShdGround terrain."""
-    from pvsyst_auto.native.headless import _faces, _shd_object, _shd_tree
     from pvsyst_auto.scene.author import obstacle_profiles
+    from pvsyst_auto.scene.ground import emit_shading_obstacles, pv_shading_header
 
     if module_orient == "moLandscape":
         dim_along_axis = module_length_m
@@ -477,19 +477,7 @@ def build_terrain_tracker_shading(
     axis_dx, axis_dy = math.sin(az_rad), math.cos(az_rad)
     step_dx, step_dy = math.cos(az_rad), -math.sin(az_rad)
 
-    lines = [
-        "  PVObject_Ombrage=pvShading",
-        "    Comment=3D Terrain-draped horizontal N-S tracker shading scene",
-        "    Flags=$000A0300",
-        "    Precision=1",
-        "    FracOmbreMod=1.000",
-        "    FracOmbreThin=0.400",
-        "    GCROffset=1.0",
-        "    DisplayedRef=refGeographical",
-        "",
-        f"    ListeObjets, list of={total_objs} TShdObject",
-        "",
-    ]
+    lines = pv_shading_header("3D Terrain-draped horizontal N-S tracker shading scene", total_objs)
 
     tracker_summaries: list[dict[str, Any]] = []
     start_offset = -0.5 * (tracker_count - 1) * pitch_ew_m
@@ -547,13 +535,7 @@ def build_terrain_tracker_shading(
     obj_idx += 1
     lines.extend(emit_pvshd_ground(mesh, object_index=obj_idx, version=SEED_RECORD_VERSION))
 
-    for obs in parsed_obstacles:
-        obj_idx += 1
-        if obs["kind"] == "tree":
-            lines.extend(_shd_tree(obj_idx, obj_idx, obs, 0.0, 0.0))
-        else:
-            world_verts = [tuple(v) for v in obs["vertices"]]
-            lines.extend(_shd_object(obj_idx, obj_idx, world_verts, _faces(obs)))
+    lines.extend(emit_shading_obstacles(parsed_obstacles, start_index=obj_idx + 1))
 
     lines.extend([
         "    End of ListeObjets",

@@ -26,6 +26,22 @@ def init_workspace(root: Path, *, extra_dirs: tuple[str, ...] = ()) -> Path:
     return root
 
 
+def init_full_workspace(root: Path) -> Path:
+    """Create the verified 26-folder PVsyst8.1_Data workspace tree under ``root`` and return it."""
+    from pvsyst_auto.workflows.design import (
+        EXPECTED_WORKSPACE_BASENAME,
+        LAYOUT_COMPOSPV_FOLDERS,
+        LAYOUT_ROOT_FOLDERS,
+    )
+
+    ws = root / EXPECTED_WORKSPACE_BASENAME
+    for folder in LAYOUT_ROOT_FOLDERS:
+        (ws / folder).mkdir(parents=True, exist_ok=True)
+    for folder in LAYOUT_COMPOSPV_FOLDERS:
+        (ws / "ComposPV" / folder).mkdir(parents=True, exist_ok=True)
+    return ws
+
+
 def write_utf8_crlf(path: Path, text: str, *, bom: bool = True) -> None:
     """Write text with CRLF line endings (and optional UTF-8 BOM)."""
     payload = text.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8")

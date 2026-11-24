@@ -13,7 +13,7 @@ from pvsyst_auto.components.editor import objects
 from pvsyst_auto.energy.storage import create_grid_storage_variant, storage_state, validate_storage
 from pvsyst_auto.energy.load import hourly_load_block, load_snapshot
 from pvsyst_auto.project.paths import workspace_file
-from pvsyst_auto.results import POWER_TO_KW, fingerprint
+from pvsyst_auto.results import POWER_TO_KW, fingerprint, verify_pdf_header
 
 
 def _load_signature(text):
@@ -211,9 +211,7 @@ def read_storage_year(csv_path, pdf_path, year, load_record, load_values, state)
         raise ValueError("Storage output does not cover the entire prepared hourly year")
     if any(not math.isfinite(value) for value in totals.values()):
         raise ValueError("Storage annual totals exceed finite numeric range")
-    with Path(pdf_path).open("rb") as stream:
-        if stream.read(5) != b"%PDF-":
-            raise ValueError("Native storage report is not a PDF")
+    verify_pdf_header(Path(pdf_path), message="Native storage report is not a PDF")
     names = {"grid_import_kwh": "EFrGrid", "grid_export_kwh": "E_Grid", "load_energy_kwh": "E_User",
              "unmet_load_kwh": "E_Miss", "battery_charge_kwh": "EBatCh", "battery_discharge_kwh": "EBatDis",
              "unused_energy_kwh": "EUnused", "array_energy_kwh": "EArray", "clipping_loss_kwh": "IL_Pmax"}

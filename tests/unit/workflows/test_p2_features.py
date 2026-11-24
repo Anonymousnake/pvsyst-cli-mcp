@@ -18,7 +18,7 @@ from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.report import generate_report
-from tests._fixtures import write_sfi_csv
+from tests._fixtures import FakeCliBase, init_full_workspace, write_sfi_csv
 from tests.unit.core.test_bifacial_utility import UTILITY_OND, UTILITY_PAN
 from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
 
@@ -128,17 +128,7 @@ class CompactPreviewAndReportLanguageTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.ws = Path(self._tmp.name) / "PVsyst8.1_Data"
-        for folder in (
-            "ComposPV/PVmodules", "ComposPV/Inverters", "ComposPV/Batteries",
-            "ComposPV/Clients", "ComposPV/Gensets", "ComposPV/Pumps",
-            "ComposPV/Regulators", "ComposPV/RegulPmp", "ComposPV/Sellers",
-            "DataMeas", "Meteo", "Models", "Other", "Projects", "Results",
-            "Shadings", "Sites", "Templates", "UserBatch", "UserData",
-            "UserHourly", "UserHourlyParams", "UserImages", "UserOptimization",
-            "UserRecycleBin",
-        ):
-            (self.ws / folder).mkdir(parents=True, exist_ok=True)
+        self.ws = init_full_workspace(Path(self._tmp.name))
         (self.ws / "ComposPV/PVmodules/Lab440.PAN").write_bytes(
             b"\xef\xbb\xbf" + UTILITY_PAN.replace("\n", "\r\n").encode("utf-8")
         )
@@ -159,13 +149,15 @@ class CompactPreviewAndReportLanguageTests(unittest.TestCase):
     def test_compact_preview_folds_rejected_templates_unless_verbose(self):
         calls: list[dict] = []
 
-        class _FakeCLI:
-            workspace = self.ws
-            def _require(self, *a, **k): return None
-            def command_help(self, *a, **k): return "Available language: [en, zh]"
-            def version(self, *a, **k): return "8.1.7"
-            def license_info(self, *a, **k): return {"status": "ACTIVATED", "remaining_executions": None}
-            def _redact(self, s): return s
+        ws = self.ws
+
+        class _FakeCLI(FakeCliBase):
+            def __init__(self):
+                super().__init__(ws, version="8.1.7", license_status="ACTIVATED")
+
+            def command_help(self, *a, **k):
+                return "Available language: [en, zh]"
+
             def run_simulation(self, project, variant, **kwargs):
                 calls.append(kwargs)
                 out_csv = Path(kwargs["out_csv"])
