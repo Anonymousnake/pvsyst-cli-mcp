@@ -869,3 +869,8 @@ def remove_subarray(store, project: str, variant: str, subarray_id: int, expecte
             "orientation_id_map": orientation_id_map, "remaining_member_id": remaining_member,
             "inverter_group_count": len(matches), "backup_name": backup, "sha256": hashlib.sha256(candidate).hexdigest(),
         }
+
+
+def validate_structure(store, project: str, variant: str) -> dict:
+    """Backward-compatible helper delegating to ``VariantStore.validate_structure``."""
+    return store.validate_structure(project, variant)

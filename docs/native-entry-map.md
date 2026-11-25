@@ -39,7 +39,7 @@
 |---|---|---|
 | 常数热损系数 $U_c$ | MCP 可读写 | `main_array_updates.UFactor`（范围 `15..100` W/m²·K），要求主阵列标准 `Flags`/`Flags2` |
 | 风速热损项 $U_v$ | MCP 可读写（present-only） | `main_array_updates.UVFactor`（原生 `Uv` 字面值，仅已有字段可编辑、不建默认/别名）；适配域为任意有限数值（无原生量程/权威单位：字面 `Uw fact; [W/m2K]` 与量纲 `W/m2K per (m/s)` 存 SourceGap，原生数值校验延后）；接受真实跟踪夹具 `$01900400`/`$082A` 的 8.1.0/8.1.6 Grid 主阵（不要求无几何，保留 80 物体场景与跟踪/遮挡字节），编辑后失效自身派生结果缓存并只清 root 仿真位、保留其余控制位 |
-| DC 线缆阻值 / 损失率 | MCP 已封装（免 GUI 原生写入） | `pvsyst_create_dc_cabling_variant`；读取本地 `.PAN` 单二极管模型求解 STC `(Vmp, Imp)` 完成 `mOhm <-> %` 互算，写入 `RSCablageCh`/`RSCablagePC`、`pvMainArray`/`pvSubArray.Flags` 与 `StringNode` `CableDefinition`；内置加密/不可读组件允许 `resistance` 模式，拒绝 `percent` 模式 |
+| DC 线缆阻值 / 损失率 | MCP 已封装（免 GUI 原生写入） | `pvsyst_create_dc_cabling_variant`；读取本地 `.PAN` 单二极管模型求解 STC `(Vmp, Imp)` 完成 `mOhm <-> %` 互算，写入 `RSCablageCh`/`RSCablagePC`、`pvMainArray`/`pvSubArray.Flags` 与 `StringNode` `CableDefinition`；内置加密/不可读组件允许 `resistance` 模式（`.PAN` 不可读时会写出 `RSCablagePC=0.00`，`PVsystCLI 8.1.7` 实际消费 `StringNode` 的 `Resistance`，并非线损未生效），拒绝 `percent` 模式 |
 | AC 线缆 | MCP 已封装 | `pvsyst_create_ac_cabling_variant`；同步更新主阵列使能位、子阵列长度（`0.1 m` 精度）与直接 `InverterNode` 的 `CableDefinition` |
 | 多级 MV/HV 变压器与夜间断开 | MCP 已封装（已过 8.1.7 实测） | `pvsyst_configure_transformers`（支持单台/并联/级联 MV+HV 变压器、`NightDisconnect` 及 ISO 60228 AC 集电线缆；内置 PVsyst 8.1.7 `PNomInvAC` 损耗基准与 `80%–200%` 容量、正值铭牌损耗、`≤1%` 铁损 / `≤5%` 铜损及 `HV ≥ MV` 电压预检） |
 | 组件质量损失 | MCP 可读写 | `subarray_updates.ModuleQualityLoss`（`[-5, 20]%`），同步写入子阵列 `PQualityModU` 与 `PQualityModI`，并清除默认标志位 `0x00100000` |

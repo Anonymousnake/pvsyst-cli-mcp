@@ -1314,6 +1314,45 @@ class CliTransientRetryAndResourcesTests(unittest.TestCase):
 
         asyncio.run(_check())
 
+    def test_legacy_consolidated_module_imports_forward_cleanly(self) -> None:
+        import importlib
+        import pvsyst_auto
+        from pvsyst_auto.components.editor import generator_state, pan_validation_fields
+        from pvsyst_auto.components.generator import state as legacy_gen_state
+        from pvsyst_auto.components.pan import validation_fields as legacy_validation_fields
+        from pvsyst_auto.energy.storage import plan_tou_storage_schedule as new_tou
+        from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule as legacy_tou
+        from pvsyst_auto.project.bifacial import create_shed_variant as new_shed
+        from pvsyst_auto.project.circuit import validate_structure as new_validate
+        from pvsyst_auto.project.sheds import create_shed_variant as legacy_shed
+        from pvsyst_auto.project.variant_topology import validate_structure as legacy_validate
+
+        self.assertIs(legacy_tou, new_tou)
+        self.assertIs(legacy_validation_fields, pan_validation_fields)
+        self.assertIs(legacy_gen_state, generator_state)
+        self.assertIs(legacy_shed, new_shed)
+        self.assertIs(legacy_validate, new_validate)
+
+        for legacy_name, targets in pvsyst_auto._LEGACY_MODULE_ALIASES.items():
+            with self.subTest(legacy_name=legacy_name):
+                mod = importlib.import_module(legacy_name)
+                self.assertEqual(mod.__name__, legacy_name)
+                for target_name in targets:
+                    self.assertEqual(importlib.import_module(target_name).__name__, target_name)
+
+        env = dict(os.environ)
+        if env.get("PVSYST_TEST_INSTALLED") == "1":
+            env.pop("PYTHONPATH", None)
+        else:
+            env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3] / "src")
+        subprocess.run(
+            [sys.executable, "-c",
+             "from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule; "
+             "assert callable(plan_tou_storage_schedule)"],
+            check=True,
+            env=env,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

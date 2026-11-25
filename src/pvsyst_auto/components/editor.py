@@ -467,6 +467,9 @@ def pan_validation_fields(text: str) -> dict[str, list[str]]:
     return fields
 
 
+validation_fields = pan_validation_fields
+
+
 def sourced_component(store: ComponentStore, kind: str, filename: str) -> tuple[str, str, dict | None]:
     """Read one loose UTF-8 component by exact filename and bind its declared identity."""
     from pvsyst_auto.components.store import electrical_inventory
@@ -609,6 +612,9 @@ def generator_state(lines, arrays, system):
     except ValueError as exc:
         result["errors"].append(str(exc))
     return result
+
+
+state = generator_state
 
 
 def replace_generator(lines, arrays, system, updates, components):
