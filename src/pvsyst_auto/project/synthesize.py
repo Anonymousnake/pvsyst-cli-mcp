@@ -688,3 +688,6 @@ def __getattr__(name: str):
         from pvsyst_auto.project import template
         return getattr(template, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = list(dict.fromkeys([k for k in globals() if not k.startswith("_")] + ["pv_shading_header", *[k for k in _MOVED_TO_TEMPLATE if not k.startswith("_")]]))

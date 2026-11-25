@@ -1353,26 +1353,35 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
         import inspect
         import typing
         import pvsyst_auto
-        from pvsyst_auto.components import builder, identity, pan
+        from pvsyst_auto.components import battery, builder, identity, pan
         from pvsyst_auto.components.editor import generator_state, pan_validation_fields
         from pvsyst_auto.components.generator import state as legacy_gen_state
         from pvsyst_auto.components.pan import validation_fields as legacy_validation_fields
-        from pvsyst_auto.components.store import ComponentStore
+        from pvsyst_auto.components.store import ComponentStore, fileio as store_fileio
         from pvsyst_auto.energy import inverter_temperature, power, power_factor, transformers
         from pvsyst_auto.energy.storage import plan_tou_storage_schedule as new_tou
         from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule as legacy_tou
-        from pvsyst_auto.project import fileio, sheds, variant_topology
+        from pvsyst_auto.project import fileio, sheds, variant_readback, variant_topology
         from pvsyst_auto.project.bifacial import create_shed_variant as new_shed
         from pvsyst_auto.project.circuit import validate_structure as new_validate
         from pvsyst_auto.project.sheds import create_shed_variant as legacy_shed
         from pvsyst_auto.project.variant_topology import validate_structure as legacy_validate
-        from pvsyst_auto.project.variants import VariantStore
+        from pvsyst_auto.project.variants import (
+            VariantStore,
+            fileio as variants_fileio,
+            variant_readback as variants_readback,
+            variant_topology as variants_topology,
+        )
 
         self.assertIs(legacy_tou, new_tou)
         self.assertIs(legacy_validation_fields, pan_validation_fields)
         self.assertIs(legacy_gen_state, generator_state)
         self.assertIs(legacy_shed, new_shed)
         self.assertIs(legacy_validate, new_validate)
+        self.assertIs(store_fileio, fileio)
+        self.assertIs(variants_fileio, fileio)
+        self.assertIs(variants_readback, variant_readback)
+        self.assertIs(variants_topology, variant_topology)
 
         for legacy_name in self._LEGACY_MODULES:
             with self.subTest(legacy_name=legacy_name):
@@ -1407,6 +1416,43 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
             self.assertIs(fileio.stage, orig_stage)
             self.assertIs(paths.stage, orig_stage)
 
+            with patch.object(paths, "stage") as outer:
+                with patch("pvsyst_auto.project.fileio.stage") as inner:
+                    self.assertIs(paths.stage, inner)
+                    self.assertIs(fileio.stage, inner)
+                self.assertIs(paths.stage, outer)
+                self.assertIs(fileio.stage, outer)
+            self.assertIs(paths.stage, orig_stage)
+
+            del paths.stage
+            try:
+                self.assertFalse(hasattr(fileio, "stage"))
+                with patch("pvsyst_auto.project.fileio.stage", create=True) as created:
+                    self.assertIs(paths.stage, created)
+                self.assertFalse(hasattr(paths, "stage"))
+                self.assertFalse(hasattr(fileio, "stage"))
+            finally:
+                paths.stage = orig_stage
+
+            btr_text = "\r\n".join([
+                "PVObject_=pvBattery",
+                "  Version=8.1.7",
+                "  BattTechnol=btPb_Sealed_AGM",
+                "  DVGassShape=TCubicProfile",
+                "    NPtsMax=4",
+                "    NPtsEff=4",
+                "    Mode=1",
+                "    Point_1=1,1.1",
+                "    Point_2=10,1.2",
+                "    Point_3=50,1.25",
+                "    Point_4=100,1.3",
+                "  End of TCubicProfile",
+                "End of PVObject pvBattery",
+            ]) + "\r\n"
+            self.assertEqual(battery.battery_curve_inventory(btr_text)["items"][0]["cli_recognition"], "recognized")
+            with patch.object(battery, "KNOWN_TAGS", frozenset()):
+                self.assertEqual(battery.battery_curve_inventory(btr_text)["items"][0]["cli_recognition"], "unverified")
+
             ws = tmp_path / "ws"
             (ws / "Projects").mkdir(parents=True)
             (ws / "Projects" / "Demo.PRJ").write_text("PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
@@ -1427,6 +1473,18 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
                 ]) + "\n",
                 encoding="utf-8",
             )
+
+            with patch.object(builder, "bind_source_values", side_effect=RuntimeError("intercepted")):
+                with self.assertRaisesRegex(RuntimeError, "^intercepted$"):
+                    builder.build_sourced_component(
+                        ComponentStore(ws),
+                        component_type="PAN",
+                        new_name="Mock.PAN",
+                        manufacturer="MockCo",
+                        model="MockM",
+                        sources=[],
+                        declarations=[{"field": "pnom", "value": 600}],
+                    )
 
             class DelegatingStore(VariantStore):
                 def validate_structure(self, project: str, variant: str) -> dict:
@@ -1451,6 +1509,10 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
             env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3] / "src")
         subprocess.run(
             [sys.executable, "-c",
+             "import typing; "
+             "from pvsyst_auto.components import editor; "
+             "from pvsyst_auto.components.store import ComponentStore; "
+             "assert typing.get_type_hints(editor.sourced_component)['store'] is ComponentStore; "
              "from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule; "
              "assert callable(plan_tou_storage_schedule)"],
             check=True,

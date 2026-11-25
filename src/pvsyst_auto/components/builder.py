@@ -5,6 +5,7 @@ import difflib
 import json
 import math
 import re
+import sys
 from datetime import datetime
 
 from pvsyst_auto.components.editor import (
@@ -462,12 +463,11 @@ def _build_zero_template_candidate(component_type, *, manufacturer, model, value
 
 
 def _validate_candidate_bytes(store, component_type: str, candidate: str, *, bom: bool) -> tuple[bytes, dict, dict]:
-    from pvsyst_auto.components.store import electrical_inventory
-
     data = (b"\xef\xbb\xbf" if bom else b"") + candidate.encode("utf-8")
     validation = store._inspect(component_type, data)
     store._require_valid(validation, complete=True)
-    electrical = electrical_inventory(component_type, candidate)
+    electrical_inventory_fn = globals().get("electrical_inventory") or __getattr__("electrical_inventory")
+    electrical = electrical_inventory_fn(component_type, candidate)
     if electrical["status"] != "readable":
         raise ValueError("Candidate electrical fields are unreadable: " + "; ".join(electrical["issues"]))
     return data, validation, electrical
@@ -525,12 +525,11 @@ def build_sourced_component(store, *, component_type, new_name, manufacturer, mo
     if result["issues"]:
         return result
 
-    from pvsyst_auto.workflows.sourced_design import bind_source_values
-
     fields = {k: (u, ("scalar", k)) for k, u in SCALAR_UNITS[component_type].items()}
     fields.update({k: (u, ("commercial", k)) for k, u in DIMENSION_UNITS.items()})
-    binding = bind_source_values(manufacturer_model=f"{manufacturer} {model}", sources=sources,
-                                 declarations=declarations, field_specs=fields)
+    bind_fn = globals().get("bind_source_values") or __getattr__("bind_source_values")
+    binding = bind_fn(manufacturer_model=f"{manufacturer} {model}", sources=sources,
+                      declarations=declarations, field_specs=fields)
     result.update(issues=binding["issues"], warnings=binding["warnings"], provenance=binding["provenance"])
     if result["issues"]:
         result["allowed_fields"] = {k: list(v[0]) for k, v in sorted(fields.items())}
@@ -714,3 +713,9 @@ def __getattr__(name: str):
         globals()[name] = bind_source_values
         return bind_source_values
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+if "pvsyst_auto.components.store" not in sys.modules:
+    import pvsyst_auto.components.store
+
+__all__ = list(dict.fromkeys([k for k in globals() if not k.startswith("_")] + ["electrical_inventory", "inspect_curves", "bind_source_values"]))

@@ -758,7 +758,20 @@ class ComponentStore:
         return {"project": f"{base}.PRJ", "variant": variant, "references": refs, "generator_configuration": generator}
 
 
+from pvsyst_auto.components import builder as _builder
 from pvsyst_auto.components import editor as _editor
 
 _editor.ComponentStore = ComponentStore
 _editor.electrical_inventory = electrical_inventory
+_builder.electrical_inventory = electrical_inventory
+_builder.inspect_curves = inspect_curves
+
+
+def __getattr__(name: str):
+    if name == "fileio":
+        import importlib
+
+        value = importlib.import_module("pvsyst_auto.project.fileio")
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

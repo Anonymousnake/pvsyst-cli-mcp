@@ -51,6 +51,7 @@ _LEGACY_MODULE_ALIASES: dict[str, tuple[str, ...]] = {
 _LEGACY_ATTR_RENAMES: dict[str, dict[str, tuple[str, str]]] = {
     "pvsyst_auto.components.battery": {
         "ALIASES": ("pvsyst_auto.components.builder", "BTR_CURVE_ALIASES"),
+        "KNOWN_TAGS": ("pvsyst_auto.components.builder", "BTR_KNOWN_TAGS"),
     },
     "pvsyst_auto.components.commercial": {
         "PATH": ("pvsyst_auto.components.builder", "COMMERCIAL_PATH"),
@@ -76,6 +77,7 @@ _LEGACY_ATTR_RENAMES: dict[str, dict[str, tuple[str, str]]] = {
     "pvsyst_auto.energy.inverter_temperature": {
         "FIELDS": ("pvsyst_auto.energy.system", "_TEMP_FIELDS"),
         "FLAGS": ("pvsyst_auto.energy.system", "_TEMP_FLAGS"),
+        "KNOWN": ("pvsyst_auto.energy.system", "_TEMP_KNOWN"),
     },
     "pvsyst_auto.energy.mismatch": {
         "FIELD": ("pvsyst_auto.energy.dc", "_MISMATCH_FIELD"),
@@ -97,6 +99,7 @@ _LEGACY_ATTR_RENAMES: dict[str, dict[str, tuple[str, str]]] = {
         "PF_BITS": ("pvsyst_auto.energy.system", "_PF_BITS"),
         "PNOM_BITS": ("pvsyst_auto.energy.system", "_PNOM_BITS"),
         "ALLOWED_BITS": ("pvsyst_auto.energy.system", "_PWR_PF_BITS"),
+        "KNOWN": ("pvsyst_auto.energy.system", "_PF_KNOWN"),
     },
     "pvsyst_auto.project.seasonal": {
         "SEASONAL": ("pvsyst_auto.project.bifacial", "SEASONAL_FIELDS"),
@@ -139,9 +142,6 @@ _LEGACY_ATTR_RENAMES: dict[str, dict[str, tuple[str, str]]] = {
 }
 
 _LEGACY_EXTRA_CONSTANTS: dict[str, dict[str, object]] = {
-    "pvsyst_auto.components.battery": {
-        "KNOWN_TAGS": frozenset(("CapaCourant", "IAutoShape", "CapaTemper", "VMaxChargeRate", "DVGassShape", "NbCycleMax")),
-    },
     "pvsyst_auto.energy.ageing": {
         "YEAR_OBJECT": "pvAgeing",
         "YEAR_OBJECT_OWNER": "PVObject_Ageing",
@@ -172,10 +172,8 @@ _LEGACY_EXTRA_CONSTANTS: dict[str, dict[str, object]] = {
     },
     "pvsyst_auto.energy.inverter_temperature": {
         "FLAG_MASK": 0xC000,
-        "KNOWN": {"Comment", "Flags", "SystemType", "TempShift", "TempFixed"},
     },
     "pvsyst_auto.energy.power_factor": {
-        "KNOWN": {"Comment", "Flags", "SystemType", "TanPhi", "TanPhiM"},
         "MODES": ("none", "constant", "monthly"),
         "MONTHS": 12,
     },
@@ -197,8 +195,21 @@ _LEGACY_EXTRA_CONSTANTS: dict[str, dict[str, object]] = {
 class _LegacyAliasModule(types.ModuleType):
     """Module view forwarding attribute reads/writes/patches to backing consolidated modules."""
 
+    def _sync(self):
+        d = object.__getattribute__(self, "__dict__")
+        owners = d.get("_legacy_attr_owners")
+        if owners:
+            for key, (target_mod, target_attr) in owners.items():
+                if hasattr(target_mod, target_attr):
+                    d[key] = getattr(target_mod, target_attr)
+                else:
+                    d.pop(key, None)
+        return d
+
     def __getattribute__(self, name: str):
-        if not name.startswith("__") and name != "_legacy_attr_owners":
+        if name == "__dict__":
+            return object.__getattribute__(self, "_sync")()
+        if not name.startswith("__") and name not in ("_legacy_attr_owners", "_sync"):
             d = object.__getattribute__(self, "__dict__")
             owners = d.get("_legacy_attr_owners")
             if owners is not None and name in owners:
@@ -207,6 +218,8 @@ class _LegacyAliasModule(types.ModuleType):
                     val = getattr(target_mod, target_attr)
                     d[name] = val
                     return val
+                d.pop(name, None)
+                raise AttributeError(f"module {self.__name__!r} has no attribute {name!r}")
         return super().__getattribute__(name)
 
     def __setattr__(self, name: str, value) -> None:
@@ -217,12 +230,16 @@ class _LegacyAliasModule(types.ModuleType):
             setattr(target_mod, target_attr, value)
 
     def __delattr__(self, name: str) -> None:
-        owners = object.__getattribute__(self, "__dict__").get("_legacy_attr_owners")
-        super().__delattr__(name)
+        d = object.__getattribute__(self, "__dict__")
+        owners = d.get("_legacy_attr_owners")
         if owners is not None and name in owners:
             target_mod, target_attr = owners[name]
+            d.pop(name, None)
             if hasattr(target_mod, target_attr):
                 delattr(target_mod, target_attr)
+                return
+            raise AttributeError(name)
+        super().__delattr__(name)
 
 
 class _LegacySubmoduleFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):

@@ -812,3 +812,13 @@ class VariantStore:
                 self._project_text(candidate) if path.name == project else self._sections(self._text(candidate)[1])
                 candidates[path] = candidate
             return {"project": project, "site": site_name, "meteo": met_name, **self._commit_project_files(project, originals, candidates)}
+
+
+def __getattr__(name: str):
+    if name in ("fileio", "variant_readback", "variant_topology"):
+        import importlib
+
+        value = importlib.import_module(f"pvsyst_auto.project.{name}")
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

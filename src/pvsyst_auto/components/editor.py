@@ -472,8 +472,6 @@ validation_fields = pan_validation_fields
 
 def sourced_component(store: ComponentStore, kind: str, filename: str) -> tuple[str, str, dict | None]:
     """Read one loose UTF-8 component by exact filename and bind its declared identity."""
-    from pvsyst_auto.components.store import electrical_inventory
-
     path = None
     for library in ("workspace", "builtin"):
         if library == "builtin" and store.builtin is None:
@@ -516,7 +514,8 @@ def sourced_component(store: ComponentStore, kind: str, filename: str) -> tuple[
         if not declared:
             return f"{kind}.{key}", f"{name} is missing in its owning object", None
         identity[key] = next(iter(declared.values()))
-    return "", "", {"manufacturer": identity["manufacturer"], "model": identity["model"], "electrical": electrical_inventory(kind, text)}
+    electrical_inventory_fn = globals().get("electrical_inventory") or __getattr__("electrical_inventory")
+    return "", "", {"manufacturer": identity["manufacturer"], "model": identity["model"], "electrical": electrical_inventory_fn(kind, text)}
 
 
 def direct_fields(lines, bounds):
@@ -737,3 +736,9 @@ def __getattr__(name: str):
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+import sys as _sys
+
+if "pvsyst_auto.components.store" not in _sys.modules and "pvsyst_auto.components.builder" not in _sys.modules:
+    import pvsyst_auto.components.store
