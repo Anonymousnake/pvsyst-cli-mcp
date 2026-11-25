@@ -699,3 +699,18 @@ def build_sourced_component(store, *, component_type, new_name, manufacturer, mo
                     "Creation failed; no source record from this attempt is retained and no existing file "
                     "was overwritten. Inspect the reported paths before retrying."})
     return result
+
+
+def __getattr__(name: str):
+    if name in ("electrical_inventory", "inspect_curves"):
+        from pvsyst_auto.components import store as _store
+
+        value = getattr(_store, name)
+        globals()[name] = value
+        return value
+    if name == "bind_source_values":
+        from pvsyst_auto.workflows.sourced_design import bind_source_values
+
+        globals()[name] = bind_source_values
+        return bind_source_values
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -266,8 +266,10 @@ def synthesize_ond_from_datasheet(
         if three_voltage_voltages is None or len(three_voltage_voltages) != 3:
             raise ValueError("three_voltage_voltages must provide exactly 3 voltages [VMin, VNom, VMax]")
         v1, v2, v3 = (_pos_finite(v, f"VNomEff[{i}]") for i, v in enumerate(three_voltage_voltages))
-        if not (v1 < v2 < v3) or v1 < vmpp_min_v or v3 > vabs_max_v:
-            raise ValueError("three_voltage_voltages must be strictly increasing within [VMppMin, VAbsMax]")
+        if not (v1 < v2 < v3):
+            raise ValueError("three_voltage_voltages must be strictly increasing (VMin < VNom < VMax)")
+        if v1 < vmpp_min_v or v3 > vabs_max_v:
+            raise ValueError("three_voltage_voltages must lie within [VMppMin, VAbsMax]")
         v_tri = (v1, v2, v3)
         if three_voltage_effic_max is not None:
             if len(three_voltage_effic_max) != 3:
@@ -298,8 +300,13 @@ def synthesize_ond_from_datasheet(
                         raise ValueError(f"{tag}[{p_i}] must be a [p_in, p_out] pair")
                     pin = _pos_finite(pt[0], f"{tag}[{p_i}][0]")
                     pout = _pos_finite(pt[1], f"{tag}[{p_i}][1]", allow_zero=True)
-                    if pout > pin + 1e-6 or (parsed_pts and (pin <= parsed_pts[-1][0] or pout < parsed_pts[-1][1])):
-                        raise ValueError(f"{tag}[{p_i}] violates strictly increasing p_in / monotonic curve constraints (p_out cannot exceed p_in)")
+                    if pout > pin + 1e-6:
+                        raise ValueError(f"{tag}[{p_i}] p_out ({pout}) cannot exceed p_in ({pin})")
+                    if parsed_pts:
+                        if pin <= parsed_pts[-1][0]:
+                            raise ValueError(f"{tag}[{p_i}] p_in must be strictly increasing")
+                        if pout < parsed_pts[-1][1]:
+                            raise ValueError(f"{tag}[{p_i}] p_out must be non-decreasing")
                     parsed_pts.append((pin, pout))
                 v_curves[tag] = parsed_pts
             else:

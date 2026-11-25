@@ -1314,18 +1314,59 @@ class CliTransientRetryAndResourcesTests(unittest.TestCase):
 
         asyncio.run(_check())
 
+
+class LegacyModuleCompatibilityTests(unittest.TestCase):
+    _LEGACY_MODULES = (
+        "pvsyst_auto.components.battery",
+        "pvsyst_auto.components.commercial",
+        "pvsyst_auto.components.curves",
+        "pvsyst_auto.components.generator",
+        "pvsyst_auto.components.identity",
+        "pvsyst_auto.components.pan",
+        "pvsyst_auto.energy.ac",
+        "pvsyst_auto.energy.ageing",
+        "pvsyst_auto.energy.auxiliaries",
+        "pvsyst_auto.energy.availability",
+        "pvsyst_auto.energy.iam",
+        "pvsyst_auto.energy.inverter_temperature",
+        "pvsyst_auto.energy.load",
+        "pvsyst_auto.energy.mismatch",
+        "pvsyst_auto.energy.peak",
+        "pvsyst_auto.energy.power",
+        "pvsyst_auto.energy.power_factor",
+        "pvsyst_auto.energy.soiling",
+        "pvsyst_auto.energy.spectral",
+        "pvsyst_auto.energy.tou_planner",
+        "pvsyst_auto.energy.unavailability",
+        "pvsyst_auto.project.fileio",
+        "pvsyst_auto.project.native_economics",
+        "pvsyst_auto.project.orientation_convert",
+        "pvsyst_auto.project.seasonal",
+        "pvsyst_auto.project.sheds",
+        "pvsyst_auto.project.variant_readback",
+        "pvsyst_auto.project.variant_topology",
+        "pvsyst_auto.project.variant_writer",
+    )
+
     def test_legacy_consolidated_module_imports_forward_cleanly(self) -> None:
         import importlib
+        import inspect
+        import typing
         import pvsyst_auto
+        from pvsyst_auto.components import builder, identity, pan
         from pvsyst_auto.components.editor import generator_state, pan_validation_fields
         from pvsyst_auto.components.generator import state as legacy_gen_state
         from pvsyst_auto.components.pan import validation_fields as legacy_validation_fields
+        from pvsyst_auto.components.store import ComponentStore
+        from pvsyst_auto.energy import inverter_temperature, power, power_factor, transformers
         from pvsyst_auto.energy.storage import plan_tou_storage_schedule as new_tou
         from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule as legacy_tou
+        from pvsyst_auto.project import fileio, sheds, variant_topology
         from pvsyst_auto.project.bifacial import create_shed_variant as new_shed
         from pvsyst_auto.project.circuit import validate_structure as new_validate
         from pvsyst_auto.project.sheds import create_shed_variant as legacy_shed
         from pvsyst_auto.project.variant_topology import validate_structure as legacy_validate
+        from pvsyst_auto.project.variants import VariantStore
 
         self.assertIs(legacy_tou, new_tou)
         self.assertIs(legacy_validation_fields, pan_validation_fields)
@@ -1333,12 +1374,75 @@ class CliTransientRetryAndResourcesTests(unittest.TestCase):
         self.assertIs(legacy_shed, new_shed)
         self.assertIs(legacy_validate, new_validate)
 
-        for legacy_name, targets in pvsyst_auto._LEGACY_MODULE_ALIASES.items():
+        for legacy_name in self._LEGACY_MODULES:
             with self.subTest(legacy_name=legacy_name):
                 mod = importlib.import_module(legacy_name)
                 self.assertEqual(mod.__name__, legacy_name)
-                for target_name in targets:
+                reloaded = importlib.reload(mod)
+                self.assertIs(reloaded, mod)
+                for target_name in pvsyst_auto._LEGACY_MODULE_ALIASES[legacy_name]:
                     self.assertEqual(importlib.import_module(target_name).__name__, target_name)
+
+        self.assertEqual(sheds.WRITABLE["pitch_m"], "Pitch")
+        self.assertEqual(pan.DIMENSIONS, {"Width": "LargApp", "Height": "LongApp"})
+        self.assertIsInstance(power.PF_BITS, int)
+        self.assertEqual(power.PF_BITS, 0x00F00000)
+        self.assertEqual(power_factor.PF_BITS, {"constant": 0x00100000, "monthly": 0x00300000})
+        self.assertEqual(inverter_temperature.FIELDS, ("TempShift", "TempFixed"))
+        self.assertEqual(power_factor.FIELDS, ("TanPhi", "TanPhiM"))
+        self.assertTrue(callable(builder.electrical_inventory))
+        self.assertTrue(callable(builder.inspect_curves))
+        self.assertTrue(callable(builder.bind_source_values))
+        self.assertEqual(transformers.ln_strip(s=" x "), "x")
+        self.assertIs(typing.get_type_hints(identity.sourced_component)["store"], ComponentStore)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            target = tmp_path / "atomic.txt"
+            orig_stage = paths.stage
+            with patch("pvsyst_auto.project.fileio.stage", wraps=orig_stage) as stage_mock:
+                fileio.atomic_replace(target, b"payload")
+                stage_mock.assert_called_once_with(target, b"payload")
+            self.assertEqual(target.read_bytes(), b"payload")
+            self.assertIs(fileio.stage, orig_stage)
+            self.assertIs(paths.stage, orig_stage)
+
+            ws = tmp_path / "ws"
+            (ws / "Projects").mkdir(parents=True)
+            (ws / "Projects" / "Demo.PRJ").write_text("PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
+            (ws / "Projects" / "Demo.VC0").write_text(
+                "\n".join([
+                    "PVObject_=pvVCalcul",
+                    "  PVObject_=pvOrient",
+                    "    NoOrient=1",
+                    "  End of TOrientGroup",
+                    "  PVObject_=pvSubArray",
+                    "    SubArrayId=1",
+                    "    NoOrientation=1",
+                    "  End of PVObject pvSubArray",
+                    "  PVObject_System=pvSystem",
+                    "    SystemType=OffGrid",
+                    "  End of PVObject pvSystem",
+                    "End of PVObject pvVCalcul",
+                ]) + "\n",
+                encoding="utf-8",
+            )
+
+            class DelegatingStore(VariantStore):
+                def validate_structure(self, project: str, variant: str) -> dict:
+                    return variant_topology.validate_structure(self, project, variant)
+
+            res = DelegatingStore(ws, ComponentStore(ws)).validate_structure("Demo.PRJ", "VC0")
+            self.assertEqual(res["system_type"], "OffGrid")
+            self.assertEqual(res["orientation_ids"], [1])
+            self.assertEqual(res["subarray_ids"], [1])
+
+        importlib.reload(pvsyst_auto)
+        importlib.reload(pvsyst_auto)
+        finders = [f for f in sys.meta_path if getattr(f, "_PVSYST_LEGACY_FINDER", False)]
+        self.assertEqual(len(finders), 1)
+        self.assertIsNone(finders[0].find_spec("pvsyst_auto.project.fileio", ["C:/nonexistent_dir"]))
+        self.assertTrue(inspect.getsource(fileio))
 
         env = dict(os.environ)
         if env.get("PVSYST_TEST_INSTALLED") == "1":

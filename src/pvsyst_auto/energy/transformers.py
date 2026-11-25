@@ -26,7 +26,8 @@ _MAIN_TRF_KEYS = {
     "MVTrfDSNomPower", "MVTrfDSIronLoss", "MVTrfDSCopperLoss",
     "HVTrfDSNomPower", "HVTrfDSIronLoss", "HVTrfDSCopperLoss",
 }
-ln_strip = str.strip
+def ln_strip(s: str) -> str:
+    return s.strip()
 
 
 def _finite_pos(val: Any, name: str, *, allow_zero: bool = False) -> float:

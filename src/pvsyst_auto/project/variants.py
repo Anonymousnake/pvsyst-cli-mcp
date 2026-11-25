@@ -591,61 +591,7 @@ class VariantStore:
 
     def validate_structure(self, project: str, variant: str) -> dict:
         """Check cross-object references inside a variant."""
-        with self.lock:
-            self._check_project(project)
-            arrays, system = self._sections(lines := self._text(data := self._read(self._path(project, variant)))[1])
-            issues, warnings, orientation_ids = [], [], set()
-            for index, line in enumerate(lines):
-                if line.strip() not in ("PVObject_=pvOrient", "PVObject_=pvDomeOrient"):
-                    continue
-                closing = "End of TOrientGroup" if line.strip() == "PVObject_=pvOrient" else "End of TDomeOrientGroup"
-                if (end := next((i for i in range(index + 1, len(lines)) if lines[i].strip() == closing), None)) is None:
-                    issues.append("Unclosed orientation")
-                elif len(identifiers := self._field_indices(lines, (index, end), "NoOrient")) != 1:
-                    issues.append("Orientation needs one NoOrient")
-                elif not (raw := FIELD.fullmatch(lines[identifiers[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) in orientation_ids:
-                    issues.append(f"Duplicate or invalid orientation ID: {raw}")
-                else:
-                    orientation_ids.add(int(raw))
-            list_headers, list_unchecked = [ln.strip() for ln in lines if ln.strip().startswith("Orientations, list of=")], []
-            if list_headers:
-                if any(not ln.endswith(" TOrientGroup") for ln in list_headers) or any(ln.strip() == "PVObject_=pvDomeOrient" for ln in lines):
-                    list_unchecked.append("orientation list counts for dome/unknown list types")
-                else:
-                    try:
-                        self._orientation_list(lines)
-                    except ValueError as exc:
-                        issues.append(str(exc))
-            for identifier, bounds in arrays.items():
-                if len(indices := self._field_indices(lines, bounds, "NoOrientation")) != 1:
-                    issues.append(f"Subarray {identifier} needs one NoOrientation")
-                elif not (raw := FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) not in orientation_ids:
-                    issues.append(f"Subarray {identifier} references unknown orientation {raw}")
-            system_type, unchecked, circuit_res = None, list_unchecked, None
-            if system is None:
-                issues.append("Missing pvSystem section")
-                unchecked.append("system circuit references")
-            elif len(kinds := self._field_indices(lines, system, "SystemType")) != 1:
-                issues.append("System needs exactly one SystemType")
-                unchecked.append("system circuit references")
-            else:
-                if not (system_type := FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2]):
-                    issues.append("SystemType must not be empty")
-                if system_type == "Grid":
-                    circuit_res = circuit.inventory(lines, arrays)
-                    issues.extend(circuit_res["issues"])
-                    unchecked.extend(circuit_res["unchecked_checks"])
-                else:
-                    unchecked.append("system circuit references")
-                    warnings.append(f"Circuit checks are not implemented for SystemType={system_type!r}")
-            if any("PVObject_ShdTable" in ln or "ListeObjets, list of=" in ln for ln in lines):
-                warnings.append("Shading geometry and derived factor tables require simulation verification")
-            return {
-                "project": project, "variant": variant.upper(), "sha256": hashlib.sha256(data).hexdigest(),
-                "valid": False if issues else None if unchecked else True, "checks_complete": not unchecked,
-                "unchecked_checks": unchecked, "system_type": system_type, "grid_circuit": circuit_res,
-                "issues": issues, "warnings": warnings, "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids),
-            }
+        return circuit.validate_structure(self, project, variant)
 
     def _clone_subarray_data(self, data, source_subarray_id, *, clone_orientation=False, share_inverter=False, reserved_ids=()):
         return circuit.clone_subarray_data(self, data, source_subarray_id, clone_orientation=clone_orientation, share_inverter=share_inverter, reserved_ids=reserved_ids)

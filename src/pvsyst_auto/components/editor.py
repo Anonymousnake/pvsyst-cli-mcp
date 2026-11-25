@@ -727,3 +727,13 @@ def read_flat_grid_system(
         if total != len(fields.get(key, [])):
             raise ValueError(f"Require {key} only in the owning system")
     return fields, index, int(raw[1:], 16)
+
+
+def __getattr__(name: str):
+    if name in ("ComponentStore", "electrical_inventory"):
+        from pvsyst_auto.components import store as _store
+
+        value = getattr(_store, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

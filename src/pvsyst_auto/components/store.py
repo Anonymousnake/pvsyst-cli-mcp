@@ -756,3 +756,9 @@ class ComponentStore:
                 "release_threshold_present": any(item["release"] is not None for item in subarrays),
             }
         return {"project": f"{base}.PRJ", "variant": variant, "references": refs, "generator_configuration": generator}
+
+
+from pvsyst_auto.components import editor as _editor
+
+_editor.ComponentStore = ComponentStore
+_editor.electrical_inventory = electrical_inventory
