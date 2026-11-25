@@ -674,7 +674,7 @@ def _prepare_weather_paths(
     result: dict,
     empty_note: str = "csv_name is empty; supply it before an execution run",
     conflict_suffix: str = "",
-) -> tuple[Path, Path, Path] | None:
+) -> tuple[Path, Path] | None:
     if not csv_name:
         if dry_run:
             result["warnings"].append(empty_note)
@@ -699,7 +699,7 @@ def _prepare_weather_paths(
     if dry_run:
         result["status"] = "ready"
         return None
-    return csv_path, raw_path, manifest_path
+    return csv_path, raw_path
 
 
 def _fetch_and_save_raw(url: str, params: dict, raw_path: Path, result: dict) -> dict:
@@ -740,18 +740,21 @@ def _finalize_weather_csv(
     result.update(status="prepared", stage="done")
 
 
-def _write_manifest_checkpoint(manifest_path: Path | None, result: dict, *, dry_run: bool) -> None:
-    if not dry_run and manifest_path is not None:
-        # New-only provenance on disk, so a blocked or failed execution keeps its reason
-        # next to the raw response instead of leaving no trace.
-        result["created_files"]["manifest"] = {"name": manifest_path.name}
-        try:
-            _bounded_write(manifest_path, json.dumps(result, indent=2, ensure_ascii=True, allow_nan=False))
-        except (OSError, ValueError) as error:
-            result["created_files"].pop("manifest", None)
-            result["issues"].append("manifest write failed: " + str(error))
-            if result["status"] == "prepared":
-                result.update(status="failed", stage="manifest")
+def _write_manifest_checkpoint(result: dict, *, dry_run: bool) -> None:
+    manifest = result["artifacts"].get("manifest")
+    if dry_run or manifest is None:
+        return
+    # The path is recorded before checking for collisions, so a blocked or failed
+    # execution keeps its reason. An existing manifest remains protected by _bounded_write.
+    manifest_path = Path(manifest)
+    result["created_files"]["manifest"] = {"name": manifest_path.name}
+    try:
+        _bounded_write(manifest_path, json.dumps(result, indent=2, ensure_ascii=True, allow_nan=False))
+    except (OSError, ValueError) as error:
+        result["created_files"].pop("manifest", None)
+        result["issues"].append("manifest write failed: " + str(error))
+        if result["status"] == "prepared":
+            result.update(status="failed", stage="manifest")
 
 
 def _apply_provider_elevation_echo(
@@ -826,14 +829,13 @@ def _download_pvgis_tmy(
         ],
         "review_required": ["Verify PVGIS TMY coverage and representative years for the target site"],
     }
-    manifest_path = None
     try:
         paths = _prepare_weather_paths(
             workspace_path, csv_name=csv_name, raw_suffix="_pvgis_tmy_raw.json", dry_run=dry_run, result=result,
         )
         if paths is None:
             return result
-        csv_path, raw_path, manifest_path = paths
+        csv_path, raw_path = paths
         payload = _fetch_and_save_raw(PVGIS_TMY_URL, params, raw_path, result)
 
         inputs = payload.get("inputs") or {}
@@ -895,7 +897,7 @@ def _download_pvgis_tmy(
     except (WeatherAcquisitionError, OSError, ValueError) as error:
         _record_weather_exception(result, error)
     finally:
-        _write_manifest_checkpoint(manifest_path, result, dry_run=dry_run)
+        _write_manifest_checkpoint(result, dry_run=dry_run)
     return result
 
 
@@ -952,14 +954,13 @@ def _download_nasa_power(
         ],
         "review_required": ["Verify NASA POWER grid resolution and satellite diffuse irradiance"],
     }
-    manifest_path = None
     try:
         paths = _prepare_weather_paths(
             workspace_path, csv_name=csv_name, raw_suffix="_nasapower_raw.json", dry_run=dry_run, result=result,
         )
         if paths is None:
             return result
-        csv_path, raw_path, manifest_path = paths
+        csv_path, raw_path = paths
         payload = _fetch_and_save_raw(NASA_POWER_URL, params, raw_path, result)
 
         coords = (payload.get("geometry") or {}).get("coordinates") or []
@@ -1012,7 +1013,7 @@ def _download_nasa_power(
     except (WeatherAcquisitionError, OSError, ValueError) as error:
         _record_weather_exception(result, error)
     finally:
-        _write_manifest_checkpoint(manifest_path, result, dry_run=dry_run)
+        _write_manifest_checkpoint(result, dry_run=dry_run)
     return result
 
 
@@ -1067,7 +1068,6 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
               "units": dict(CSV_UNITS), "artifacts": {}, "created_files": {},
               "provider_echo": None, "raw_preserved": False, "issues": [], "warnings": [],
               "review_required": []}
-    manifest_path = None
     try:
         if type(dry_run) is not bool:
             raise WeatherAcquisitionError("dry_run must be a strict boolean")
@@ -1141,7 +1141,7 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
         )
         if paths is None:
             return result
-        csv_path, raw_path, manifest_path = paths
+        csv_path, raw_path = paths
         payload = _fetch_and_save_raw(ARCHIVE_URL, params, raw_path, result)
         result["provider_echo"] = {
             "grid_latitude": payload.get("latitude"), "grid_longitude": payload.get("longitude"),
@@ -1187,5 +1187,5 @@ def download_weather(workspace, *, csv_name="", year=None, location_id=None, lat
     except (WeatherAcquisitionError, OSError, ValueError) as error:
         _record_weather_exception(result, error)
     finally:
-        _write_manifest_checkpoint(manifest_path, result, dry_run=dry_run)
+        _write_manifest_checkpoint(result, dry_run=dry_run)
     return result

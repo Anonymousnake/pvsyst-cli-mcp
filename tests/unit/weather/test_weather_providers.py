@@ -134,6 +134,37 @@ class MultiProviderWeatherTests(unittest.TestCase):
         self.assertEqual(blocked["status"], "blocked")
         self.assertTrue(any("sentinel" in msg for msg in blocked["issues"]))
 
+    def test_execution_records_blocked_manifest_on_weather_output_collision(self):
+        for provider, raw_suffix in (
+            ("open_meteo_era5", "openmeteo"), ("pvgis_tmy", "pvgis_tmy"), ("nasa_power", "nasapower"),
+        ):
+            for dry_run in (False, True):
+                for existing_name in ("collision.csv", f"collision_{raw_suffix}_raw.json"):
+                    with self.subTest(provider=provider, dry_run=dry_run, existing=existing_name):
+                        workspace = self.root / provider / str(dry_run) / existing_name
+                        (workspace / "Meteo").mkdir(parents=True)
+                        (workspace / "Results").mkdir()
+                        existing = workspace / "Meteo" / existing_name
+                        existing.write_bytes(b"existing output\n")
+                        with patch.object(acquisition, "_provider_get") as get:
+                            result = acquisition.download_weather(
+                                workspace, csv_name="collision.csv", year=2023,
+                                latitude=31.32, longitude=120.72, site_name="Suzhou", country_code="CN",
+                                timezone_name="Asia/Shanghai", altitude=12.0, provider=provider, dry_run=dry_run,
+                            )
+                        get.assert_not_called()
+                        self.assertEqual((result["status"], result["stage"]), ("blocked", "plan"))
+                        self.assertIn("refusing to overwrite", result["issues"][0])
+                        self.assertEqual(existing.read_bytes(), b"existing output\n")
+                        self.assertEqual(list((workspace / "Meteo").iterdir()), [existing])
+                        manifest = workspace / "Results" / "collision_acquisition.json"
+                        if dry_run:
+                            self.assertFalse(manifest.exists())
+                            self.assertEqual(result["created_files"], {})
+                        else:
+                            self.assertEqual(result["created_files"], {"manifest": {"name": manifest.name}})
+                            self.assertEqual(json.loads(manifest.read_text(encoding="utf-8")), result)
+
     def test_mcp_acquire_weather_one_step_prepare_chain(self):
         import pvsyst_auto.api.weather as api_weather
 
