@@ -360,7 +360,7 @@ def _build_batch_sweep_figure(parsed_batch: dict[str, Any], *, palette: list[str
                 break
     if out_metric is None:
         return None
-    has_pr = any(_try_float(r["values"].get("PR")) is not None for r in rows)
+    has_pr = out_metric != "PR" and any(_try_float(r["values"].get("PR")) is not None for r in rows)
     pr_unit = units.get("PR", "")
 
     def pr_pct(value):
@@ -624,7 +624,7 @@ def generate_report(
     fig_batch = None
     if batch_summary_csv:
         batch_path = _resolve_batch_csv(workspace, batch_summary_csv)
-        fig_batch = _build_batch_sweep_figure(parse_batch_results(batch_path), palette=palette, opt_label=t["batch_opt_label"])
+        fig_batch = _build_batch_sweep_figure(parse_batch_results(batch_path, columns=None), palette=palette, opt_label=t["batch_opt_label"])
 
     if dry_run:
         return {

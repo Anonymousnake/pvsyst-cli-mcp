@@ -340,6 +340,19 @@ class InteractiveReportTests(unittest.TestCase):
         self.assertEqual(res["status"], "ready")
         self.assertTrue(res["has_economics"])
 
+    def test_report_accepts_batch_selected_outputs(self):
+        write_sfi_csv(self.root / "Results" / "base.csv", [("E_Grid", "kWh")],
+                      [["01/06/24 12:00", 3], ["01/06/24 13:00", 4]])
+        for metric in ("E_Grid", "EArray"):
+            with self.subTest(metric=metric):
+                (self.root / "UserBatch" / "tilt.csv").write_text(
+                    f"Ident;Create hourly;Plane tilt;Error;{metric}\n;;[deg];;[MWh]\n"
+                    "SIM_1;;15;;180.5\nSIM_2;;20;;184.2\n", encoding="utf-8")
+                result = generate_report(workspace=self.root, title="Tilt", output_name=f"{metric}.html",
+                                         scenarios=[{"csv_name": "base.csv"}], batch_summary_csv="tilt.csv")
+                self.assertTrue(result["has_batch_sweep"])
+                self.assertIn(f"{metric} (MWh)", Path(result["report_path"]).read_text(encoding="utf-8"))
+
     def test_three_dimensional_sweep_preserves_groups_and_pr_units(self):
         from pvsyst_auto.workflows.report import _build_batch_sweep_figure
         rows = [{"parameters": {"tilt": t, "pitch": p, "count": c}, "values": {"E_Grid": 10, "PR": 1.2}}
