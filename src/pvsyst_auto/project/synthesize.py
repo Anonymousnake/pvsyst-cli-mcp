@@ -304,6 +304,8 @@ def _normalize_orientation(item: dict) -> dict:
         "bifacial": item.get("bifacial"),
     }
     if field_type == "Sheds":
+        if base_slope:
+            raise ValueError("Nonzero base_slope_deg requires a 3D ground-sheds layout")
         spec.update({
             "pitch_m": _finite(item.get("pitch_m", 10.0), "orientation.pitch_m", minimum=0.1),
             "collector_width_m": _finite(item.get("collector_width_m", 4.28), "orientation.collector_width_m", minimum=0.1),
