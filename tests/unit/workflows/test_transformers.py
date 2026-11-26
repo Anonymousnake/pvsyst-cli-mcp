@@ -208,8 +208,8 @@ class TransformersTests(unittest.TestCase):
 
     def test_auto_infers_120mw_stc_ref_power_from_pan_and_bom_ground_sheds_workflow(self) -> None:
         from pvsyst_auto.energy.dc import create_dc_cabling_variant
-        from pvsyst_auto.project.sheds import create_shed_variant
-        from pvsyst_auto.project.synthesize import synthesize_utility_project
+        from pvsyst_auto.project.bifacial import create_shed_variant
+        from pvsyst_auto.project.template import synthesize_utility_project
 
         # 1. Synthesize 129.36 MWp bifacial ground_sheds variant with UTF-8 BOM (28 * 10500 * 440 Wp = 129,360 kWp)
         synth = synthesize_utility_project(

@@ -15,7 +15,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule
+from pvsyst_auto.energy.storage import plan_tou_storage_schedule
 from pvsyst_auto.engineering.economics import (
     _battery_replacement_event,
     _compute_cashflow_metrics,

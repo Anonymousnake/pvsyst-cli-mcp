@@ -11,7 +11,7 @@ import re
 from decimal import Decimal
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value
-from pvsyst_auto.components.generator import finite
+from pvsyst_auto.components.editor import finite
 from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
 
 HEAD = "P50_P90=TP50_P90"

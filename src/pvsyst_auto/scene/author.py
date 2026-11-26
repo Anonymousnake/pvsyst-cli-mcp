@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from pvsyst_auto.components.editor import objects, root_block
-from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
+from pvsyst_auto.components.editor import pan_validation_fields
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.validation import finite_number as _finite

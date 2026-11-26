@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from pvsyst_auto.components.editor import ASSIGNMENT, root_block
-from pvsyst_auto.components.generator import direct_fields, one
+from pvsyst_auto.components.editor import direct_fields, one
 from pvsyst_auto.project.circuit import circuit_nodes, inventory as grid_inventory
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 

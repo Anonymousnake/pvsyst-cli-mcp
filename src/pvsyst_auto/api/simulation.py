@@ -17,7 +17,7 @@ from pvsyst_auto.api.schemas import (
     SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest,
 )
 from pvsyst_auto.api.context import categorized_tool, cli, components, optional_path, simulation_csv_path, variant_store, workspace_path
-from pvsyst_auto.components.identity import sourced_component
+from pvsyst_auto.components.editor import sourced_component
 
 
 @categorized_tool()

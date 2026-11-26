@@ -5,10 +5,10 @@ import re
 from decimal import Decimal, InvalidOperation
 
 from pvsyst_auto.components.editor import objects, replace_value, root_block
-from pvsyst_auto.components.generator import direct_fields, finite, one
+from pvsyst_auto.components.editor import direct_fields, finite, one
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import inventory as grid_inventory
-from pvsyst_auto.project.variant_writer import run_new_variant_transaction
+from pvsyst_auto.project.variant_updates import run_new_variant_transaction
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 START = "PVObject_UserNeeds=pvLoad"
@@ -187,7 +187,7 @@ def native_load_block(load, newline, blank_before=False):
         from datetime import datetime, timedelta
         from pathlib import Path
         import random
-        from pvsyst_auto.energy.load import hourly_load_block
+        from pvsyst_auto.energy.profiles import hourly_load_block
 
         step_kw = _number(load.get("power_step_kw"), "power_step_kw", positive=True)
         probs_raw = load.get("probabilities_pct")
@@ -414,7 +414,7 @@ def create_native_load_variant(store, *, project, source_variant, new_variant, l
         manifest_name = load["load_manifest_name"]
         if not isinstance(manifest_name, str) or not manifest_name.strip():
             raise ValueError("load_manifest_name must be a non-empty manifest filename")
-        from pvsyst_auto.energy.load import create_load_variant
+        from pvsyst_auto.energy.profiles import create_load_variant
         return create_load_variant(
             store, project=project, source_variant=source_variant, new_variant=new_variant,
             load_manifest_name=manifest_name, dry_run=dry_run,

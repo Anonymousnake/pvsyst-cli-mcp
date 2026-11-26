@@ -1,4 +1,4 @@
-"""Offline tests: no PVsyst executable is started and no quota is consumed."""
+"""Offline tests for PVsystCLI, file I/O transactions, workspace.ini, and retry handling."""
 from __future__ import annotations
 
 import asyncio
@@ -13,13 +13,19 @@ from threading import Barrier
 from time import sleep
 from pathlib import Path
 from unittest.mock import Mock, patch
-
 from pvsyst_auto.native.cli import PVsystCLI, PVsystError, build_monthly_weather_csv, build_sfi, iter_result_csv, parse_batch_results, result_units, summarize_results
 from pvsyst_auto.native import load as native_load
 from pvsyst_auto.api import app as _registered_app, context as server
 import pvsyst_auto.api.projects as api_projects
 import pvsyst_auto.api.results as api_results
 import pvsyst_auto.api.simulation as api_simulation
+import json
+from unittest.mock import patch
+from pvsyst_auto.project import paths
+import codecs
+from contextlib import nullcontext
+from pvsyst_auto.native import _workspace_ini as ini
+from pvsyst_auto.native.cli import PVsystCLI, PVsystError, _is_transient_simulation_abort
 
 CSV_TEXT = """PVSYST 8.0.6
 ;File;File date;Description
@@ -900,6 +906,618 @@ class PVsystTests(unittest.TestCase):
         ):
             with self.assertRaises(AssertionError):
                 case._assert_plain_csv_result(bad, "e2e_ok.csv")
+
+
+class FileioTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.path = self.root / "Example.VC0"
+
+    def names(self):
+        return sorted(path.name for path in self.root.iterdir())
+
+    def temporaries(self):
+        return [path.name for path in self.root.iterdir() if path.name.endswith(".tmp")]
+
+    def test_stage_cleans_up_on_fsync_failure(self):
+        staged = paths.stage(self.path, b"candidate")
+        self.assertEqual(staged.parent, self.root)
+        self.assertTrue(staged.name.startswith(".Example.VC0.") and staged.name.endswith(".tmp"))
+        self.assertEqual(staged.read_bytes(), b"candidate")
+        staged.unlink()
+        with patch.object(paths.os, "fsync", side_effect=OSError("injected flush failure")):
+            with self.assertRaisesRegex(OSError, "injected flush failure"):
+                paths.stage(self.path, b"candidate")
+        self.assertEqual(self.names(), [])
+
+    def test_replace_checked_success_and_stale_abort(self):
+        self.path.write_bytes(b"inspected")
+        events = []
+
+        def read(path):
+            events.append(("read", len(self.temporaries())))
+            return path.read_bytes()
+
+        result = paths.replace_checked(
+            self.path, b"inspected", b"candidate", read, "changed",
+            prepare=lambda: events.append(("prepare", 0)) or "backup-name",
+            verify=lambda: events.append(("verify", len(self.temporaries()))),
+        )
+        self.assertEqual(result, "backup-name")
+        self.assertEqual(events, [("read", 0), ("prepare", 0), ("read", 1), ("verify", 1)])
+        self.assertEqual(self.path.read_bytes(), b"candidate")
+        self.assertEqual(self.names(), ["Example.VC0"])
+
+        self.path.write_bytes(b"saved by another process")
+        prepared = []
+        with self.assertRaisesRegex(ValueError, "^Variant changed while preparing the edit$"):
+            paths.replace_checked(self.path, b"inspected", b"candidate", Path.read_bytes,
+                                   "Variant changed while preparing the edit",
+                                   prepare=lambda: prepared.append(True))
+        self.assertEqual(prepared, [])
+
+        self.path.write_bytes(b"inspected")
+        reads = []
+
+        def racing_read(path):
+            reads.append(self.temporaries())
+            if len(reads) == 2:
+                path.write_bytes(b"saved after staging")
+            return path.read_bytes()
+
+        with self.assertRaisesRegex(ValueError, "^Component changed while preparing the edit$"):
+            paths.replace_checked(self.path, b"inspected", b"candidate", racing_read,
+                                   "Component changed while preparing the edit")
+        self.assertEqual(self.path.read_bytes(), b"saved after staging")
+
+        self.path.write_bytes(b"inspected")
+        with self.assertRaisesRegex(ValueError, "Generator component changed"):
+            paths.replace_checked(self.path, b"inspected", b"candidate", Path.read_bytes, "changed",
+                                   verify=lambda: (_ for _ in ()).throw(ValueError("Generator component changed")))
+        self.assertEqual(self.path.read_bytes(), b"inspected")
+        self.assertEqual(self.names(), ["Example.VC0"])
+
+    def test_atomic_replace_and_lock_rollback(self):
+        paths.atomic_replace(self.path, b"first")
+        self.assertEqual(self.path.read_bytes(), b"first")
+        paths.atomic_replace(self.path, b"second")
+        self.assertEqual(self.path.read_bytes(), b"second")
+        with patch.object(paths.os, "replace", side_effect=PermissionError("injected lock")):
+            with self.assertRaisesRegex(PermissionError, "injected lock"):
+                paths.atomic_replace(self.path, b"third")
+        self.assertEqual(self.path.read_bytes(), b"second")
+        self.assertEqual(self.names(), ["Example.VC0"])
+
+    def test_publish_new_exclusive_and_race_safe(self):
+        with patch.object(paths.os, "fsync", side_effect=OSError(28, "injected disk full")):
+            with self.assertRaisesRegex(OSError, "injected disk full"):
+                paths.publish_new(self.path, b"candidate")
+        self.assertEqual(self.names(), [])
+
+        paths.publish_new(self.path, b"created")
+        self.assertEqual(self.path.read_bytes(), b"created")
+        with self.assertRaises(FileExistsError):
+            paths.publish_new(self.path, b"overwrite attempt")
+
+        target = self.root / "Race.VC0"
+        stage = paths.stage
+
+        def stage_then_write(path, data):
+            staged = stage(path, data)
+            path.write_bytes(b"saved meanwhile")
+            return staged
+
+        with patch.object(paths, "stage", side_effect=stage_then_write):
+            with self.assertRaises(FileExistsError):
+                paths.publish_new(target, b"candidate")
+        self.assertEqual(target.read_bytes(), b"saved meanwhile")
+
+    def test_write_json_exclusive_atomic_and_failure_preserves_checkpoint(self):
+        target = self.root / "Results" / "task.json"
+        paths.write_json(target, {"phase": "initialized"}, first=True)
+        with self.assertRaises(FileExistsError):
+            paths.write_json(target, {"phase": "other task"}, first=True)
+
+        events = []
+        fsync, replace = os.fsync, os.replace
+        with patch.object(paths.os, "fsync", side_effect=lambda fd: (events.append("fsync"), fsync(fd))[1]), \
+                patch.object(paths.os, "replace", side_effect=lambda s, d: (events.append("replace"), replace(s, d))[1]):
+            paths.write_json(target, {"phase": "completed", "note": "caf\u00e9"})
+        self.assertEqual(events, ["fsync", "replace"])
+        raw = target.read_bytes()
+        self.assertNotIn(b"\r\n", raw)
+        self.assertEqual(json.loads(raw.decode("ascii")), {"phase": "completed", "note": "caf\u00e9"})
+
+        with self.assertRaisesRegex(ValueError, "not JSON compliant"):
+            paths.write_json(target, {"ratio": float("nan")})
+        with patch.object(paths.os, "replace", side_effect=PermissionError("fixture: manifest is locked")):
+            with self.assertRaisesRegex(PermissionError, "manifest is locked"):
+                paths.write_json(target, {"phase": "failed"})
+        self.assertEqual(target.read_bytes(), raw)
+
+
+class WorkspaceIniTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "PVsystCLI" / "8.1" / "Admin" / "PVsystCLI.ini"
+        self.path.parent.mkdir(parents=True)
+        self.executable = Path(directory.name) / "PVsyst8.1.7" / "PVsystCLI.exe"
+        for mock in (patch.object(ini, "_profile_ini", return_value=self.path),
+                     patch.object(ini, "_is_supported", return_value=True)):
+            mock.start()
+            self.addCleanup(mock.stop)
+        lock = patch.object(ini, "_profile_lock", side_effect=lambda _: nullcontext())
+        self.lock = lock.start()
+        self.addCleanup(lock.stop)
+
+    def test_merge_utf16_fields_on_native_timeout(self):
+        def raw(text):
+            return codecs.BOM_UTF16_LE + text.encode("utf-16-le")
+
+        self.path.write_bytes(raw("[System]\r\nDataPath=old-é\r\nNRun=1\r\n"
+                                  "[RecentWorkspaces]\r\nWorkspace3=空\r\nWorkspace1=old"))
+        native = (";新 setting\r\n[System]\r\nNRun=2\r\n  DATAPATH =new\r\nLastDate=today\n"
+                  "[RecentWorkspaces]\nWorkspace1=new\r\n; native comment\r\n"
+                  "Workspace2=temp\r\nWorkspace4=temp\r\nWorkspaceMax=9\r\n"
+                  "[Other]\r\nDataPath=untouched\r\nWorkspace1=untouched")
+        with self.assertRaises(subprocess.TimeoutExpired):
+            with ini.preserve_workspace_settings(self.executable, restore=True):
+                self.path.write_bytes(raw(native))
+                raise subprocess.TimeoutExpired("fake native launch", 10)
+        expected = (native.replace("  DATAPATH =new\r\n", "DataPath=old-é\r\n")
+                    .replace("Workspace1=new\r\n", "Workspace3=空\r\n")
+                    .replace("Workspace2=temp\r\nWorkspace4=temp\r\n", "Workspace1=old\r\n"))
+        self.assertEqual(self.path.read_bytes(), raw(expected))
+        self.lock.assert_called_once_with(self.path)
+
+    def test_first_launch_removes_only_new_workspace_fields(self):
+        before = b"[System]\r\nNRun=1\r\nDataPath=temp\r\nLastDate=today\r\n"
+        recent = b"[RecentWorkspaces]\r\nWorkspace1=temp\r\nOpaque=\x81\r\n"
+        self.assertFalse(self.path.exists())
+        with ini.preserve_workspace_settings(self.executable, restore=True):
+            self.path.write_bytes(codecs.BOM_UTF8 + before + recent)
+        self.assertEqual(self.path.read_bytes(), codecs.BOM_UTF8
+                         + before.replace(b"DataPath=temp\r\n", b"")
+                         + recent.replace(b"Workspace1=temp\r\n", b""))
+
+    def test_restore_target_fields_when_native_removes_file(self):
+        self.path.write_bytes(b"[System]\r\nDataPath=old\r\nNRun=2\r\n"
+                              b"[RecentWorkspaces]\r\nWorkspace1=old")
+        with ini.preserve_workspace_settings(self.executable, restore=True):
+            self.path.unlink()
+        self.assertEqual(self.path.read_bytes(), b"[System]\r\nDataPath=old\r\n"
+                                                 b"[RecentWorkspaces]\r\nWorkspace1=old")
+
+    def test_opt_out_takes_same_lock_without_touching_ini(self):
+        with patch.object(ini, "_read_ini", side_effect=AssertionError("unexpected INI access")):
+            with ini.preserve_workspace_settings(self.executable, restore=False):
+                self.assertFalse(self.path.exists())
+        self.lock.assert_called_once_with(self.path)
+
+    def test_failed_restore_keeps_current_file_and_removes_staging_file(self):
+        self.path.write_bytes(b"[System]\r\nDataPath=old\r\n")
+        native = b"[System]\r\nDataPath=temp\r\nNRun=2\r\n"
+        with patch.object(ini.os, "replace", side_effect=PermissionError("fixture locked")):
+            with self.assertRaisesRegex(ini.WorkspaceSettingsError, "Could not restore"):
+                with ini.preserve_workspace_settings(self.executable, restore=True):
+                    self.path.write_bytes(native)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+        self.assertEqual(self.path.read_bytes(), native)
+
+    def test_recheck_does_not_overwrite_a_concurrent_external_edit(self):
+        old = b"[System]\r\nDataPath=old\r\n"
+        native, external = old.replace(b"old", b"temp"), old + b"NRun=3\r\n"
+        self.path.write_bytes(old)
+        replace = ini.atomic_replace
+
+        def external_save(path, data, verify):
+            path.write_bytes(external)
+            replace(path, data, verify)
+
+        with patch.object(ini, "atomic_replace", side_effect=external_save):
+            with self.assertRaises(ini.WorkspaceSettingsError):
+                with ini.preserve_workspace_settings(self.executable, restore=True):
+                    self.path.write_bytes(native)
+        self.assertEqual(self.path.read_bytes(), external)
+
+
+@unittest.skipUnless(os.name == "nt", "Windows profile coordination")
+class WorkspaceIniWindowsTests(unittest.TestCase):
+    def test_native_version_gate_and_profile_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / "PVsystCLI.ini"
+            fake = root / "PVsystCLI.exe"
+            fake.write_bytes(b"not a PE resource")
+            with patch.object(ini, "_profile_ini", side_effect=AssertionError("unexpected profile access")):
+                with ini.preserve_workspace_settings(fake, restore=True):
+                    pass
+                with patch.object(ini, "_file_version", return_value=(8, 1, 7, 49383)):
+                    with ini.preserve_workspace_settings(fake, restore=True):
+                        pass
+
+            child = """
+import sys
+from pathlib import Path
+from pvsyst_auto.native import _workspace_ini as ini
+ini._LOCK_TIMEOUT_MS = 40
+path = Path(sys.argv[1])
+try:
+    with ini._profile_lock(path):
+        raise AssertionError('same-profile lock was not held')
+except ini.WorkspaceSettingsError as exc:
+    assert 'Timed out' in str(exc), exc
+with ini._profile_lock(path.with_name('another-profile.ini')):
+    pass
+"""
+            env = dict(os.environ, PYTHONPATH=str(Path(ini.__file__).resolve().parents[2]))
+            with patch.object(ini, "_profile_ini", return_value=profile):
+                for version in ((8, 1, 6, 49278), (8, 1, 7, 49382)):
+                    with self.subTest(version=version), patch.object(ini, "_file_version", return_value=version):
+                        with ini.preserve_workspace_settings(fake, restore=False):
+                            subprocess.run([sys.executable, "-c", child, str(profile)], check=True, timeout=10,
+                                           env=env)
+            with ini._profile_lock(profile):
+                self.assertFalse(profile.exists())
+
+
+class CliTransientRetryAndResourcesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name) / "ws"
+        for sub in ("Projects", "Models", "Results", "UserHourly", "ComposPV/PVmodules", "ComposPV/Inverters", "ComposPV/Batteries"):
+            (self.root / sub).mkdir(parents=True, exist_ok=True)
+        self.fake_cli = Path(self._tmp.name) / "PVsystCLI.exe"
+        self.fake_cli.write_bytes(b"stub")
+        (self.root / "Projects" / "Demo.PRJ").write_text("PVObject_=pvProjet\nEnd of PVObject pvProjet\n", encoding="utf-8")
+        (self.root / "Projects" / "Demo.VC0").write_text("PVObject_=pvVCalcul\nEnd of PVObject pvVCalcul\n", encoding="utf-8")
+        (self.root / "Models" / "sim.SFI").write_text("SFI", encoding="utf-8")
+
+    def test_transient_abort_classifier_matrix(self) -> None:
+        self.assertTrue(_is_transient_simulation_abort("Checking license...\nLoading project Demo.PRJ...\nChecking va"))
+        self.assertTrue(_is_transient_simulation_abort(""))
+        self.assertFalse(_is_transient_simulation_abort("Checking license...\nNo license or license expired"))
+        self.assertFalse(_is_transient_simulation_abort("Checking variant ...\nSimulation cannot be run.\nGrid storage: The selected battery is in error."))
+        self.assertFalse(_is_transient_simulation_abort("Error: Invalid command syntax"))
+        self.assertFalse(_is_transient_simulation_abort("Simulation done in 0min 3sec"))
+
+    def test_run_simulation_retries_transient_abort_and_never_retries_fatal(self) -> None:
+        cli = PVsystCLI(self.fake_cli, self.root, max_transient_retries=1)
+        cli._help_cache["run-simulation"] = (
+            "  --workspace|-w\n"
+            "  --project|-p\n"
+            "  --variant|-v\n"
+            "  --input-sfi-file|-isf\n"
+            "  --output-csv-file|-ocf\n"
+            "  --log-level|-ll\n"
+        )
+        out_csv = self.root / "Results" / "retry_ok.csv"
+        calls = {"n": 0}
+
+        def _fake_checked_run(label, *args, allow_window_creation=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return subprocess.CompletedProcess(
+                    args, 1,
+                    stdout="Checking license...\nLoading project Demo.PRJ...\nChecking va",
+                    stderr="",
+                )
+            out_csv.write_text("date;E_Grid\n;kW\n01/01/24 00:00;0\n", encoding="utf-8")
+            return subprocess.CompletedProcess(args, 0, stdout="Simulation done in 0min 2sec\n", stderr="")
+
+        with patch.object(cli, "_checked_run", side_effect=_fake_checked_run), patch("pvsyst_auto.native.cli.time.sleep"):
+            res = cli.run_simulation("Demo.PRJ", "VC0", sfi=self.root / "Models" / "sim.SFI", out_csv=out_csv, log_level=3)
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(res["transient_retries"], 1)
+        self.assertEqual(len(res["transient_retry_evidence"]), 1)
+
+        # Fatal license error must NEVER retry
+        calls_lic = {"n": 0}
+        def _fake_lic(label, *args, allow_window_creation=None):
+            calls_lic["n"] += 1
+            return subprocess.CompletedProcess(args, 1, stdout="Checking license...\nNo license or license expired\n", stderr="")
+
+        with patch.object(cli, "_checked_run", side_effect=_fake_lic), patch("pvsyst_auto.native.cli.time.sleep"):
+            with self.assertRaisesRegex(PVsystError, "No license"):
+                cli.run_simulation("Demo.PRJ", "VC0", sfi=self.root / "Models" / "sim.SFI", out_csv=self.root / "Results" / "lic.csv", log_level=3)
+        self.assertEqual(calls_lic["n"], 1)
+
+        # Exhausted transient retries reports retry count clearly
+        calls_exh = {"n": 0}
+        def _fake_abort(label, *args, allow_window_creation=None):
+            calls_exh["n"] += 1
+            return subprocess.CompletedProcess(args, 1, stdout="Checking license...\nChecking va", stderr="")
+
+        with patch.object(cli, "_checked_run", side_effect=_fake_abort), patch("pvsyst_auto.native.cli.time.sleep"):
+            with self.assertRaisesRegex(PVsystError, r"after 1 transient retry"):
+                cli.run_simulation("Demo.PRJ", "VC0", sfi=self.root / "Models" / "sim.SFI", out_csv=self.root / "Results" / "exh.csv", log_level=3)
+        self.assertEqual(calls_exh["n"], 2)
+
+    def test_public_simulation_stops_if_partial_output_cannot_be_removed(self) -> None:
+        from pvsyst_auto.api.simulation import pvsyst_run_simulation
+
+        cli = PVsystCLI(self.fake_cli, self.root, max_transient_retries=1)
+        out_csv = self.root / "Results" / "locked.csv"
+        calls = []
+
+        def aborted(label, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                out_csv.write_text("partial", encoding="utf-8")
+                return subprocess.CompletedProcess(args, 1, stdout="Loading project", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="Simulation done in 0min 1sec", stderr="")
+
+        with patch("pvsyst_auto.api.simulation.cli", return_value=cli), \
+             patch("pvsyst_auto.api.simulation.simulation_csv_path", return_value=out_csv), \
+             patch.object(cli, "license_info", return_value={"status": "OK"}), \
+             patch.object(cli, "_checked_run", side_effect=aborted), \
+             patch("pvsyst_auto.native.cli.time.sleep"), \
+             patch.object(Path, "unlink", side_effect=PermissionError("locked")):
+            with self.assertRaisesRegex(PVsystError, "partial.*locked"):
+                pvsyst_run_simulation(project="Demo.PRJ", variant="VC0", csv_name="locked.csv", log_level=3)
+        self.assertEqual(len(calls), 1)
+
+    def test_dynamic_mcp_workspace_resources_and_new_prompts(self) -> None:
+        from pvsyst_auto.api.context import mcp
+
+        (self.root / "Results" / "report_a.html").write_text("<html></html>", encoding="utf-8")
+        (self.root / "Results" / "run_a.csv").write_text("date;E_Grid\n", encoding="utf-8")
+        (self.root / "Projects" / "Demo.VB1").write_text("PVObject_=pvVCalcul\n", encoding="utf-8")
+
+        async def _check():
+            resources = await mcp.list_resources()
+            uris = {str(r.uri) for r in resources}
+            for expected in (
+                "pvsyst://guide/workflows",
+                "pvsyst://guide/variables",
+                "pvsyst://workspace/projects",
+                "pvsyst://workspace/components",
+                "pvsyst://workspace/results",
+            ):
+                self.assertIn(expected, uris)
+
+            prompts = await mcp.list_prompts()
+            p_names = {p.name for p in prompts}
+            self.assertIn("ci_bess_feasibility_study", p_names)
+            self.assertIn("optimize_bess_sizing", p_names)
+
+            # Unconfigured workspace returns graceful configured=False
+            with patch.dict(os.environ, {"PVSYST_WORKSPACE": ""}):
+                raw = await mcp.read_resource("pvsyst://workspace/projects")
+                payload = json.loads(raw[0].content)
+                self.assertFalse(payload["configured"])
+
+            # Configured workspace returns projects and results cleanly
+            with patch.dict(os.environ, {"PVSYST_WORKSPACE": str(self.root)}):
+                raw_proj = await mcp.read_resource("pvsyst://workspace/projects")
+                proj_data = json.loads(raw_proj[0].content)
+                self.assertTrue(proj_data["configured"])
+                demo = next(p for p in proj_data["projects"] if p["project"] == "Demo.PRJ")
+                self.assertIn("VC0", demo["variants"])
+                self.assertIn("VB1", demo["variants"])
+
+                raw_res = await mcp.read_resource("pvsyst://workspace/results")
+                res_data = json.loads(raw_res[0].content)
+                self.assertTrue(res_data["configured"])
+                names = {f["name"] for f in res_data["files"]}
+                self.assertIn("report_a.html", names)
+                self.assertIn("run_a.csv", names)
+
+                raw_comp = await mcp.read_resource("pvsyst://workspace/components")
+                comp_data = json.loads(raw_comp[0].content)
+                self.assertTrue(comp_data["configured"])
+                self.assertIn("PAN", comp_data["components"])
+
+        asyncio.run(_check())
+
+
+class LegacyModuleCompatibilityTests(unittest.TestCase):
+    _LEGACY_MODULES = (
+        "pvsyst_auto.components.battery",
+        "pvsyst_auto.components.commercial",
+        "pvsyst_auto.components.curves",
+        "pvsyst_auto.components.generator",
+        "pvsyst_auto.components.identity",
+        "pvsyst_auto.components.pan",
+        "pvsyst_auto.energy.ac",
+        "pvsyst_auto.energy.ageing",
+        "pvsyst_auto.energy.auxiliaries",
+        "pvsyst_auto.energy.availability",
+        "pvsyst_auto.energy.iam",
+        "pvsyst_auto.energy.inverter_temperature",
+        "pvsyst_auto.energy.load",
+        "pvsyst_auto.energy.mismatch",
+        "pvsyst_auto.energy.peak",
+        "pvsyst_auto.energy.power",
+        "pvsyst_auto.energy.power_factor",
+        "pvsyst_auto.energy.soiling",
+        "pvsyst_auto.energy.spectral",
+        "pvsyst_auto.energy.tou_planner",
+        "pvsyst_auto.energy.unavailability",
+        "pvsyst_auto.project.fileio",
+        "pvsyst_auto.project.native_economics",
+        "pvsyst_auto.project.orientation_convert",
+        "pvsyst_auto.project.seasonal",
+        "pvsyst_auto.project.sheds",
+        "pvsyst_auto.project.variant_readback",
+        "pvsyst_auto.project.variant_topology",
+        "pvsyst_auto.project.variant_writer",
+    )
+
+    def test_legacy_consolidated_module_imports_forward_cleanly(self) -> None:
+        import importlib
+        import inspect
+        import typing
+        import pvsyst_auto
+        from pvsyst_auto.components import battery, builder, identity, pan
+        from pvsyst_auto.components.editor import generator_state, pan_validation_fields
+        from pvsyst_auto.components.generator import state as legacy_gen_state
+        from pvsyst_auto.components.pan import validation_fields as legacy_validation_fields
+        from pvsyst_auto.components.store import ComponentStore, fileio as store_fileio
+        from pvsyst_auto.energy import inverter_temperature, power, power_factor, transformers
+        from pvsyst_auto.energy.storage import plan_tou_storage_schedule as new_tou
+        from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule as legacy_tou
+        from pvsyst_auto.project import fileio, sheds, variant_readback, variant_topology
+        from pvsyst_auto.project.bifacial import create_shed_variant as new_shed
+        from pvsyst_auto.project.circuit import validate_structure as new_validate
+        from pvsyst_auto.project.sheds import create_shed_variant as legacy_shed
+        from pvsyst_auto.project.variant_topology import validate_structure as legacy_validate
+        from pvsyst_auto.project.variants import (
+            VariantStore,
+            fileio as variants_fileio,
+            variant_readback as variants_readback,
+            variant_topology as variants_topology,
+        )
+
+        self.assertIs(legacy_tou, new_tou)
+        self.assertIs(legacy_validation_fields, pan_validation_fields)
+        self.assertIs(legacy_gen_state, generator_state)
+        self.assertIs(legacy_shed, new_shed)
+        self.assertIs(legacy_validate, new_validate)
+        self.assertIs(store_fileio, fileio)
+        self.assertIs(variants_fileio, fileio)
+        self.assertIs(variants_readback, variant_readback)
+        self.assertIs(variants_topology, variant_topology)
+
+        for legacy_name in self._LEGACY_MODULES:
+            with self.subTest(legacy_name=legacy_name):
+                mod = importlib.import_module(legacy_name)
+                self.assertEqual(mod.__name__, legacy_name)
+                reloaded = importlib.reload(mod)
+                self.assertIs(reloaded, mod)
+                for target_name in pvsyst_auto._LEGACY_MODULE_ALIASES[legacy_name]:
+                    self.assertEqual(importlib.import_module(target_name).__name__, target_name)
+
+        self.assertEqual(sheds.WRITABLE["pitch_m"], "Pitch")
+        self.assertEqual(pan.DIMENSIONS, {"Width": "LargApp", "Height": "LongApp"})
+        self.assertIsInstance(power.PF_BITS, int)
+        self.assertEqual(power.PF_BITS, 0x00F00000)
+        self.assertEqual(power_factor.PF_BITS, {"constant": 0x00100000, "monthly": 0x00300000})
+        self.assertEqual(inverter_temperature.FIELDS, ("TempShift", "TempFixed"))
+        self.assertEqual(power_factor.FIELDS, ("TanPhi", "TanPhiM"))
+        self.assertTrue(callable(builder.electrical_inventory))
+        self.assertTrue(callable(builder.inspect_curves))
+        self.assertTrue(callable(builder.bind_source_values))
+        self.assertEqual(transformers.ln_strip(s=" x "), "x")
+        self.assertIs(typing.get_type_hints(identity.sourced_component)["store"], ComponentStore)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            target = tmp_path / "atomic.txt"
+            orig_stage = paths.stage
+            with patch("pvsyst_auto.project.fileio.stage", wraps=orig_stage) as stage_mock:
+                fileio.atomic_replace(target, b"payload")
+                stage_mock.assert_called_once_with(target, b"payload")
+            self.assertEqual(target.read_bytes(), b"payload")
+            self.assertIs(fileio.stage, orig_stage)
+            self.assertIs(paths.stage, orig_stage)
+
+            with patch.object(paths, "stage") as outer:
+                with patch("pvsyst_auto.project.fileio.stage") as inner:
+                    self.assertIs(paths.stage, inner)
+                    self.assertIs(fileio.stage, inner)
+                self.assertIs(paths.stage, outer)
+                self.assertIs(fileio.stage, outer)
+            self.assertIs(paths.stage, orig_stage)
+
+            del paths.stage
+            try:
+                self.assertFalse(hasattr(fileio, "stage"))
+                with patch("pvsyst_auto.project.fileio.stage", create=True) as created:
+                    self.assertIs(paths.stage, created)
+                self.assertFalse(hasattr(paths, "stage"))
+                self.assertFalse(hasattr(fileio, "stage"))
+            finally:
+                paths.stage = orig_stage
+
+            btr_text = "\r\n".join([
+                "PVObject_=pvBattery",
+                "  Version=8.1.7",
+                "  BattTechnol=btPb_Sealed_AGM",
+                "  DVGassShape=TCubicProfile",
+                "    NPtsMax=4",
+                "    NPtsEff=4",
+                "    Mode=1",
+                "    Point_1=1,1.1",
+                "    Point_2=10,1.2",
+                "    Point_3=50,1.25",
+                "    Point_4=100,1.3",
+                "  End of TCubicProfile",
+                "End of PVObject pvBattery",
+            ]) + "\r\n"
+            self.assertEqual(battery.battery_curve_inventory(btr_text)["items"][0]["cli_recognition"], "recognized")
+            with patch.object(battery, "KNOWN_TAGS", frozenset()):
+                self.assertEqual(battery.battery_curve_inventory(btr_text)["items"][0]["cli_recognition"], "unverified")
+
+            ws = tmp_path / "ws"
+            (ws / "Projects").mkdir(parents=True)
+            (ws / "Projects" / "Demo.PRJ").write_text("PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
+            (ws / "Projects" / "Demo.VC0").write_text(
+                "\n".join([
+                    "PVObject_=pvVCalcul",
+                    "  PVObject_=pvOrient",
+                    "    NoOrient=1",
+                    "  End of TOrientGroup",
+                    "  PVObject_=pvSubArray",
+                    "    SubArrayId=1",
+                    "    NoOrientation=1",
+                    "  End of PVObject pvSubArray",
+                    "  PVObject_System=pvSystem",
+                    "    SystemType=OffGrid",
+                    "  End of PVObject pvSystem",
+                    "End of PVObject pvVCalcul",
+                ]) + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(builder, "bind_source_values", side_effect=RuntimeError("intercepted")):
+                with self.assertRaisesRegex(RuntimeError, "^intercepted$"):
+                    builder.build_sourced_component(
+                        ComponentStore(ws),
+                        component_type="PAN",
+                        new_name="Mock.PAN",
+                        manufacturer="MockCo",
+                        model="MockM",
+                        sources=[],
+                        declarations=[{"field": "pnom", "value": 600}],
+                    )
+
+            class DelegatingStore(VariantStore):
+                def validate_structure(self, project: str, variant: str) -> dict:
+                    return variant_topology.validate_structure(self, project, variant)
+
+            res = DelegatingStore(ws, ComponentStore(ws)).validate_structure("Demo.PRJ", "VC0")
+            self.assertEqual(res["system_type"], "OffGrid")
+            self.assertEqual(res["orientation_ids"], [1])
+            self.assertEqual(res["subarray_ids"], [1])
+
+        importlib.reload(pvsyst_auto)
+        importlib.reload(pvsyst_auto)
+        finders = [f for f in sys.meta_path if getattr(f, "_PVSYST_LEGACY_FINDER", False)]
+        self.assertEqual(len(finders), 1)
+        self.assertIsNone(finders[0].find_spec("pvsyst_auto.project.fileio", ["C:/nonexistent_dir"]))
+        self.assertTrue(inspect.getsource(fileio))
+
+        env = dict(os.environ)
+        if env.get("PVSYST_TEST_INSTALLED") == "1":
+            env.pop("PYTHONPATH", None)
+        else:
+            env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3] / "src")
+        subprocess.run(
+            [sys.executable, "-c",
+             "import typing; "
+             "from pvsyst_auto.components import editor; "
+             "from pvsyst_auto.components.store import ComponentStore; "
+             "assert typing.get_type_hints(editor.sourced_component)['store'] is ComponentStore; "
+             "from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule; "
+             "assert callable(plan_tou_storage_schedule)"],
+            check=True,
+            env=env,
+        )
 
 
 if __name__ == "__main__":

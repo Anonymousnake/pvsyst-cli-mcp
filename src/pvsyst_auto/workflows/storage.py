@@ -11,7 +11,7 @@ import re
 from pvsyst_auto.native.cli import iter_result_csv, result_units
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.energy.storage import create_grid_storage_variant, storage_state, validate_storage
-from pvsyst_auto.energy.load import hourly_load_block, load_snapshot
+from pvsyst_auto.energy.profiles import hourly_load_block, load_snapshot
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.results import POWER_TO_KW, fingerprint, verify_pdf_header
 

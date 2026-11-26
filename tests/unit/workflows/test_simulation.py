@@ -18,7 +18,7 @@ import pvsyst_auto.workflows.house as house_flow
 import pvsyst_auto.workflows.revision as revision_flow
 import pvsyst_auto.workflows.simulation as pvsyst_simulation
 from pvsyst_auto.components.store import ComponentStore, electrical_inventory
-from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
+from pvsyst_auto.components.editor import pan_validation_fields
 from pvsyst_auto.engineering.sizing import plan_capacity
 from pvsyst_auto.native.cli import PVsystCLI, PVsystError
 from pvsyst_auto.project.variants import VariantStore

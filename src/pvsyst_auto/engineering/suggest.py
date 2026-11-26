@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 
 from pvsyst_auto.components.editor import objects
-from pvsyst_auto.components.pan import validation_fields as pan_validation_fields
+from pvsyst_auto.components.editor import pan_validation_fields
 from pvsyst_auto.components.store import electrical_inventory
 
 DEFAULT_BETA_VOC_PCT_PER_C = -0.30

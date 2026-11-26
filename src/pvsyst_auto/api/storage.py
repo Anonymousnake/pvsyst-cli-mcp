@@ -6,7 +6,7 @@ from pydantic import Field, StrictBool, StrictInt, StrictStr
 from pvsyst_auto.energy.profiles import prepare_load_profile
 from pvsyst_auto.energy.storage import create_grid_storage_variant
 from pvsyst_auto.energy.system import create_grid_storage_system
-from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule
+from pvsyst_auto.energy.storage import plan_tou_storage_schedule
 from pvsyst_auto.native.load import create_native_load_variant
 from pvsyst_auto.api.schemas import (
     BatteryPackDesign,

@@ -15,7 +15,7 @@ from pvsyst_auto.components.single_diode import (
     synthesize_ond_from_datasheet,
     synthesize_pan_from_datasheet,
 )
-from pvsyst_auto.energy.tou_planner import plan_tou_storage_schedule
+from pvsyst_auto.energy.storage import plan_tou_storage_schedule
 from pvsyst_auto.engineering.diagnostics import diagnose_simulation_csv
 from pvsyst_auto.engineering.economics import _resolve_result_csv, evaluate_economics
 from pvsyst_auto.project.paths import safe_filename, workspace_file
