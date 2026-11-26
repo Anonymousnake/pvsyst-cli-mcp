@@ -305,6 +305,11 @@ def diagnose_simulation_csv(
     reader = RegularResultCsv(path, empty_message="Result CSV contains no simulation rows")
     units = reader.units
     has_grid_storage = bool(vc_info and vc_info.get("grid_storage") is not None)
+    system_type = ((vc_info or {}).get("system_parameters") or {}).get("SystemType")
+    has_local_use = bool(
+        has_grid_storage or system_type == "Battery"
+        or (load_ctx and (load_ctx.get("has_pvload") or load_ctx.get("load_flag_enabled")))
+    )
 
     # Accumulators
     sums: dict[str, float] = {}
@@ -410,9 +415,18 @@ def diagnose_simulation_csv(
                 if len(night_export_stamps) < 5:
                     night_export_stamps.append(str(stamp))
 
-            # High irradiance with zero/negative output
+            # Grid export alone does not measure generation when load or storage is present.
             if gi_w_m2 is not None and gi_w_m2 >= cfg["zero_output_irrad_min_w_m2"]:
-                out_val = float(ea_raw) if ea_ok else (float(eg_raw) if eg_ok else None)
+                out_val = None
+                for col in ("EArray", "EOutInv", "E_Avail"):
+                    value = row[idx[col]] if col in idx else None
+                    if isinstance(value, (int, float)) and math.isfinite(value):
+                        out_val = float(value)
+                        break
+                local_use_columns = ("E_User", "E_Solar", "EFrGrid", "E_Miss", "EUseful", "EDirUse",
+                                     "EBatCh", "EBatDis", "SOC", "SOC_End", "SOC_Beg", "SOCmean")
+                if out_val is None and not has_local_use and not any(col in idx for col in local_use_columns):
+                    out_val = float(eg_raw) if eg_ok else None
                 if out_val is not None and out_val <= 1e-6:
                     zero_out_count += 1
                     if len(zero_out_stamps) < 5:

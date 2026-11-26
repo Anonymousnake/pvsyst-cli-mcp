@@ -250,6 +250,48 @@ class DiagnosticsEngineTests(unittest.TestCase):
         diag_p = diagnose_simulation_csv(_write_csv(self.root / "Results" / "phase_lag.csv", cols_p, rows_p))
         self.assertIn("IRRADIANCE_OUTPUT_PHASE_MISMATCH", {f["code"] for f in diag_p["findings"]})
 
+    def test_zero_output_uses_generation_and_avoids_self_consumption_export(self):
+        start = datetime(2024, 6, 1)
+        stamps = [(start + timedelta(hours=i)).strftime("%d/%m/%y %H:%M") for i in range(30)]
+
+        def finding(cols, values, **kwargs):
+            path = _write_csv(self.root / "Results" / "zero_self_use.csv", cols,
+                              [[stamp, 500.0, *values] for stamp in stamps])
+            diag = diagnose_simulation_csv(path, **kwargs)
+            return next((f for f in diag["findings"] if f["code"] == "HIGH_IRRADIANCE_ZERO_OUTPUT"), None)
+
+        # E_Grid=0 is not evidence of zero generation when load or storage is present.
+        for marker in ("E_User", "EBatCh", "E_Solar", "EFrGrid"):
+            with self.subTest(marker=marker):
+                cols = [("GlobInc", "W/m2"), ("E_Grid", "kW"), (marker, "kW")]
+                self.assertIsNone(finding(cols, [0.0, 1.0]))
+
+        # A generation-side measurement remains usable even with self-consumption.
+        for source in ("EArray", "EOutInv", "E_Avail"):
+            with self.subTest(source=source):
+                cols = [("GlobInc", "W/m2"), ("E_Grid", "kW"), ("E_User", "kW"), (source, "kW")]
+                self.assertIsNone(finding(cols, [0.0, 1.0, 2.0]))
+                zero = finding(cols, [0.0, 1.0, 0.0])
+                self.assertIsNotNone(zero)
+                self.assertEqual(zero["observed"], 30.0)
+                self.assertEqual(zero["severity"], "high")
+                self.assertIsNone(finding(cols, [0.0, 1.0, ""]))
+
+        # Plain grid-only exports retain their original behavior.
+        grid_cols = [("GlobInc", "W/m2"), ("E_Grid", "kW")]
+        self.assertEqual(finding(grid_cols, [0.0])["observed"], 30.0)
+        self.assertIsNone(finding(grid_cols, [1.0]))
+
+        # Variant metadata must also prevent an unsafe E_Grid fallback.
+        for vc_info, load_ctx in (
+            ({"grid_storage": {}}, None),
+            ({"system_parameters": {"SystemType": "Battery"}}, None),
+            ({}, {"has_pvload": True, "load_flag_enabled": True}),
+        ):
+            with self.subTest(vc_info=vc_info, load_ctx=load_ctx):
+                with patch("pvsyst_auto.engineering.diagnostics._variant_context", return_value=(vc_info, load_ctx)):
+                    self.assertIsNone(finding(grid_cols, [0.0]))
+
     def test_planned_system_unavailability_downgrades_zero_output_to_info(self):
         synth = synthesize_project_and_variant(
             None,
