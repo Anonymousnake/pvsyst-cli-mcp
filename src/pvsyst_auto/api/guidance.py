@@ -1,6 +1,7 @@
 """MCP protocol guidance layer: server instructions, workflow prompts, and on-demand reference/workspace resources."""
 from __future__ import annotations
 
+from collections.abc import Collection
 import json
 import os
 from pathlib import Path
@@ -8,32 +9,174 @@ import re
 
 from pvsyst_auto.native.cli import REPORT_PAGES, VAR_GROUPS
 
-SERVER_INSTRUCTIONS = """PVsyst CLI MCP drives a local Windows PVsyst 8.x installation and workspace.
+_EXPERT_DIRECT_WRITERS = (
+    "pvsyst_create_site",
+    "pvsyst_build_monthly_weather",
+    "pvsyst_convert_meteo",
+)
+_OPT_IN_TOOLS = frozenset({
+    "pvsyst_license_activate",
+    "pvsyst_license_deactivate",
+    "pvsyst_license_sync",
+    "pvsyst_export_logs",
+    *_EXPERT_DIRECT_WRITERS,
+})
 
-Quick workflow selection:
-1. Check environment first: call `pvsyst_capabilities` and `pvsyst_license_info` before running simulations.
-2. Search & select components with `pvsyst_list_components` (supports electrical filters: `min_power_w`, `max_power_w`, `bifacial`, `min_system_voltage_v`, `min_mppt`, `manufacturer`) / `pvsyst_get_component`, or synthesize custom commercial `.PAN`/`.OND` (single- or 3-voltage) / Li-ion `.BTR` from cited datasheets via `pvsyst_build_sourced_component` (omit `template_name` for zero-template synthesis). Pass `refit_single_diode=true` on `pvsyst_update_component` to refit `.PAN` single-diode parameters when editing STC values.
-3. Weather: call `pvsyst_resolve_location` -> `pvsyst_acquire_weather(provider="open_meteo_era5" | "pvgis_tmy" | "nasa_power", prepare=true)` to fetch and convert `.SIT`/`.MET` in one step, or pass `weather.mode="open_meteo" | "pvgis_tmy" | "nasa_power"` directly in `pvsyst_simulate_design`.
-4. Fixed-plane, utility ground PV, or Stand-Alone off-grid PV+BESS+Genset:
-   - Use `pvsyst_simulate_design` with `scope="fixed_unshaded_grid" | "ground_sheds" | "ground_tracker" | "stand_alone"`.
-   - For utility ground PV, pass optional `ground_layout` (`model_mode="unlimited" | "3d"`, `site_polygon`, `obstacles`, `base_slope_deg`, or 3D DEM `terrain` from XYZ JSON/CSV/GeoTIFF), `bifacial`, and MV/HV `transformers`.
-   - For off-grid Stand-Alone (`scope="stand_alone"`), pass `standalone` (`.BTR` battery bank, MPPT/direct `.RLT` controller, optional `.GEN` backup generator or inline `genset_spec`, load profile, and diesel-fuel economics).
-   - For existing variants, configure multi-stage MV/HV transformers & AC collection cables via `pvsyst_configure_transformers`, convert orientation type in-place (`fixed`/`seasonal`/`sheds`/`tracker_ns`/`tracker_2axis`) via `pvsyst_convert_orientation`, or update spectral correction, random unavailability, and native `TEcoEvaluation` PDF financials via `pvsyst_update_variant_parameters`.
-   - Pass `electrical_design`/`capacity` or call `pvsyst_suggest_sizing` / `sizing_mode="auto_from_components"`.
-5. 3D rooftop house + obstacles + electrical shading (`module_layout`):
-   - Call `pvsyst_run_house_task` (omit `source_project`/`source_variant` for zero-template synthesis).
-6. C&I PV+BESS optimization, economics, feasibility studies & interactive reporting:
-   - Convert TOU tariffs into PVsyst `PowerShift` 48-slot schedules via `pvsyst_plan_tou_storage_schedule`.
-   - Run two-stage hybrid BESS sizing (`bess_kwh x pcs_kw x strategy` + optional Stage 2 PVsystCLI verification) via `pvsyst_optimize_bess_sizing`.
-   - Sweep parameters in one CLI call with `pvsyst_run_batch_sweep` (`dry_run=true` first), audit with `pvsyst_diagnose_results`, and auto-remediate via `pvsyst_optimize_variant`.
-   - Evaluate fixed, TOU, and two-part demand-charge tariffs, battery replacement, sensitivity tornadoes, LCOE, NPV, IRR, and payback via `pvsyst_evaluate_economics`.
-   - Run a complete one-shot feasibility study (synthesis -> simulation/reuse -> diagnostics -> TOU/BESS sizing -> economics -> Plotly report) via `pvsyst_run_feasibility_study` (`dry_run=true` first, then `dry_run=false, confirm=true`).
-   - Generate interactive Plotly HTML engineering reports (zh/en, with demand shaving, tornado, and BESS heatmap charts) via `pvsyst_generate_report`, and bundle deliverables via `pvsyst_export_engineering_delivery`.
-7. Safety & verification conventions:
-   - For mutating tools whose schema declares a `dry_run` parameter (including `pvsyst_generate_report`), always preview with `dry_run=true` before executing `dry_run=false`.
-   - Direct writers without a `dry_run` parameter (such as `pvsyst_build_sfi`, `pvsyst_clone_variant`, `pvsyst_create_component`, and `pvsyst_run_simulation`, plus `pvsyst_create_site`/`pvsyst_build_monthly_weather`/`pvsyst_convert_meteo` when `expert` tools are enabled) write immediately; never overwrite existing projects/outputs and always pick fresh output filenames.
-   - Consult on-demand resources `pvsyst://guide/workflows`, `pvsyst://guide/variables`, `pvsyst://workspace/projects`, `pvsyst://workspace/components`, and `pvsyst://workspace/results` for live workspace state, SFI variables, and multi-step recipes.
-"""
+
+def build_server_instructions(active_tools: Collection[str] | None = None) -> str:
+    """Build MCP server instructions referencing only the registered tool surface."""
+    active_set = frozenset(active_tools) if active_tools is not None else None
+
+    def _has(*names: str) -> bool:
+        if active_set is None:
+            return all(name not in _OPT_IN_TOOLS for name in names)
+        return all(name in active_set for name in names)
+
+    def _any(*names: str) -> list[str]:
+        return [name for name in names if _has(name)]
+
+    sections: list[str] = []
+
+    if _has("pvsyst_capabilities", "pvsyst_license_info"):
+        sections.append("Check environment first: call `pvsyst_capabilities` and `pvsyst_license_info` before running simulations.")
+    elif _has("pvsyst_capabilities"):
+        sections.append("Check environment first: call `pvsyst_capabilities` to inspect CLI commands and options.")
+    elif _has("pvsyst_license_info"):
+        sections.append("Check environment first: call `pvsyst_license_info` to check license status and quota.")
+
+    comp_parts: list[str] = []
+    if _has("pvsyst_list_components", "pvsyst_get_component"):
+        comp_parts.append(
+            "Search & select components with `pvsyst_list_components` (supports electrical filters: "
+            "`min_power_w`, `max_power_w`, `bifacial`, `min_system_voltage_v`, `min_mppt`, `manufacturer`) / "
+            "`pvsyst_get_component`"
+        )
+    elif _has("pvsyst_list_components"):
+        comp_parts.append("Search & filter components with `pvsyst_list_components`")
+    elif _has("pvsyst_get_component"):
+        comp_parts.append("Inspect components with `pvsyst_get_component`")
+    if _has("pvsyst_build_sourced_component"):
+        comp_parts.append(
+            "synthesize custom commercial `.PAN`/`.OND` (single- or 3-voltage) / Li-ion `.BTR` from cited datasheets "
+            "via `pvsyst_build_sourced_component` (omit `template_name` for zero-template synthesis)"
+        )
+    if _has("pvsyst_update_component"):
+        comp_parts.append(
+            "pass `refit_single_diode=true` on `pvsyst_update_component` to refit `.PAN` single-diode parameters "
+            "when editing STC values"
+        )
+    if comp_parts:
+        sections.append("Components: " + "; ".join(comp_parts) + ".")
+
+    if _has("pvsyst_resolve_location", "pvsyst_acquire_weather", "pvsyst_simulate_design"):
+        sections.append(
+            "Weather: call `pvsyst_resolve_location` -> `pvsyst_acquire_weather(provider=\"open_meteo_era5\" | "
+            "\"pvgis_tmy\" | \"nasa_power\", prepare=true)` to fetch and convert `.SIT`/`.MET` in one step, or pass "
+            "`weather.mode=\"open_meteo\" | \"pvgis_tmy\" | \"nasa_power\"` directly in `pvsyst_simulate_design`."
+        )
+    elif weather_tools := _any("pvsyst_resolve_location", "pvsyst_acquire_weather", "pvsyst_prepare_weather", "pvsyst_review_weather"):
+        sections.append("Weather: use " + ", ".join(f"`{t}`" for t in weather_tools) + ".")
+
+    design_bullets: list[str] = []
+    if _has("pvsyst_simulate_design"):
+        design_bullets.extend([
+            "   - Use `pvsyst_simulate_design` with `scope=\"fixed_unshaded_grid\" | \"ground_sheds\" | \"ground_tracker\" | \"stand_alone\"`.",
+            "   - For utility ground PV, pass optional `ground_layout` (`model_mode=\"unlimited\" | \"3d\"`, `site_polygon`, `obstacles`, `base_slope_deg`, or 3D DEM `terrain` from XYZ JSON/CSV/GeoTIFF), `bifacial`, and MV/HV `transformers`.",
+            "   - For off-grid Stand-Alone (`scope=\"stand_alone\"`), pass `standalone` (`.BTR` battery bank, MPPT/direct `.RLT` controller, optional `.GEN` backup generator or inline `genset_spec`, load profile, and diesel-fuel economics).",
+        ])
+    variant_parts: list[str] = []
+    if _has("pvsyst_configure_transformers"):
+        variant_parts.append("configure multi-stage MV/HV transformers & AC collection cables via `pvsyst_configure_transformers`")
+    if _has("pvsyst_convert_orientation"):
+        variant_parts.append("convert orientation type in-place (`fixed`/`seasonal`/`sheds`/`tracker_ns`/`tracker_2axis`) via `pvsyst_convert_orientation`")
+    if _has("pvsyst_update_variant_parameters"):
+        variant_parts.append("update spectral correction, random unavailability, and native `TEcoEvaluation` PDF financials via `pvsyst_update_variant_parameters`")
+    if variant_parts:
+        design_bullets.append("   - For existing variants, " + ", or ".join(variant_parts) + ".")
+    if _has("pvsyst_suggest_sizing"):
+        design_bullets.append("   - Pass `electrical_design`/`capacity` or call `pvsyst_suggest_sizing` / `sizing_mode=\"auto_from_components\"`.")
+    if design_bullets:
+        sections.append("Fixed-plane, utility ground PV, or Stand-Alone off-grid PV+BESS+Genset:\n" + "\n".join(design_bullets))
+
+    if _has("pvsyst_run_house_task"):
+        sections.append(
+            "3D rooftop house + obstacles + electrical shading (`module_layout`):\n"
+            "   - Call `pvsyst_run_house_task` (omit `source_project`/`source_variant` for zero-template synthesis)."
+        )
+
+    ci_bullets: list[str] = []
+    if _has("pvsyst_plan_tou_storage_schedule"):
+        ci_bullets.append("   - Convert TOU tariffs into PVsyst `PowerShift` 48-slot schedules via `pvsyst_plan_tou_storage_schedule`.")
+    if _has("pvsyst_optimize_bess_sizing"):
+        ci_bullets.append("   - Run two-stage hybrid BESS sizing (`bess_kwh x pcs_kw x strategy` + optional Stage 2 PVsystCLI verification) via `pvsyst_optimize_bess_sizing`.")
+    if _has("pvsyst_run_batch_sweep") and _has("pvsyst_diagnose_results") and _has("pvsyst_optimize_variant"):
+        ci_bullets.append("   - Sweep parameters in one CLI call with `pvsyst_run_batch_sweep` (`dry_run=true` first), audit with `pvsyst_diagnose_results`, and auto-remediate via `pvsyst_optimize_variant`.")
+    else:
+        if _has("pvsyst_run_batch_sweep"):
+            ci_bullets.append("   - Sweep parameters in one CLI call with `pvsyst_run_batch_sweep` (`dry_run=true` first).")
+        if _has("pvsyst_diagnose_results"):
+            ci_bullets.append("   - Audit simulation CSVs with `pvsyst_diagnose_results`.")
+        if _has("pvsyst_optimize_variant"):
+            ci_bullets.append("   - Auto-remediate anomalies on cloned variants via `pvsyst_optimize_variant`.")
+    if _has("pvsyst_evaluate_economics"):
+        ci_bullets.append("   - Evaluate fixed, TOU, and two-part demand-charge tariffs, battery replacement, sensitivity tornadoes, LCOE, NPV, IRR, and payback via `pvsyst_evaluate_economics`.")
+    if _has("pvsyst_run_feasibility_study"):
+        ci_bullets.append("   - Run a complete one-shot feasibility study (synthesis -> simulation/reuse -> diagnostics -> TOU/BESS sizing -> economics -> Plotly report) via `pvsyst_run_feasibility_study` (`dry_run=true` first, then `dry_run=false, confirm=true`).")
+    report_delivery: list[str] = []
+    if _has("pvsyst_generate_report"):
+        report_delivery.append("Generate interactive Plotly HTML engineering reports (zh/en, with demand shaving, tornado, and BESS heatmap charts) via `pvsyst_generate_report`")
+    if _has("pvsyst_export_engineering_delivery"):
+        report_delivery.append("bundle deliverables via `pvsyst_export_engineering_delivery`")
+    if report_delivery:
+        ci_bullets.append("   - " + ", and ".join(report_delivery).capitalize() + ".")
+    if ci_bullets:
+        sections.append("C&I PV+BESS optimization, economics, feasibility studies & interactive reporting:\n" + "\n".join(ci_bullets))
+
+    if results_tools := _any("pvsyst_read_results", "pvsyst_read_rows", "pvsyst_read_batch_results"):
+        if not ci_bullets or not _has("pvsyst_simulate_design"):
+            extra = " (or run `pvsyst_diagnose_results` above)" if _has("pvsyst_diagnose_results") else ""
+            sections.append(
+                "Simulation result inspection: read outputs with "
+                + ", ".join(f"`{t}`" for t in results_tools) + extra + "."
+            )
+
+    if admin_tools := _any("pvsyst_license_activate", "pvsyst_license_deactivate", "pvsyst_license_sync", "pvsyst_export_logs"):
+        sections.append(
+            "Admin & Diagnostics: manage licensing or export logs via "
+            + ", ".join(f"`{t}`" for t in admin_tools)
+            + " (license mutations require `confirm=true`)."
+        )
+
+    lines = ["PVsyst CLI MCP drives a local Windows PVsyst 8.x installation and workspace.", "", "Quick workflow selection:"]
+    for idx, section in enumerate(sections, start=1):
+        lines.append(f"{idx}. {section}")
+
+    safety_num = len(sections) + 1
+    lines.append(f"{safety_num}. Safety & verification conventions:")
+    dry_note = " (including `pvsyst_generate_report`)" if _has("pvsyst_generate_report") else ""
+    lines.append(f"   - For mutating tools whose schema declares a `dry_run` parameter{dry_note}, always preview with `dry_run=true` before executing `dry_run=false`.")
+    direct_writers = _any(
+        "pvsyst_build_sfi",
+        "pvsyst_clone_variant",
+        "pvsyst_create_component",
+        "pvsyst_run_simulation",
+        *_EXPERT_DIRECT_WRITERS,
+    )
+    if direct_writers:
+        lines.append(
+            "   - Direct writers without a `dry_run` parameter ("
+            + ", ".join(f"`{t}`" for t in direct_writers)
+            + ") write immediately; never overwrite existing projects/outputs and always pick fresh output filenames."
+        )
+    lines.append(
+        "   - Consult on-demand resources `pvsyst://guide/workflows`, `pvsyst://guide/variables`, "
+        "`pvsyst://workspace/projects`, `pvsyst://workspace/components`, and `pvsyst://workspace/results` "
+        "for live workspace state, SFI variables, and multi-step recipes."
+    )
+    return "\n".join(lines) + "\n"
+
+
+SERVER_INSTRUCTIONS = build_server_instructions()
 
 WORKFLOW_GUIDE_MD = """# PVsyst CLI MCP — Agent Workflow Playbook
 
@@ -93,121 +236,159 @@ def _variables_guide_md() -> str:
     return "\n".join(lines) + "\n"
 
 
-def register_guidance(server) -> None:
-    """Attach standard MCP prompts and read-only reference resources to ``server``."""
+_PROMPT_REQUIRED_TOOLS = {
+    "design_fixed_or_utility_pv": frozenset({
+        "pvsyst_capabilities", "pvsyst_license_info", "pvsyst_resolve_location",
+        "pvsyst_list_components", "pvsyst_suggest_sizing", "pvsyst_simulate_design",
+    }),
+    "design_rooftop_3d_pv": frozenset({
+        "pvsyst_capabilities", "pvsyst_license_info", "pvsyst_resolve_location",
+        "pvsyst_acquire_weather", "pvsyst_prepare_weather", "pvsyst_list_components", "pvsyst_run_house_task",
+    }),
+    "design_pv_with_storage": frozenset({
+        "pvsyst_project_handoff", "pvsyst_list_components", "pvsyst_prepare_load_profile",
+        "pvsyst_create_grid_storage_system", "pvsyst_build_sfi", "pvsyst_run_simulation",
+        "pvsyst_read_results", "pvsyst_compare_engineering_scenarios",
+    }),
+    "diagnose_and_optimize_simulation": frozenset({
+        "pvsyst_get_variant_parameters", "pvsyst_project_handoff", "pvsyst_read_results",
+        "pvsyst_diagnose_results", "pvsyst_optimize_variant", "pvsyst_clone_variant",
+        "pvsyst_update_variant_parameters", "pvsyst_run_batch_sweep",
+    }),
+    "ci_bess_feasibility_study": frozenset({
+        "pvsyst_capabilities", "pvsyst_license_info", "pvsyst_resolve_location",
+        "pvsyst_list_components", "pvsyst_build_sourced_component",
+        "pvsyst_plan_tou_storage_schedule", "pvsyst_run_feasibility_study",
+    }),
+    "optimize_bess_sizing": frozenset({
+        "pvsyst_optimize_bess_sizing", "pvsyst_generate_report",
+    }),
+}
 
-    @server.prompt(
-        name="design_fixed_or_utility_pv",
-        description="Step-by-step workflow to design and simulate a fixed-plane, ground sheds, or single-axis tracker PV plant (mono or bifacial).",
-    )
-    def design_fixed_or_utility_pv(
-        location: str,
-        target_dc_kw: str = "1000",
-        scope: str = "ground_tracker",
-        bifacial: str = "true",
-    ) -> str:
-        return (
-            f"Design and simulate a {target_dc_kw} kWp PV plant at {location} "
-            f"(scope={scope}, bifacial={bifacial}) using the PVsyst CLI MCP tools:\n"
-            "1. Call `pvsyst_capabilities` and `pvsyst_license_info` to confirm CLI readiness and quota.\n"
-            "2. Call `pvsyst_resolve_location` for the target location and `pvsyst_list_components` for available PAN/OND files.\n"
-            "   Note: if bifacial=true, verify the loose .PAN declares bifaciality (Flags bit 23 / $00800000).\n"
-            "3. Call `pvsyst_suggest_sizing` (or pass `sizing_mode='auto_from_components'` directly in `pvsyst_simulate_design`) "
-            "to derive a safe string/MPPT/inverter layout.\n"
-            "4. Run `pvsyst_simulate_design(..., dry_run=True)` first to inspect planned files, sizing checks, and weather plan; "
-            "once `ready`/`ready_for_weather`, execute with `dry_run=False`.\n"
-            "5. Summarize annual E_Grid, PR, specific yield, bifacial rear gain (if enabled), and any diagnostic warnings."
+
+def register_guidance(server, active_tools: Collection[str] | None = None) -> None:
+    """Attach enabled MCP prompts and read-only reference resources to ``server``."""
+    active_set = frozenset(active_tools) if active_tools is not None else None
+
+    def _prompt_enabled(name: str) -> bool:
+        return active_set is None or _PROMPT_REQUIRED_TOOLS[name] <= active_set
+
+    if _prompt_enabled("design_fixed_or_utility_pv"):
+        @server.prompt(
+            name="design_fixed_or_utility_pv",
+            description="Step-by-step workflow to design and simulate a fixed-plane, ground sheds, or single-axis tracker PV plant (mono or bifacial).",
         )
+        def design_fixed_or_utility_pv(
+            location: str,
+            target_dc_kw: str = "1000",
+            scope: str = "ground_tracker",
+            bifacial: str = "true",
+        ) -> str:
+            return (
+                f"Design and simulate a {target_dc_kw} kWp PV plant at {location} "
+                f"(scope={scope}, bifacial={bifacial}) using the PVsyst CLI MCP tools:\n"
+                "1. Call `pvsyst_capabilities` and `pvsyst_license_info` to confirm CLI readiness and quota.\n"
+                "2. Call `pvsyst_resolve_location` for the target location and `pvsyst_list_components` for available PAN/OND files.\n"
+                "   Note: if bifacial=true, verify the loose .PAN declares bifaciality (Flags bit 23 / $00800000).\n"
+                "3. Call `pvsyst_suggest_sizing` (or pass `sizing_mode='auto_from_components'` directly in `pvsyst_simulate_design`) "
+                "to derive a safe string/MPPT/inverter layout.\n"
+                "4. Run `pvsyst_simulate_design(..., dry_run=True)` first to inspect planned files, sizing checks, and weather plan; "
+                "once `ready`/`ready_for_weather`, execute with `dry_run=False`.\n"
+                "5. Summarize annual E_Grid, PR, specific yield, bifacial rear gain (if enabled), and any diagnostic warnings."
+            )
 
-    @server.prompt(
-        name="design_rooftop_3d_pv",
-        description="Step-by-step workflow to model a 3D house/rooftop PV system with obstacles and module-level shading.",
-    )
-    def design_rooftop_3d_pv(
-        location: str,
-        roof_description: str,
-        shading_mode: str = "module_layout",
-    ) -> str:
-        return (
-            f"Build and simulate a 3D rooftop PV system at {location} ({roof_description}) "
-            f"with shading_mode={shading_mode}:\n"
-            "1. Check `pvsyst_capabilities` and `pvsyst_license_info`.\n"
-            "2. Prepare workspace weather files: `pvsyst_resolve_location` -> `pvsyst_acquire_weather(dry_run=False)` "
-            "-> `pvsyst_prepare_weather(dry_run=False)`.\n"
-            "3. List available PAN/OND files with `pvsyst_list_components`.\n"
-            "4. Construct planar upward-facing roof meshes (`house.kind='mesh'`), PV table placements (`layout`), "
-            "surrounding `obstacles`, and optional `string_layout`.\n"
-            "5. Call `pvsyst_run_house_task` without `source_project`/`source_variant` (zero-template synthesis) "
-            "with `dry_run=True` first, then `dry_run=False, confirm=True`.\n"
-            "6. Report annual E_Grid, PR, shading losses (`GlobShd`/`ShdElec`), and any diagnostics."
+    if _prompt_enabled("design_rooftop_3d_pv"):
+        @server.prompt(
+            name="design_rooftop_3d_pv",
+            description="Step-by-step workflow to model a 3D house/rooftop PV system with obstacles and module-level shading.",
         )
+        def design_rooftop_3d_pv(
+            location: str,
+            roof_description: str,
+            shading_mode: str = "module_layout",
+        ) -> str:
+            return (
+                f"Build and simulate a 3D rooftop PV system at {location} ({roof_description}) "
+                f"with shading_mode={shading_mode}:\n"
+                "1. Check `pvsyst_capabilities` and `pvsyst_license_info`.\n"
+                "2. Prepare workspace weather files: `pvsyst_resolve_location` -> `pvsyst_acquire_weather(dry_run=False)` "
+                "-> `pvsyst_prepare_weather(dry_run=False)`.\n"
+                "3. List available PAN/OND files with `pvsyst_list_components`.\n"
+                "4. Construct planar upward-facing roof meshes (`house.kind='mesh'`), PV table placements (`layout`), "
+                "surrounding `obstacles`, and optional `string_layout`.\n"
+                "5. Call `pvsyst_run_house_task` without `source_project`/`source_variant` (zero-template synthesis) "
+                "with `dry_run=True` first, then `dry_run=False, confirm=True`.\n"
+                "6. Report annual E_Grid, PR, shading losses (`GlobShd`/`ShdElec`), and any diagnostics."
+            )
 
-    @server.prompt(
-        name="design_pv_with_storage",
-        description="Step-by-step workflow to add load profiles and AC-coupled battery storage to a PV project and compare strategies.",
-    )
-    def design_pv_with_storage(
-        project: str,
-        variant: str = "VC0",
-        storage_strategy: str = "peak_shaving",
-    ) -> str:
-        strategy = storage_strategy.strip().lower()
-        if strategy == "peak_shaving":
+    if _prompt_enabled("design_pv_with_storage"):
+        @server.prompt(
+            name="design_pv_with_storage",
+            description="Step-by-step workflow to add load profiles and AC-coupled battery storage to a PV project and compare strategies.",
+        )
+        def design_pv_with_storage(
+            project: str,
+            variant: str = "VC0",
+            storage_strategy: str = "peak_shaving",
+        ) -> str:
+            strategy = storage_strategy.strip().lower()
+            if strategy == "peak_shaving":
+                return (
+                    f"Add AC-coupled battery storage ({storage_strategy}) to {project}/{variant}:\n"
+                    "1. Inspect the baseline via `pvsyst_project_handoff(project, variant)` to confirm the source variant "
+                    "has no self-consumption `pvLoad` block (PVsyst rejects PeakShaving paired with a self-consumption load), "
+                    "and list batteries via `pvsyst_list_components(component_type='BTR', library='builtin')`.\n"
+                    "2. Do not attach a load profile and omit `load_manifest_name` when creating `peak_shaving` storage.\n"
+                    "3. Create the storage variant via `pvsyst_create_grid_storage_system` (`storage={'strategy': 'peak_shaving', ...}`, "
+                    "omitting `load_manifest_name`; preview with `dry_run=True` then execute with `dry_run=False`).\n"
+                    "4. Build a storage SFI with `pvsyst_build_sfi(variables='grid_storage')`, run `pvsyst_run_simulation`, "
+                    "and compare against baseline using `pvsyst_read_results(compare_to=...)` or `pvsyst_compare_engineering_scenarios`."
+                )
+            if strategy in ("self_consumption", "weak_grid"):
+                extra = " and supply a matching `availability` profile" if strategy == "weak_grid" else ""
+                return (
+                    f"Add load and AC-coupled battery storage ({storage_strategy}) to {project}/{variant}:\n"
+                    "1. Inspect the baseline via `pvsyst_project_handoff(project, variant)` and available batteries via "
+                    "`pvsyst_list_components(component_type='BTR', library='builtin')`.\n"
+                    "2. Prepare an hourly load profile via `pvsyst_prepare_load_profile` (hourly CSV in `UserData`) and "
+                    f"record its `load_manifest_name` (required for `{strategy}`{extra}).\n"
+                    "3. Create the storage variant via `pvsyst_create_grid_storage_system` passing `load_manifest_name` "
+                    "(`dry_run=True` then `dry_run=False`).\n"
+                    "4. Build a storage SFI with `pvsyst_build_sfi(variables='grid_storage')`, run `pvsyst_run_simulation`, "
+                    "and compare against baseline using `pvsyst_read_results(compare_to=...)` or `pvsyst_compare_engineering_scenarios`."
+                )
             return (
                 f"Add AC-coupled battery storage ({storage_strategy}) to {project}/{variant}:\n"
-                "1. Inspect the baseline via `pvsyst_project_handoff(project, variant)` to confirm the source variant "
-                "has no self-consumption `pvLoad` block (PVsyst rejects PeakShaving paired with a self-consumption load), "
-                "and list batteries via `pvsyst_list_components(component_type='BTR', library='builtin')`.\n"
-                "2. Do not attach a load profile and omit `load_manifest_name` when creating `peak_shaving` storage.\n"
-                "3. Create the storage variant via `pvsyst_create_grid_storage_system` (`storage={'strategy': 'peak_shaving', ...}`, "
-                "omitting `load_manifest_name`; preview with `dry_run=True` then execute with `dry_run=False`).\n"
-                "4. Build a storage SFI with `pvsyst_build_sfi(variables='grid_storage')`, run `pvsyst_run_simulation`, "
-                "and compare against baseline using `pvsyst_read_results(compare_to=...)` or `pvsyst_compare_engineering_scenarios`."
-            )
-        if strategy in ("self_consumption", "weak_grid"):
-            extra = " and supply a matching `availability` profile" if strategy == "weak_grid" else ""
-            return (
-                f"Add load and AC-coupled battery storage ({storage_strategy}) to {project}/{variant}:\n"
                 "1. Inspect the baseline via `pvsyst_project_handoff(project, variant)` and available batteries via "
                 "`pvsyst_list_components(component_type='BTR', library='builtin')`.\n"
-                "2. Prepare an hourly load profile via `pvsyst_prepare_load_profile` (hourly CSV in `UserData`) and "
-                f"record its `load_manifest_name` (required for `{strategy}`{extra}).\n"
-                "3. Create the storage variant via `pvsyst_create_grid_storage_system` passing `load_manifest_name` "
-                "(`dry_run=True` then `dry_run=False`).\n"
+                "2. Load binding depends on strategy: for `self_consumption` or `weak_grid`, prepare an hourly load via "
+                "`pvsyst_prepare_load_profile` and pass `load_manifest_name`; for `peak_shaving`, use a source variant "
+                "without `pvLoad` and omit `load_manifest_name`; for `power_shift`, a load is optional.\n"
+                "3. Create the storage variant via `pvsyst_create_grid_storage_system` (`dry_run=True` then `dry_run=False`).\n"
                 "4. Build a storage SFI with `pvsyst_build_sfi(variables='grid_storage')`, run `pvsyst_run_simulation`, "
                 "and compare against baseline using `pvsyst_read_results(compare_to=...)` or `pvsyst_compare_engineering_scenarios`."
             )
-        return (
-            f"Add AC-coupled battery storage ({storage_strategy}) to {project}/{variant}:\n"
-            "1. Inspect the baseline via `pvsyst_project_handoff(project, variant)` and available batteries via "
-            "`pvsyst_list_components(component_type='BTR', library='builtin')`.\n"
-            "2. Load binding depends on strategy: for `self_consumption` or `weak_grid`, prepare an hourly load via "
-            "`pvsyst_prepare_load_profile` and pass `load_manifest_name`; for `peak_shaving`, use a source variant "
-            "without `pvLoad` and omit `load_manifest_name`; for `power_shift`, a load is optional.\n"
-            "3. Create the storage variant via `pvsyst_create_grid_storage_system` (`dry_run=True` then `dry_run=False`).\n"
-            "4. Build a storage SFI with `pvsyst_build_sfi(variables='grid_storage')`, run `pvsyst_run_simulation`, "
-            "and compare against baseline using `pvsyst_read_results(compare_to=...)` or `pvsyst_compare_engineering_scenarios`."
-        )
 
-    @server.prompt(
-        name="diagnose_and_optimize_simulation",
-        description="Audit a completed simulation CSV + variant parameters for anomalies (clipping, overvoltage, shading, storage) and propose targeted fixes.",
-    )
-    def diagnose_and_optimize_simulation(
-        project: str,
-        variant: str,
-        csv_name: str,
-    ) -> str:
-        return (
-            f"Audit simulation results `{csv_name}` for `{project}/{variant}`:\n"
-            "1. Read variant state with `pvsyst_get_variant_parameters` or `pvsyst_project_handoff`.\n"
-            "2. Summarize key columns with `pvsyst_read_results` and run `pvsyst_diagnose_results` "
-            "to inspect PR, inverter limits (`IL_Vmax`, `IL_Vmin`, `IL_Pmax`, `IL_Imax`), shading (`GlobShd`, `ShdElec`), "
-            "and grid/storage losses.\n"
-            "3. Map each anomaly back to concrete `.VC0` parameters (e.g., `NModSerie`, DC/AC ratio, pitch/tilt, storage schedule).\n"
-            "4. Propose and verify an isolated revised variant (`pvsyst_optimize_variant`, `pvsyst_clone_variant` / "
-            "`pvsyst_update_variant_parameters`, or `pvsyst_run_batch_sweep`) and compare before/after performance."
+    if _prompt_enabled("diagnose_and_optimize_simulation"):
+        @server.prompt(
+            name="diagnose_and_optimize_simulation",
+            description="Audit a completed simulation CSV + variant parameters for anomalies (clipping, overvoltage, shading, storage) and propose targeted fixes.",
         )
+        def diagnose_and_optimize_simulation(
+            project: str,
+            variant: str,
+            csv_name: str,
+        ) -> str:
+            return (
+                f"Audit simulation results `{csv_name}` for `{project}/{variant}`:\n"
+                "1. Read variant state with `pvsyst_get_variant_parameters` or `pvsyst_project_handoff`.\n"
+                "2. Summarize key columns with `pvsyst_read_results` and run `pvsyst_diagnose_results` "
+                "to inspect PR, inverter limits (`IL_Vmax`, `IL_Vmin`, `IL_Pmax`, `IL_Imax`), shading (`GlobShd`, `ShdElec`), "
+                "and grid/storage losses.\n"
+                "3. Map each anomaly back to concrete `.VC0` parameters (e.g., `NModSerie`, DC/AC ratio, pitch/tilt, storage schedule).\n"
+                "4. Propose and verify an isolated revised variant (`pvsyst_optimize_variant`, `pvsyst_clone_variant` / "
+                "`pvsyst_update_variant_parameters`, or `pvsyst_run_batch_sweep`) and compare before/after performance."
+            )
 
     @server.resource(
         "pvsyst://guide/workflows",
@@ -317,43 +498,45 @@ def register_guidance(server) -> None:
         entries.sort(key=lambda item: -item["mtime"])
         return json.dumps({"configured": True, "workspace": str(ws), "files": entries[:100]}, ensure_ascii=False, indent=2)
 
-    @server.prompt(
-        name="ci_bess_feasibility_study",
-        description="End-to-end C&I PV+BESS feasibility workflow with two-part demand tariff, TOU PowerShift scheduling, sizing optimization, sensitivity analysis, and bilingual Plotly HTML report.",
-    )
-    def ci_bess_feasibility_study(
-        location: str,
-        target_dc_kw: str = "500",
-        language: str = "zh",
-    ) -> str:
-        return (
-            f"Run a complete C&I PV+BESS feasibility study for a {target_dc_kw} kWp plant at {location} (language={language}):\n"
-            "1. Inspect workspace readiness with `pvsyst_capabilities`, `pvsyst_license_info`, and resources "
-            "`pvsyst://workspace/components` and `pvsyst://workspace/projects`.\n"
-            "2. Resolve location (`pvsyst_resolve_location`) and select or synthesize commercial PAN/OND/BTR components "
-            "via `pvsyst_list_components` or zero-template `pvsyst_build_sourced_component`.\n"
-            "3. Plan two-charge/two-discharge TOU windows with `pvsyst_plan_tou_storage_schedule`.\n"
-            "4. Run `pvsyst_run_feasibility_study(spec=..., dry_run=True)` to preview the full execution graph "
-            "(weather, PV/BESS simulation, diagnostics, two-part demand + TOU economics, sensitivity tornado, optional BESS sizing sweep, "
-            "and interactive Plotly HTML report), then execute with `dry_run=False, confirm=True`.\n"
-            "5. Present annual yield, PR, demand peak shaving savings, NPV, IRR, LCOE, payback, sensitivity drivers, and the generated HTML report path."
+    if _prompt_enabled("ci_bess_feasibility_study"):
+        @server.prompt(
+            name="ci_bess_feasibility_study",
+            description="End-to-end C&I PV+BESS feasibility workflow with two-part demand tariff, TOU PowerShift scheduling, sizing optimization, sensitivity analysis, and bilingual Plotly HTML report.",
         )
+        def ci_bess_feasibility_study(
+            location: str,
+            target_dc_kw: str = "500",
+            language: str = "zh",
+        ) -> str:
+            return (
+                f"Run a complete C&I PV+BESS feasibility study for a {target_dc_kw} kWp plant at {location} (language={language}):\n"
+                "1. Inspect workspace readiness with `pvsyst_capabilities`, `pvsyst_license_info`, and resources "
+                "`pvsyst://workspace/components` and `pvsyst://workspace/projects`.\n"
+                "2. Resolve location (`pvsyst_resolve_location`) and select or synthesize commercial PAN/OND/BTR components "
+                "via `pvsyst_list_components` or zero-template `pvsyst_build_sourced_component`.\n"
+                "3. Plan two-charge/two-discharge TOU windows with `pvsyst_plan_tou_storage_schedule`.\n"
+                "4. Run `pvsyst_run_feasibility_study(spec=..., dry_run=True)` to preview the full execution graph "
+                "(weather, PV/BESS simulation, diagnostics, two-part demand + TOU economics, sensitivity tornado, optional BESS sizing sweep, "
+                "and interactive Plotly HTML report), then execute with `dry_run=False, confirm=True`.\n"
+                "5. Present annual yield, PR, demand peak shaving savings, NPV, IRR, LCOE, payback, sensitivity drivers, and the generated HTML report path."
+            )
 
-    @server.prompt(
-        name="optimize_bess_sizing",
-        description="Two-stage hybrid PV+BESS sizing optimization workflow (fast pure-Python grid sweep + optional Stage 2 PVsystCLI verification).",
-    )
-    def optimize_bess_sizing_prompt(
-        baseline_csv: str,
-        installed_dc_kw: str = "500",
-        rank_by: str = "npv",
-    ) -> str:
-        return (
-            f"Optimize battery capacity (kWh) and PCS power (kW) for `{baseline_csv}` ({installed_dc_kw} kWp, rank_by={rank_by}):\n"
-            "1. Confirm the baseline CSV and available load/TOU/demand-charge tariff parameters.\n"
-            "2. Run `pvsyst_optimize_bess_sizing` Stage 1 (`verify_top_k=0`, `dry_run=True`) across candidate `bess_kwh_values` "
-            "and `pcs_kw_values` (including `0` for PV-only baseline) to inspect ranked KPIs, Pareto frontier, and 2D heatmap.\n"
-            "3. Optionally run Stage 2 (`verify_top_k=1..3`, `dry_run=False`, `confirm=True`) with a loose or zero-template Li-ion `.BTR` "
-            "to reconcile fast-model estimates against exact `PVsystCLI` simulations.\n"
-            "4. Embed the resulting `bess_optimization` dict into `pvsyst_generate_report` to render the interactive heatmap and Pareto chart."
+    if _prompt_enabled("optimize_bess_sizing"):
+        @server.prompt(
+            name="optimize_bess_sizing",
+            description="Two-stage hybrid PV+BESS sizing optimization workflow (fast pure-Python grid sweep + optional Stage 2 PVsystCLI verification).",
         )
+        def optimize_bess_sizing_prompt(
+            baseline_csv: str,
+            installed_dc_kw: str = "500",
+            rank_by: str = "npv",
+        ) -> str:
+            return (
+                f"Optimize battery capacity (kWh) and PCS power (kW) for `{baseline_csv}` ({installed_dc_kw} kWp, rank_by={rank_by}):\n"
+                "1. Confirm the baseline CSV and available load/TOU/demand-charge tariff parameters.\n"
+                "2. Run `pvsyst_optimize_bess_sizing` Stage 1 (`verify_top_k=0`, `dry_run=True`) across candidate `bess_kwh_values` "
+                "and `pcs_kw_values` (including `0` for PV-only baseline) to inspect ranked KPIs, Pareto frontier, and 2D heatmap.\n"
+                "3. Optionally run Stage 2 (`verify_top_k=1..3`, `dry_run=False`, `confirm=True`) with a loose or zero-template Li-ion `.BTR` "
+                "to reconcile fast-model estimates against exact `PVsystCLI` simulations.\n"
+                "4. Embed the resulting `bess_optimization` dict into `pvsyst_generate_report` to render the interactive heatmap and Pareto chart."
+            )

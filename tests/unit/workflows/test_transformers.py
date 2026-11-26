@@ -516,6 +516,73 @@ class TransformersTests(unittest.TestCase):
                 components=self.comp,
             )
 
+    def test_in_place_single_mv_night_disconnect_preserves_flags_wire_section_and_stc(self) -> None:
+        """Issue #274: night_disconnect-only update preserves cable section, bits 23/24, and STC ref."""
+        import re
+        from unittest.mock import patch
+        from pvsyst_auto.api.projects import pvsyst_configure_transformers
+        from pvsyst_auto.api.schemas import MvTransformerSpec
+
+        init_res = configure_transformers(
+            self.store,
+            project="TrfTest.PRJ",
+            source_variant="VC0",
+            new_variant="VC1",
+            mv={
+                "count": 1,
+                "output_voltage_kv": 20.0,
+                "stc_ref_power_kw": 440.0,
+                "night_disconnect": False,
+                "cable": {"length_m": 450.0, "metal": "Copper", "section_mm2": 150},
+            },
+            dry_run=False,
+        )
+        self.assertEqual(init_res["status"], "created", init_res)
+        mv_path = self.root / "Projects" / "TrfTest.VC1"
+        vc_mv = mv_path.read_text(encoding="utf-8-sig")
+        vc_mv = re.sub(
+            r"(PVObject_PVMainArray=pvMainArray\r?\n\s+Flags=)\$[0-9A-Fa-f]+",
+            r"\1$01F00400",
+            vc_mv,
+            count=1,
+        )
+        vc_mv = vc_mv.replace(
+            "NightDisconnect=False",
+            "MVWireNoSect=2\r\n          NightDisconnect=False",
+            1,
+        )
+        mv_path.write_text("\ufeff" + vc_mv, encoding="utf-8")
+        stc_before = [line.strip() for line in vc_mv.splitlines() if "STC" in line]
+
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
+            on_res = pvsyst_configure_transformers(
+                "TrfTest.PRJ",
+                "VC1",
+                "VC2",
+                mv=MvTransformerSpec(night_disconnect=True),
+                dry_run=False,
+            )
+            self.assertEqual(on_res["status"], "created", on_res)
+            vc_on = (self.root / "Projects" / "TrfTest.VC2").read_text(encoding="utf-8-sig")
+            self.assertIn("Flags=$21F00400", vc_on)
+            self.assertIn("MVWireNoSect=2", vc_on)
+            self.assertIn("NightDisconnect=True", vc_on)
+            self.assertEqual([line.strip() for line in vc_on.splitlines() if "STC" in line], stc_before)
+
+            off_res = pvsyst_configure_transformers(
+                "TrfTest.PRJ",
+                "VC2",
+                "VC3",
+                mv=MvTransformerSpec(night_disconnect=False),
+                dry_run=False,
+            )
+            self.assertEqual(off_res["status"], "created", off_res)
+            vc_off = (self.root / "Projects" / "TrfTest.VC3").read_text(encoding="utf-8-sig")
+            self.assertIn("Flags=$01F00400", vc_off)
+            self.assertIn("MVWireNoSect=2", vc_off)
+            self.assertIn("NightDisconnect=False", vc_off)
+            self.assertEqual([line.strip() for line in vc_off.splitlines() if "STC" in line], stc_before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,11 +17,7 @@ from pvsyst_auto.native.cli import PVsystCLI, PVsystError
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.project.paths import workspace_file
-from pvsyst_auto.api.guidance import SERVER_INSTRUCTIONS, register_guidance
-
-
-mcp = MCPServer("pvsyst-cli", instructions=SERVER_INSTRUCTIONS)
-register_guidance(mcp)
+from pvsyst_auto.api.guidance import build_server_instructions, register_guidance
 
 _cli: PVsystCLI | None = None
 _cli_key: tuple[str | None, str | None] | None = None
@@ -143,6 +139,9 @@ def import_modules_for_groups(groups: tuple[str, ...]) -> tuple[str, ...]:
 ACTIVE_TOOL_GROUPS = resolve_tool_groups(os.environ.get("PVSYST_TOOL_GROUPS"))
 ACTIVE_TOOL_NAMES = tool_names_for_groups(ACTIVE_TOOL_GROUPS)
 
+mcp = MCPServer("pvsyst-cli", instructions=build_server_instructions(ACTIVE_TOOL_NAMES))
+register_guidance(mcp, active_tools=ACTIVE_TOOL_NAMES)
+
 _strict_arguments: dict[str, frozenset[str]] = {}
 _tool_registry: dict[str, tuple[str, Any, frozenset[str]]] = {}
 
@@ -213,8 +212,8 @@ def create_mcp_server(tool_groups: str | None = None) -> MCPServer:
     missing = sorted(names - set(_tool_registry))
     if missing:
         raise RuntimeError(f"Unregistered strict entry points: {missing}")
-    server = MCPServer("pvsyst-cli", instructions=SERVER_INSTRUCTIONS)
-    register_guidance(server)
+    server = MCPServer("pvsyst-cli", instructions=build_server_instructions(names))
+    register_guidance(server, active_tools=names)
     strict_map: dict[str, frozenset[str]] = {}
     server.middleware.append(make_strict_middleware(strict_map))
     for name in sorted(names):

@@ -591,8 +591,10 @@ def synthesize_utility_project(
                                                     module_orient=module_orient, spacing_x_m=sx, spacing_y_m=sy,
                                                     obstacles=obstacles, terrain_mesh=terrain_mesh, version=version)
         else:
+            clearance = _finite(ground_clearance_m, "ground_clearance_m", minimum=0.0)
             shading_lines = synthesize_ground_shed_shading(shed_count=shed_count, pitch_m=resolved_pitch, tilt_deg=tilt_deg,
-                                                           azimuth_deg=azimuth_deg, base_slope_deg=eff_base_slope, **mod_kw)
+                                                           azimuth_deg=azimuth_deg, base_slope_deg=eff_base_slope,
+                                                           origin=(0.0, 0.0, clearance), **mod_kw)
             if obstacles:
                 from pvsyst_auto.scene.author import obstacle_profiles
                 from pvsyst_auto.scene.ground import emit_shading_obstacles

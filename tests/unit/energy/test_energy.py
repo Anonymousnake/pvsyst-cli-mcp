@@ -1651,6 +1651,56 @@ class SpecialLoadsAndOutagesTests(unittest.TestCase):
                 '\n',
             )
 
+    def test_random_unavailability_hits_exact_target_fraction_and_full_year(self) -> None:
+        """Issue #275: random outages hit exact target hours and allow 01/01 00:00 full-year outage."""
+        lines_80 = crlf(SYSTEM)
+        res_80 = replace_system_unavailability(
+            lines_80,
+            (2, 5),
+            {
+                "mode": "random",
+                "time_fraction_pct": 80,
+                "period_count": 4,
+                "min_duration_hours": 1,
+                "max_duration_hours": 3000,
+                "random_seed": 7,
+            },
+        )
+        periods_80 = res_80["after"]["periods"]
+        self.assertEqual(len(periods_80), 4)
+        total_hours = 0.0
+        intervals = []
+        for entry in periods_80:
+            dur = float(entry["duration"])
+            self.assertGreaterEqual(dur, 1.0)
+            self.assertLessEqual(dur, 3000.0)
+            total_hours += dur
+            start = datetime.strptime(entry["date_beg"], "%d/%m/%y %H:%M")
+            end = start + timedelta(hours=dur)
+            intervals.append((start, end))
+        self.assertAlmostEqual(total_hours, 7008.0, places=6)
+        intervals.sort()
+        for prev, curr in zip(intervals, intervals[1:]):
+            self.assertLessEqual(prev[1], curr[0])
+
+        lines_100 = crlf(SYSTEM)
+        res_100 = replace_system_unavailability(
+            lines_100,
+            (2, 5),
+            {
+                "mode": "random",
+                "time_fraction_pct": 100,
+                "period_count": 1,
+                "min_duration_hours": 8760,
+                "max_duration_hours": 8760,
+                "random_seed": 7,
+            },
+        )
+        periods_100 = res_100["after"]["periods"]
+        self.assertEqual(len(periods_100), 1)
+        self.assertEqual(periods_100[0]["date_beg"], "01/01/90 00:00")
+        self.assertAlmostEqual(float(periods_100[0]["duration"]), 8760.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()
