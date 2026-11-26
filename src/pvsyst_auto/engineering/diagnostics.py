@@ -336,7 +336,7 @@ def diagnose_simulation_csv(
     step_hours = 1.0
 
     try:
-        for stamp, row, dt_hours in reader.iter_rows():
+        for stamp, row, dt_hours in reader.iter_rows(validate_all_rows=True):
             if rows == 0:
                 headers = reader.headers
                 idx = reader.idx
@@ -442,7 +442,7 @@ def diagnose_simulation_csv(
             "finding_count": 0,
             "counts_by_severity": {"critical": 0, "high": 0, "medium": 0, "info": 0},
             "needs_review": False,
-            "rows": None,
+            "rows": reader.rows_count,
             "step_minutes": None,
             "is_bifacial": False,
             "weighted_pr": None,

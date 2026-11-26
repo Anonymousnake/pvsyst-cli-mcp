@@ -127,11 +127,13 @@ class RegularResultCsv:
         val = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0.0
         return val * factor if is_power else (val * factor / dt_hours)
 
-    def iter_rows(self):
+    def iter_rows(self, *, validate_all_rows: bool = False):
+        """Optionally validate and count remaining CSV rows before raising for cadence."""
         first_row = None
         prev_stamp = None
         step_min: float | None = None
-        for headers, row in iter_result_csv(self.csv_path, strict=True):
+        source = iter_result_csv(self.csv_path, strict=True)
+        for headers, row in source:
             if self.rows_count == 0:
                 self.headers = list(headers)
                 self.idx = {name: i for i, name in enumerate(headers) if i > 0}
@@ -147,7 +149,9 @@ class RegularResultCsv:
                 continue
             stamp = row[0]
             delta = (stamp - prev_stamp).total_seconds() / 60.0
-            if delta <= 0:
+            if delta <= 0 or (step_min is not None and abs(delta - step_min) > 1e-6):
+                if validate_all_rows:
+                    self.rows_count += 1 + sum(1 for _ in source)
                 raise ValueError(self._irregular_message)
             if step_min is None:
                 step_min = delta
@@ -155,8 +159,6 @@ class RegularResultCsv:
                 dt_hours = step_min / 60.0
                 yield first_row[0], first_row, dt_hours
                 first_row = None
-            elif abs(delta - step_min) > 1e-6:
-                raise ValueError(self._irregular_message)
             dt_hours = step_min / 60.0
             prev_stamp = stamp
             self.rows_count += 1

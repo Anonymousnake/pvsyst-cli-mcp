@@ -566,6 +566,7 @@ class DiagnosticsEngineTests(unittest.TestCase):
         diag = diagnose_simulation_csv(csv_gap, thresholds={"zero_output_max_hours": 3.0})
         self.assertEqual(diag["status"], "blocked", diag)
         self.assertIsNone(diag["step_minutes"])
+        self.assertEqual(diag["rows"], len(stamps))
         self.assertEqual(diag["finding_count"], 0)
         self.assertTrue(diag["issues"])
 
@@ -607,6 +608,17 @@ class DiagnosticsEngineTests(unittest.TestCase):
         self.assertEqual(sim["status"], "needs_review")
         self.assertEqual(sim["physical_diagnostics"]["status"], "blocked")
         self.assertTrue(sim["physical_diagnostics"]["issues"])
+
+
+    def test_irregular_csv_still_rejects_invalid_later_rows(self):
+        path = self.root / "Results" / "gap_then_malformed.csv"
+        preamble = "date;E_Grid\n;kWh\n01/06/24 08:00;0\n01/06/24 08:15;0\n01/06/24 08:45;0\n"
+        for last_row, error in (("INVALID;0", "Invalid timestamp"),
+                                ("01/06/24 09:00;0;extra", "more values than its header")):
+            with self.subTest(last_row=last_row):
+                path.write_text(preamble + last_row + "\n", encoding="utf-8-sig")
+                with self.assertRaisesRegex(ValueError, error):
+                    diagnose_simulation_csv(path)
 
 
 if __name__ == "__main__":
