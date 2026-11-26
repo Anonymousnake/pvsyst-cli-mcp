@@ -251,13 +251,19 @@ def _explicit_cells(binding, tables, subs, ranges):
         _fail(not isinstance(entry["cells"], list), "Binding cells must be a list")
         cell_map = {}
         for cell in entry["cells"]:
-            _fail(not isinstance(cell, dict) or set(cell) != {"row", "col", "global_string"}, "Each module cell requires exactly row, col and global_string")
+            if not isinstance(cell, dict) or set(cell) != {"row", "col", "global_string"}:
+                raise ValueError("Each module cell requires exactly row, col and global_string")
             row, col, gstr = cell["row"], cell["col"], cell["global_string"]
-            _fail(any(type(v) is not int for v in (row, col, gstr)), "row, col and global_string must be strict integers")
-            _fail(not (1 <= row <= rows and 1 <= col <= columns), "Binding cell (%d, %d) lies outside table %r (%dx%d)", row, col, name, rows, columns)
-            _fail((row, col) in cell_map, "Binding repeats cell (%d, %d) in table %r", row, col, name)
-            _fail(gstr == 0, "Draft binding: table %r has unassigned cells; complete the layout before native import", name)
-            _fail(not first <= gstr <= last, "global_string %d is outside source subarray %d strings %d..%d", gstr, sub_id, first, last)
+            if type(row) is not int or type(col) is not int or type(gstr) is not int:
+                raise ValueError("row, col and global_string must be strict integers")
+            if not (1 <= row <= rows and 1 <= col <= columns):
+                raise ValueError("Binding cell (%d, %d) lies outside table %r (%dx%d)" % (row, col, name, rows, columns))
+            if (row, col) in cell_map:
+                raise ValueError("Binding repeats cell (%d, %d) in table %r" % (row, col, name))
+            if gstr == 0:
+                raise ValueError("Draft binding: table %r has unassigned cells; complete the layout before native import" % name)
+            if not first <= gstr <= last:
+                raise ValueError("global_string %d is outside source subarray %d strings %d..%d" % (gstr, sub_id, first, last))
             cell_map[(row, col)] = gstr
             used[gstr] += 1
         _fail(len(cell_map) != rows * columns, "Binding must assign every cell of table %r (expected %d, got %d)", name, rows * columns, len(cell_map))
@@ -817,12 +823,10 @@ def _resolve_target_path(store, project, next_variant):
 def import_house_pv_scene_native(store, components, scene_name, variant_name,
                                  dry_run=True, confirm=False, shading_mode="linear", string_layout=None):
     """Build a native input variant from the scene declaration without GUI or simulation."""
-    result = {"status": "blocked", "stage": "preflight", "method": "native", "dry_run": dry_run,
-              "project": None, "source_variant": None, "variant": None, "file": None,
-              "native_variant_created": False, "native_geometry_verified": False,
-              "native_module_layout_verified": False, "native_consumption_verified": False,
-              "stored_geometry_verified": False, "stored_module_layout_verified": False,
-              "imported": False, "precheck_passed": False, "issues": [], "warnings": [], "artifacts": {}}
+    result = {"status": "blocked", "stage": "preflight", "method": "native", "dry_run": dry_run, "project": None, "source_variant": None,
+              "variant": None, "file": None, "native_variant_created": False, "native_geometry_verified": False,
+              "native_module_layout_verified": False, "native_consumption_verified": False, "stored_geometry_verified": False,
+              "stored_module_layout_verified": False, "imported": False, "precheck_passed": False, "issues": [], "warnings": [], "artifacts": {}}
     with store.lock:
         try:
             _fail(type(dry_run) is not bool or type(confirm) is not bool, "Use strict booleans")
@@ -836,8 +840,7 @@ def import_house_pv_scene_native(store, components, scene_name, variant_name,
             next_variant = _next_variant_id(store, args["project"])
             if dry_run:
                 result.update(status="ready_to_import", stage="preflight", planned_variant=next_variant)
-                result["warnings"].append("Preview builds and verifies the native records in memory only (stored_* stay false); "
-                                          "nothing is written and no licence or engine action is used. Execution requires dry_run=false and confirm=true.")
+                result["warnings"].append("Preview builds and verifies the native records in memory only (stored_* stay false); nothing is written and no licence or engine action is used. Execution requires dry_run=false and confirm=true.")
                 return result
             if not confirm:
                 return {**result, "status": "confirmation_required", "issues": ["Call again with dry_run=false and confirm=true to write the new native variant."]}
@@ -857,18 +860,15 @@ def import_house_pv_scene_native(store, components, scene_name, variant_name,
             _fail(snap["path"].read_bytes() != snap["bytes"], "Source variant changed before writing the native variant")
             result["stage"] = "write"
             publish_new(target, candidate)
-            obs_list = pre["obstacles"]
+            obs_list, geom = pre["obstacles"], written["geometry"]
             result.update(
-                status="native_variant_created", stage="created", variant=target.suffix[1:].upper(),
-                file=str(target), artifacts={"variant": str(target)}, native_variant_created=True,
-                stored_geometry_verified=bool(written["geometry"].get("house_geometry_verified")
-                                              and written["geometry"].get("tree_obstacles_verified")
-                                              and written["geometry"].get("pv_geometry_verified")),
+                status="native_variant_created", stage="created", variant=target.suffix[1:].upper(), file=str(target),
+                artifacts={"variant": str(target)}, native_variant_created=True,
+                stored_geometry_verified=bool(geom.get("house_geometry_verified") and geom.get("tree_obstacles_verified") and geom.get("pv_geometry_verified")),
                 stored_module_layout_verified=shading_mode == "module_layout" and bool(written["module_layout"].get("status") == "stored_consistent"),
             )
             if obs_list:
-                result.update(obstacle_count=len(obs_list), tree_count=sum(1 for o in obs_list if o["kind"] == "tree"),
-                              obstacle_mesh_count=sum(1 for o in obs_list if o["kind"] != "tree"))
+                result.update(obstacle_count=len(obs_list), tree_count=sum(1 for o in obs_list if o["kind"] == "tree"), obstacle_mesh_count=sum(1 for o in obs_list if o["kind"] != "tree"))
         except (ValueError, OSError, UnicodeError, KeyError, TypeError, StopIteration, FileExistsError, RuntimeError) as exc:
             result["issues"].append(str(exc))
             result["status"] = "failed" if result["stage"] == "write" else "blocked"

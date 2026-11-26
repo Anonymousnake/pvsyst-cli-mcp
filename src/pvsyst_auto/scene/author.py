@@ -503,13 +503,19 @@ def _string_layout_profile(string_layout, tables):
             _vfail(not isinstance(entry["cells"], list), "cells must be a list")
             rows, columns, seen_cells, cells = profile["module_rows"], profile["module_columns"], set(), []
             for cell in entry["cells"]:
-                _vfail(not isinstance(cell, dict) or set(cell) != {"row", "col", "global_string"}, "Each cell requires exactly row, col and global_string")
+                if not isinstance(cell, dict) or set(cell) != {"row", "col", "global_string"}:
+                    raise ValueError("Each cell requires exactly row, col and global_string")
                 row, col, glob = cell["row"], cell["col"], cell["global_string"]
-                for label, value in (("row", row), ("col", col)):
-                    _vfail(type(value) is not int or value < 1, f"{label} must be a positive strict integer")
-                _vfail(type(glob) is not int or glob < 0, "global_string must be a non-negative strict integer (0 = unassigned draft)")
-                _vfail(row > rows or col > columns, f"cell ({row},{col}) is outside the {rows}x{columns} grid of table {name}")
-                _vfail((row, col) in seen_cells, f"cell ({row},{col}) is repeated in table {name}")
+                if type(row) is not int or row < 1:
+                    raise ValueError("row must be a positive strict integer")
+                if type(col) is not int or col < 1:
+                    raise ValueError("col must be a positive strict integer")
+                if type(glob) is not int or glob < 0:
+                    raise ValueError("global_string must be a non-negative strict integer (0 = unassigned draft)")
+                if row > rows or col > columns:
+                    raise ValueError(f"cell ({row},{col}) is outside the {rows}x{columns} grid of table {name}")
+                if (row, col) in seen_cells:
+                    raise ValueError(f"cell ({row},{col}) is repeated in table {name}")
                 seen_cells.add((row, col))
                 cells.append({"row": row, "col": col, "global_string": glob})
             if len(seen_cells) != rows * columns or any(c["global_string"] == 0 for c in cells):
