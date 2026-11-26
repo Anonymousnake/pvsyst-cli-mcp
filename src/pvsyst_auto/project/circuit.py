@@ -828,8 +828,8 @@ def validate_structure(store, project: str, variant: str) -> dict:
                 orientation_ids.add(int(raw))
         list_headers, list_unchecked = [ln.strip() for ln in lines if ln.strip().startswith("Orientations, list of=")], []
         if list_headers:
-            if any(not ln.endswith(" TOrientGroup") for ln in list_headers) or any(ln.strip() == "PVObject_=pvDomeOrient" for ln in lines):
-                list_unchecked.append("orientation list counts for dome/unknown list types")
+            if any(not ln.endswith(" TOrientGroup") for ln in list_headers):
+                list_unchecked.append("orientation list counts for unknown list types")
             else:
                 try:
                     store._orientation_list(lines)
@@ -840,6 +840,11 @@ def validate_structure(store, project: str, variant: str) -> dict:
                 issues.append(f"Subarray {ident} needs one NoOrientation")
             elif not (raw := FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) not in orientation_ids:
                 issues.append(f"Subarray {ident} references unknown orientation {raw}")
+            elif indices2 := store._field_indices(lines, bounds, "NoOrientation2"):
+                if len(indices2) != 1:
+                    issues.append(f"Subarray {ident} has repeated NoOrientation2")
+                elif not (raw2 := FIELD.fullmatch(lines[indices2[0]].rstrip("\r\n"))[2]).isdigit() or int(raw2) not in orientation_ids or int(raw2) == int(raw):
+                    issues.append(f"Subarray {ident} references invalid NoOrientation2 {raw2}")
         system_type, unchecked, circuit_res = None, list_unchecked, None
         if system is None:
             issues.append("Missing pvSystem section")

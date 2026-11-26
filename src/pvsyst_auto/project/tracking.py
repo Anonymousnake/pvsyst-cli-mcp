@@ -5,7 +5,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from pvsyst_auto.components.editor import objects, replace_value, root_block
+from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, root_block
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.variant_updates import run_new_variant_transaction
@@ -54,7 +54,7 @@ FALSE_FLAGS = ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver")
 BT_NO_TRACKERS = "-1,-1,"
 UNLIM_GEOMETRY = {"Pitch": Decimal("6.600"), "CollectorWidth": Decimal("3.000"), "InactiveBandWidth1": Decimal("0.020"), "InactiveBandWidth2": Decimal("0.020"), "CellWidth": Decimal("0.156"), "FracShadingFactor": Decimal("1.000")}
 UNLIM_INTEGERS = {"NSheds": "10", "NModInWidth": "3"}
-TARGET_TYPES = {"fixed": "FixedPlane", "seasonal": "SeasonalTilt", "sheds": "Sheds", "tracker_ns": "UnlimTracking", "tracker_2axis": "TrackTwoAxis"}
+TARGET_TYPES = {"fixed": "FixedPlane", "seasonal": "SeasonalTilt", "sheds": "Sheds", "tracker_ns": "UnlimTracking", "tracker_2axis": "TrackTwoAxis", "dome": "Dome"}
 
 
 def _decimal(text, label):
@@ -275,8 +275,100 @@ def _strip_block(lines: list[str], start_marker: str, end_marker: str) -> tuple[
     return out, removed
 
 
+def _rewrite_converted_subarrays(lines: list[str], *, target_type: str, eol: str) -> None:
+    """Update subarray orientation bindings and mixed-orientation flags in-place."""
+    spans, start = [], None
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s == "PVObject_=pvSubArray":
+            start = i
+        elif s == "End of PVObject pvSubArray" and start is not None:
+            spans.append((start, i))
+            start = None
+    if not spans:
+        return
+    blocks = []
+    for s, e in spans:
+        direct, depth = {}, 0
+        for idx in range(s + 1, e):
+            st = lines[idx].strip()
+            if st.startswith("PVObject_") or st.endswith("=Start"):
+                depth += 1
+            elif st.startswith("End of ") or st == "EndTags" or st.endswith("=End"):
+                depth = max(0, depth - 1)
+            elif depth == 0 and (m := ASSIGNMENT.fullmatch(lines[idx].rstrip("\r\n"))):
+                direct.setdefault(m[2], (idx, m[4]))
+        blocks.append((s, e, direct))
+
+    dual_split = (
+        target_type == "dome"
+        and len(blocks) == 2
+        and all("NoOrientation2" not in d for _, _, d in blocks)
+    )
+    if target_type == "dome" and not dual_split:
+        for _, _, d in blocks:
+            raw_str = (d.get("NStringCh") or (None, ""))[1]
+            if not raw_str.isdigit() or int(raw_str) < 2 or int(raw_str) % 2 != 0:
+                raise ValueError("Converting a subarray to mixed dome orientation requires an even string count >= 2")
+
+    for sub_pos, (s, e, d) in reversed(list(enumerate(blocks))):
+        mixed_target = target_type == "dome" and not dual_split
+        oid1 = str(sub_pos + 1) if dual_split else "1"
+        n_str_raw = (d.get("NStringCh") or (None, ""))[1]
+        if "NoOrientation" in d:
+            idx = d["NoOrientation"][0]
+            lines[idx] = replace_value(lines[idx], oid1)
+        if "Flags" in d and re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", d["Flags"][1]):
+            fidx, fraw = d["Flags"]
+            fval = int(fraw[1:], 16)
+            fval = (fval | 0x40) if mixed_target else (fval & ~0x40)
+            lines[fidx] = replace_value(lines[fidx], f"${fval:0{max(2, len(fraw) - 1)}X}")
+        had_orient2 = "NoOrientation2" in d
+        if "Flags2" in d and re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", d["Flags2"][1]):
+            f2idx, f2raw = d["Flags2"]
+            f2val = int(f2raw[1:], 16)
+            if mixed_target:
+                f2val |= 0x1
+            elif had_orient2:
+                f2val &= ~0x1
+            lines[f2idx] = replace_value(lines[f2idx], f"${f2val:0{max(2, len(f2raw) - 1)}X}")
+        if "NStrOrient1" in d and n_str_raw.isdigit():
+            lines[d["NStrOrient1"][0]] = replace_value(
+                lines[d["NStrOrient1"][0]], str(int(n_str_raw) // 2) if mixed_target else n_str_raw
+            )
+        if mixed_target:
+            if "NoOrientation2" in d:
+                lines[d["NoOrientation2"][0]] = replace_value(lines[d["NoOrientation2"][0]], "2")
+            elif "NoOrientation" in d:
+                ins = d["NoOrientation"][0] + 1
+                indent = lines[d["NoOrientation"][0]][:len(lines[d["NoOrientation"][0]]) - len(lines[d["NoOrientation"][0]].lstrip(" \t"))]
+                lines.insert(ins, f"{indent}NoOrientation2=2{eol}")
+        for idx in sorted((d[k][0] for k in (("NStrOrient2",) if mixed_target else ("NoOrientation2", "NStrOrient2")) if k in d), reverse=True):
+            del lines[idx]
+
+
 def _build_orientation_block(target_type: str, params: dict[str, Any], *, eol: str, version: str = SYNTH_VERSION) -> tuple[list[str], dict[str, Any]]:
     ft = TARGET_TYPES[target_type]
+    if target_type == "dome":
+        from pvsyst_auto.scene.dome import opposite_azimuth_deg
+        tilt = _finite(params.get("tilt_deg", 10.0), "tilt_deg", 0.0, 90.0)
+        if tilt <= 0.0:
+            raise ValueError("tilt_deg must be positive (> 0..90) for dome")
+        azim = _finite(params.get("azimuth_deg", 90.0), "azimuth_deg", -180.0, 180.0)
+        slope = _finite(params.get("base_slope_deg", 0.0), "base_slope_deg", -45.0, 45.0)
+        back_azim = opposite_azimuth_deg(azim)
+        tail = ["    UsesTiltAver=False", "    UsesAzimAver=False", "    UsesSlopeAver=False", "    BTNoTrackers=-1,-1,"]
+        def _dome_rec(oid: int, pair_oid: int, rft: str, raz: float, main: bool, lbl: str) -> list[str]:
+            return [
+                f"    PVObject_=pvDomeOrient{eol}", f"      Comment=Dome {lbl}, Tilt {tilt:.1f}°, Azim. {raz:.1f}°{eol}",
+                f"      Version={version}{eol}", f"      Flags=$00{eol}", f"    NoOrient={oid}{eol}", f"    FieldType={rft}{eol}",
+                f"    FieldTilt={tilt:.1f}{eol}", f"    FieldAzim={raz:.1f}{eol}", f"    BaseSlope={slope:.1f}{eol}",
+                *(ln + eol for ln in tail), f"    NoPairOrient={pair_oid}{eol}", f"    IsMainOrient={'True' if main else 'False'}{eol}",
+                f"    End of TDomeOrientGroup{eol}",
+            ]
+        meta = {"field_type": ft, "tilt_deg": tilt, "azimuth_deg": azim, "back_azimuth_deg": back_azim, "base_slope_deg": slope}
+        return [f"  Orientations, list of=2 TOrientGroup{eol}", eol, *_dome_rec(1, 2, "Dome", azim, True, "front face"),
+                eol, *_dome_rec(2, 1, "DomeBackfaces", back_azim, False, "backface"), f"  End of Orientations{eol}"], meta
     if target_type == "fixed":
         tilt, azim, slope = _finite(params.get("tilt_deg", 25.0), "tilt_deg", 0.0, 90.0), _finite(params.get("azimuth_deg", 0.0), "azimuth_deg", -180.0, 180.0), _finite(params.get("base_slope_deg", 0.0), "base_slope_deg", -45.0, 45.0)
         comment = f"Fixed, Tilt {tilt:.1f}°, Azim. {azim:.1f}°"
@@ -328,16 +420,9 @@ def _build_orientation_block(target_type: str, params: dict[str, Any], *, eol: s
 
 def convert_orientation_lines(lines: list[str], *, target_type: str, params: dict[str, Any] | None = None) -> tuple[list[str], dict[str, Any]]:
     """Replace the Orientations list of a variant with a new orientation type, stripping incompatible 3D caches."""
-    if target_type == "dome":
-        raise ValueError("Conversions to or from paired dome orientations are not supported; dome faces need native pvDomeOrient pairing and string allocation")
     if target_type not in TARGET_TYPES:
         raise ValueError(f"target_type must be one of {sorted(TARGET_TYPES)}")
-    parsed_blocks = objects("".join(lines))
-    subarrays = [b for b in parsed_blocks if b.object_type == "pvSubArray"]
-    if (any(b.object_type == "pvDomeOrient" for b in parsed_blocks)
-            or any("NoOrientation2" in b.fields or "NStrOrient2" in b.fields for b in subarrays)
-            or any(b.object_type == "pvOrient" and ("NoPairOrient" in b.fields or any(v in ("Dome", "DomeBackfaces") for _, v in b.fields.get("FieldType", ()))) for b in parsed_blocks)):
-        raise ValueError("Conversions to or from paired dome orientations are not supported; dome faces need native pvDomeOrient pairing and string allocation")
+    objects("".join(lines))
     eol = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
     start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("Orientations, list of=")), None)
     end = next((i for i, ln in enumerate(lines) if ln.strip() in ("End of Orientations", "End of List Orientations")), None)
@@ -354,9 +439,7 @@ def convert_orientation_lines(lines: list[str], *, target_type: str, params: dic
             if m := re.match(r"^(\s*Flags=)\$([0-9A-Fa-f]{1,8})(\r?\n?)$", cand[idx]):
                 cand[idx] = f"{m.group(1)}${int(m.group(2), 16) & ~0x00000C41:08X}{m.group(3)}"
                 break
-    for idx, ln in enumerate(cand):
-        if ln.strip().startswith("NoOrientation="):
-            cand[idx] = replace_value(ln, "1")
+    _rewrite_converted_subarrays(cand, target_type=target_type, eol=eol)
     return cand, {"previous_field_types": prior_types, "target_type": target_type, "converted": meta, "stripped_3d_shading": removed_3d, "stripped_module_layout": removed_ml}
 
 
@@ -372,7 +455,11 @@ def convert_orientation(store, *, project: str, source_variant: str, new_variant
         candidate_lines, summary = convert_orientation_lines(lines, target_type=target_type, params=params or {})
 
         def verify(checked, _, res):
-            if not [b for b in objects("".join(checked)) if b.object_type == "pvOrient"]:
+            parsed = objects("".join(checked))
+            if target_type == "dome":
+                if len([b for b in parsed if b.object_type == "pvDomeOrient"]) != 2:
+                    raise ValueError("Converted dome variant lacks paired pvDomeOrient blocks")
+            elif not [b for b in parsed if b.object_type == "pvOrient"]:
                 raise ValueError("Converted variant lost its pvOrient block")
             res["orientation_conversion"] = summary
 

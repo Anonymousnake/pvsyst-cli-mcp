@@ -353,16 +353,19 @@ class VariantStore:
     def _orientation(lines: list[str], number: int) -> tuple[int, int]:
         if not isinstance(number, int) or isinstance(number, bool) or number < 1:
             raise ValueError("orientation_id must be a positive integer")
-        groups, start = [], None
+        groups, start, close_tag = [], None, None
         for index, line in enumerate(lines):
             value = line.strip()
-            if value == "PVObject_=pvOrient":
+            if value in ("PVObject_=pvOrient", "PVObject_=pvDomeOrient"):
                 if start is not None:
                     raise ValueError("Nested orientations")
                 start = index
-            elif value == "End of TOrientGroup" and start is not None:
+                close_tag = "End of TOrientGroup" if value == "PVObject_=pvOrient" else "End of TDomeOrientGroup"
+            elif value in ("End of TOrientGroup", "End of TDomeOrientGroup") and start is not None:
+                if value != close_tag:
+                    raise ValueError("Mismatched orientation closing tag")
                 groups.append((start, index))
-                start = None
+                start = close_tag = None
         if start is not None:
             raise ValueError("Unclosed orientation")
         matches = [b for b in groups if any((m := FIELD.fullmatch(lines[i].rstrip("\r\n"))) and m[1] == "NoOrient" and m[2] == str(number) for i in range(b[0] + 1, b[1]))]
@@ -376,30 +379,56 @@ class VariantStore:
         if len(headers) != 1 or not headers[0][1] or len(ends) != 1 or headers[0][0] >= ends[0]:
             raise ValueError("Expected one counted TOrientGroup orientation list")
         header, match = headers[0]
-        starts = [i for i in range(header + 1, ends[0]) if lines[i].strip() == "PVObject_=pvOrient"]
-        closings = [i for i in range(header + 1, ends[0]) if lines[i].strip() == "End of TOrientGroup"]
-        if len(starts) != sum(line.strip() == "PVObject_=pvOrient" for line in lines) or any(line.strip() == "PVObject_=pvDomeOrient" for line in lines):
+        open_tags = {"PVObject_=pvOrient": "End of TOrientGroup", "PVObject_=pvDomeOrient": "End of TDomeOrientGroup"}
+        starts = [i for i in range(header + 1, ends[0]) if lines[i].strip() in open_tags]
+        closings = [i for i in range(header + 1, ends[0]) if lines[i].strip() in ("End of TOrientGroup", "End of TDomeOrientGroup")]
+        if len(starts) != sum(line.strip() in open_tags for line in lines):
             raise ValueError("Only listed TOrientGroup orientation records are supported")
         if not starts or len(starts) != len(closings) or int(match[1]) != len(starts):
             raise ValueError("Orientation list count differs from its records")
-        groups = []
+        groups, dome_meta = [], {}
         for pos, (first, last) in enumerate(zip(starts, closings)):
             if first >= last or (pos and closings[pos - 1] >= first):
                 raise ValueError("Overlapping orientation records")
+            if lines[last].strip() != open_tags[lines[first].strip()]:
+                raise ValueError("Mismatched orientation record closing tag")
             if len(ids := self._field_indices(lines, (first, last), "NoOrient")) != 1:
                 raise ValueError("Orientation requires one ID")
             if not (raw := FIELD.fullmatch(lines[ids[0]].rstrip("\r\n"))[2]).isdigit() or not 1 <= int(raw) <= 2147483647:
                 raise ValueError("Orientation ID must be a positive 32-bit integer")
-            if self._orientation(lines, int(raw)) != (first, last):
+            gid = int(raw)
+            if self._orientation(lines, gid) != (first, last):
                 raise ValueError("Orientation is outside its declared list")
-            groups.append((first, last, int(raw)))
+            if lines[first].strip() == "PVObject_=pvDomeOrient":
+                ft_idx = self._field_indices(lines, (first, last), "FieldType")
+                pr_idx = self._field_indices(lines, (first, last), "NoPairOrient")
+                mn_idx = self._field_indices(lines, (first, last), "IsMainOrient")
+                if len(ft_idx) != 1 or len(pr_idx) != 1 or len(mn_idx) != 1:
+                    raise ValueError("pvDomeOrient requires FieldType, NoPairOrient, and IsMainOrient")
+                ft_val = FIELD.fullmatch(lines[ft_idx[0]].rstrip("\r\n"))[2]
+                pr_val = FIELD.fullmatch(lines[pr_idx[0]].rstrip("\r\n"))[2]
+                mn_val = FIELD.fullmatch(lines[mn_idx[0]].rstrip("\r\n"))[2]
+                expected_main = "True" if ft_val == "Dome" else "False" if ft_val == "DomeBackfaces" else None
+                if expected_main is None or mn_val != expected_main or not pr_val.isdigit():
+                    raise ValueError("Invalid pvDomeOrient FieldType, IsMainOrient, or NoPairOrient")
+                dome_meta[gid] = (int(pr_val), ft_val)
+            groups.append((first, last, gid))
+        for gid, (pair_id, ft_val) in dome_meta.items():
+            if pair_id == gid or pair_id not in dome_meta or dome_meta[pair_id][0] != gid or {ft_val, dome_meta[pair_id][1]} != {"Dome", "DomeBackfaces"}:
+                raise ValueError(f"Dome orientation {gid} lacks a valid paired partner")
         arrays, _ = self._sections(lines)
         identifiers, referenced = {gid for _, _, gid in groups}, set()
         for first, last in arrays.values():
-            raw = next(b for b in objects("".join(lines[first:last + 1])) if not b.path).one("NoOrientation")[1]
+            block = next(b for b in objects("".join(lines[first:last + 1])) if not b.path)
+            raw = block.one("NoOrientation")[1]
             if not raw.isdigit() or int(raw) not in identifiers:
                 raise ValueError("Subarray references an orientation outside its declared list")
             referenced.add(int(raw))
+            if "NoOrientation2" in block.fields:
+                raw2 = block.one("NoOrientation2")[1]
+                if not raw2.isdigit() or int(raw2) not in identifiers or int(raw2) == int(raw):
+                    raise ValueError("Subarray NoOrientation2 must reference another declared orientation")
+                referenced.add(int(raw2))
         if unused := identifiers - referenced:
             raise ValueError(f"Orientation has no assigned subarray: {sorted(unused)}")
         return header, groups
@@ -412,6 +441,8 @@ class VariantStore:
 
     @staticmethod
     def _ordinary_fixed_plane(lines, bounds, allow_missing_flags=False, allow_sheds=False):
+        if lines[bounds[0]].strip() != "PVObject_=pvOrient":
+            raise ValueError("Operation requires ordinary PVObject_=pvOrient")
         _allowed_nested = ("PVObject_Bifacial=", "PVObject_BiFacialShedModel=", "PVObject_BiFacialTrackerModel=")
         if any((line.strip().startswith("PVObject_") and not line.strip().startswith(_allowed_nested)) or line.strip().endswith("=Start") for line in lines[bounds[0] + 1:bounds[1]]):
             raise ValueError("Operation requires a flat fixed-plane record")

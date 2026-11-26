@@ -218,7 +218,7 @@ def _validate_spec(spec) -> list[dict]:
     if spec.get("report_language", "en") not in ("en", "zh"): _bad(issues, "report_language", "Choose 'en' or 'zh' for report_language")
     scope = spec.get("scope", SCOPE)
     if scope not in SUPPORTED_SCOPES:
-        _bad(issues, "scope", "Only fixed_unshaded_grid, ground_sheds, and ground_tracker are supported; a roof or free-standing scope would need thermal and loss inputs this flow never infers")
+        _bad(issues, "scope", "Only fixed_unshaded_grid, ground_sheds, ground_tracker, ground_dome, and stand_alone are supported")
     new_project = spec.get("new_project")
     if not _is_text(new_project): _bad(issues, "new_project", "Provide the new project filename")
     else:
@@ -234,7 +234,7 @@ def _validate_spec(spec) -> list[dict]:
     if scope in UTILITY_SCOPES: validate_utility_spec(spec, scope, issues)
     else:
         if spec.get("ground_layout") is not None:
-            _bad(issues, "ground_layout", "ground_layout requires scope='ground_sheds' or 'ground_tracker'")
+            _bad(issues, "ground_layout", "ground_layout requires scope='ground_sheds', 'ground_tracker', or 'ground_dome'")
         if spec.get("bifacial") is not None: _bad(issues, "bifacial", "bifacial requires scope='ground_sheds' or 'ground_tracker'")
         for name, low, high in (("tilt", 0, 90), ("azimuth", -180, 180)):
             value = spec.get(name)

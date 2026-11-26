@@ -181,7 +181,7 @@ def _normalize_orientation(item: dict) -> dict:
     oid = _pos_int(item.get("id", 1), "orientation.id")
     raw_ft = item.get("field_type", "FixedPlane")
     field_type = {"UnlimSheds": "Sheds", "RegularSheds": "FixedPlane"}.get(raw_ft, raw_ft)
-    if field_type not in ("FixedPlane", "Sheds", "UnlimTracking", "TrackHorizNSAxis"):
+    if field_type not in ("FixedPlane", "Sheds", "UnlimTracking", "TrackHorizNSAxis", "Dome", "DomeBackfaces"):
         raise ValueError(f"Unsupported orientation field_type: {raw_ft!r}")
     tilt = _finite(item.get("tilt_deg", 25.0), "orientation.tilt_deg", minimum=0.0, maximum=90.0)
     azim = _finite(item.get("azimuth_deg", 0.0), "orientation.azimuth_deg", minimum=-180.0, maximum=180.0)
@@ -191,12 +191,22 @@ def _normalize_orientation(item: dict) -> dict:
         "Sheds": f"Unlimited sheds, Tilt {_fmt_angle(tilt)} deg, Azim. {_fmt_angle(azim)} deg",
         "UnlimTracking": "Unlimited trackers, horizontal axis N-S",
         "TrackHorizNSAxis": "Tracking, horizontal axis N-S",
+        "Dome": f"Dome front face, Tilt {_fmt_angle(tilt)} deg, Azim. {_fmt_angle(azim)} deg",
+        "DomeBackfaces": f"Dome backface, Tilt {_fmt_angle(tilt)} deg, Azim. {_fmt_angle(azim)} deg",
     }[field_type]
     spec = {
         "id": oid, "field_type": field_type, "tilt_deg": tilt, "azimuth_deg": azim,
         "base_slope_deg": base_slope, "comment": item.get("comment") or default_comment,
         "extra_fields": dict(item.get("extra_fields") or {}), "bifacial": item.get("bifacial"),
     }
+    if field_type in ("Dome", "DomeBackfaces"):
+        if tilt <= 0.0:
+            raise ValueError("Dome orientation tilt_deg must be positive (> 0..90)")
+        pair_oid = _pos_int(item.get("pair_orientation_id"), "orientation.pair_orientation_id")
+        if pair_oid == oid:
+            raise ValueError("Dome orientation pair_orientation_id must differ from id")
+        spec["pair_orientation_id"] = pair_oid
+        spec["is_main_orient"] = field_type == "Dome"
     if field_type == "Sheds":
         if base_slope:
             raise ValueError("Nonzero base_slope_deg requires a 3D ground-sheds layout")
@@ -263,16 +273,19 @@ def _orient_shed_geometry_lines(spec: dict) -> list[str]:
 
 
 def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) -> list[str]:
-    """Serialize one TOrientGroup / pvOrient record (including optional pvBiFacial)."""
+    """Serialize one TOrientGroup / pvOrient or TDomeOrientGroup / pvDomeOrient record."""
     spec = _normalize_orientation(orient)
     ft = spec["field_type"]
+    is_dome = ft in ("Dome", "DomeBackfaces")
+    obj_tag = "PVObject_=pvDomeOrient" if is_dome else "PVObject_=pvOrient"
+    close_tag = "    End of TDomeOrientGroup" if is_dome else "    End of TOrientGroup"
     lines = [
-        "    PVObject_=pvOrient", f"      Comment={_clean_text(spec['comment'], 'orientation.comment')}",
+        f"    {obj_tag}", f"      Comment={_clean_text(spec['comment'], 'orientation.comment')}",
         f"      Version={version}", "      Flags=$00", f"    NoOrient={spec['id']}", f"    FieldType={ft}",
     ]
-    if ft in ("FixedPlane", "Sheds"):
+    if ft in ("FixedPlane", "Sheds") or is_dome:
         lines.extend([f"    FieldTilt={_fmt_angle(spec['tilt_deg'])}", f"    FieldAzim={_fmt_angle(spec['azimuth_deg'])}"])
-        lines.extend([f"    BaseSlope={_fmt_angle(spec['base_slope_deg'])}"] if ft == "FixedPlane" else _orient_shed_geometry_lines(spec))
+        lines.extend([f"    BaseSlope={_fmt_angle(spec['base_slope_deg'])}"] if ft != "Sheds" else _orient_shed_geometry_lines(spec))
     elif ft == "UnlimTracking":
         lines.extend([
             f"    AxisAzim={_fmt_angle(spec['axis_azimuth_deg'])}", f"    MinPhi={_fmt_angle(spec['min_phi_deg'])}",
@@ -291,9 +304,13 @@ def synthesize_orientation_block(orient: dict, *, version: str = SYNTH_VERSION) 
         ])
     lines.extend(["    UsesTiltAver=False", "    UsesAzimAver=False", "    UsesSlopeAver=False", "    BTNoTrackers=-1,-1,",
                   *(f"    {k}={v}" for k, v in spec["extra_fields"].items())])
-    if spec["bifacial"] is not None:
+    if is_dome:
+        if spec["bifacial"] is not None:
+            raise ValueError("Bifacial 2D model is not supported on paired dome orientations")
+        lines.extend([f"    NoPairOrient={spec['pair_orientation_id']}", f"    IsMainOrient={'True' if spec['is_main_orient'] else 'False'}"])
+    elif spec["bifacial"] is not None:
         lines.extend(render_bifacial_block(spec["bifacial"], field_type=ft, indent="    "))
-    lines.append("    End of TOrientGroup")
+    lines.append(close_tag)
     return lines
 
 
@@ -336,8 +353,27 @@ def _normalize_subarray(item: dict, *, default_pan: str, default_ond: str) -> di
     pmism_raw, pqual_raw = item.get("pmism_mpp"), item.get("module_quality_loss")
     pmism_explicit = pmism_raw is not None if item.get("pmism_mpp_explicit") is None else item.get("pmism_mpp_explicit")
     pqual_explicit = pqual_raw is not None if item.get("module_quality_loss_explicit") is None else item.get("module_quality_loss_explicit")
+    raw_oid2 = item.get("orientation_id_2")
+    oid2 = None if raw_oid2 is None else _pos_int(raw_oid2, f"subarray {sid} orientation_id_2")
+    if oid2 is not None:
+        if oid2 == oid:
+            raise ValueError(f"subarray {sid}: orientation_id_2 must differ from orientation_id")
+        if ps_raw >= 0:
+            raise ValueError(f"subarray {sid}: mixed orientation_id_2 cannot be combined with power_sharing_inverter_id >= 0")
+        raw_nso1 = item.get("n_str_orient_1")
+        if raw_nso1 is None:
+            if n_string_ch % 2 != 0:
+                raise ValueError(f"subarray {sid}: mixed orientation requires even n_string_ch or explicit n_str_orient_1")
+            n_str_orient_1 = n_string_ch // 2
+        else:
+            n_str_orient_1 = _pos_int(raw_nso1, f"subarray {sid} n_str_orient_1")
+        if not 1 <= n_str_orient_1 < n_string_ch:
+            raise ValueError(f"subarray {sid}: n_str_orient_1 ({n_str_orient_1}) must lie in 1..{n_string_ch - 1}")
+    else:
+        n_str_orient_1 = n_string_ch
     return {
-        "subarray_id": sid, "orientation_id": oid, "comment": comment, "pan_name": pan_name, "ond_name": ond_name,
+        "subarray_id": sid, "orientation_id": oid, "orientation_id_2": oid2, "n_str_orient_1": n_str_orient_1,
+        "comment": comment, "pan_name": pan_name, "ond_name": ond_name,
         "n_mod_serie": n_mod_serie, "n_string_ch": n_string_ch, "n_inverter": n_inverter, "n_inv_mppt": n_inv_mppt,
         "independent_mppt": independent_mppt, "power_sharing_inverter_id": ps_raw,
         "pnom_ac_in_mppt": _finite(item.get("pnom_ac_in_mppt", 7.5), f"subarray {sid} pnom_ac_in_mppt", minimum=0.0),
@@ -405,16 +441,21 @@ def synthesize_circuit_and_subarrays(subarrays: list[dict], *, default_pan: str 
     subarray_lines = ["  SubArrays=Start"]
     for sub in normalized:
         flags_int = 0x001E0502 if sub["power_sharing_inverter_id"] >= 0 else (0x001E0402 if sub["independent_mppt"] else 0x001E0002)
+        if sub["orientation_id_2"] is not None:
+            flags_int |= 0x00000040
         if sub["pmism_mpp_explicit"]:
             flags_int &= ~0x00040000
         if sub["module_quality_loss_explicit"]:
             flags_int &= ~0x00100000
+        flags2_val = "$0021" if sub["orientation_id_2"] is not None else "$0020"
+        orient2_lines = [f"      NoOrientation2={sub['orientation_id_2']}"] if sub["orientation_id_2"] is not None else []
         subarray_lines.extend([
             "    PVObject_=pvSubArray", f"      Comment={sub['comment']}", f"      Version={version}",
-            f"      Flags=${flags_int:08X}", "      Flags2=$0020", f"      SubArrayId={sub['subarray_id']}",
+            f"      Flags=${flags_int:08X}", f"      Flags2={flags2_val}", f"      SubArrayId={sub['subarray_id']}",
             f"      PVModule={sub['pan_name']}", f"      GInverter={sub['ond_name']}",
             f"      NModSerie={sub['n_mod_serie']}", f"      NStringCh={sub['n_string_ch']}",
-            f"      NStrOrient1={sub['n_string_ch']}", f"      NoOrientation={sub['orientation_id']}",
+            f"      NStrOrient1={sub['n_str_orient_1']}", f"      NoOrientation={sub['orientation_id']}",
+            *orient2_lines,
             f"      NInverter={sub['n_inverter']}", f"      NInvMPPT={sub['n_inv_mppt']}",
             "      SEIsHeterogeneousString=False,", f"      PowerSharingInverterId={sub['power_sharing_inverter_id']}",
             f"      PNomAC_InMPPT={sub['pnom_ac_in_mppt']:.2f}", f"      PQualityModU={sub['module_quality_loss']:.2f}",
@@ -471,7 +512,9 @@ def synthesize_variant_text(*, variant_comment: str, site_body: list[str], meteo
     if len(set(orient_ids)) != len(orient_ids):
         raise ValueError("Orientation IDs must be unique")
     circuit_lines, subarray_lines, norm_subs = synthesize_circuit_and_subarrays(subarrays, default_pan=default_pan, default_ond=default_ond, version=version)
-    referenced_orients = {sub["orientation_id"] for sub in norm_subs}
+    referenced_orients = {sub["orientation_id"] for sub in norm_subs} | {
+        sub["orientation_id_2"] for sub in norm_subs if sub["orientation_id_2"] is not None
+    }
     if not referenced_orients.issubset(set(orient_ids)):
         raise ValueError("Subarray references an undeclared orientation ID")
     if set(orient_ids) - referenced_orients:

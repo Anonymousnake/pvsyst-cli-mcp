@@ -479,6 +479,8 @@ class GroundLayoutRequest(_StrictModel):
     base_slope_deg: StrictNum | None = None
     terrain: TerrainSpec | None = None
     sub_orientations: Annotated[list[GroundSubOrientationSpec], Field(min_length=1, max_length=16)] | None = None
+    top_spacing_m: StrictNum | None = None
+    dome_wiring: Literal["auto", "dual_mppt", "mixed"] | None = None
 class AutoSizingOptions(_StrictModel):
     """Optional bounds used when sizing_mode='auto_from_components' derives capacity from PAN/OND."""
     voltage_standard: Literal["IEC", "UL"] = "IEC"
@@ -598,7 +600,7 @@ class SingleDesignRequest(_StrictModel):
     target_dc_kw: StrictNum | None = None
     tilt: StrictNum | None = None
     azimuth: StrictNum | None = None
-    scope: Literal["fixed_unshaded_grid", "ground_sheds", "ground_tracker", "stand_alone"] = "fixed_unshaded_grid"
+    scope: Literal["fixed_unshaded_grid", "ground_sheds", "ground_tracker", "ground_dome", "stand_alone"] = "fixed_unshaded_grid"
     sizing_mode: Literal["strict", "auto_from_components"] = "strict"
     auto_sizing: AutoSizingOptions | None = None
     module: EquipmentRequest = Field(default_factory=EquipmentRequest)
