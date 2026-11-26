@@ -18,18 +18,18 @@
 | 功能模块 | 对应工具 | 实现说明与相关文档 |
 |---|---|---|
 | 工程与变体生命周期 | `inspect`、`create`、`clone_variant`、标题更新、气象源切换（部分位于 `expert` 组） | 标题更新支持单行 UTF-8 校验及 BOM 保留，见[工具参考](tool-reference.md) |
-| 站点与气象准备 | `create_site`、`convert_meteo`、`prepare_weather`、`acquire_weather`、`review_weather` | 见[天气准备](weather-preparation.md)；支持 Open-Meteo ERA5 / PVGIS / NASA POWER 下载、当地标准时（`LegalTime`）对齐与逐时/亚小时（`5/10/15/30/60 min`）`.SIT`/`.MET` 转换 |
-| 单方案设计与源工程准备 | `simulate_design`、`prepare_design_project`、`suggest_sizing`、`prepare_sourced_design` | 见[单方案设计输入](single-design-inputs.md)；支持零模板 `fixed_unshaded_grid` / `ground_sheds`（含多朝向 `sub_orientations`、有限 3D 地块/障碍物/坡度/3D DEM `terrain`） / `ground_tracker` + `pvBiFacial`、MV/HV `transformers` 与 `auto_from_components` 自动选型；**Stand-Alone 离网光储柴微网（`scope="stand_alone"`）仅由 `pvsyst_simulate_design` 支持，`pvsyst_prepare_design_project` 会直接 `blocked` 拦截** |
+| 站点与气象准备 | `create_site`、`convert_meteo`、`prepare_weather`、`acquire_weather`、`review_weather` | 见[天气准备](workflows-guide.md#3-站点与标准逐时亚小时气象制备pvsyst_prepare_weather)；支持 Open-Meteo ERA5 / PVGIS / NASA POWER 下载、当地标准时（`LegalTime`）对齐与逐时/亚小时（`5/10/15/30/60 min`）`.SIT`/`.MET` 转换 |
+| 单方案设计与源工程准备 | `simulate_design`、`prepare_design_project`、`suggest_sizing`、`prepare_sourced_design` | 见[单方案设计输入](workflows-guide.md#1-单方案设计输入与全年流程)；支持零模板 `fixed_unshaded_grid` / `ground_sheds`（含多朝向 `sub_orientations`、有限 3D 地块/障碍物/坡度/3D DEM `terrain`） / `ground_tracker` + `pvBiFacial`、MV/HV `transformers` 与 `auto_from_components` 自动选型；**Stand-Alone 离网光储柴微网（`scope="stand_alone"`）仅由 `pvsyst_simulate_design` 支持，`pvsyst_prepare_design_project` 会直接 `blocked` 拦截** |
 | 参数化批量扫描（Batch Sweep） | `pvsyst_run_batch_sweep`、`pvsyst_read_batch_results` | 自动生成 UTF-8 BOM + CRLF `UserBatch/<name>_BatchParams.CSV` 与 `_BatchVariables.RVT`，支持倾角/间距/反照率/积灰/限发/MPPT 扫描，单次 CLI 跑完最多 100 组参数并返回曲线提取、按目标指标排序与基线差值 |
 | 物理结果诊断与归因 | `pvsyst_diagnose_results` | 纯 Python 对 SFI 逐时/亚小时结果执行损失链、剪峰、电压限幅、阴影、双面增益与储能循环异常诊断（可选 `.VC0` 根因归因）；`simulate_design` 与 `run_house_task` 自动附带轻量摘要 |
 | 亚小时仿真与结果积分 | `pvsyst_prepare_weather(step_minutes=...)`、`pvsyst_build_sfi(time_step="subhour")`、`pvsyst_run_simulation(time_step="subhour")` | 支持 `5/10/15/30 min` 气象 CSV -> `.MEF`（`MeasureStep`）-> `.MET`（`VarMeteoVarAcc=SubHour`）-> `TypeValW=SubHour` SFI 与 `-ts:subhour` 仿真及步长精确能量积分；原生 `pvLoad` 嵌入式快照仍为逐时（60 min）并在仿真步长内保持恒定功率 |
 | 固定分块工程拼装 | `prepare_block_project` | 按模板子阵分块的整数倍批量复制组装新工程（`expert` 组，见[工具参考](tool-reference.md)） |
-| 工程改参、多方案对比与交付 | `project_handoff`、`run_engineering_task`、`compare_engineering_scenarios`、`export_engineering_delivery` | 见[工程修订与交付](engineering-delivery.md)、[多方案对比](engineering-scenarios.md) |
+| 工程改参、多方案对比与交付 | `project_handoff`、`run_engineering_task`、`compare_engineering_scenarios`、`export_engineering_delivery` | 见[工程修订、多方案对比与交付](workflows-guide.md#6-多方案对比简报预审与工程交付打包) |
 | 原生 PDF 财务评估（`TEcoEvaluation`） | `pvsyst_get_variant_parameters(include_economics=True)`、`pvsyst_update_variant_parameters(native_economics_updates=...)` | 读写变体原生 `EconomicEval=TEcoEvaluation`（`InvestmentCosts`/`OperatingCosts`/`Loans`/电价与折旧参数），开启后 CLI 生成的 PDF 报告原生附带财务评估页；已在 PVsyst 8.1.7 实测通过 |
 | 共享电路拓扑读取（只读，可选） | `pvsyst_get_variant_parameters(include_topology=True)` | 读出变体自身持久化的原生 `PVObject_SystemCircuit=pvCircuit` 节点树（节点类型、源行号、原始字段含未知字段）；`subarray_id`/`nelements` 带 `present` 标记，省略属主为 `present=false/value=null` 而非 0，显式 0 保持 0；成员按源序不排序，逐 `StringNode` 报 `NElements`；默认不返回、保持旧响应；不推导计数、电气分组或功率分配 |
-| 可研简报与工程输入核对 | `review_engineering_brief`、`review_project_inputs` | 见[工程简报预审](engineering-brief.md)与[工具参考](tool-reference.md) |
+| 可研简报与工程输入核对 | `review_engineering_brief`、`review_project_inputs` | 见[工程简报预审](workflows-guide.md#6-多方案对比简报预审与工程交付打包)与[工具参考](tool-reference.md) |
 | 遗留 8.0 DCGrid 声明读取（只读） | `pvsyst_get_variant_parameters` | 仅当根 `Version=8.0.x` 且唯一 `SystemType=DCGrid` 时返回 `legacy_read_scope`（源版本与 `TypeRegul`/`VNomAlim`/`VPVMax`/`RGridPV`/`RGridAlim` 原值）；仅作只读展示，不支持 8.1 编辑、升级或推导缺省组件参数 |
-| 组件库读写与引用创建 | 组件增删改查、曲线表编辑、`build_sourced_component` | 见[按来源创建组件](sourced-components.md)；新生成的 `.PAN`/`.OND` 落在工作区 `ComposPV` 下 |
+| 组件库读写与引用创建 | 组件增删改查、曲线表编辑、`build_sourced_component` | 见[按来源创建组件](workflows-guide.md#2-基于规格书引用创建自定义-pan--ond--btr-组件)；新生成的 `.PAN`/`.OND` 落在工作区 `ComposPV` 下 |
 | 电路拓扑与串并联数量 | `validate_variant_structure`、`update_variant_parameters`、`clone/remove_subarray` | 同步维护子阵列、逆变器组、MPPT 与组串节点计数 |
 | 仿真运行、结果读取与报告页选择 | `build_sfi`、`run_simulation`、`read_results`、`read_rows`、`report_pages` | PDF 页裁剪直接调用 CLI 原生 `-rp` 参数 |
 
@@ -74,9 +74,9 @@
 | 无限水平轴跟踪仿真 | MCP 已封装 | `pvsyst_create_tracking_variant` + `pvsyst_run_engineering_task` 支持修改并运行 `UnlimTracking` 全年仿真 |
 | 远方地平线（Far Horizon） | MCP 可读写 | `horizon_updates` 写入 4..100 个方位角/仰角点对或清空地平线 |
 | 房屋、周边遮挡与光伏 `.pvc2` 建模与回读 | MCP 已封装 | `pvsyst_create_house_pv_scene` 与 `pvsyst_read_house_pv_scene`，支持单朝向多分区、多朝向屋顶及 4 类 `obstacles`（`building`、`tree`、`wall`、`mesh`）生成与 XML 无损还原 |
-| 3D 场景免 GUI 原生导入与全年任务 | MCP 已封装（免 GUI 原生写入） | `pvsyst_import_house_pv_scene`、`pvsyst_run_house_task`、`pvsyst_run_sourced_house_task`（支持 `landscape`/`portrait` 竖装、正模块间距、3+ 独立固定朝向屋面、`PowerSharingInverterId >= 0` 共享逆变器、`pvShdGenObject` 与原生 `oeTree`），见[住宅单任务](native-house-task.md)与[双屋面说明](engineering-delivery.md#two-roof-house-workflow) |
+| 3D 场景免 GUI 原生导入与全年任务 | MCP 已封装（免 GUI 原生写入） | `pvsyst_import_house_pv_scene`、`pvsyst_run_house_task`、`pvsyst_run_sourced_house_task`（支持 `landscape`/`portrait` 竖装、正模块间距、3+ 独立固定朝向屋面、`PowerSharingInverterId >= 0` 共享逆变器、`pvShdGenObject` 与原生 `oeTree`），见[住宅单任务与双屋面说明](workflows-guide.md#4-住宅-3d-场景端到端任务pvsyst_run_house_task) |
 | 已保存场景的 PV 表格关联检查 | 只读状态 | `pvsyst_get_variant_parameters` 返回 `shading_scene.pv_bindings`，以及 `module_layout` 保存完整性 |
-| Module Layout 精细电气阴影 | MCP 已封装（原生写入 + 显式 `string_layout`） | 导入工具及住宅任务的 `shading_mode="module_layout"` 写入原生组件布局、支持双朝向自动填串与显式逐格 `string_layout` 接线（兼容含 `obstacles`/`oeTree` 场景）；已通过 PVsyst 8.1.7 CLI `ShdElec` 仿真验证，见[原生住宅任务](native-house-task.md#module-layout-电气阴影) |
+| Module Layout 精细电气阴影 | MCP 已封装（原生写入 + 显式 `string_layout`） | 导入工具及住宅任务的 `shading_mode="module_layout"` 写入原生组件布局、支持双朝向自动填串与显式逐格 `string_layout` 接线（兼容含 `obstacles`/`oeTree` 场景）；已通过 PVsyst 8.1.7 CLI `ShdElec` 仿真验证，见[原生住宅任务](workflows-guide.md#4-住宅-3d-场景端到端任务pvsyst_run_house_task) |
 | 既有 3D 场景阴影重算 | MCP 已封装 | `pvsyst_run_simulation(recompute_shading=True)` 调 CLI `-rs` 参数重新计算阴影表 |
 | 地面有限 3D 多边形阵列、障碍物、坡度与 3D DEM 地形 | MCP 已封装（已过 8.1.7 实测） | `pvsyst_simulate_design(scope="ground_sheds", ground_layout={site_polygon, setback_m, obstacles, base_slope_deg, terrain, ...})` 与多朝向 `sub_orientations` 支持 2D 凸/凹多边形自动裁剪排布 `pvShdArrayTable`、叠加 3D 障碍物、非零 `BaseSlope` 与连续 3D DEM 地形贴合（`pvShdGround`，纯 Python 支持 JSON/CSV XYZ，安装 `[geo]` 可选支持 GeoTIFF） |
 | 离网 Stand-Alone 光储柴微网 | MCP 已封装（已过 8.1.7 实测） | `pvsyst_simulate_design(scope="stand_alone")` 零模板构建离网 `.PRJ`/`.VC0`（PV 阵列 + `.BTR` 蓄电池 + 可选内置/零模板 `.GEN` 柴油发电机 + 负荷），配合 `stand_alone` SFI 预设与离网柴发经济性评估 |
@@ -99,9 +99,9 @@
 
 | 功能项 | 当前支持状态 | 底层字段与注意事项 |
 |---|---|---|
-| 全年逐时负荷 CSV 准备与绑定 | MCP 已封装 | `pvsyst_prepare_load_profile` 校验 8760/8784 小时负荷；`pvsyst_create_native_load_variant(load={"mode":"hourly","load_manifest_name":...})` 将逐时数据编码写入 `pvLoad` 的 `Energy/MJ` base62 缓存（PVsyst 仿真直接消费该内嵌缓存——仅修改外部 CSV 或 `HourlyFile` 仍会继续沿用旧负荷，改完 CSV 须重跑准备与重绑定工具），见[AC 光储评估](engineering-storage.md) |
+| 全年逐时负荷 CSV 准备与绑定 | MCP 已封装 | `pvsyst_prepare_load_profile` 校验 8760/8784 小时负荷；`pvsyst_create_native_load_variant(load={"mode":"hourly","load_manifest_name":...})` 将逐时数据编码写入 `pvLoad` 的 `Energy/MJ` base62 缓存（PVsyst 仿真直接消费该内嵌缓存——仅修改外部 CSV 或 `HourlyFile` 仍会继续沿用旧负荷，改完 CSV 须重跑准备与重绑定工具），见[AC 光储评估](workflows-guide.md#5-ac-耦合光储工程pvsyst_run_engineering_task--engineering-storage) |
 | 常数 / 月度 / 日曲线 / 家用电器 / 概率分布负荷 | MCP 已封装 | `pvsyst_create_native_load_variant` 在纯光伏变体上配置常数（`kW`）、月度（12 个月 `kWh`）、日曲线（24 小时 `kW`）、家用电器（`mode="household"`，全年或分季）与概率分布（`mode="probability"`）自发自用负荷 |
-| 集中式 AC 耦合光储系统构建 | MCP 已封装 | `pvsyst_create_grid_storage_system` 在纯光伏变体（兼容 3D 阴影/多朝向）上挂载工作区或内置 `.BTR` 锂电/铅酸电池，支持 `SelfConsumption`、`WeakGrid`（支持外部 CSV 与确定性 `mode="generated"` 停电生成器）、`PeakShaving`（无需手动负荷，写入 `PLimGrid`）与 `PowerShift`（`PVProdFraction` / `SpecChargPower` / `PVToGridMin` + `SpecifiedHours` / `Night` / `MinMaxHour` 的 48 槽 `TParSimulSeries`；注意 PVsyst 8.1.7 中 `PowerShift` 仅使用可用光伏发电充电，含 `SpecChargPower` 模式，不支持电网充电），见[AC 光储评估](engineering-storage.md) |
+| 集中式 AC 耦合光储系统构建 | MCP 已封装 | `pvsyst_create_grid_storage_system` 在纯光伏变体（兼容 3D 阴影/多朝向）上挂载工作区或内置 `.BTR` 锂电/铅酸电池，支持 `SelfConsumption`、`WeakGrid`（支持外部 CSV 与确定性 `mode="generated"` 停电生成器）、`PeakShaving`（无需手动负荷，写入 `PLimGrid`）与 `PowerShift`（`PVProdFraction` / `SpecChargPower` / `PVToGridMin` + `SpecifiedHours` / `Night` / `MinMaxHour` 的 48 槽 `TParSimulSeries`；注意 PVsyst 8.1.7 中 `PowerShift` 仅使用可用光伏发电充电，含 `SpecChargPower` 模式，不支持电网充电），见[AC 光储评估](workflows-guide.md#5-ac-耦合光储工程pvsyst_run_engineering_task--engineering-storage) |
 | 既有光储系统参数修改 | MCP 已封装 | `pvsyst_create_grid_storage_variant` 修改 SOC、充放电功率、效率、`PowerShift` 48 槽充放电曲线、`PeakShaving` limits/discharge timing 及 `allow_grid_export`（系统 bit 27 防逆流位），保留 `pvShading`/`pvModuleLayout` 并自动清理 `VarList` |
 | 削峰（Peak Shaving）放电窗口 | MCP 已封装 | 由 `pvsyst_create_grid_storage_variant` 统一设置 `strategy="peak_shaving"` 与 `discharging_strategy`（`after_sunset` / `hour_window`） |
 | 完整 AC 光储能量流导出 | MCP 已封装 | `pvsyst_build_sfi(variables="grid_storage")` 自动包含 `CL_Over`（变流器限幅损失）等完整能量平衡列 |
