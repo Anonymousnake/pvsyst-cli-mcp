@@ -136,7 +136,7 @@ class InteractiveReportTests(unittest.TestCase):
             )
 
         # MCP tool roundtrip in English
-        import pvsyst_auto.api.engineering as api_eng
+        import pvsyst_auto.api.simulation as api_eng
         from pvsyst_auto.api.schemas import ReportScenarioInput
 
         fake_cli = self.root / "PVsystCLI.exe"

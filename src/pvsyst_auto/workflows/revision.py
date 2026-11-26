@@ -2,15 +2,25 @@
 from __future__ import annotations
 
 import calendar
+import csv
+from copy import deepcopy
+from datetime import datetime, timedelta
+from decimal import Decimal
+import html
 import json
 import math
 from pathlib import Path
+import re
 import subprocess
+import zipfile
 
 from pvsyst_auto.native.cli import PVsystError, VAR_GROUPS, build_sfi, iter_result_csv, result_units, validate_report_pages
 from pvsyst_auto.components.editor import objects
+from pvsyst_auto.energy.profiles import hourly_load_block, load_snapshot
+from pvsyst_auto.energy.storage import create_grid_storage_variant, storage_state, validate_storage
+from pvsyst_auto.engineering.comparison import build_project_handoff
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file, write_json
-from pvsyst_auto.results import annual_summary, fingerprint, verify_native_csv_context, verify_pdf_header
+from pvsyst_auto.results import POWER_TO_KW, annual_summary, fingerprint, verify_native_csv_context, verify_pdf_header
 from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.weather.preparation import inspect_met_calendar
 from pvsyst_auto.versions import CLI_TRACKING_BUILDS
@@ -223,8 +233,6 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                          declarations=None, report_pages=None, dry_run=True,
                          load_manifest_name="", availability=None):
     """One isolated revision and one native annual execution; no automatic retry."""
-    from pvsyst_auto.engineering.handoff import build_project_handoff
-
     record = {"operation": "engineering_revision", "schema_version": 1, "status": "blocked",
               "stage": "preflight", "dry_run": dry_run, "native_consumption_verified": False,
               "issues": [], "warnings": [], "changes": [], "metrics": None, "artifacts": {}}
@@ -280,7 +288,6 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             tracking_mode = orientation["values"].get("FieldType") == "UnlimTracking"
             storage_preparation = None
             if storage_mode:
-                from pvsyst_auto.workflows.storage import prepare_storage_revision
                 if set(changes) != {"storage"} or orientation["values"].get("FieldType") != "FixedPlane":
                     raise ValueError("Existing AC storage revisions accept explicit storage updates only on a fixed plane")
                 storage_preparation = prepare_storage_revision(store, source_project, source_variant,
@@ -418,7 +425,6 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             save("revision")
             if storage_mode:
                 if changes["storage"] or availability is not None:
-                    from pvsyst_auto.energy.storage import create_grid_storage_variant
                     edited = create_grid_storage_variant(store, project=new_project, source_variant=source_variant,
                         new_variant=new_variant, updates=changes["storage"], availability=availability, dry_run=False)
                     if edited["status"] != "created":
@@ -458,7 +464,6 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             record["native_context"] = _context(paths["csv"], new_project, new_variant,
                                                 assets["site"]["name"], assets["meteo"]["name"])
             if storage_mode:
-                from pvsyst_auto.workflows.storage import read_storage_year
                 record.update(read_storage_year(paths["csv"], paths["pdf"], year,
                     storage_preparation["load_record"], storage_preparation["load_values"], storage_preparation["after"]))
                 record["metrics"]["sha256"] = fingerprint(paths["csv"])
@@ -505,3 +510,525 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
         if manifest_owned:
             save()
         return record
+
+
+def _load_signature(text):
+    """Keep cache structure/tokens; display text and historical paths are metadata."""
+    signature = []
+    for line in text.splitlines():
+        if not (line := line.strip()):
+            continue
+        name, separator, value = line.partition("=")
+        name, value = name.strip(), value.strip()
+        if separator and name in ("Comment", "PathName"):
+            continue
+        if separator and name == "FileName":
+            value = value.casefold()
+        if separator and name in ("WRFactor", "OriginalScale", "RenormVal", "NColDate", "DateFormat"):
+            if not (number := Decimal(value)).is_finite():
+                raise ValueError("Nonfinite native load field: " + name)
+            value = number
+        signature.append((name, value) if separator else line)
+    return signature
+
+
+def prepare_storage_revision(store, project, variant, new_variant, updates, load_manifest_name, year, availability=None):
+    """Preview an existing native storage edit and bind its actual embedded load."""
+    result = {"status": "blocked", "issues": [], "warnings": [], "input_assets": {}, "database_references": []}
+    with store.lock:
+        try:
+            if type(year) is not int or not 1969 <= year <= 2068:
+                raise ValueError("Storage year must be an integer in 1969..2068")
+            source = store._path(project, variant)
+            original = store._read(source)
+            _, lines = store._text(original)
+            _, system = store._sections(lines)
+            before, _, _ = storage_state(lines, system)
+            blocks = objects("".join(lines))
+            root = next(block for block in blocks if not block.path)
+            flags = root.one("Flags")[1]
+            if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", flags) or not int(flags[1:], 16) & 0x00080000:
+                raise ValueError("Storage delivery requires the enabled native user-load bit")
+            loads = [block for block in blocks if block.object_type == "pvLoad"]
+            if len(loads) != 1 or loads[0].path != "PVObject_UserNeeds" or not loads[0].end_line:
+                raise ValueError("Require one complete directly owned native hourly load")
+            record, profile, values = load_snapshot(store.workspace, load_manifest_name)
+            manifest_path = workspace_file(store.workspace, "Results", load_manifest_name, ".json")
+            raw_source_path = workspace_file(store.workspace, "UserData", record["source"]["name"], ".csv")
+            snapshots = {path: path.read_bytes() for path in (manifest_path, raw_source_path, profile)}
+            if record["year"] != year:
+                raise ValueError("Prepared load and native annual execution must use the same year")
+            expected, encoding = hourly_load_block(profile, values, year, "\n")
+            stored = "\n".join(lines[loads[0].line - 1:loads[0].end_line])
+            if _load_signature(stored) != _load_signature(expected):
+                raise ValueError("Native hourly load cache/time settings differ from the prepared load; rebind using the existing load tool")
+            if availability is not None:
+                if not isinstance(availability, dict):
+                    raise ValueError("Grid availability must be an explicit declaration")
+                if any(availability.get(key) != record[key] for key in ("year", "utc_offset_hours", "time_basis")):
+                    raise ValueError("Grid availability and prepared load must use the same year and standard time basis")
+                path = workspace_file(store.workspace, "UserData", availability["csv_name"], ".csv")
+                snapshots[path] = path.read_bytes()
+            if updates == {} and availability is None:
+                validate_storage(before)
+                if store._path(project, new_variant).exists():
+                    raise FileExistsError("Choose a new grid storage variant")
+                preview = {"status": "ready", "before": before, "after": before, "warnings": []}
+            else:
+                preview = create_grid_storage_variant(store, project=project, source_variant=variant,
+                    new_variant=new_variant, updates=updates, availability=availability, dry_run=True)
+            result["preview"] = preview
+            if preview["status"] != "ready":
+                raise ValueError("Storage revision is blocked: " + "; ".join(preview["issues"]))
+            assets = {}
+            for label, folder, name in (("load_manifest", "Results", load_manifest_name),
+                                        ("load_source", "UserData", record["source"]["name"]),
+                                        ("load_profile", "UserHourlyParams", profile.name)):
+                path = workspace_file(store.workspace, folder, name, ".json" if label == "load_manifest" else ".csv")
+                assets[label] = {"folder": folder, "name": name, "library": "workspace", "sha256": fingerprint(path)}
+            if availability is not None:
+                path = workspace_file(store.workspace, "UserData", availability["csv_name"], ".csv")
+                assets["grid_availability"] = {"folder": "UserData", "name": availability["csv_name"], "library": "workspace", "sha256": fingerprint(path)}
+            libraries = ("workspace", "builtin") if store.components.builtin else ("workspace",)
+            battery = before["battery_file"]
+            library = next((item for item in libraries if store.components._path("BTR", battery, item).is_file()), None)
+            if library is not None:
+                assets["BTR"] = {"folder": "ComposPV/Batteries", "name": battery, "library": library, "sha256": fingerprint(store.components._path("BTR", battery, library))}
+            else:
+                result["database_references"].append({"kind": "BTR", "name": battery, "resolution": "native_database_uninspected"})
+            if store._read(source) != original or any(path.read_bytes() != data for path, data in snapshots.items()):
+                raise ValueError("A source variant or prepared load/availability input changed during preflight")
+            result.update(status="ready", before=before, after=preview["after"], load_record={**record, "native_encoding": encoding},
+                          load_values=values, input_assets=assets, utc_offset_hours=record["utc_offset_hours"], time_basis=record["time_basis"], load_encoding=encoding)
+            result["warnings"].extend(preview["warnings"])
+        except (ValueError, OSError, KeyError, TypeError, StopIteration, ArithmeticError, csv.Error) as exc:
+            result["issues"].append(str(exc))
+    return result
+
+
+def _power_error(value):
+    return max(0.001, 0.5 * 10 ** (math.floor(math.log10(abs(value))) - 5)) if value else 0.001
+
+
+def read_storage_year(csv_path, pdf_path, year, load_record, load_values, state):
+    """Interpret native hourly storage flows without the grid-only PR formula."""
+    if type(year) is not int or not 1969 <= year <= 2068 or load_record["year"] != year:
+        raise ValueError("Storage output and prepared load require the same supported year")
+    units = result_units(csv_path, strict=True)
+    required = {"E_User", "EFrGrid", "E_Grid", "SOC_Beg", "SOC_End", "EBatCh", "EBatDis", "CL_Chrg", "CL_InvB"}
+    if required - set(units):
+        raise ValueError("Storage output is missing required load/SOC/AC power columns: " + ", ".join(sorted(required - set(units))))
+    if any(not unit for unit in units.values()):
+        raise ValueError("Every actual storage result column requires an explicit unit")
+    power_names = {"E_User", "EFrGrid", "E_Grid", "E_Miss", "E_Avail", "EBatCh", "EBatDis", "CL_Chrg", "CL_InvB", "CL_Over", "EUnused", "EArray", "IL_Pmax"}
+    power_scales = {name: POWER_TO_KW.get(units[name]) for name in power_names & set(units)}
+    soc_scales = {name: {"ratio": 1, "%": 0.01}.get(units[name]) for name in ("SOC_Beg", "SOC_End")}
+    if any(scale is None for scale in (*power_scales.values(), *soc_scales.values())):
+        raise ValueError("Storage power columns require W/kW and SOC requires ratio or percent")
+    balance_names = {"E_Avail", "EFrGrid", "EBatDis", "E_User", "E_Miss", "E_Grid", "EBatCh", "CL_Chrg", "CL_InvB", "CL_Over", "EUnused"}
+    missing_balance = sorted(balance_names - set(power_scales))
+    totals = dict.fromkeys(power_scales, 0.0)
+    soc_min, soc_max = dict.fromkeys(soc_scales, math.inf), dict.fromkeys(soc_scales, -math.inf)
+    first = expected = datetime(year, 1, 1)
+    end = datetime(year + 1, 1, 1)
+    indices = initial_soc = None
+    count = 0
+    load_error = charge_max = discharge_max = balance_max = balance_bound_max = 0.0
+    encoding_error = load_record.get("native_encoding", {}).get("encoding_error_bound_kw", 0.0)
+    for headers, row in iter_result_csv(csv_path, strict=True):
+        if indices is None:
+            if len(set(headers)) != len(headers) or set(headers[1:]) != set(units):
+                raise ValueError("Storage output requires unique columns matching its units row")
+            indices = {name: headers.index(name) for name in units}
+        if row[0] != expected or expected >= end or count >= len(load_values):
+            raise ValueError("Storage annual hourly coverage differs from the declared year/load")
+        if any(not math.isfinite(value) for value in row[1:]):
+            raise ValueError("Storage output contains missing or nonfinite numeric data")
+        load_stamp, load_power = load_values[count]
+        if load_stamp != expected:
+            raise ValueError("Prepared load timestamps differ from the native output")
+        power = {name: row[indices[name]] * scale for name, scale in power_scales.items()}
+        soc = {name: row[indices[name]] * scale for name, scale in soc_scales.items()}
+        if any(not math.isfinite(value) for value in (*power.values(), *soc.values())):
+            raise ValueError("Storage unit conversion exceeds finite numeric range")
+        difference = abs(power["E_User"] - load_power)
+        load_error = max(load_error, difference)
+        if difference > encoding_error + _power_error(power["E_User"]):
+            raise ValueError("Native E_User differs from the bound prepared hourly load")
+        for name, value in soc.items():
+            if not state["soc_min"] - 0.0001 <= value <= state["soc_max"] + 0.0001:
+                raise ValueError("Native SOC is outside the declared bounds")
+            soc_min[name], soc_max[name] = min(soc_min[name], value), max(soc_max[name], value)
+        if initial_soc is None:
+            initial_soc = soc["SOC_Beg"]
+            if abs(initial_soc - state["initial_soc"]) > 0.0001:
+                raise ValueError("Native initial SOC differs from the declared initial SOC")
+        charge, discharge = power["EBatCh"] + power["CL_Chrg"], power["EBatDis"] - power["CL_InvB"]
+        if charge > state["max_charge_ac_kw"] + _power_error(power["EBatCh"]) + _power_error(power["CL_Chrg"]):
+            raise ValueError("Native charging AC input exceeds the declared limit")
+        if discharge > state["max_discharge_ac_kw"] + _power_error(power["EBatDis"]) + _power_error(power["CL_InvB"]):
+            raise ValueError("Native battery-inverter AC output exceeds the declared limit")
+        charge_max, discharge_max = max(charge_max, charge), max(discharge_max, discharge)
+        if not missing_balance:
+            try:
+                residual = math.fsum(power[name] for name in ("E_Avail", "EFrGrid", "EBatDis", "E_Miss")) - math.fsum(
+                    power[name] for name in ("E_User", "E_Grid", "EBatCh", "CL_Chrg", "CL_InvB", "CL_Over", "EUnused"))
+            except OverflowError:
+                raise ValueError("Storage AC balance exceeds finite numeric range") from None
+            bound = math.fsum(_power_error(power[name]) for name in balance_names)
+            if not math.isfinite(residual) or not math.isfinite(bound):
+                raise ValueError("Storage AC balance exceeds finite numeric range")
+            balance_max, balance_bound_max = max(balance_max, abs(residual)), max(balance_bound_max, bound)
+            if abs(residual) > bound:
+                raise ValueError("Native storage AC energy-flow residual exceeds its column export precision bound")
+        for name, value in power.items():
+            totals[name] += value
+        expected += timedelta(hours=1)
+        count += 1
+    if expected != end or count != len(load_values):
+        raise ValueError("Storage output does not cover the entire prepared hourly year")
+    if any(not math.isfinite(value) for value in totals.values()):
+        raise ValueError("Storage annual totals exceed finite numeric range")
+    verify_pdf_header(Path(pdf_path), message="Native storage report is not a PDF")
+    names = {"grid_import_kwh": "EFrGrid", "grid_export_kwh": "E_Grid", "load_energy_kwh": "E_User",
+             "unmet_load_kwh": "E_Miss", "battery_charge_kwh": "EBatCh", "battery_discharge_kwh": "EBatDis",
+             "unused_energy_kwh": "EUnused", "array_energy_kwh": "EArray", "clipping_loss_kwh": "IL_Pmax"}
+    flags = ["Complete AC balance was not checked; native output lacks: " + ", ".join(missing_balance)] if missing_balance else []
+    metrics = {
+        "year": year, "rows": count, "first": str(first), "last": str(end - timedelta(hours=1)),
+        "complete_year": True, "step_minutes": 60, "diagnostic_flags": flags,
+        **{name: totals.get(column) for name, column in names.items()},
+        "missing_metrics": [name for name, column in names.items() if column not in totals],
+        "soc_begin_min": soc_min["SOC_Beg"], "soc_begin_max": soc_max["SOC_Beg"],
+        "soc_end_min": soc_min["SOC_End"], "soc_end_max": soc_max["SOC_End"], "initial_soc": initial_soc,
+        "pr_method": "Not applied: storage/self-consumption E_Grid is exported energy, not grid-only PV yield",
+    }
+    return {
+        "metrics": metrics, "hourly_rows": count, "numeric_columns": headers[1:],
+        "storage_output": {
+            "units": units, "utc_offset_hours": load_record["utc_offset_hours"], "time_basis": load_record["time_basis"],
+            "max_load_error_kw": load_error, "max_charge_ac_kw": charge_max, "max_discharge_ac_kw": discharge_max,
+            "soc_export_tolerance_ratio": 0.0001, "power_export_precision": "Six significant figures with a 0.001 kW per-column floor",
+            "ac_balance_verified": not missing_balance, "ac_balance_missing_columns": missing_balance,
+            "max_ac_balance_residual_kw": balance_max if not missing_balance else None,
+            "max_ac_balance_export_bound_kw": balance_bound_max if not missing_balance else None,
+        },
+    }
+
+
+def _cell(value):
+    if value is None:
+        return "未记录"
+    text = json.dumps(value, ensure_ascii=False, allow_nan=False) if isinstance(value, (dict, list)) else str(value)
+    return html.escape(text, quote=False).replace("|", "\\|").replace("\r", "").replace("\n", " / ")
+
+
+def _table(headers, rows):
+    return "\n".join(["| " + " | ".join(headers) + " |", "| " + " | ".join("---" for _ in headers) + " |"]
+                     + ["| " + " | ".join(_cell(value) for value in row) + " |" for row in rows])
+
+
+def _json_block(value):
+    return "```json\n" + json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + "\n```"
+
+
+def _house_evidence(task):
+    imported = task.get("native_import") or {}
+    verification, reload = imported.get("verification") or {}, imported.get("native_reload") or {}
+    evidence = {
+        "regions": (task.get("geometry") or {}).get("tables"), "native_geometry_verified": imported.get("native_geometry_verified"),
+        "house_mapping": verification.get("house_mapping"), "pv_mapping": verification.get("pv_mapping"),
+        "native_reload_verified": imported.get("native_reload_verified"), "native_reload": reload if reload else None,
+    }
+    if imported.get("method") == "native":
+        evidence.update(import_method="native", stored_geometry_verified=imported.get("stored_geometry_verified"),
+                        stored_module_layout_verified=imported.get("stored_module_layout_verified"),
+                        native_consumption_verified=task.get("native_consumption_verified"))
+    return evidence
+
+
+def _summary(task, handoff, manifest_name, comparison=None, delivery_review_required=False, house_runs=()):
+    metrics = task.get("metrics") or {}
+    storage = any(key in metrics for key in ("grid_import_kwh", "load_energy_kwh", "battery_charge_kwh", "initial_soc"))
+    names = (("grid_import_kwh", "年电网购电", "kWh"), ("grid_export_kwh", "年上网电量", "kWh"), ("load_energy_kwh", "年用户负荷", "kWh"),
+             ("unmet_load_kwh", "年未供负荷", "kWh"), ("battery_charge_kwh", "年电池侧充电", "kWh"),
+             ("battery_discharge_kwh", "年电池侧放电", "kWh"), ("unused_energy_kwh", "年未用电量", "kWh")) if storage else (
+             ("grid_energy_kwh", "年并网电量", "kWh"), ("array_energy_kwh", "年阵列有效电量", "kWh"),
+             ("clipping_loss_kwh", "逆变器超额功率损失 IL_Pmax", "kWh"), ("pr_percent", "标准 PR", "%"),
+             ("nominal_dc_power_kw", "铭牌直流容量", "kWp"), ("incident_irradiation_kwh_m2", "阵列面年辐照", "kWh/m²"))
+    metric_rows = [(label, metrics[key], unit) for key, label, unit in names if key in metrics]
+    if storage:
+        metric_rows.extend((label, metrics[key], "ratio") for key, label in
+                           (("initial_soc", "首小时SOC"), ("soc_begin_min", "小时开始SOC最小值"), ("soc_begin_max", "小时开始SOC最大值"),
+                            ("soc_end_min", "小时结束SOC最小值"), ("soc_end_max", "小时结束SOC最大值")) if key in metrics)
+    changes = task.get("changes") or []
+    warnings = list(task.get("warnings") or []) + list(handoff.get("review_items") or []) + (list(comparison.get("review_items") or []) if comparison else [])
+    status = "原生年度任务完成，仍需复核" if task["status"] == "needs_review" else ("原生年度任务完成；交付内容仍需复核" if delivery_review_required else "原生年度任务完成")
+    lines = ["# 工程交付摘要", "", "**" + status + "**", "",
+             _table(("项目", "记录"), [("工程 / 方案", task["working_project"] + " / " + task["working_variant"]), ("运行年份", task.get("year")),
+                    ("运行清单", manifest_name), ("任务状态 / 阶段", task["status"] + " / " + task["stage"]),
+                    ("运行清单记录的原生消费验证", "已记录为通过" if task.get("native_consumption_verified") is True else "未记录为通过")]),
+             "", "## 实际变更", "",
+             _table(("项目", "修改前", "修改后", "原因"),
+                    [(row.get("field"), row.get("before"), row.get("after"), row.get("reason", "调用方明确要求")) for row in changes[:6]])
+             if changes else "本任务没有记录参数变更；以 inputs.md 中的实际保存输入为准。",
+             "", "## 年度结果", "", _table(("指标", "原生结果汇总", "单位"), metric_rows) if metric_rows else "运行清单未提供上述年度指标。"]
+    if storage:
+        lines.extend(["", "电池充放电按原生电池侧导出量展示，不能直接当作AC侧功率限值；SOC采用0..1分数。"])
+        if metrics.get("missing_metrics"):
+            lines.append("未导出的指标保留未记录：" + _cell(metrics["missing_metrics"]) + "。")
+    for house in house_runs or ([task] if task.get("operation") == "engineering_house" else []):
+        evidence = _house_evidence(house)
+        lines.extend(["", "## 住宅保存与重载记录", "", "工程/方案：" + _cell(house["working_project"] + "/" + house["working_variant"]), "",
+            _table(("记录项", "本次运行清单记录"), [("PV区域", evidence["regions"]), ("原生保存几何已验证", evidence["native_geometry_verified"]),
+                ("住宅物体映射", evidence["house_mapping"]), ("PV表映射", evidence["pv_mapping"]), ("原生GUI重载已验证", evidence["native_reload_verified"])]),
+            "", "以上仅转述该次运行记录；未记录的映射或重载项保持未记录。实际证据和重载有效性见 inputs.md。",
+            "包内所选原生VC保留其内嵌几何，另附绑定的场景、SFI和原始任务清单；接收方仍需准备合法的组件及天气依赖。"])
+    if comparison:
+        lines.extend(["", "## 方案比较", "", "比较记录状态：" + _cell(comparison["status"]), ""])
+        lines.extend("- " + _cell(item) for item in (comparison.get("summary") or [])[:4])
+        order = (("EFrGrid", "电网购电"), ("E_Miss", "未供负荷"), ("EBatCh", "电池侧充电"), ("EBatDis", "电池侧放电"),
+                 ("E_Grid", "上网电量"), ("E_User", "用户负荷"), ("EUnused", "未用电量")) if storage else (("E_Grid", "并网电量"),)
+        deltas = [(row.get("baseline_label"), row.get("target_label"), label, energy.get("delta_energy_kwh"))
+                  for row in comparison.get("metrics") or [] for column, label in order
+                  if isinstance(energy := row.get("summary", {}).get(column), dict)]
+        if deltas:
+            lines.extend(["", _table(("基准", "候选", "指标", "候选减基准的完整电量差(kWh)"), deltas)])
+        lines.extend(["", "各方案的明确变更、关键时段和限制见 comparison.md；逐项数据见 comparison.csv，工程与原生结果已一并收录。"])
+    lines.extend(["", "## 交接事项", "", *(("- " + _cell(item)) for item in warnings[:5])])
+    if not warnings:
+        lines.append("- 本次任务未记录额外警告。")
+    if handoff.get("missing_items"):
+        lines.append("- 输入交接仍有 " + str(len(handoff["missing_items"])) + " 项补件/依据事项，详见 inputs.md。")
+    lines.extend(["- 包内含各收录方案的原生 PRJ、选中 VC 和运行清单绑定的结果文件；设备模型、气象、负荷等外部依赖按 inputs.md 另行准备。",
+                  "- 打包成功表示成果已整理；工程依据和任务复核状态沿用运行清单。完整变更、警告及输入说明见 inputs.md。", ""])
+    return "\n".join(lines)
+
+
+def _inputs(handoff, task):
+    saved, declarations = handoff["saved"], (handoff.get("declarations") or {})
+    lines = ["# 工程输入交接", "", "工程：" + _cell(handoff["project"]) + "；方案：" + _cell(handoff["variant"]),
+             "", "以下为该次运行记录的保存输入。声明资料单独列示；软件默认值与继承值不自动成为现场或厂家依据。", "", "## 设备、数量与朝向分配", ""]
+    rows = [(row["id"], (refs := row.get("references", {})).get("PAN"), refs.get("OND"), (values := row.get("values", {})).get("NModSerie"),
+             values.get("NStringCh"), row.get("declared_module_count"), values.get("NInverter"), values.get("NInvMPPT"), values.get("NoOrientation"))
+            for row in saved.get("subarrays", [])]
+    lines.extend([
+        _table(("子阵", "保存组件引用", "保存逆变器引用", "串联组件数", "并联串数", "声明组件数(串联×并联)", "逆变器数", "保存NInvMPPT", "朝向ID"), rows),
+        "", "## 保存朝向与跟踪参数", "", _table(("朝向ID", "保存值"), [(row["id"], row.get("values")) for row in saved.get("orientations", [])]),
+        "", "## 声明资料", "", _table(("声明项", "调用方提供的值、单位与来源"), declarations.items()) if declarations else "本次未提供额外工程声明。",
+        "", "## 项目继承值及原生系统保存值", "", _json_block({"project": saved.get("project"), "system": saved.get("system"), "main_array": saved.get("main_array")}),
+        "", "## 站点、天气、负荷与储能", "", _json_block({key: saved.get(key) for key in ("sources", "load", "storage")}),
+        "", "## 保存的MPPT与电路对应", "", _json_block(saved.get("grid_circuit")),
+        "", "## 未打包的外部依赖", "",
+        _table(("类别", "引用", "解析状态", "需要准备或确认"),
+               [(row.get("kind"), row.get("name"), row.get("resolution"), row.get("required_action", "在接收方PVsyst环境中准备合法可用的相同依赖"))
+                for row in handoff.get("external_dependencies", [])]),
+        "", "## 缺件与补件事项", "",
+        _table(("项目", "原因", "下一步"), [(row.get("field"), row.get("reason"), row.get("action")) for row in handoff.get("missing_items", [])]),
+        "", "## 完整变更记录", "", _json_block(task.get("changes") or []), "", "## 保留的复核事项", "",
+        *(("- " + _cell(item)) for item in list(task.get("warnings") or []) + list(handoff.get("review_items") or [])),
+    ])
+    if task.get("operation") == "engineering_house":
+        lines.extend(["", "## 住宅屋面映射、保存与重载证据", "", _json_block(_house_evidence(task)),
+            "", "## 随包提供的受控住宅复演资料", "",
+            _table(("类别", "目录", "文件名"), [(kind, task["input_assets"][kind]["folder"], task["input_assets"][kind]["name"]) for kind in ("scene", "sfi")]
+                + [("原始任务清单", "Results", Path(task["artifacts"]["manifest"]).name)]),
+            "", "这些文件是该次运行绑定的原文件。清单中的本机绝对路径作为历史记录保留；在接收方建立工作区时需按包内目录映射，"
+            "不据此读取包外路径。商业组件、站点及气象原件不随包分发；缺少这些依赖时无法在本地重新执行仿真。"])
+    lines.extend(["", "本交接包汇总已保存的工程文件和运行清单，不包含未保存的 GUI 状态或外部商业组件原件。", ""])
+    return "\n".join(lines)
+
+
+def _delivery_result_path(store, value, extension):
+    if not isinstance(value, str):
+        raise ValueError("Run artifact must be a controlled workspace filename or absolute Results path")
+    given = Path(value)
+    if not given.is_absolute() and given.name != value:
+        raise ValueError("Relative run artifacts must be filenames without directories")
+    name = safe_filename(given.name, extension)
+    expected = workspace_file(store.workspace, "Results", name, extension)
+    if given.is_absolute() and given.resolve() != expected:
+        raise ValueError("Run artifact is outside the controlled Results folder")
+    if not expected.is_file():
+        raise FileNotFoundError(name)
+    return expected
+
+
+def _stamp(path):
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns, stat.st_ino
+
+
+def _saved_inputs(saved):
+    saved = deepcopy(saved)
+    if isinstance(saved, dict):
+        for row in saved.get("load", {}).get("objects", []):
+            if isinstance(row, dict) and isinstance(row.get("hourly_source"), dict):
+                row["hourly_source"].pop("path_matches_workspace", None)
+    return saved
+
+
+def _saved_inputs_match(current, recorded):
+    current, recorded = _saved_inputs(current), _saved_inputs(recorded)
+    if isinstance(current, dict) and isinstance(recorded, dict):
+        before, after = recorded.get("subarrays"), current.get("subarrays")
+        if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+            for old, new in zip(before, after):
+                if isinstance(old, dict) and isinstance(new, dict) and old.get("id") == new.get("id") and "inverter_state" not in old:
+                    new.pop("inverter_state", None)
+    return current == recorded
+
+
+def _comparison_report(store, comparison_name, load_run):
+    safe_filename(comparison_name, ".json")
+    path = _delivery_result_path(store, comparison_name, ".json")
+    with path.open("rb") as stream:
+        data = stream.read(32 * 1024 * 1024 + 1)
+    if len(data) > 32 * 1024 * 1024:
+        raise ValueError("Comparison report exceeds 32 MiB")
+    report = json.loads(data)
+    if (not isinstance(report, dict) or report.get("operation") != "engineering_scenario_comparison"
+            or report.get("dry_run") is not False or report.get("status") not in ("created", "needs_review")
+            or report.get("historical_input_binding_verified") is not True
+            or not isinstance(report.get("written_artifacts"), list) or set(report["written_artifacts"]) != {"csv", "markdown", "json"} or len(report["written_artifacts"]) != 3
+            or not isinstance(report.get("scenarios"), list) or not 2 <= len(report["scenarios"]) <= 3
+            or any(not isinstance(report.get(key), list) for key in ("summary", "metrics", "review_items"))
+            or any(not isinstance(item, str) for item in report["summary"])
+            or any(not isinstance(item, dict) or not isinstance(item.get("summary"), dict) for item in report["metrics"])
+            or not isinstance(report.get("report_files"), dict) or set(report["report_files"]) != {"csv", "markdown"}):
+        raise ValueError("Require a written comparison with complete reports and bound native-run inputs")
+    files = {key: _delivery_result_path(store, report["artifacts"][key], extension)
+             for key, extension in (("json", ".json"), ("csv", ".csv"), ("markdown", ".md"))}
+    if files["json"] != path or files["csv"] != path.with_suffix(".csv") or files["markdown"] != path.with_suffix(".md"):
+        raise ValueError("Comparison artifacts must identify this report and its matching CSV/Markdown files")
+    if any(fingerprint(files[key]) != report["report_files"][key] for key in ("csv", "markdown")):
+        raise ValueError("Comparison CSV or Markdown changed after it was recorded")
+    bindings, manifests = [], set()
+    for scenario in report["scenarios"]:
+        if not isinstance(scenario, dict):
+            raise ValueError("Comparison scenario must contain a native-run binding")
+        manifest = safe_filename(scenario["run_manifest_name"], ".json")
+        if manifest.casefold() in manifests:
+            raise ValueError("Comparison scenarios must refer to distinct native runs")
+        manifests.add(manifest.casefold())
+        project, variant = project_name(scenario["project"]), variant_id(scenario["variant"])
+        csv_name = safe_filename(scenario["csv_name"], ".csv")
+        task = load_run(store, manifest, project=project, variant=variant, csv_name=csv_name)
+        if not isinstance(scenario.get("input_handoff"), dict) or not _saved_inputs_match(scenario["input_handoff"].get("saved"), task["input_handoff"].get("saved")):
+            raise ValueError("Comparison scenario inputs differ from its recorded native run")
+        bindings.append({"run_manifest_name": manifest, "project": project, "variant": variant,
+                         "csv_name": csv_name, "label": scenario.get("label", project + "/" + variant), "task": task})
+    return report, files, data, bindings
+
+
+def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=True, comparison_name=""):
+    """Export a bound native run and an optional recorded comparison without changing their review states."""
+    result = {"status": "blocked", "dry_run": dry_run, "issues": [], "included_files": [], "external_dependencies": [],
+              "native_consumption_verified": False, "task_native_consumption_verified": False, "artifact": None}
+    writing = False
+    with store.lock:
+        try:
+            if type(dry_run) is not bool:
+                raise ValueError("Use a strict dry_run boolean")
+            if not isinstance(comparison_name, str):
+                raise ValueError("comparison_name must be an optional Results JSON filename")
+            safe_filename(manifest_name, ".json")
+            output = workspace_file(store.workspace, "Results", output_name, ".zip")
+            if output.name.casefold() != output_name.casefold():
+                raise ValueError("Delivery filename resolves to a different file")
+            if output.exists():
+                raise FileExistsError("Delivery already exists; use a new output_name")
+            comparison, comparison_files, comparison_bytes = None, {}, None
+            if comparison_name:
+                comparison, comparison_files, comparison_bytes, bindings = _comparison_report(store, comparison_name, load_engineering_run)
+                primary = next((item for item in bindings if item["run_manifest_name"].casefold() == manifest_name.casefold()), None)
+                if primary is None:
+                    raise ValueError("The explicit comparison must include the requested primary native-run manifest")
+                task = primary["task"]
+            else:
+                task = load_engineering_run(store, manifest_name)
+                bindings = [{"run_manifest_name": manifest_name, "project": task["working_project"], "variant": task["working_variant"],
+                             "csv_name": Path(task["artifacts"]["csv"]).name, "label": task["working_project"] + "/" + task["working_variant"], "task": task}]
+            sources, payloads, external_dependencies = {}, {}, []
+            for binding in bindings:
+                run = binding["task"]
+                project, variant = project_name(run["working_project"]), variant_id(run["working_variant"])
+                if run.get("status") not in ("completed", "needs_review") or run.get("stage") != "completed":
+                    raise ValueError("Delivery requires completed engineering runs; their review states are retained")
+                handoff = run["input_handoff"]
+                if not isinstance(handoff, dict) or handoff.get("project", "").casefold() != project.casefold() or handoff.get("variant", "").upper() != variant:
+                    raise ValueError("Runtime input handoff does not identify this working project and variant")
+                current = build_project_handoff(store, project=project, variant=variant, declarations=handoff.get("declarations"))
+                if current["status"] == "blocked" or not _saved_inputs_match(current["saved"], handoff.get("saved")):
+                    raise ValueError("Saved inputs differ from the run-time handoff; no mismatched delivery was created")
+                files = [("Projects", store._path(project)), ("Projects", store._path(project, variant)),
+                         *(("Results", _delivery_result_path(store, run["artifacts"][kind], "." + kind)) for kind in run_output_kinds(run))]
+                if run.get("operation") == "engineering_house":
+                    files.append(("Results", _delivery_result_path(store, run["artifacts"]["manifest"], ".json")))
+                    files.extend((run["input_assets"][kind]["folder"], _asset_path(store, run["input_assets"][kind])) for kind in ("scene", "sfi"))
+                for folder, path in files:
+                    name = folder + "/" + path.name
+                    if (existing := next((key for key in sources if key.casefold() == name.casefold()), None)) is not None:
+                        if sources[existing] != path:
+                            raise ValueError("Different scenario files have conflicting delivery names")
+                        continue
+                    sources[name] = path
+                    if folder == "Projects":
+                        payloads[name] = store._read(path)
+                    elif run.get("operation") == "engineering_house" and name.casefold() == ("Results/" + binding["run_manifest_name"]).casefold():
+                        raw_manifest = path.read_bytes()
+                        if json.loads(raw_manifest) != run:
+                            raise ValueError("House task manifest changed before it was packaged")
+                        payloads[name] = raw_manifest
+                for dependency in handoff.get("external_dependencies", []):
+                    if dependency not in external_dependencies:
+                        external_dependencies.append(dependency)
+            if comparison:
+                sources.update({"comparison.json": comparison_files["json"], "comparison.csv": comparison_files["csv"], "comparison.md": comparison_files["markdown"]})
+                payloads["comparison.json"] = comparison_bytes
+            before = {name: _stamp(path) for name, path in sources.items()}
+            handoff = task["input_handoff"]
+            review = (any(item["task"]["status"] == "needs_review" or item["task"]["input_handoff"].get("status") == "needs_review" for item in bindings)
+                      or bool(comparison and (comparison["status"] == "needs_review" or comparison.get("review_items"))))
+            summary = _summary(task, handoff, manifest_name, comparison, review,
+                               house_runs=[b["task"] for b in bindings if b["task"].get("operation") == "engineering_house"])
+            inputs = _inputs(handoff, task)
+            documented = {manifest_name.casefold()}
+            for binding in bindings:
+                if binding["run_manifest_name"].casefold() not in documented:
+                    inputs += "\n---\n\n" + _inputs(binding["task"]["input_handoff"], binding["task"])
+                    documented.add(binding["run_manifest_name"].casefold())
+            result.update(
+                status="ready", task_status=task["status"], task_stage=task["stage"],
+                task_native_consumption_verified=task.get("native_consumption_verified") is True,
+                included_files=["summary.md", "inputs.md", *sources], external_dependencies=external_dependencies,
+                review_required=review, comparison_status=comparison["status"] if comparison else None,
+                comparison_name=comparison_name,
+                scenarios=[{k: v for k, v in b.items() if k != "task"} | {"task_status": b["task"]["status"]} for b in bindings],
+                artifact={"zip": str(output)}, summary_markdown=summary, inputs_markdown=inputs, source_manifest=manifest_name,
+                scope="Recorded engineering runs and an optional bound comparison; selected variants retain embedded geometry. "
+                      "House runs also include their bound scene, SFI and original manifest; model, weather and load files are external dependencies",
+            )
+            if dry_run:
+                return result
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
+                writing = True
+                archive.writestr("summary.md", summary)
+                archive.writestr("inputs.md", inputs)
+                for name, path in sources.items():
+                    if name in payloads:
+                        archive.writestr(name, payloads[name])
+                    else:
+                        archive.write(path, name)
+            if (any(_stamp(path) != before[name] for name, path in sources.items())
+                    or any(path.read_bytes() != payloads[name] for name, path in sources.items() if name in payloads)):
+                raise ValueError("Delivery inputs changed while packaging; retained ZIP is not accepted for delivery")
+            result["status"] = "exported"
+            return result
+        except (ValueError, OSError, KeyError, TypeError, RuntimeError, zipfile.BadZipFile) as exc:
+            result.update(status="failed" if writing else "blocked", issues=[str(exc)])
+            if writing:
+                result["retained_artifact"] = result["artifact"]
+                result["recovery"] = "保留本次ZIP供查看；解决输入变化或写入问题后，使用新的output_name重新导出。"
+            return result

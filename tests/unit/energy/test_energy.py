@@ -824,7 +824,7 @@ class WorkspaceTests(unittest.TestCase):
         from pvsyst_auto.energy.system import create_ac_cabling_variant
         from pvsyst_auto.energy.storage import grid_storage_state
         from pvsyst_auto.energy.profiles import replace_system_unavailability
-        from pvsyst_auto.workflows.storage import prepare_storage_revision
+        from pvsyst_auto.workflows.revision import prepare_storage_revision
 
         # 1. prepare_storage_revision succeeds with 3-tuple load_snapshot (no unpack error)
         self.source(ROOT.format(root_flags="$00") + ARRAY + PV_SYSTEM + CLOSE)
@@ -1520,7 +1520,7 @@ class SpecialLoadsAndOutagesTests(unittest.TestCase):
         from unittest.mock import patch
         from pvsyst_auto.api import context as api_context
         from pvsyst_auto.api.schemas import GridAvailabilityProfile, GridStorageUpdates
-        from pvsyst_auto.api.storage import pvsyst_create_grid_storage_variant
+        from pvsyst_auto.api.weather import pvsyst_create_grid_storage_variant
 
         with tempfile.TemporaryDirectory() as td:
             ws = Path(td) / "ws"

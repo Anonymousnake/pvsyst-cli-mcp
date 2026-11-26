@@ -8,15 +8,15 @@
 
 | 目录 / 模块 | 主要职责 | 核心文件 |
 |---|---|---|
-| `api` | MCP 协议层、引导层（`instructions`/Prompt/Resource）、入参校验、工具分组注册与进程内共享上下文 | `app.py`、`context.py`、`guidance.py`、`schemas.py` 及 8 个分组模块 |
-| `workflows` | 串联文件准备、零模板合成、批处理扫描、自动优化、PV+BESS 两阶段寻优、一站式可研编排、Plotly 交互报告与交付打包的端到端工作流 | `design.py`、`utility.py`、`batch.py`、`optimize.py`、`bess_optimize.py`、`feasibility.py`、`report.py`、`revision.py`、`house.py`、`simulation.py`、`blocks.py`、`delivery.py`、`sourced_design.py`、`sourced_house.py`、`storage.py` |
-| `engineering` | 自动选型、物理诊断引擎、财务/TOU/两部制需量/项目融资与敏感性评估、可研简报核对、工程参数交接单与多方案结果对比 | `suggest.py`、`diagnostics.py`、`economics.py`、`sizing.py`、`envelope.py`、`brief.py`、`handoff.py`、`review.py`、`comparison.py`、`inputs.py` |
-| `project` | `.PRJ` / `.VCx` 文本解析、并网/离网零模板工程合成器、`pvBiFacial` 双面建模、原地朝向转换、棚架/跟踪/季节朝向、原生 PDF `TEcoEvaluation` 与逆变器/组串拓扑 | `synthesize.py`、`standalone.py`、`bifacial.py`、`orientation_convert.py`、`sheds.py`、`seasonal.py`、`tracking.py`、`native_economics.py`、`variants.py`、`variant_readback.py`、`variant_updates.py`、`variant_topology.py`、`variant_writer.py`、`circuit.py`、`template.py`、`paths.py`、`fileio.py` |
-| `components` | `.PAN` / `.OND` / `.BTR` / `.GEN` 组件库管理与 mtime 元数据索引、单/三电压曲线编辑、商业字段、无模板单二极管/三电压 OND/锂电 BTR/柴发 GEN 合成与 `.PAN` 改参重拟合 | `store.py`、`builder.py`、`single_diode.py`、`editor.py`、`pan.py`、`battery.py`、`generator.py`、`curves.py`、`commercial.py`、`identity.py` |
-| `scene` | `.pvc2` 3D 房屋与光伏网格构建、有限 3D 地面多边形裁剪与 3D DEM 连续地形贴合（`pvShdGround`）、XML 回读及空间坐标比对 | `author.py`、`ground.py`、`terrain.py`、`reader.py`、`mapping.py`、`state.py` |
-| `energy` | 负荷曲线（含 `household`/`probability`）、AC 耦合储能系统、弱网确定性停电生成、TOU 48 槽 `PowerShift` 排程规划、多级 MV/HV 变压器、AC/DC 线缆、光谱修正、系统停运与详细损失字段读写 | `profiles.py`、`load.py`、`storage.py`、`system.py`、`availability.py`、`tou_planner.py`、`transformers.py`、`power.py`、`power_factor.py`、`ac.py`、`dc.py`、`spectral.py`、`unavailability.py`、`ageing.py`、`auxiliaries.py`、`iam.py`、`soiling.py`、`mismatch.py`、`peak.py`、`inverter_temperature.py` |
-| `weather` | 地理编码、Open-Meteo ERA5 / PVGIS v5.3 TMY / NASA POWER 下载、亚小时 CSV 与 `.SIT`/`.MET` 制备与核对 | `acquisition.py`、`preparation.py`、`review.py`、`csv.py` |
-| `native` | `PVsystCLI.exe` 命令行封装、免 GUI 3D 阴影/精细接线构建（`headless.py` / `_prep.py`）、私有非输入桌面进程隔离（`_winlaunch.py` / `_workspace_ini.py`）与各功能域原生写入器 | `cli.py`、`headless.py`、`_prep.py`、`_winlaunch.py`、`_workspace_ini.py`、`grid_limit.py`、`horizon.py`、`load.py`、`p50.py` |
+| `api` | MCP 协议层、引导层（`instructions`/Prompt/Resource）、入参校验、工具分组注册与进程内共享上下文 | `app.py`、`context.py`、`projects.py`、`schemas.py`、`simulation.py`、`weather.py` |
+| `workflows` | 串联文件准备、零模板合成、批处理扫描、自动优化、PV+BESS 两阶段寻优、一站式可研编排、Plotly 交互报告与交付打包的端到端工作流 | `batch.py`、`bess_optimize.py`、`design.py`、`house.py`、`optimize.py`、`report.py`、`revision.py`、`simulation.py`、`sourced_design.py`、`utility.py` |
+| `engineering` | 自动选型、物理诊断引擎、财务/TOU/两部制需量/项目融资与敏感性评估、可研简报核对、工程参数交接单与多方案结果对比 | `comparison.py`、`diagnostics.py`、`economics.py`、`review.py`、`sizing.py` |
+| `project` | `.PRJ` / `.VCx` 文本解析、并网/离网零模板工程合成器、`pvBiFacial` 双面建模、原地朝向转换、棚架/跟踪/季节朝向、原生 PDF `TEcoEvaluation` 与逆变器/组串拓扑 | `bifacial.py`、`circuit.py`、`paths.py`、`standalone.py`、`synthesize.py`、`template.py`、`tracking.py`、`variant_updates.py`、`variants.py` |
+| `components` | `.PAN` / `.OND` / `.BTR` / `.GEN` 组件库管理与 mtime 元数据索引、单/三电压曲线编辑、商业字段、无模板单二极管/三电压 OND/锂电 BTR/柴发 GEN 合成与 `.PAN` 改参重拟合 | `builder.py`、`editor.py`、`single_diode.py`、`store.py` |
+| `scene` | `.pvc2` 3D 房屋与光伏网格构建、有限 3D 地面多边形裁剪与 3D DEM 连续地形贴合（`pvShdGround`）、XML 回读及空间坐标比对 | `author.py`、`mapping.py`、`reader.py`、`terrain.py` |
+| `energy` | 负荷曲线（含 `household`/`probability`）、AC 耦合储能系统、弱网确定性停电生成、TOU 48 槽 `PowerShift` 排程规划、多级 MV/HV 变压器、AC/DC 线缆、光谱修正、系统停运与详细损失字段读写 | `dc.py`、`profiles.py`、`storage.py`、`system.py`、`transformers.py` |
+| `weather` | 地理编码、Open-Meteo ERA5 / PVGIS v5.3 TMY / NASA POWER 下载、亚小时 CSV 与 `.SIT`/`.MET` 制备与核对 | `acquisition.py`、`preparation.py`、`review.py` |
+| `native` | `PVsystCLI.exe` 命令行封装、免 GUI 3D 阴影/精细接线与地平线/P50/限发/负荷构建、以及私有非输入桌面进程隔离 | `_winlaunch.py`、`cli.py`、`headless.py`、`load.py` |
 | `results.py` | 仿真结果 CSV 解析与逐时/亚小时指标汇总、年度能量平衡校核与双结果逐时对比 | `results.py` |
 
 阅读代码时的经验法则：
@@ -67,7 +67,7 @@ from pvsyst_auto import PVsystCLI, PVsystError
 | `pvsyst_simulation` | `pvsyst_auto.workflows.simulation` |
 | `pvsyst_house_task` | `pvsyst_auto.workflows.house` |
 | `pvsyst_engineering_task` | `pvsyst_auto.workflows.revision` |
-| `pvsyst_engineering_delivery` | `pvsyst_auto.workflows.delivery` |
+| `pvsyst_engineering_delivery` | `pvsyst_auto.workflows.revision` |
 | `pvsyst_native_scene_mapping` | `pvsyst_auto.scene.mapping` |
 | `pvsyst_weather_flow` | `pvsyst_auto.weather.preparation` |
 | `pvsyst_results` | `pvsyst_auto.results` |

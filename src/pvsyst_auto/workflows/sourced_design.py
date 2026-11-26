@@ -5,7 +5,7 @@ import difflib
 import re
 from decimal import Decimal, InvalidOperation
 
-from pvsyst_auto.engineering.envelope import prepare_design_envelope
+from pvsyst_auto.engineering.sizing import prepare_design_envelope
 from pvsyst_auto.validation import (
     append_issue as _issue,
     append_warning as _warn,

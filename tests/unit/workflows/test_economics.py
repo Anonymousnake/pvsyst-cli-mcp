@@ -201,7 +201,7 @@ class EconomicsEngineTests(unittest.TestCase):
             "SIM_3;;35;;151000;0.83\n",
             encoding="utf-8",
         )
-        import pvsyst_auto.api.engineering as api_eng
+        import pvsyst_auto.api.simulation as api_eng
         from pvsyst_auto.api.schemas import EconomicsFinancialConfig, EconomicsTariffConfig
 
         fake_cli = self.root / "PVsystCLI.exe"

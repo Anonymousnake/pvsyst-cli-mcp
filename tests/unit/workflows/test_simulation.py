@@ -511,7 +511,7 @@ class TerminalStateTests(unittest.TestCase):
         spec = dict(source_project="Template.PRJ", source_variant="VC0", new_project="Revision.PRJ",
                     new_variant="VC2", objective="Regression: terminal manifest state", year=1990,
                     nominal_dc_power_kw=31.68, power_source="Fixture declaration", changes={"tilt": 30})
-        with patch("pvsyst_auto.engineering.handoff.build_project_handoff", return_value=dict(HANDOFF)):
+        with patch("pvsyst_auto.engineering.comparison.build_project_handoff", return_value=dict(HANDOFF)):
             for index, metrics in enumerate(({"rows": 8760}, None)):
                 with self.subTest(metrics=metrics):
                     with patch.object(cli, "run_simulation", side_effect=_native_outputs(minimal=True)), \

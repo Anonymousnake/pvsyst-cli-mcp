@@ -14,11 +14,11 @@ from pvsyst_auto.components.editor import sourced_component
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.native.cli import PVsystCLI
 from pvsyst_auto.api import app as _registered_app, context as server
-import pvsyst_auto.api.components as api_components
+import pvsyst_auto.api.projects as api_components
 import hashlib
 from pvsyst_auto.components.builder import capacity_ratio
 from pvsyst_auto.components.builder import commercial_inventory
-from pvsyst_auto.api.components import pvsyst_build_sourced_component
+from pvsyst_auto.api.projects import pvsyst_build_sourced_component
 from pvsyst_auto.components.single_diode import (
     derive_single_diode_parameters,
     synthesize_btr_from_datasheet,

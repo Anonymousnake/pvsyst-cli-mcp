@@ -334,7 +334,7 @@ class DiagnosticsEngineTests(unittest.TestCase):
             diagnose_simulation_csv(csv_path, store=self.store, project="OnlyProj.PRJ")
 
     def test_mcp_tool_pvsyst_diagnose_results(self):
-        import pvsyst_auto.api.results as api_results
+        import pvsyst_auto.api.weather as api_results
         cols, rows = _solar_rows(days=2, pr=0.84)
         _write_csv(self.root / "Results" / "mcp_diag.csv", cols, rows)
         fake_cli = self.root / "PVsystCLI.exe"

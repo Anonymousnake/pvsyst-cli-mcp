@@ -29,38 +29,28 @@ from pvsyst_auto.validation import (
     is_printable_text as _is_text,
     is_strict_int as _is_int,
 )
-
 from pvsyst_auto.native.cli import PVsystError, validate_report_pages
-from pvsyst_auto.engineering.envelope import REQUEST_KEYS, prepare_design_envelope
-from pvsyst_auto.engineering.inputs import discover_design_inputs
-from pvsyst_auto.engineering.suggest import suggest_sizing
+from pvsyst_auto.engineering.review import discover_design_inputs
+from pvsyst_auto.engineering.sizing import NUMBERS as CAPACITY_NUMBERS, REQUEST_KEYS, prepare_design_envelope, suggest_sizing
 from pvsyst_auto.project.paths import project_name, variant_id, workspace_file, workspace_folder
 from pvsyst_auto.workflows.simulation import simulate_template, prepare_template
-from pvsyst_auto.engineering.sizing import NUMBERS as CAPACITY_NUMBERS
 from pvsyst_auto.project.template import SEED_VARIANT, prepare_standard_template
 from pvsyst_auto.weather.acquisition import download_weather
 from pvsyst_auto.weather.preparation import prepare_weather
 from pvsyst_auto.project.standalone import STANDALONE_SCOPE, run_standalone_design
-from pvsyst_auto.workflows.utility import (
-    UTILITY_SCOPES,
-    plan_utility_capacity,
-    run_utility_design,
-    validate_utility_spec,
-)
+from pvsyst_auto.workflows.utility import UTILITY_SCOPES, plan_utility_capacity, run_utility_design, validate_utility_spec
 
 SCOPE = "fixed_unshaded_grid"
 SUPPORTED_SCOPES = (SCOPE, *UTILITY_SCOPES, STANDALONE_SCOPE)
 TIME_BASIS = "local_standard_interval_start"
-# The verified PVsyst 8.1 workspace layout: 17 root folders plus 9 inside ComposPV. This 26-folder
-# superset is what a real bootstrap proved; it is not trimmed to a guessed minimum.
 EXPECTED_WORKSPACE_BASENAME = "PVsyst8.1_Data"
-LAYOUT_ROOT_FOLDERS = ("ComposPV", "DataMeas", "Meteo", "Models", "Other", "Projects", "Results",
-                       "Shadings", "Sites", "Templates", "UserBatch", "UserData", "UserHourly",
-                       "UserHourlyParams", "UserImages", "UserOptimization", "UserRecycleBin")
-LAYOUT_COMPOSPV_FOLDERS = ("Batteries", "Clients", "Gensets", "Inverters", "Pumps", "PVmodules",
-                           "Regulators", "RegulPmp", "Sellers")
+LAYOUT_ROOT_FOLDERS = (
+    "ComposPV", "DataMeas", "Meteo", "Models", "Other", "Projects", "Results",
+    "Shadings", "Sites", "Templates", "UserBatch", "UserData", "UserHourly",
+    "UserHourlyParams", "UserImages", "UserOptimization", "UserRecycleBin",
+)
+LAYOUT_COMPOSPV_FOLDERS = ("Batteries", "Clients", "Gensets", "Inverters", "Pumps", "PVmodules", "Regulators", "RegulPmp", "Sellers")
 TEMPERATURE_METHOD = "endpoint_mean"   # the only method verified inside pvsyst_weather_acquisition
-# Acquisition accepts -12..14, but create-site does not: an offset above this is stopped before any write.
 CREATE_SITE_MAX_OFFSET_HOURS = 12
 SIMULATION_OPTIONS = ("input-sfi-file", "start-date", "end-date", "time-step")
 SITE_OPTIONS = ("site-name", "altitude", "timezone", "country-code")
@@ -86,54 +76,36 @@ WEATHER_KEYS = frozenset((
 ))
 REMOTE_WEATHER_MODES = ("open_meteo", "pvgis_tmy", "nasa_power")
 WEATHER_MODES = ("existing", "synthetic_from_site", "csv", *REMOTE_WEATHER_MODES)
-_PROVIDER_FOR_MODE = {
-    "open_meteo": "open_meteo_era5",
-    "pvgis_tmy": "pvgis_tmy",
-    "nasa_power": "nasa_power",
-}
-_RAW_SUFFIX_FOR_MODE = {
-    "open_meteo": "_openmeteo_raw.json",
-    "pvgis_tmy": "_pvgis_tmy_raw.json",
-    "nasa_power": "_nasapower_raw.json",
-}
+_PROVIDER_FOR_MODE = {"open_meteo": "open_meteo_era5", "pvgis_tmy": "pvgis_tmy", "nasa_power": "nasa_power"}
+_RAW_SUFFIX_FOR_MODE = {"open_meteo": "_openmeteo_raw.json", "pvgis_tmy": "_pvgis_tmy_raw.json", "nasa_power": "_nasapower_raw.json"}
 LOSS_KEYS = frozenset(("LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor"))
 CAPACITY_KEYS = frozenset((*CAPACITY_NUMBERS, "min_dc_ac_ratio", "capacity_tolerance_pct", "voltage_standard", "design_basis"))
-ENVELOPE_NESTED = ("temperatures", "envelope", "coefficients", "module_limits", "mppt_limits",
-                   "effective_irradiance")
+ENVELOPE_NESTED = ("temperatures", "envelope", "coefficients", "module_limits", "mppt_limits", "effective_irradiance")
 ACQUIRE_SUCCESS = ("prepared",)
 PREPARE_SUCCESS = ("prepared", "needs_review")
 SIMULATE_SUCCESS = ("completed", "needs_review")
-RETAINED_NOTE = ("Produced provider JSON, CSV, preparation artifacts, the working project and the "
-                 "recovery steps are retained; no automatic cleanup, overwrite or rollback was "
-                 "performed and a documented recovery is never reported as success")
+RETAINED_NOTE = (
+    "Produced provider JSON, CSV, preparation artifacts, the working project and the "
+    "recovery steps are retained; no automatic cleanup, overwrite or rollback was "
+    "performed and a documented recovery is never reported as success"
+)
+_PHASE_ERRORS = (ValueError, OSError, KeyError, TypeError, RuntimeError, subprocess.TimeoutExpired)
 
 
 def _prune_empty(value):
-    """Drop unset optionals - None and blank strings - the shape a typed server sends by default.
-
-    A blank text field means "not supplied", so it becomes absent instead of invalid; required
-    fields then report a missing input and numeric/boolean fields still reject a blank string
-    because it never becomes a number. False and 0 are real values and are kept.
-    """
+    """Drop unset optionals - None and blank strings - the shape a typed server sends by default."""
     if isinstance(value, dict):
-        pruned = {}
-        for key, item in value.items():
-            item = _prune_empty(item)
-            if item is None or (isinstance(item, str) and not item.strip()):
-                continue
-            pruned[key] = item
-        return pruned
+        return {
+            key: item for key, raw in value.items()
+            if (item := _prune_empty(raw)) is not None and not (isinstance(item, str) and not item.strip())
+        }
     if isinstance(value, list):
         return [_prune_empty(item) for item in value]
     return value
 
 
 def _inherit(result: dict, source: dict, field: str) -> None:
-    """Carry one phase's issues/warnings/review_required/error up, normalizing plain strings.
-
-    A phase that fails without an issue list still reports the reason here; the full phase result,
-    including its own error and diagnostics, stays in ``preview``.
-    """
+    """Carry one phase's issues/warnings/review_required/error up, normalizing plain strings."""
     for item in source.get("issues") or []:
         result["issues"].append(item if isinstance(item, dict) else {"field": field, "message": str(item)})
     error = source.get("error")
@@ -142,10 +114,7 @@ def _inherit(result: dict, source: dict, field: str) -> None:
         if error not in reported:
             result["issues"].append({"field": field, "message": error})
     for item in source.get("warnings") or []:
-        if isinstance(item, dict):
-            result["warnings"].append(f"{item.get('field')}: {item.get('message')}")
-        else:
-            result["warnings"].append(str(item))
+        result["warnings"].append(f"{item.get('field')}: {item.get('message')}" if isinstance(item, dict) else str(item))
     for item in source.get("review_required") or []:
         result["warnings"].append(f"{field}.review_required: {item}")
 
@@ -153,9 +122,6 @@ def _inherit(result: dict, source: dict, field: str) -> None:
 def _stop(result: dict, stage: str, status: str = "blocked") -> dict:
     result.update(status=status, stage=stage)
     return result
-
-
-_PHASE_ERRORS = (ValueError, OSError, KeyError, TypeError, RuntimeError, subprocess.TimeoutExpired)
 
 
 def _phase(result: dict, stage: str, call):
@@ -167,195 +133,166 @@ def _phase(result: dict, stage: str, call):
         return None, _stop(result, stage, "failed")
 
 
-def _check_equipment(selector, kind, spec_issues):
-    def bad(field, message):
-        spec_issues.append({"field": field, "message": message})
+def _bad(spec_issues: list[dict], field: str, message) -> None:
+    spec_issues.append({"field": field, "message": str(message)})
 
+
+def _check_equipment(selector, kind, spec_issues):
     field = kind.lower()
     if not isinstance(selector, dict):
-        bad(field, f"Provide the {field} component selector object")
+        _bad(spec_issues, field, f"Provide the {field} component selector object")
         return
     for key in sorted(set(selector) - EQUIPMENT_KEYS):
-        bad(f"{field}.{key}", "Unknown component selector input")
-    file_name = selector.get("file_name")
-    manufacturer = selector.get("manufacturer")
-    model = selector.get("model")
+        _bad(spec_issues, f"{field}.{key}", "Unknown component selector input")
+    file_name, manufacturer, model = selector.get("file_name"), selector.get("manufacturer"), selector.get("model")
     if file_name is not None:
         if not _is_text(file_name):
-            bad(f"{field}.file_name", "Use one loose filename without directories")
+            _bad(spec_issues, f"{field}.file_name", "Use one loose filename without directories")
         elif Path(file_name).name != file_name or file_name != file_name.strip():
-            bad(f"{field}.file_name", "Pass a plain filename; the workspace resolves the library path")
+            _bad(spec_issues, f"{field}.file_name", "Pass a plain filename; the workspace resolves the library path")
     for key, value in (("manufacturer", manufacturer), ("model", model)):
         if value is not None and not _is_text(value):
-            bad(f"{field}.{key}", "Use printable text")
+            _bad(spec_issues, f"{field}.{key}", "Use printable text")
     if not _is_text(file_name) and not (_is_text(manufacturer) and _is_text(model)):
-        bad(f"{field}.name", f"Provide one exact manufacturer+model pair or an explicit {field} filename")
+        _bad(spec_issues, f"{field}.name", f"Provide one exact manufacturer+model pair or an explicit {field} filename")
 
 
 def _check_capacity(capacity, target, spec_issues):
-    def bad(field, message):
-        spec_issues.append({"field": field, "message": message})
-
     if not isinstance(capacity, dict):
-        bad("capacity", "Provide the direct capacity object")
+        _bad(spec_issues, "capacity", "Provide the direct capacity object")
         return
     for key in sorted(set(capacity) - CAPACITY_KEYS):
-        bad(f"capacity.{key}", "Unknown capacity input")
+        _bad(spec_issues, f"capacity.{key}", "Unknown capacity input")
     for name in CAPACITY_NUMBERS:
         value = capacity.get(name)
         if value is None:
-            bad(f"capacity.{name}", "Required design input is missing; no value is inferred")
+            _bad(spec_issues, f"capacity.{name}", "Required design input is missing; no value is inferred")
         elif not _is_number(value):
-            bad(f"capacity.{name}", "Use a finite strict numeric value")
+            _bad(spec_issues, f"capacity.{name}", "Use a finite strict numeric value")
         elif not name.startswith("design_") and value <= 0:
-            bad(f"capacity.{name}", "Design magnitudes must be positive")
+            _bad(spec_issues, f"capacity.{name}", "Design magnitudes must be positive")
     if _is_number(capacity.get("target_dc_kw")) and float(capacity["target_dc_kw"]) != target:
-        bad("capacity.target_dc_kw",
-            f"capacity.target_dc_kw {capacity['target_dc_kw']} must equal spec.target_dc_kw {target}")
+        _bad(spec_issues, "capacity.target_dc_kw", f"capacity.target_dc_kw {capacity['target_dc_kw']} must equal spec.target_dc_kw {target}")
     tolerance = capacity.get("capacity_tolerance_pct")
     if tolerance is not None and (not _is_number(tolerance) or not 0 <= tolerance <= 20):
-        bad("capacity.capacity_tolerance_pct", "Use 0..20 percent")
+        _bad(spec_issues, "capacity.capacity_tolerance_pct", "Use 0..20 percent")
     if capacity.get("voltage_standard") not in ("IEC", "UL"):
-        bad("capacity.voltage_standard", "Explicitly choose IEC or UL")
+        _bad(spec_issues, "capacity.voltage_standard", "Explicitly choose IEC or UL")
     basis = capacity.get("design_basis")
     if not _is_text(basis) or len(basis) > 2000:
-        bad("capacity.design_basis", "Provide a printable design basis up to 2000 characters")
+        _bad(spec_issues, "capacity.design_basis", "Provide a printable design basis up to 2000 characters")
 
 
 def _check_design(design, target, spec_issues):
-    def bad(field, message):
-        spec_issues.append({"field": field, "message": message})
-
     if not isinstance(design, dict):
-        bad("electrical_design", "Provide the declared manufacturer design object")
+        _bad(spec_issues, "electrical_design", "Provide the declared manufacturer design object")
         return
     for key in sorted(set(design) - REQUEST_KEYS):
-        bad(f"electrical_design.{key}", "Unknown design-envelope input")
+        _bad(spec_issues, f"electrical_design.{key}", "Unknown design-envelope input")
     declared = design.get("target_dc_kw")
     if declared is not None:
         if not _is_number(declared):
-            bad("electrical_design.target_dc_kw", "Use a finite strict numeric target")
+            _bad(spec_issues, "electrical_design.target_dc_kw", "Use a finite strict numeric target")
         elif float(declared) != target:
-            bad("electrical_design.target_dc_kw",
-                f"The declared target {declared} contradicts spec.target_dc_kw {target}; "
-                "the unified entry injects one target and never reconciles two")
+            _bad(spec_issues, "electrical_design.target_dc_kw",
+                 f"The declared target {declared} contradicts spec.target_dc_kw {target}; the unified entry injects one target and never reconciles two")
     for name in ENVELOPE_NESTED:
-        value = design.get(name)
-        if value is not None and not isinstance(value, dict):
-            bad(f"electrical_design.{name}", "Provide this design-envelope input as an object")
-    label = design.get("manufacturer_model")
-    if label is not None and not _is_text(label):
-        bad("electrical_design.manufacturer_model", "Use printable text")
+        if (value := design.get(name)) is not None and not isinstance(value, dict):
+            _bad(spec_issues, f"electrical_design.{name}", "Provide this design-envelope input as an object")
+    if (label := design.get("manufacturer_model")) is not None and not _is_text(label):
+        _bad(spec_issues, "electrical_design.manufacturer_model", "Use printable text")
 
 
 def _check_weather(weather, spec_issues):
-    def bad(field, message):
-        spec_issues.append({"field": field, "message": message})
-
     if not isinstance(weather, dict):
-        bad("weather", "Provide the weather request object")
+        _bad(spec_issues, "weather", "Provide the weather request object")
         return
     for key in sorted(set(weather) - WEATHER_KEYS):
-        bad(f"weather.{key}", "Unknown weather input")
+        _bad(spec_issues, f"weather.{key}", "Unknown weather input")
     mode = weather.get("mode")
     if mode not in WEATHER_MODES:
-        bad("weather.mode", "Choose existing, synthetic_from_site, csv, open_meteo, pvgis_tmy or nasa_power")
+        _bad(spec_issues, "weather.mode", "Choose existing, synthetic_from_site, csv, open_meteo, pvgis_tmy or nasa_power")
         return
     if "strict_dhi" in weather and type(weather["strict_dhi"]) is not bool:
-        bad("weather.strict_dhi", "Use a strict boolean for strict_dhi")
+        _bad(spec_issues, "weather.strict_dhi", "Use a strict boolean for strict_dhi")
     country_code = weather.get("country_code")
     if country_code is not None and (not _is_text(country_code) or not ISO_COUNTRY.fullmatch(country_code)):
-        bad("weather.country_code", "Use an explicit uppercase ISO alpha-2 country code")
+        _bad(spec_issues, "weather.country_code", "Use an explicit uppercase ISO alpha-2 country code")
     if weather.get("time_basis") is not None and weather.get("time_basis") != TIME_BASIS:
-        bad("weather.time_basis", "Declare " + TIME_BASIS)
+        _bad(spec_issues, "weather.time_basis", "Declare " + TIME_BASIS)
     for key in ("sit_name", "met_name", "csv_name"):
-        value = weather.get(key)
-        if value is not None and not _is_text(value):
-            bad(f"weather.{key}", "Use one filename without directories")
+        if (value := weather.get(key)) is not None and not _is_text(value):
+            _bad(spec_issues, f"weather.{key}", "Use one filename without directories")
     if mode == "existing":
         for key in ("sit_name", "met_name"):
             if not _is_text(weather.get(key)):
-                bad(f"weather.{key}", "Existing weather requires an explicit workspace SIT and MET filename")
+                _bad(spec_issues, f"weather.{key}", "Existing weather requires an explicit workspace SIT and MET filename")
         return
     if mode == "synthetic_from_site":
         if not _is_text(weather.get("sit_name")):
-            bad("weather.sit_name", "synthetic_from_site requires an explicit workspace SIT filename")
+            _bad(spec_issues, "weather.sit_name", "synthetic_from_site requires an explicit workspace SIT filename")
         if weather.get("met_name") is not None:
-            bad("weather.met_name", "synthetic_from_site generates hourly meteo from sit_name; omit met_name or use mode='existing'")
+            _bad(spec_issues, "weather.met_name", "synthetic_from_site generates hourly meteo from sit_name; omit met_name or use mode='existing'")
         return
     if mode == "csv":
         if not _is_text(weather.get("csv_name")):
-            bad("weather.csv_name", "Provide the staged workspace weather CSV filename")
+            _bad(spec_issues, "weather.csv_name", "Provide the staged workspace weather CSV filename")
         if not _is_text(weather.get("country_code")):
-            bad("weather.country_code", "A staged CSV requires the explicit uppercase ISO alpha-2 code")
+            _bad(spec_issues, "weather.country_code", "A staged CSV requires the explicit uppercase ISO alpha-2 code")
         if weather.get("time_basis") != TIME_BASIS:
-            bad("weather.time_basis", "A staged CSV requires " + TIME_BASIS)
+            _bad(spec_issues, "weather.time_basis", "A staged CSV requires " + TIME_BASIS)
     if mode in REMOTE_WEATHER_MODES:
         location_id = weather.get("location_id")
-        if location_id is not None and any(weather.get(name) is not None
-                                           for name in ("latitude", "longitude")):
-            bad("weather.location_id", "Pass either location_id or explicit coordinates, not both")
+        if location_id is not None and any(weather.get(name) is not None for name in ("latitude", "longitude")):
+            _bad(spec_issues, "weather.location_id", "Pass either location_id or explicit coordinates, not both")
         if location_id is None:
-            # a manual place never inherits anything from the provider, country code included
             missing = [name for name in LOCATION_FIELDS if weather.get(name) is None]
             if missing:
-                bad("weather.location_id",
-                    "Provide location_id from search_locations, or the complete explicit place; missing: "
-                    + ", ".join(missing))
+                _bad(spec_issues, "weather.location_id", "Provide location_id from search_locations, or the complete explicit place; missing: " + ", ".join(missing))
         elif not _is_int(location_id) or location_id <= 0:
-            bad("weather.location_id", "Use a positive integer location_id from search_locations")
+            _bad(spec_issues, "weather.location_id", "Use a positive integer location_id from search_locations")
         for name in ("latitude", "longitude", "altitude"):
-            value = weather.get(name)
-            if value is not None and not _is_number(value):
-                bad(f"weather.{name}", "Use a finite strict number")
+            if (value := weather.get(name)) is not None and not _is_number(value):
+                _bad(spec_issues, f"weather.{name}", "Use a finite strict number")
         if _is_number(weather.get("latitude")) and not -90 <= weather["latitude"] <= 90:
-            bad("weather.latitude", "Latitude must lie in -90..90")
+            _bad(spec_issues, "weather.latitude", "Latitude must lie in -90..90")
         if _is_number(weather.get("longitude")) and not -180 <= weather["longitude"] <= 180:
-            bad("weather.longitude", "Longitude must lie in -180..180")
-        method = weather.get("temperature_method")
-        if method is not None and method != TEMPERATURE_METHOD:
-            bad("weather.temperature_method", "Only " + TEMPERATURE_METHOD + " is verified")
+            _bad(spec_issues, "weather.longitude", "Longitude must lie in -180..180")
+        if (method := weather.get("temperature_method")) is not None and method != TEMPERATURE_METHOD:
+            _bad(spec_issues, "weather.temperature_method", "Only " + TEMPERATURE_METHOD + " is verified")
 
 
 def _validate_spec(spec) -> list[dict]:
     issues: list[dict] = []
-
-    def bad(field, message):
-        issues.append({"field": field, "message": str(message)})
-
     if not isinstance(spec, dict):
-        bad("spec", "Provide the design-flow spec object")
+        _bad(issues, "spec", "Provide the design-flow spec object")
         return issues
     for key in sorted(set(spec) - SPEC_KEYS):
-        bad(str(key), "Unknown design-flow spec input")
+        _bad(issues, str(key), "Unknown design-flow spec input")
     try:
         validate_report_pages(spec.get("report_pages"))
     except ValueError as exc:
-        bad("report_pages", exc)
-    report_lang = spec.get("report_language", "en")
-    if report_lang not in ("en", "zh"):
-        bad("report_language", "Choose 'en' or 'zh' for report_language")
+        _bad(issues, "report_pages", exc)
+    if spec.get("report_language", "en") not in ("en", "zh"):
+        _bad(issues, "report_language", "Choose 'en' or 'zh' for report_language")
     scope = spec.get("scope", SCOPE)
     if scope not in SUPPORTED_SCOPES:
-        bad("scope", "Only fixed_unshaded_grid, ground_sheds, and ground_tracker are supported; "
-                     "a roof or free-standing scope would need thermal and loss inputs this flow never infers")
+        _bad(issues, "scope", "Only fixed_unshaded_grid, ground_sheds, and ground_tracker are supported; a roof or free-standing scope would need thermal and loss inputs this flow never infers")
 
     new_project = spec.get("new_project")
     if not _is_text(new_project):
-        bad("new_project", "Provide the new project filename")
+        _bad(issues, "new_project", "Provide the new project filename")
     else:
         try:
             project_name(new_project)
         except ValueError as exc:
-            bad("new_project", exc)
+            _bad(issues, "new_project", exc)
 
-    year = spec.get("year")
-    if not _is_int(year) or not 1969 <= year <= 2068:
-        bad("year", "Use an integer year in 1969..2068; native dates carry two-digit years")
-
+    if not _is_int(year := spec.get("year")) or not 1969 <= year <= 2068:
+        _bad(issues, "year", "Use an integer year in 1969..2068; native dates carry two-digit years")
     target = spec.get("target_dc_kw")
     if not _is_number(target) or target <= 0:
-        bad("target_dc_kw", "Provide a finite positive DC target in kW; no target is inferred")
+        _bad(issues, "target_dc_kw", "Provide a finite positive DC target in kW; no target is inferred")
     else:
         target = float(target)
 
@@ -363,63 +300,52 @@ def _validate_spec(spec) -> list[dict]:
         validate_utility_spec(spec, scope, issues)
     else:
         if spec.get("ground_layout") is not None:
-            bad("ground_layout", "ground_layout requires scope='ground_sheds' or 'ground_tracker'")
+            _bad(issues, "ground_layout", "ground_layout requires scope='ground_sheds' or 'ground_tracker'")
         if spec.get("bifacial") is not None:
-            bad("bifacial", "bifacial requires scope='ground_sheds' or 'ground_tracker'")
+            _bad(issues, "bifacial", "bifacial requires scope='ground_sheds' or 'ground_tracker'")
         for name, low, high in (("tilt", 0, 90), ("azimuth", -180, 180)):
             value = spec.get(name)
-            note = ("Use a finite tilt in 0..90 degrees" if name == "tilt"
-                    else "Use finite PVsyst azimuth in -180..180 degrees, zero south and west positive")
+            note = "Use a finite tilt in 0..90 degrees" if name == "tilt" else "Use finite PVsyst azimuth in -180..180 degrees, zero south and west positive"
             if value is None or not _is_number(value) or not low <= value <= high:
-                bad(name, note)
-
-        template_project = spec.get("template_project")
-        if template_project is not None:
-            if not _is_text(template_project):
-                bad("template_project", "Use one workspace PRJ filename")
-            else:
-                try:
-                    project_name(template_project)
-                except ValueError as exc:
-                    bad("template_project", exc)
-        variant = spec.get("variant")
-        if variant is not None:
-            if not _is_text(variant):
-                bad("variant", "Use one VC identifier or omit it")
-            else:
-                try:
-                    variant_id(variant)
-                except ValueError as exc:
-                    bad("variant", exc)
+                _bad(issues, name, note)
+        for field_name, validator, msg in (
+            ("template_project", project_name, "Use one workspace PRJ filename"),
+            ("variant", variant_id, "Use one VC identifier or omit it"),
+        ):
+            if (raw_v := spec.get(field_name)) is not None:
+                if not _is_text(raw_v):
+                    _bad(issues, field_name, msg)
+                else:
+                    try:
+                        validator(raw_v)
+                    except ValueError as exc:
+                        _bad(issues, field_name, exc)
 
     _check_equipment(spec.get("module"), "module", issues)
     _check_equipment(spec.get("inverter"), "inverter", issues)
 
     sizing_mode = spec.get("sizing_mode", "strict")
     if sizing_mode not in SIZING_MODES:
-        bad("sizing_mode", "Choose 'strict' or 'auto_from_components'")
+        _bad(issues, "sizing_mode", "Choose 'strict' or 'auto_from_components'")
     auto_sizing = spec.get("auto_sizing")
     if auto_sizing is not None:
         if sizing_mode != "auto_from_components":
-            bad("auto_sizing", "auto_sizing options require sizing_mode='auto_from_components'")
+            _bad(issues, "auto_sizing", "auto_sizing options require sizing_mode='auto_from_components'")
         elif not isinstance(auto_sizing, dict):
-            bad("auto_sizing", "Provide auto_sizing as an object")
+            _bad(issues, "auto_sizing", "Provide auto_sizing as an object")
         else:
             for key in sorted(set(auto_sizing) - AUTO_SIZING_KEYS):
-                bad(f"auto_sizing.{key}", "Unknown auto_sizing option")
+                _bad(issues, f"auto_sizing.{key}", "Unknown auto_sizing option")
 
-    capacity = spec.get("capacity")
-    design = spec.get("electrical_design")
+    capacity, design = spec.get("capacity"), spec.get("electrical_design")
     if sizing_mode == "auto_from_components":
         if capacity is not None or design is not None:
-            bad("sizing_mode", "sizing_mode='auto_from_components' cannot be combined with explicit capacity or electrical_design")
+            _bad(issues, "sizing_mode", "sizing_mode='auto_from_components' cannot be combined with explicit capacity or electrical_design")
     else:
         if capacity is None and design is None:
-            bad("capacity", "Provide exactly one of capacity (direct design envelope) or electrical_design "
-                            "(declared manufacturer inputs), or set sizing_mode='auto_from_components'; "
-                            "a template count is never used instead")
+            _bad(issues, "capacity", "Provide exactly one of capacity (direct design envelope) or electrical_design (declared manufacturer inputs), or set sizing_mode='auto_from_components'; a template count is never used instead")
         elif capacity is not None and design is not None:
-            bad("electrical_design", "Provide exactly one of capacity or electrical_design; they are mutually exclusive")
+            _bad(issues, "electrical_design", "Provide exactly one of capacity or electrical_design; they are mutually exclusive")
         if capacity is not None and _is_number(target):
             _check_capacity(capacity, target, issues)
         if design is not None and _is_number(target):
@@ -428,14 +354,13 @@ def _validate_spec(spec) -> list[dict]:
     losses = spec.get("losses")
     if losses is not None:
         if not isinstance(losses, dict):
-            bad("losses", "Provide an explicit supported loss object")
+            _bad(issues, "losses", "Provide an explicit supported loss object")
         else:
             for key in sorted(set(losses) - LOSS_KEYS):
-                bad(f"losses.{key}", "Unsupported loss parameter")
+                _bad(issues, f"losses.{key}", "Unsupported loss parameter")
             for key, value in losses.items():
                 if key in LOSS_KEYS and not _is_number(value):
-                    bad(f"losses.{key}", "Require a supported finite numeric loss parameter")
-
+                    _bad(issues, f"losses.{key}", "Require a supported finite numeric loss parameter")
     _check_weather(spec.get("weather"), issues)
     return issues
 
@@ -451,44 +376,41 @@ def _entries(root):
 def _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name, *, prepare_only=False):
     """Every name the flow could create, checked before the first write of any phase."""
     issues, targets = [], {}
-    new_project = spec["new_project"]
+    new_project, year = spec["new_project"], spec["year"]
     stem = Path(new_project).stem
-    year = spec["year"]
     try:
-        root = store._root()
-        entries = _entries(root)
-        if any(store._belongs_to_project(path, new_project) for path in entries):
-            issues.append({"field": "new_project",
-                           "message": "Working project files already exist; choose a new project filename"})
+        if any(store._belongs_to_project(path, new_project) for path in _entries(store._root())):
+            issues.append({"field": "new_project", "message": "Working project files already exist; choose a new project filename"})
     except (ValueError, OSError, AttributeError) as exc:
         issues.append({"field": "new_project", "message": str(exc)})
     try:
         if prepare_only:
-            prefix = f"{stem}_prepare_{year}"
-            targets["project_manifest"] = workspace_file(cli.workspace, "Results", prefix + ".json", ".json")
+            targets["project_manifest"] = workspace_file(cli.workspace, "Results", f"{stem}_prepare_{year}.json", ".json")
         else:
             prefix = f"{stem}_annual_{year}"
-            targets["annual_csv"] = workspace_file(cli.workspace, "Results", prefix + ".csv", ".csv")
-            targets["annual_pdf"] = workspace_file(cli.workspace, "Results", prefix + ".pdf", ".pdf")
-            targets["annual_manifest"] = workspace_file(cli.workspace, "Results", prefix + ".json", ".json")
-            targets["annual_sfi"] = workspace_file(cli.workspace, "Models", prefix + ".SFI", ".SFI")
-        # These derivations mirror pvsyst_weather_flow.prepare_weather and
-        # pvsyst_weather_acquisition.download_weather; keep the three in step.
+            targets.update({
+                "annual_csv": workspace_file(cli.workspace, "Results", prefix + ".csv", ".csv"),
+                "annual_pdf": workspace_file(cli.workspace, "Results", prefix + ".pdf", ".pdf"),
+                "annual_manifest": workspace_file(cli.workspace, "Results", prefix + ".json", ".json"),
+                "annual_sfi": workspace_file(cli.workspace, "Models", prefix + ".SFI", ".SFI"),
+            })
         if weather["mode"] in ("csv", *REMOTE_WEATHER_MODES):
             met_stem = Path(met_name).stem
-            targets["sit"] = workspace_file(cli.workspace, "Sites", sit_name, ".SIT")
-            targets["met"] = workspace_file(cli.workspace, "Meteo", met_name, ".MET")
-            targets["weather_import_csv"] = workspace_file(cli.workspace, "Meteo", f"{met_stem}_import.csv", ".csv")
-            targets["weather_monthly_csv"] = workspace_file(cli.workspace, "Meteo", f"{met_stem}_monthly.csv", ".csv")
-            targets["weather_mef"] = workspace_file(cli.workspace, "Meteo", f"{met_stem}.MEF", ".MEF")
-            targets["weather_manifest"] = workspace_file(cli.workspace, "Results", f"{met_stem}_weather.json", ".json")
+            targets.update({
+                "sit": workspace_file(cli.workspace, "Sites", sit_name, ".SIT"),
+                "met": workspace_file(cli.workspace, "Meteo", met_name, ".MET"),
+                "weather_import_csv": workspace_file(cli.workspace, "Meteo", f"{met_stem}_import.csv", ".csv"),
+                "weather_monthly_csv": workspace_file(cli.workspace, "Meteo", f"{met_stem}_monthly.csv", ".csv"),
+                "weather_mef": workspace_file(cli.workspace, "Meteo", f"{met_stem}.MEF", ".MEF"),
+                "weather_manifest": workspace_file(cli.workspace, "Results", f"{met_stem}_weather.json", ".json"),
+            })
         if weather["mode"] in REMOTE_WEATHER_MODES:
             csv_stem = Path(csv_name).stem
-            targets["source_csv"] = workspace_file(cli.workspace, "Meteo", csv_name, ".csv")
-            targets["provider_raw"] = workspace_file(
-                cli.workspace, "Meteo", f"{csv_stem}{_RAW_SUFFIX_FOR_MODE[weather['mode']]}", ".json"
-            )
-            targets["acquisition_manifest"] = workspace_file(cli.workspace, "Results", f"{csv_stem}_acquisition.json", ".json")
+            targets.update({
+                "source_csv": workspace_file(cli.workspace, "Meteo", csv_name, ".csv"),
+                "provider_raw": workspace_file(cli.workspace, "Meteo", f"{csv_stem}{_RAW_SUFFIX_FOR_MODE[weather['mode']]}", ".json"),
+                "acquisition_manifest": workspace_file(cli.workspace, "Results", f"{csv_stem}_acquisition.json", ".json"),
+            })
     except (ValueError, OSError) as exc:
         issues.append({"field": "outputs", "message": str(exc)})
         return issues, {}
@@ -496,9 +418,7 @@ def _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name, *, 
     for label, path in targets.items():
         key = str(path).casefold()
         if key in seen:
-            issues.append({"field": label, "message":
-                           f"Two planned outputs resolve to the same file: {path.name} "
-                           f"(also planned as {seen[key]}); choose distinct names"})
+            issues.append({"field": label, "message": f"Two planned outputs resolve to the same file: {path.name} (also planned as {seen[key]}); choose distinct names"})
         else:
             seen[key] = label
         if path.exists():
@@ -512,28 +432,20 @@ def _seed_conflicts(cli, store, seed_project, targets, stem):
     try:
         project_name(seed_project)
     except ValueError:
-        issues.append({"field": "seed", "message":
-                       f"new_project stem {stem!r} derives a seed filename of "
-                       f"{len(seed_project)} characters, beyond the 180-character project filename "
-                       "limit; supply a shorter new_project name instead of truncating the derived name"})
+        issues.append({"field": "seed", "message": f"new_project stem {stem!r} derives a seed filename of {len(seed_project)} characters, beyond the 180-character project filename limit; supply a shorter new_project name instead of truncating the derived name"})
     try:
-        root = store._root()
-        if any(store._belongs_to_project(path, seed_project) for path in _entries(root)):
-            issues.append({"field": "seed", "message":
-                           "The derived seed project already exists; a seed template is created new-only"})
+        if any(store._belongs_to_project(path, seed_project) for path in _entries(store._root())):
+            issues.append({"field": "seed", "message": "The derived seed project already exists; a seed template is created new-only"})
     except (ValueError, OSError, AttributeError) as exc:
         issues.append({"field": "seed", "message": str(exc)})
     name = Path(seed_project).name.casefold()
     for label, path in targets.items():
         if path.name.casefold() == name:
-            issues.append({"field": "seed", "message":
-                           f"The derived seed name {Path(seed_project).name} collides with the planned "
-                           f"{label} file {path.name}; choose another new_project name"})
+            issues.append({"field": "seed", "message": f"The derived seed name {Path(seed_project).name} collides with the planned {label} file {path.name}; choose another new_project name"})
     return issues
 
 
 def _layout_entries():
-    """Every standard folder as (label, path parts), root folders first."""
     for folder in LAYOUT_ROOT_FOLDERS:
         yield folder, (folder,)
     for folder in LAYOUT_COMPOSPV_FOLDERS:
@@ -541,12 +453,6 @@ def _layout_entries():
 
 
 def _resolve_layout(cli):
-    """Map each standard folder to its boundary-checked path, or to its escape error.
-
-    The whole relative path is resolved through ``workspace_folder`` in one call, so a nested
-    junction or symlink (ComposPV/Batteries) cannot escape the workspace unnoticed while a missing
-    folder stays an ordinary path.
-    """
     resolved, errors = {}, {}
     for label, parts in _layout_entries():
         try:
@@ -559,19 +465,18 @@ def _resolve_layout(cli):
 def _readonly_layout(cli):
     """Preflight the canonical root name and the standard folders; nothing is created or moved."""
     issues = []
-    layout = {"expected_basename": EXPECTED_WORKSPACE_BASENAME, "workspace": str(cli.workspace),
-              "basename": Path(cli.workspace).name, "root_folders": list(LAYOUT_ROOT_FOLDERS),
-              "compos_pv_folders": list(LAYOUT_COMPOSPV_FOLDERS), "present": [], "missing": [],
-              "file_conflicts": [], "escaped": {}, "created_directories": []}
+    layout = {
+        "expected_basename": EXPECTED_WORKSPACE_BASENAME, "workspace": str(cli.workspace),
+        "basename": Path(cli.workspace).name, "root_folders": list(LAYOUT_ROOT_FOLDERS),
+        "compos_pv_folders": list(LAYOUT_COMPOSPV_FOLDERS), "present": [], "missing": [],
+        "file_conflicts": [], "escaped": {}, "created_directories": [],
+    }
     if layout["basename"] != EXPECTED_WORKSPACE_BASENAME:
-        issues.append({"field": "workspace", "message":
-                       f"The workspace root is named {layout['basename']!r}; the verified PVsyst 8.1 layout "
-                       f"is {EXPECTED_WORKSPACE_BASENAME!r}. A root is never renamed, moved or replaced"})
+        _bad(issues, "workspace", f"The workspace root is named {layout['basename']!r}; the verified PVsyst 8.1 layout is {EXPECTED_WORKSPACE_BASENAME!r}. A root is never renamed, moved or replaced")
     resolved, errors = _resolve_layout(cli)
     layout["escaped"] = errors
     for label, reason in sorted(errors.items()):
-        issues.append({"field": "workspace." + label,
-                       "message": f"The workspace folder does not stay inside the workspace: {reason}"})
+        _bad(issues, "workspace." + label, f"The workspace folder does not stay inside the workspace: {reason}")
     for label, path in resolved.items():
         if path.is_dir():
             layout["present"].append(label)
@@ -580,20 +485,12 @@ def _readonly_layout(cli):
         else:
             layout["missing"].append(label)
     for label in layout["file_conflicts"]:
-        # Known before any weather request: a file where a standard folder belongs is a hard block,
-        # and the execution step re-checks it in case the file appears after this preflight.
-        issues.append({"field": "workspace." + label,
-                       "message": f"{label} exists and is not a directory; an existing file is never "
-                                  "overwritten or replaced"})
+        _bad(issues, "workspace." + label, f"{label} exists and is not a directory; an existing file is never overwritten or replaced")
     return issues, layout
 
 
 def _init_layout(cli, store):
-    """Create the missing standard folders; a file, an escape or a permission error fails.
-
-    Returns (created, error). Nothing is overwritten, no settings, component or project file is
-    copied and no reverse engineering of the root is attempted.
-    """
+    """Create the missing standard folders; a file, an escape or a permission error fails."""
     try:
         store._root()
     except (ValueError, OSError, AttributeError) as exc:
@@ -606,8 +503,7 @@ def _init_layout(cli, store):
         if path.is_dir():
             continue
         if path.exists():
-            return created, (f"{label} already exists and is not a directory; an existing file is never "
-                             "overwritten or replaced")
+            return created, f"{label} already exists and is not a directory; an existing file is never overwritten or replaced"
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -617,10 +513,8 @@ def _init_layout(cli, store):
 
 
 def _acquired_place(acquire):
-    """The place record of one acquisition result, whichever public name it uses."""
     for key in ("location", "site"):
-        value = acquire.get(key)
-        if isinstance(value, dict):
+        if isinstance(value := acquire.get(key), dict):
             return value
     return {}
 
@@ -629,32 +523,23 @@ def _identity_drift(previous, current):
     """Detect components that changed between two discovery passes of one call."""
     for kind in ("PAN", "OND"):
         first, second = previous[kind], current[kind]
-        identity = ((Path(first["name"]).name, first.get("library"), first.get("manufacturer"),
-                     first.get("model")))
-        if identity != (Path(second["name"]).name, second.get("library"), second.get("manufacturer"),
-                        second.get("model")):
-            return (f"The selected {kind} changed between the first discovery and the capacity "
-                    "confirmation; the accepted envelope is never applied to a different component")
+        if (Path(first["name"]).name, first.get("library"), first.get("manufacturer"), first.get("model")) != (
+                Path(second["name"]).name, second.get("library"), second.get("manufacturer"), second.get("model")):
+            return f"The selected {kind} changed between the first discovery and the capacity confirmation; the accepted envelope is never applied to a different component"
         if first.get("electrical") != second.get("electrical"):
-            return (f"The declared {kind} electrical values changed between the first discovery and "
-                    "the capacity confirmation; the accepted envelope is never applied to changed data")
+            return f"The declared {kind} electrical values changed between the first discovery and the capacity confirmation; the accepted envelope is never applied to changed data"
     return None
 
 
 def _native_preflight(cli, mode, *, prepare_only=False, allow_window_creation=None):
-    """Read-only capability/licence check run before any weather download.
-
-    ``simulate_template`` and ``prepare_weather`` repeat these checks; running them here means a
-    broken CLI or exhausted licence stops the flow before a provider request is issued.
-    """
+    """Read-only capability/licence check run before any weather download."""
     state = {}
     try:
         if not prepare_only:
             for option in SIMULATION_OPTIONS:
                 cli._require("run-simulation", option, allow_window_creation=allow_window_creation)
             if mode == "synthetic_from_site":
-                cli._require("run-simulation", "synthetic-weatherdata-generation",
-                             allow_window_creation=allow_window_creation)
+                cli._require("run-simulation", "synthetic-weatherdata-generation", allow_window_creation=allow_window_creation)
         if mode not in ("existing", "synthetic_from_site"):
             for option in SITE_OPTIONS:
                 cli._require("create-site", option, allow_window_creation=allow_window_creation)
@@ -673,8 +558,7 @@ def _identity(selected):
     pan, ond = selected["PAN"], selected["OND"]
     for kind, item in (("PAN", pan), ("OND", ond)):
         if not _is_text(item.get("manufacturer")) or not _is_text(item.get("model")):
-            return None, (f"The selected {kind} declares no manufacturer/model; the unified entry "
-                          "binds one explicit identity label or nothing")
+            return None, f"The selected {kind} declares no manufacturer/model; the unified entry binds one explicit identity label or nothing"
     return f"{pan['manufacturer']} {pan['model']} / {ond['manufacturer']} {ond['model']}", None
 
 
@@ -690,38 +574,27 @@ def _compact_discovery(discovery: dict | None) -> dict | None:
         eligible = [item for item in templates if isinstance(item, dict) and item.get("valid")]
         rejected_count = len(templates) - len(eligible)
         sel_tpl = (out.get("selected") or {}).get("template")
-        new_candidates = dict(candidates)
         summary: dict = {
-            "scanned_count": len(templates),
-            "eligible_count": len(eligible),
-            "rejected_count": rejected_count,
-            "selected_template": (
-                {"project": sel_tpl.get("project"), "variant": sel_tpl.get("variant")}
-                if isinstance(sel_tpl, dict) else None
-            ),
+            "scanned_count": len(templates), "eligible_count": len(eligible), "rejected_count": rejected_count,
+            "selected_template": {"project": sel_tpl.get("project"), "variant": sel_tpl.get("variant")} if isinstance(sel_tpl, dict) else None,
             "truncated": rejected_count > 0,
         }
         if rejected_count > 0:
             summary["hint"] = "Pass verbose=true to expand per-template scan rejection details."
-        new_candidates["templates"] = {"summary": summary, "eligible": eligible}
-        out["candidates"] = new_candidates
+        out["candidates"] = {**candidates, "templates": {"summary": summary, "eligible": eligible}}
     return out
 
 
-def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_context=None,
-                 allow_window_creation=None, verbose=False):
-    result = {"status": "blocked", "stage": "spec", "dry_run": dry_run,
-              "execution_preflight_complete": False, "issues": [], "warnings": [],
-              "selected": None,
-              "preview": {"discovery": None, "envelope": None, "weather": None, "prepare": None,
-                          "simulation": None, "template_seed": None, "seed_confirmed": None,
-                          "workspace": None},
-              "metrics": None,
-              "artifacts": {"acquire": {}, "prepare": {}, "simulate": {}, "seed": {}},
-              "recovery": []}
+def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_context=None, allow_window_creation=None, verbose=False):
+    result = {
+        "status": "blocked", "stage": "spec", "dry_run": dry_run,
+        "execution_preflight_complete": False, "issues": [], "warnings": [], "selected": None,
+        "preview": {"discovery": None, "envelope": None, "weather": None, "prepare": None,
+                    "simulation": None, "template_seed": None, "seed_confirmed": None, "workspace": None},
+        "metrics": None, "artifacts": {"acquire": {}, "prepare": {}, "simulate": {}, "seed": {}}, "recovery": [],
+    }
     if prepare_only:
-        result.update(operation="prepare_project", prepared=False, simulated=False,
-                      native_consumption_verified=False)
+        result.update(operation="prepare_project", prepared=False, simulated=False, native_consumption_verified=False)
     if type(dry_run) is not bool:
         _issue(result, "dry_run", "Use a strict boolean")
         return result
@@ -735,14 +608,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             _issue(result, "scope", "Stand-Alone designs require pvsyst_simulate_design")
             return result
         try:
-            return run_standalone_design(
-                cli,
-                store,
-                store.components,
-                spec,
-                dry_run=dry_run,
-                allow_window_creation=allow_window_creation,
-            )
+            return run_standalone_design(cli, store, store.components, spec, dry_run=dry_run, allow_window_creation=allow_window_creation)
         except (ValueError, FileNotFoundError, FileExistsError, PVsystError) as exc:
             _issue(result, "standalone", str(exc))
             return result
@@ -751,18 +617,13 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         return result
 
     scope = spec.get("scope", SCOPE)
-    is_utility = scope in UTILITY_SCOPES
-    year = spec["year"]
+    is_utility, year = scope in UTILITY_SCOPES, spec["year"]
     tilt = float(spec["tilt"]) if spec.get("tilt") is not None else None
     azimuth = float(spec["azimuth"]) if spec.get("azimuth") is not None else None
-    target = float(spec["target_dc_kw"])
-    losses = spec.get("losses")
-    new_project = spec["new_project"]
+    target, losses, new_project = float(spec["target_dc_kw"]), spec.get("losses"), spec["new_project"]
     module, inverter, weather = spec["module"], spec["inverter"], spec["weather"]
-    design, direct = spec.get("electrical_design"), spec.get("capacity")
-    mode = weather["mode"]
-    synthetic_weather = mode == "synthetic_from_site"
-    stem = Path(new_project).stem
+    design, direct, mode = spec.get("electrical_design"), spec.get("capacity"), weather["mode"]
+    synthetic_weather, stem = (mode == "synthetic_from_site"), Path(new_project).stem
     sit_name = weather.get("sit_name") or f"{stem}.SIT"
     met_name = "" if synthetic_weather else (weather.get("met_name") or f"{stem}.MET")
     csv_suffix = "openmeteo" if mode == "open_meteo" else mode
@@ -775,35 +636,27 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         result["issues"].extend(layout_issues)
         return _stop(result, "workspace")
 
-    issues, targets = _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name,
-                                      prepare_only=prepare_only)
+    issues, targets = _output_targets(cli, store, spec, weather, sit_name, met_name, csv_name, prepare_only=prepare_only)
     result["artifacts"]["planned"] = {key: str(path) for key, path in targets.items()}
     if issues:
         result["issues"] = issues
         return _stop(result, "outputs")
 
-    native, error = _native_preflight(cli, mode, prepare_only=prepare_only,
-                                      allow_window_creation=allow_window_creation)
+    native, error = _native_preflight(cli, mode, prepare_only=prepare_only, allow_window_creation=allow_window_creation)
     if error is not None:
         _issue(result, "native_preflight", error)
         return _stop(result, "native_preflight")
     result["preview"]["native"] = native
-    result["warnings"].append(
-        "Native capability and licence were checked read-only before any weather request; the "
-        "measured design itself stays a declared-envelope plan")
+    result["warnings"].append("Native capability and licence were checked read-only before any weather request; the measured design itself stays a declared-envelope plan")
 
     def discover(flat_capacity, project="", member=""):
         return discover_design_inputs(
-            store,
-            pan_name=module.get("file_name") or "",
-            ond_name=inverter.get("file_name") or "",
-            module_manufacturer=module.get("manufacturer") or "",
-            module_model=module.get("model") or "",
-            inverter_manufacturer=inverter.get("manufacturer") or "",
-            inverter_model=inverter.get("model") or "",
-            template_project=spec.get("template_project") or project,
-            variant=spec.get("variant") or member,
-            capacity=flat_capacity, tilt=tilt if tilt is not None else 20.0)
+            store, pan_name=module.get("file_name") or "", ond_name=inverter.get("file_name") or "",
+            module_manufacturer=module.get("manufacturer") or "", module_model=module.get("model") or "",
+            inverter_manufacturer=inverter.get("manufacturer") or "", inverter_model=inverter.get("model") or "",
+            template_project=spec.get("template_project") or project, variant=spec.get("variant") or member,
+            capacity=flat_capacity, tilt=tilt if tilt is not None else 20.0,
+        )
 
     basic, stopped = _phase(result, "discovery", lambda: discover(None))
     if stopped is not None:
@@ -823,20 +676,13 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             _inherit(result, basic, "discovery")
             return _stop(result, "discovery")
     else:
-        # A workspace with no eligible template can still be seeded from the installed standard template,
-        # but only when both components resolved exactly and the caller pinned no template of its own.
-        fallback = (basic.get("status") != "ready" and {"PAN", "OND"} <= set(resolved)
-                    and not (spec.get("template_project") or spec.get("variant")))
+        fallback = basic.get("status") != "ready" and {"PAN", "OND"} <= set(resolved) and not (spec.get("template_project") or spec.get("variant"))
         if fallback:
-            # Rejected candidates stay visible; their issues never become the reason for a fake success.
             for item in basic.get("issues") or []:
                 message = item.get("message") if isinstance(item, dict) else item
-                result["warnings"].append("Rejected template candidate (no seed decision is taken from it): "
-                                          + str(message))
+                result["warnings"].append("Rejected template candidate (no seed decision is taken from it): " + str(message))
             result["warnings"].extend(str(item) for item in basic.get("warnings") or [])
-            result["warnings"].append(
-                "No eligible workspace template was found; the flow falls back to the installed standard "
-                f"template derived as {seed_project}/{SEED_VARIANT} with the accepted capacity")
+            result["warnings"].append(f"No eligible workspace template was found; the flow falls back to the installed standard template derived as {seed_project}/{SEED_VARIANT} with the accepted capacity")
         else:
             _inherit(result, basic, "discovery")
             if basic.get("status") != "ready" or not basic.get("selected"):
@@ -849,16 +695,11 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         _issue(result, "module.inverter", label_issue)
         return _stop(result, "discovery")
 
-    sizing_mode = spec.get("sizing_mode", "strict")
-    auto_sizing_review = False
+    sizing_mode, auto_sizing_review = spec.get("sizing_mode", "strict"), False
     if sizing_mode == "auto_from_components":
-        auto_opts = dict(spec.get("auto_sizing") or {})
         suggested, stopped = _phase(result, "design_envelope", lambda: suggest_sizing(
-            store,
-            pan_name=Path(components["PAN"]["name"]).name,
-            ond_name=Path(components["OND"]["name"]).name,
-            target_dc_kw=target,
-            **auto_opts,
+            store, pan_name=Path(components["PAN"]["name"]).name, ond_name=Path(components["OND"]["name"]).name,
+            target_dc_kw=target, **dict(spec.get("auto_sizing") or {}),
         ))
         if stopped is not None:
             return stopped
@@ -869,21 +710,16 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         flat_capacity = suggested["capacity"]
         auto_sizing_review = True
         result["sizing_assumptions"] = list(suggested.get("assumptions") or [])
-        result["warnings"].append(
-            "Electrical capacity envelope was auto-estimated from PAN/OND files "
-            "(sizing_mode='auto_from_components'); review sizing_assumptions before engineering signoff"
-        )
+        result["warnings"].append("Electrical capacity envelope was auto-estimated from PAN/OND files (sizing_mode='auto_from_components'); review sizing_assumptions before engineering signoff")
     elif design is not None:
         request = dict(design)
         declared = request.get("manufacturer_model")
         if declared is not None and declared != label:
-            _issue(result, "electrical_design.manufacturer_model",
-                   f"The declared label {declared!r} does not equal the selected identity label {label!r}")
+            _issue(result, "electrical_design.manufacturer_model", f"The declared label {declared!r} does not equal the selected identity label {label!r}")
             return _stop(result, "design_envelope")
         request["manufacturer_model"] = declared or label
         request["target_dc_kw"] = target
-        envelope, stopped = _phase(result, "design_envelope", lambda: prepare_design_envelope(
-            components["PAN"]["electrical"], components["OND"]["electrical"], request))
+        envelope, stopped = _phase(result, "design_envelope", lambda: prepare_design_envelope(components["PAN"]["electrical"], components["OND"]["electrical"], request))
         if stopped is not None:
             return stopped
         result["preview"]["envelope"] = envelope
@@ -897,8 +733,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
 
     utility_plan = None
     if is_utility:
-        utility_plan, stopped = _phase(result, "template_capacity", lambda: plan_utility_capacity(
-            store, components["PAN"], components["OND"], flat_capacity))
+        utility_plan, stopped = _phase(result, "template_capacity", lambda: plan_utility_capacity(store, components["PAN"], components["OND"], flat_capacity))
         if stopped is not None:
             return stopped
         result["preview"]["utility_capacity"] = utility_plan
@@ -911,44 +746,33 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             return stopped
         result["preview"]["discovery_confirmed"] = confirm if verbose else _compact_discovery(confirm)
         if confirm.get("status") == "ready" and confirm.get("selected"):
-            drift = _identity_drift(components, confirm["selected"])
-            if drift is not None:
+            if (drift := _identity_drift(components, confirm["selected"])) is not None:
                 _issue(result, "discovery", drift)
                 return _stop(result, "discovery")
             components = confirm["selected"]
             result["selected"] = confirm["selected"]
             if fallback:
-                # The capacity-aware discovery found an eligible workspace template, so the seed is
-                # neither previewed nor written and the run uses the confirmed template instead.
                 fallback = False
-                result["warnings"].append(
-                    "The capacity-confirmed discovery selected an eligible workspace template; the "
-                    "standard-template seed fallback is not used")
+                result["warnings"].append("The capacity-confirmed discovery selected an eligible workspace template; the standard-template seed fallback is not used")
             if confirm.get("warnings") != basic.get("warnings"):
-                result["warnings"].extend(item for item in (confirm.get("warnings") or [])
-                                          if item not in (basic.get("warnings") or []))
+                result["warnings"].extend(item for item in (confirm.get("warnings") or []) if item not in (basic.get("warnings") or []))
         elif fallback:
-            conflicts = _seed_conflicts(cli, store, seed_project, targets, stem)
-            if conflicts:
+            if conflicts := _seed_conflicts(cli, store, seed_project, targets, stem):
                 result["issues"] = conflicts
                 return _stop(result, "outputs")
             seed_preview, stopped = _phase(result, "template_seed", lambda: prepare_standard_template(
                 cli, store, ond_electrical=components["OND"]["electrical"],
-                pan_name=Path(components["PAN"]["name"]).name,
-                ond_name=Path(components["OND"]["name"]).name,
+                pan_name=Path(components["PAN"]["name"]).name, ond_name=Path(components["OND"]["name"]).name,
                 new_project=seed_project, dry_run=True, capacity=flat_capacity,
-                allow_window_creation=allow_window_creation, allow_synthesize=True))
+                allow_window_creation=allow_window_creation, allow_synthesize=True,
+            ))
             if stopped is not None:
                 return stopped
             result["preview"]["template_seed"] = seed_preview
             _inherit(result, seed_preview, "template_seed")
             if seed_preview.get("status") != "ready":
-                return _stop(result, "template_seed",
-                             "failed" if seed_preview.get("status") == "failed" else "blocked")
-            result["warnings"].append(
-                "The seed preview derives PRJ/VC0 in memory from the installed standard template with the "
-                "selected components and the accepted capacity; it retains every unlisted default and loss "
-                "mode and writes nothing yet")
+                return _stop(result, "template_seed", "failed" if seed_preview.get("status") == "failed" else "blocked")
+            result["warnings"].append("The seed preview derives PRJ/VC0 in memory from the installed standard template with the selected components and the accepted capacity; it retains every unlisted default and loss mode and writes nothing yet")
         else:
             _inherit(result, confirm, "template_capacity")
             return _stop(result, "template_capacity")
@@ -956,32 +780,24 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     template = components.get("template") or {}
     template_project = spec.get("template_project") or template.get("project") or seed_project
     variant = spec.get("variant") or template.get("variant") or SEED_VARIANT
-    pan_name = Path(components["PAN"]["name"]).name
-    ond_name = Path(components["OND"]["name"]).name
-
-    manifest_name = weather.get("weather_manifest_name") or ""
-    inherited_review = auto_sizing_review
+    pan_name, ond_name = Path(components["PAN"]["name"]).name, Path(components["OND"]["name"]).name
+    manifest_name, inherited_review = weather.get("weather_manifest_name") or "", auto_sizing_review
 
     if mode in ("csv", *REMOTE_WEATHER_MODES):
         if mode in REMOTE_WEATHER_MODES:
             def request_weather(run):
                 kwargs = dict(
-                    csv_name=csv_name, year=year,
-                    location_id=weather.get("location_id"),
+                    csv_name=csv_name, year=year, location_id=weather.get("location_id"),
                     latitude=weather.get("latitude"), longitude=weather.get("longitude"),
                     site_name=weather.get("site_label") or "", altitude=weather.get("altitude"),
-                    country_code=country_code,
-                    timezone_name=weather.get("timezone_name") or "",
+                    country_code=country_code, timezone_name=weather.get("timezone_name") or "",
                     temperature_method=weather.get("temperature_method") or TEMPERATURE_METHOD,
-                    strict_dhi=bool(weather.get("strict_dhi", False)),
-                    dry_run=run,
+                    strict_dhi=bool(weather.get("strict_dhi", False)), dry_run=run,
                 )
                 if mode != "open_meteo":
                     kwargs["provider"] = _PROVIDER_FOR_MODE[mode]
                 return download_weather(cli.workspace, **kwargs)
 
-            # The plan is resolved first, even for an execution run: an unusable place or an offset
-            # create-site would reject stops the flow before a provider byte is requested or stored.
             plan, stopped = _phase(result, "acquisition", lambda: request_weather(True))
             if stopped is not None:
                 return stopped
@@ -990,22 +806,15 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             if plan.get("status") != "ready":
                 result["preview"]["weather"] = plan
                 _inherit(result, plan, "acquisition")
-                return _stop(result, "acquisition",
-                             "failed" if plan.get("status") == "failed" else "blocked")
+                return _stop(result, "acquisition", "failed" if plan.get("status") == "failed" else "blocked")
             offset = plan.get("standard_utc_offset_hours")
             if _is_number(offset) and offset > CREATE_SITE_MAX_OFFSET_HOURS:
-                _issue(result, "weather.location",
-                       f"The resolved place uses a standard UTC offset of {offset:+g} h while create-site "
-                       f"accepts at most +{CREATE_SITE_MAX_OFFSET_HOURS} h; nothing was downloaded or written")
+                _issue(result, "weather.location", f"The resolved place uses a standard UTC offset of {offset:+g} h while create-site accepts at most +{CREATE_SITE_MAX_OFFSET_HOURS} h; nothing was downloaded or written")
                 return _stop(result, "acquisition")
             if dry_run:
-                # No CSV/SIT/MET exists yet: inspecting or preparing one would be a fake walk over
-                # files this dry run is not allowed to create.
                 result["preview"]["weather"] = plan
                 _inherit(result, plan, "acquisition")
-                result["warnings"].append(
-                    "The acquisition plan is complete but no CSV/SIT/MET exists yet, so the native "
-                    "weather preflight and the annual simulation are planned, not performed")
+                result["warnings"].append("The acquisition plan is complete but no CSV/SIT/MET exists yet, so the native weather preflight and the annual simulation are planned, not performed")
                 return _stop(result, "planned", "ready_for_weather")
             acquire, stopped = _phase(result, "acquisition", lambda: request_weather(False))
             if stopped is not None:
@@ -1013,52 +822,36 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             result["preview"]["weather"] = acquire
             result["artifacts"]["acquire"] = dict(acquire.get("artifacts") or {})
             _inherit(result, acquire, "acquisition")
-            # A prepared acquisition is a provider-derived source, never a native certification.
             if acquire.get("review_required"):
                 inherited_review = True
             if acquire.get("status") not in ACQUIRE_SUCCESS:
-                return _stop(result, "acquisition",
-                             "failed" if acquire.get("status") == "failed" else "blocked")
+                return _stop(result, "acquisition", "failed" if acquire.get("status") == "failed" else "blocked")
             csv_name = (acquire.get("created_files", {}).get("csv") or {}).get("name") or csv_name
-            if not country_code:
-                # A location_id already carries its ISO country; take it from the acquired place.
-                place_country = _acquired_place(acquire).get("country_code")
-                if _is_text(place_country):
-                    country_code = place_country
-                    result["warnings"].append(
-                        "weather.country_code was not supplied; the prepared SIT/MET use the ISO code "
-                        f"{country_code} of the acquired place")
+            if not country_code and _is_text(place_country := _acquired_place(acquire).get("country_code")):
+                country_code = place_country
+                result["warnings"].append(f"weather.country_code was not supplied; the prepared SIT/MET use the ISO code {country_code} of the acquired place")
         prepare, stopped = _phase(result, "weather_prepare", lambda: prepare_weather(
             cli, csv_name=csv_name, year=year, sit_name=sit_name, met_name=met_name,
-            country_code=country_code, time_basis=TIME_BASIS, dry_run=dry_run,
-            allow_window_creation=allow_window_creation))
+            country_code=country_code, time_basis=TIME_BASIS, dry_run=dry_run, allow_window_creation=allow_window_creation,
+        ))
         if stopped is not None:
             return stopped
         result["preview"]["prepare"] = prepare
-        result["artifacts"]["prepare"] = {key: str(path) for key, path in
-                                          (prepare.get("artifacts") or {}).items()}
+        result["artifacts"]["prepare"] = {key: str(path) for key, path in (prepare.get("artifacts") or {}).items()}
         _inherit(result, prepare, "weather_prepare")
         if prepare.get("status") not in (("ready",) if dry_run else PREPARE_SUCCESS):
-            return _stop(result, "weather_prepare",
-                         "failed" if prepare.get("status") == "failed" else "blocked")
+            return _stop(result, "weather_prepare", "failed" if prepare.get("status") == "failed" else "blocked")
         if prepare.get("status") == "needs_review":
             inherited_review = True
         if dry_run:
             return _stop(result, "planned", "ready_for_weather")
         manifest_name = Path((prepare.get("artifacts") or {}).get("manifest", "")).name or manifest_name
     elif synthetic_weather:
-        result["warnings"].append(
-            "weather.mode='synthetic_from_site' runs PVsystCLI with --synthetic-weather from the "
-            f"monthly site file {sit_name} without a pre-built hourly .MET file."
-        )
+        result["warnings"].append(f"weather.mode='synthetic_from_site' runs PVsystCLI with --synthetic-weather from the monthly site file {sit_name} without a pre-built hourly .MET file.")
     elif not manifest_name:
-        result["warnings"].append(
-            "No prepared weather manifest was supplied for the existing weather inputs; the native "
-            "source-weather comparison is skipped and the SIT/MET are only name-checked")
+        result["warnings"].append("No prepared weather manifest was supplied for the existing weather inputs; the native source-weather comparison is skipped and the SIT/MET are only name-checked")
 
     if not dry_run:
-        # Only a real run builds the verified folder set, and only after the weather phase succeeded:
-        # a dry run, a native-preflight failure or a failed provider request creates nothing.
         created, error = _init_layout(cli, store)
         result["preview"]["workspace"]["created_directories"] = created
         if error is not None:
@@ -1066,27 +859,21 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             return _stop(result, "workspace_init", "failed")
 
     if fallback:
-        # The seed is written only after the capacity/seed preflight and the weather phase succeeded,
-        # so a failed provider request never leaves a half-built seed behind.
         if dry_run:
             return _stop(result, "planned", "ready_for_weather")
-        # Projects is part of the verified folder set that the workspace_init step already created.
         seed, stopped = _phase(result, "template_seed", lambda: prepare_standard_template(
-            cli, store, ond_electrical=components["OND"]["electrical"], pan_name=pan_name,
-            ond_name=ond_name, new_project=seed_project, dry_run=False, capacity=flat_capacity,
-            allow_window_creation=allow_window_creation, allow_synthesize=True))
+            cli, store, ond_electrical=components["OND"]["electrical"], pan_name=pan_name, ond_name=ond_name,
+            new_project=seed_project, dry_run=False, capacity=flat_capacity, allow_window_creation=allow_window_creation, allow_synthesize=True,
+        ))
         if stopped is not None:
             return stopped
         result["preview"]["template_seed_write"] = seed
-        result["artifacts"]["seed"] = {"project": seed_project, "variant": SEED_VARIANT,
-                                       "files": seed.get("files")}
+        result["artifacts"]["seed"] = {"project": seed_project, "variant": SEED_VARIANT, "files": seed.get("files")}
         _inherit(result, seed, "template_seed")
         if seed.get("status") != "created":
             result["warnings"].append(RETAINED_NOTE)
-            return _stop(result, "template_seed",
-                         "failed" if seed.get("status") == "failed" else "blocked")
-        confirmed, stopped = _phase(result, "template_seed",
-                                    lambda: discover(flat_capacity, seed_project, SEED_VARIANT))
+            return _stop(result, "template_seed", "failed" if seed.get("status") == "failed" else "blocked")
+        confirmed, stopped = _phase(result, "template_seed", lambda: discover(flat_capacity, seed_project, SEED_VARIANT))
         if stopped is not None:
             result["warnings"].append(RETAINED_NOTE)
             return stopped
@@ -1095,21 +882,16 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             _inherit(result, confirmed, "template_seed")
             result["warnings"].append(RETAINED_NOTE)
             return _stop(result, "template_seed")
-        drift = _identity_drift(components, confirmed["selected"])
-        if drift is not None:
+        if (drift := _identity_drift(components, confirmed["selected"])) is not None:
             _issue(result, "discovery", drift)
             result["warnings"].append(RETAINED_NOTE)
             return _stop(result, "discovery")
         components = confirmed["selected"]
         result["selected"] = confirmed["selected"]
-        result["warnings"].append(
-            f"The written seed {seed_project}/{SEED_VARIANT} reads back the requested components and "
-            "counts; the annual simulation runs on the working copy named by new_project")
+        result["warnings"].append(f"The written seed {seed_project}/{SEED_VARIANT} reads back the requested components and counts; the annual simulation runs on the working copy named by new_project")
 
     phase_name = "project_preparation" if prepare_only else "simulation"
-    context = {"preparation_context": {"request": spec, "selected": result["selected"],
-               "envelope": result["preview"]["envelope"], "review_required": inherited_review,
-               "warnings": list(result["warnings"])}} if prepare_only else {}
+    context = {"preparation_context": {"request": spec, "selected": result["selected"], "envelope": result["preview"]["envelope"], "review_required": inherited_review, "warnings": list(result["warnings"])}} if prepare_only else {}
     if prepare_only and source_context is not None:
         context["preparation_context"]["source_binding"] = source_context
         context["preparation_context"]["review_required"] |= bool(source_context.get("needs_review"))
@@ -1119,10 +901,9 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             cli, store, spec=spec, pan_info=components["PAN"], ond_info=components["OND"],
             capacity_plan=utility_plan, sit_name=sit_name, met_name=met_name,
             weather_manifest_name=manifest_name, dry_run=dry_run, prepare_only=prepare_only,
-            preparation_context=context.get("preparation_context"),
-            allow_window_creation=allow_window_creation,
-            synthetic_weather=synthetic_weather,
-            report_language=report_language))
+            preparation_context=context.get("preparation_context"), allow_window_creation=allow_window_creation,
+            synthetic_weather=synthetic_weather, report_language=report_language,
+        ))
     else:
         runner = prepare_template if prepare_only else simulate_template
         runner_kwargs = {"allow_window_creation": allow_window_creation} if prepare_only else {}
@@ -1130,39 +911,32 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             cli, store, template_project=template_project, variant=variant, new_project=new_project,
             pan_name=pan_name, ond_name=ond_name, site_name=sit_name, met_name=met_name, tilt=tilt,
             year=year, dry_run=dry_run, capacity=flat_capacity, weather_manifest_name=manifest_name,
-            azimuth=azimuth, losses=losses or None,
-            report_pages=spec.get("report_pages"), synthetic_weather=synthetic_weather,
-            report_language=report_language,
-            **context, **runner_kwargs))
+            azimuth=azimuth, losses=losses or None, report_pages=spec.get("report_pages"),
+            synthetic_weather=synthetic_weather, report_language=report_language, **context, **runner_kwargs,
+        ))
     if stopped is not None:
         result["warnings"].append(RETAINED_NOTE)
         return stopped
     result["preview"][phase_name] = simulation
     result["artifacts"]["project_preparation" if prepare_only else "simulate"] = dict(simulation.get("artifacts") or {})
     result["metrics"] = simulation.get("metrics")
-    if simulation.get("diagnostics") is not None:
-        result["diagnostics"] = simulation["diagnostics"]
-    if simulation.get("bifacial_metrics") is not None:
-        result["bifacial_metrics"] = simulation["bifacial_metrics"]
-    if simulation.get("utility_summary") is not None:
-        result["utility_summary"] = simulation["utility_summary"]
+    for k in ("diagnostics", "bifacial_metrics", "utility_summary"):
+        if simulation.get(k) is not None:
+            result[k] = simulation[k]
     result["recovery"] = list(simulation.get("recovery") or [])
     _inherit(result, simulation, phase_name)
     accepted = ("prepared", "needs_review") if prepare_only else SIMULATE_SUCCESS
     if simulation.get("status") not in (("ready",) if dry_run else accepted):
         if simulation.get("status") == "failed":
             result["warnings"].append(RETAINED_NOTE)
-        return _stop(result, simulation.get("stage") or phase_name,
-                     "failed" if simulation.get("status") == "failed" else "blocked")
+        return _stop(result, simulation.get("stage") or phase_name, "failed" if simulation.get("status") == "failed" else "blocked")
 
     result["execution_preflight_complete"] = True
     if dry_run:
         return _stop(result, simulation.get("stage") or "preflight", "ready")
     if prepare_only:
         result["prepared"] = simulation.get("prepared", False)
-        result["prepared_project"] = {"project": new_project, "variant": variant, "year": year,
-                                      "site": sit_name, "met": met_name,
-                                      "manifest": simulation["artifacts"].get("manifest")}
+        result["prepared_project"] = {"project": new_project, "variant": variant, "year": year, "site": sit_name, "met": met_name, "manifest": simulation["artifacts"].get("manifest")}
     elif is_utility:
         result["native_consumption_verified"] = bool(simulation.get("native_consumption_verified", False))
     result["status"] = "needs_review" if inherited_review or simulation["status"] == "needs_review" else ("prepared" if prepare_only else "completed")
@@ -1171,24 +945,12 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
 
 
 def simulate_design(cli, store, *, spec: dict, dry_run=True, verbose=False):
-    """Run the unified single-project design flow for one workspace.
-
-    ``spec`` is validated strictly before anything is created: unknown keys, non-numeric or
-    boolean numbers, a missing capacity/electrical_design choice and missing weather location
-    evidence all stop the flow. Returns ``status`` (blocked / ready_for_weather / ready /
-    completed / needs_review / failed), ``stage``, ``dry_run``, ``execution_preflight_complete``,
-    ``issues``, ``warnings``, ``selected``, ``preview``, ``metrics``, ``artifacts`` and
-    ``recovery``. A dry run writes nothing; a real run never overwrites and never cleans up.
-    Set ``verbose=True`` to expand per-template discovery rejection details.
-    """
-    # Hold one workspace lock for the whole flow; weather helpers reuse the CLI lock,
-    # keeping lock ordering fixed as store.lock -> cli._lock.
+    """Run the unified single-project design flow for one workspace."""
     with store.lock:
         return _design_flow(cli, store, spec, dry_run, verbose=verbose)
 
 
-def prepare_design_project(cli, store, *, spec: dict, dry_run=True, source_context=None,
-                           allow_window_creation=None, verbose=False):
+def prepare_design_project(cli, store, *, spec: dict, dry_run=True, source_context=None, allow_window_creation=None, verbose=False):
     """Prepare without an annual run; optional already-bound source provenance stays metadata."""
     with store.lock:
         return _design_flow(cli, store, spec, dry_run, prepare_only=True, source_context=source_context,

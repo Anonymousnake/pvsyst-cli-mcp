@@ -23,7 +23,7 @@ from pvsyst_auto.workflows.batch import (
     run_batch_sweep,
 )
 from pvsyst_auto.workflows.bess_optimize import optimize_bess_sizing
-from pvsyst_auto.workflows.feasibility import run_feasibility_study
+from pvsyst_auto.workflows.optimize import run_feasibility_study
 from pvsyst_auto.workflows.optimize import optimize_variant
 
 
@@ -1116,7 +1116,7 @@ class FeasibilityStudyTests(unittest.TestCase):
         self.assertIsNotNone(res["executive_summary"]["recommended_bess"])
 
         # Verify MCP tool boundary accepts strict FeasibilityStudyRequest
-        import pvsyst_auto.api.engineering as api_eng
+        import pvsyst_auto.api.simulation as api_eng
         from pvsyst_auto.api.schemas import FeasibilityStudyRequest
 
         spec2 = self._sample_spec()
@@ -1158,7 +1158,7 @@ class FeasibilityStudyTests(unittest.TestCase):
         self.assertEqual(prev_none["status"], "ready")
 
     def test_design_review_status_propagates_to_public_study(self) -> None:
-        from pvsyst_auto.api.engineering import pvsyst_run_feasibility_study
+        from pvsyst_auto.api.simulation import pvsyst_run_feasibility_study
         from pvsyst_auto.api.schemas import FeasibilityStudyRequest
 
         request = FeasibilityStudyRequest.model_validate({
@@ -1167,10 +1167,10 @@ class FeasibilityStudyTests(unittest.TestCase):
         })
         simulation = {"status": "needs_review", "artifacts": {"simulate": {"csv": str(self.base_csv)}},
                       "metrics": {"nominal_dc_power_kw": 100}}
-        with patch("pvsyst_auto.api.engineering.cli", return_value=self.cli), \
-             patch("pvsyst_auto.api.engineering.variant_store", return_value=self.store), \
-             patch("pvsyst_auto.workflows.feasibility.simulate_design", return_value=simulation), \
-             patch("pvsyst_auto.workflows.feasibility.diagnose_simulation_csv", return_value={"status": "ok", "needs_review": False}):
+        with patch("pvsyst_auto.api.simulation.cli", return_value=self.cli), \
+             patch("pvsyst_auto.api.simulation.variant_store", return_value=self.store), \
+             patch("pvsyst_auto.workflows.optimize.simulate_design", return_value=simulation), \
+             patch("pvsyst_auto.workflows.optimize.diagnose_simulation_csv", return_value={"status": "ok", "needs_review": False}):
             result = pvsyst_run_feasibility_study(spec=request, dry_run=False, confirm=True)
         self.assertEqual(result["status"], "needs_review")
         self.assertTrue(result["executive_summary"]["needs_review"])
@@ -1188,7 +1188,7 @@ class FeasibilityStudyTests(unittest.TestCase):
         base_spec["report"]["output_name"] = "design_chain.html"
 
         # 1. ready_for_weather stops early instead of continuing into empty downstream stages
-        with patch("pvsyst_auto.workflows.feasibility.simulate_design", return_value={
+        with patch("pvsyst_auto.workflows.optimize.simulate_design", return_value={
             "status": "ready_for_weather", "issues": [{"field": "weather", "message": "prepare weather first"}],
         }):
             wait_res = run_feasibility_study(self.cli, self.store, spec=base_spec, dry_run=True)
@@ -1214,7 +1214,7 @@ class FeasibilityStudyTests(unittest.TestCase):
             "metrics": {"nominal_dc_power_kw": 118.8},
             "preview": {"simulation": {"nominal_dc_power_kw": 118.8}},
         }
-        with patch("pvsyst_auto.workflows.feasibility.simulate_design", return_value=nested_sim):
+        with patch("pvsyst_auto.workflows.optimize.simulate_design", return_value=nested_sim):
             res = run_feasibility_study(self.cli, self.store, spec=base_spec, dry_run=False, confirm=True)
         self.assertIn(res["status"], ("completed", "needs_review"))
         self.assertEqual(res["executive_summary"]["installed_dc_kw"], 118.8)
