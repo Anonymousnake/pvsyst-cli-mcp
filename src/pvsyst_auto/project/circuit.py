@@ -836,15 +836,39 @@ def validate_structure(store, project: str, variant: str) -> dict:
                 except ValueError as exc:
                     issues.append(str(exc))
         for ident, bounds in arrays.items():
+            try:
+                root = root_block(lines, bounds)
+            except ValueError as exc:
+                issues.append(f"Subarray {ident}: {exc}")
+                continue
             if len(indices := store._field_indices(lines, bounds, "NoOrientation")) != 1:
                 issues.append(f"Subarray {ident} needs one NoOrientation")
-            elif not (raw := FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) not in orientation_ids:
+                continue
+            if not (raw := FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) not in orientation_ids:
                 issues.append(f"Subarray {ident} references unknown orientation {raw}")
-            elif indices2 := store._field_indices(lines, bounds, "NoOrientation2"):
+                continue
+            fl_raw = root.fields.get("Flags", [None])[0]
+            fl_val = int(fl_raw[1][1:], 16) if (fl_raw and re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", fl_raw[1])) else None
+            nstr_raw = root.one("NStringCh")[1] if "NStringCh" in root.fields else ""
+            nso1_raw = root.one("NStrOrient1")[1] if "NStrOrient1" in root.fields else ""
+            if indices2 := store._field_indices(lines, bounds, "NoOrientation2"):
                 if len(indices2) != 1:
                     issues.append(f"Subarray {ident} has repeated NoOrientation2")
                 elif not (raw2 := FIELD.fullmatch(lines[indices2[0]].rstrip("\r\n"))[2]).isdigit() or int(raw2) not in orientation_ids or int(raw2) == int(raw):
                     issues.append(f"Subarray {ident} references invalid NoOrientation2 {raw2}")
+                if not nstr_raw.isdigit() or not nso1_raw.isdigit() or not 1 <= int(nso1_raw) < int(nstr_raw):
+                    issues.append(f"Subarray {ident} mixed NStrOrient1 must satisfy 1 <= NStrOrient1 < NStringCh")
+                if fl_val is None or not (fl_val & 0x40):
+                    issues.append(f"Subarray {ident} requires mixed-orientation Flags bit $40 with NoOrientation2")
+                f2_raw = root.fields.get("Flags2", [None])[0]
+                f2_val = int(f2_raw[1][1:], 16) if (f2_raw and re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", f2_raw[1])) else None
+                if f2_val is None or not (f2_val & 0x1):
+                    issues.append(f"Subarray {ident} requires Flags2 bit $01 with NoOrientation2")
+                if "PowerSharingInverterId" in root.fields and root.one("PowerSharingInverterId")[1] != "-1":
+                    issues.append(f"Subarray {ident} cannot combine mixed NoOrientation2 with power sharing")
+            else:
+                if fl_val is not None and (fl_val & 0x40):
+                    issues.append(f"Subarray {ident} sets mixed-orientation flag without NoOrientation2")
         system_type, unchecked, circuit_res = None, list_unchecked, None
         if system is None:
             issues.append("Missing pvSystem section")

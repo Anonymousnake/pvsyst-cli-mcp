@@ -313,3 +313,79 @@ class EastWestDomeTests(unittest.TestCase):
         to_trk = convert_orientation(self.store, project="ConvDual.PRJ", source_variant="VC1", new_variant="VC2", target_type="tracker_ns", dry_run=False)
         self.assertEqual(to_trk["orientation_conversion"]["target_type"], "tracker_ns")
         self.assertTrue(self.store.validate_structure("ConvDual.PRJ", "VC2")["valid"])
+
+    def test_pr288_review_regressions_mixed_checks_readback_power_sharing_and_area(self) -> None:
+        # 1) Reject >= 3 power-sharing subarrays converting to mixed dome before writing
+        ps3 = synthesize_project_and_variant(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            pan_name="Mono440.PAN", ond_name="Inv50_2MPPT.OND",
+            orientations=[{"id": 1, "field_type": "FixedPlane", "tilt_deg": 20.0, "azimuth_deg": 0.0}],
+            subarrays=[
+                {"subarray_id": i, "orientation_id": 1, "n_mod_serie": 20, "n_string_ch": 2,
+                 "n_inverter": 1, "n_inv_mppt": 1, "independent_mppt": True,
+                 "power_sharing_inverter_id": 0, "pnom_ac_in_mppt": 16.67}
+                for i in (1, 2, 3)
+            ],
+        )
+        self.store.create_project("PS3.PRJ", ps3["prj_text"], {"VC0": ps3["vc0_text"]})
+        self.assertIs(self.store.validate_structure("PS3.PRJ", "VC0")["valid"], True)
+        blocked = convert_orientation(self.store, project="PS3.PRJ", source_variant="VC0", new_variant="VC1", target_type="dome", dry_run=False)
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertTrue(any("power-sharing" in str(msg).lower() for msg in blocked["issues"]))
+        self.assertFalse((self.ws / "Projects" / "PS3.VC1").exists())
+
+        # 2) Mixed-orientation validation catches invalid string splits & flags
+        res_mixed = synthesize_utility_project(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            field_type="Dome", pan_name="Mono440.PAN", ond_name="Inv50_1MPPT.OND",
+            n_mod_serie=20, n_string_ch=10, n_inverter=1, n_inv_mppt=1,
+            independent_mppt=False, pnom_ac_in_mppt=50.0,
+            tilt_deg=10.0, azimuth_deg=90.0, pitch_m=6.0, top_spacing_m=0.2,
+            shed_count=5, module_rows=1, module_columns=20, dome_wiring="mixed",
+        )
+        self.store.create_project("MixCheck.PRJ", res_mixed["prj_text"], {"VC0": res_mixed["vc0_text"]})
+        base_txt = res_mixed["vc0_text"]
+        # Check regular dome GCR doubles collector width relative to single face
+        self.assertEqual(
+            res_mixed["utility_summary"]["gcr"],
+            round((2.0 * res_mixed["utility_summary"]["collector_width_m"]) / 6.0, 4),
+        )
+        mutations = (
+            ("nso1_gt_total", base_txt.replace("NStrOrient1=5", "NStrOrient1=99")),
+            ("nso1_zero", base_txt.replace("NStrOrient1=5", "NStrOrient1=0")),
+            ("flags_missing_40", base_txt.replace("Flags=$001E0042", "Flags=$001E0002")),
+            ("flags2_missing_01", base_txt.replace("Flags2=$0021", "Flags2=$0020")),
+            ("no_no2_with_flag40", base_txt.replace("      NoOrientation2=2\r\n", "").replace("      NoOrientation2=2\n", "")),
+        )
+        for idx_m, (label, mutated) in enumerate(mutations, start=1):
+            with self.subTest(mutation=label):
+                vtag = f"VC{idx_m}"
+                (self.ws / "Projects" / f"MixCheck.{vtag}").write_bytes(mutated.encode("utf-8"))
+                st = validate_structure(self.store, "MixCheck.PRJ", vtag)
+                self.assertIs(st["valid"], False, label)
+
+        # 3) Public parameter reader exposes both pvDomeOrient entries + NoOrientation2
+        params = self.store.inspect_parameters("MixCheck.PRJ", "VC0")
+        self.assertEqual(len(params["orientations"]), 2)
+        self.assertEqual([o["values"]["FieldType"] for o in params["orientations"]], ["Dome", "DomeBackfaces"])
+        self.assertEqual(params["orientations"][0]["values"]["IsMainOrient"], "True")
+        self.assertEqual(params["orientations"][1]["values"]["NoPairOrient"], "1")
+        sub_vals = params["subarrays"][0]["values"]
+        self.assertEqual(sub_vals["NoOrientation"], "1")
+        self.assertEqual(sub_vals["NoOrientation2"], "2")
+        self.assertEqual(sub_vals["NStrOrient1"], "5")
+
+        # 4) Two-face collector area & GCR in 3D polygon dome summary
+        poly = [[0.0, 0.0], [34.0, 0.0], [34.0, 24.0], [0.0, 24.0]]
+        _, poly_summary = build_dome_3d_shading(
+            site_polygon=poly, terrain_mesh=None, terrain_opts=None,
+            shed_count=4, pitch_m=6.0, tilt_deg=10.0, azimuth_deg=90.0, base_slope_deg=0.0,
+            top_spacing_m=0.2, module_rows=1, module_columns=20,
+            module_width_m=1.032, module_length_m=1.996, module_name="Mono",
+            module_orient="moPortrait", spacing_x_m=0.02, spacing_y_m=0.02,
+            setback_m=1.0, ground_clearance_m=0.5, max_table_columns=25,
+        )
+        expected_two_face_area = round(2.0 * sum(t["long_shed_m"] * t["larg_shed_m"] for t in poly_summary["tables"]), 2)
+        self.assertEqual(poly_summary["collector_area_m2"], expected_two_face_area)
+        self.assertEqual(poly_summary["gcr"], round(expected_two_face_area / poly_summary["site_area_m2"], 4))
+        self.assertGreater(poly_summary["collector_area_m2"], 400.0)

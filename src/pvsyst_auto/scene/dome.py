@@ -248,11 +248,14 @@ def build_dome_3d_shading(
         obj_idx += 1
         lines.extend(emit_pvshd_ground(terrain_mesh, object_index=obj_idx, version=SEED_RECORD_VERSION))
     lines.extend(emit_shading_obstacles(parsed_obs, start_index=obj_idx + 1))
+    two_face_area = round(2.0 * sum(float(t["long_shed_m"]) * float(t["larg_shed_m"]) for t in tables), 2)
     summary = dict(ground_layout) if ground_layout is not None else {
         "row_count": len(tables), "table_count": len(tables),
-        "collector_area_m2": round(sum(t["long_shed_m"] * t["larg_shed_m"] for t in tables), 2),
         "proj_depth_m": round(footprint, 4), "base_slope_deg": base_slope_deg,
     }
+    summary["collector_area_m2"] = two_face_area
+    if "site_area_m2" in summary and float(summary["site_area_m2"]) > 0.0:
+        summary["gcr"] = round(two_face_area / float(summary["site_area_m2"]), 4)
     summary.update({
         "tables": tables,
         "dome_pair_count": len(tables),

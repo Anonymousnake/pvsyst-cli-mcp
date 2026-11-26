@@ -307,6 +307,14 @@ def _rewrite_converted_subarrays(lines: list[str], *, target_type: str, eol: str
     )
     if target_type == "dome" and not dual_split:
         for _, _, d in blocks:
+            ps_val = (d.get("PowerSharingInverterId") or (None, "-1"))[1]
+            fl_raw = (d.get("Flags") or (None, ""))[1]
+            has_ps_flag = bool(re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", fl_raw)) and bool(int(fl_raw[1:], 16) & 0x100)
+            if ps_val != "-1" or has_ps_flag:
+                raise ValueError(
+                    "Converting power-sharing subarrays to mixed dome orientation is not supported; "
+                    "disable power sharing or use a 2-subarray dual-face topology"
+                )
             raw_str = (d.get("NStringCh") or (None, ""))[1]
             if not raw_str.isdigit() or int(raw_str) < 2 or int(raw_str) % 2 != 0:
                 raise ValueError("Converting a subarray to mixed dome orientation requires an even string count >= 2")

@@ -705,9 +705,10 @@ def synthesize_utility_project(
         orientations=orientations_list, subarrays=subarrays, pan_name=pan_name, ond_name=ond_name, u_factor=u_factor,
         shading_lines=shading_lines, version=version, with_bom=with_bom, allow_missing_met=allow_missing_met,
     )
+    effective_gcr_width = (2.0 * resolved_collector_width) if field_type == "Dome" else resolved_collector_width
     result["utility_summary"] = {
         "field_type": field_type, "include_3d_scene": need_3d, "pitch_m": resolved_pitch, "collector_width_m": resolved_collector_width,
-        "gcr": round(resolved_collector_width / resolved_pitch, 4), "shed_count": shed_count, "module_rows": n_rows, "module_columns": n_cols,
+        "gcr": round(effective_gcr_width / resolved_pitch, 4), "shed_count": shed_count, "module_rows": n_rows, "module_columns": n_cols,
         "module_orient": module_orient, "module_width_m": mw, "module_length_m": ml, "module_dimension_source": dim_source,
         "bifacial_enabled": bool(bifacial and bifacial.get("enabled", True)), "base_slope_deg": eff_base_slope, "obstacle_count": len(obstacles or ()),
         **({"dome": dome_meta} if dome_meta is not None else {}),
