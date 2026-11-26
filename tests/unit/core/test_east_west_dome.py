@@ -354,7 +354,10 @@ class EastWestDomeTests(unittest.TestCase):
             ("nso1_gt_total", base_txt.replace("NStrOrient1=5", "NStrOrient1=99")),
             ("nso1_zero", base_txt.replace("NStrOrient1=5", "NStrOrient1=0")),
             ("flags_missing_40", base_txt.replace("Flags=$001E0042", "Flags=$001E0002")),
+            ("flags_with_ps_100", base_txt.replace("Flags=$001E0042", "Flags=$001E0142")),
             ("flags2_missing_01", base_txt.replace("Flags2=$0021", "Flags2=$0020")),
+            ("missing_ps_id", base_txt.replace("      PowerSharingInverterId=-1\r\n", "").replace("      PowerSharingInverterId=-1\n", "")),
+            ("dup_nso1", base_txt.replace("NStrOrient1=5", "NStrOrient1=5\r\n      NStrOrient1=5")),
             ("no_no2_with_flag40", base_txt.replace("      NoOrientation2=2\r\n", "").replace("      NoOrientation2=2\n", "")),
         )
         for idx_m, (label, mutated) in enumerate(mutations, start=1):
@@ -363,6 +366,7 @@ class EastWestDomeTests(unittest.TestCase):
                 (self.ws / "Projects" / f"MixCheck.{vtag}").write_bytes(mutated.encode("utf-8"))
                 st = validate_structure(self.store, "MixCheck.PRJ", vtag)
                 self.assertIs(st["valid"], False, label)
+                self.assertTrue(st["issues"], label)
 
         # 3) Public parameter reader exposes both pvDomeOrient entries + NoOrientation2
         params = self.store.inspect_parameters("MixCheck.PRJ", "VC0")
