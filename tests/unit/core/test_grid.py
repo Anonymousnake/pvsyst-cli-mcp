@@ -3,14 +3,11 @@ import tempfile
 import unittest
 import re
 from pathlib import Path
-
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.project.circuit import set_independent_mppt, set_power_sharing
 from pvsyst_auto.project.template import _declare_explicit_counts
 from pvsyst_auto.project.variants import VariantStore
-from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
-
-
+from pvsyst_auto.validation import NATIVE_TEXT_OR_SEED, SEED_LABEL
 GROUP = """InverterNode Start;
   NElements=2
   SubArrayId=1
@@ -35,43 +32,31 @@ ARRAY = """PVObject_=pvSubArray
   NInvMPPT=1
 End of PVObject pvSubArray
 """
-
-
 def grid_text(groups=GROUP, arrays=ARRAY):
-    return ("PVObject_=pvVCalcul\n  Version=8.1.6\n"
-            "PVObject_=pvOrient\n  NoOrient=1\n  FieldType=FixedPlane\n"
-            "  FieldTilt=20\n  FieldAzim=0\nEnd of TOrientGroup\n"
-            "PVObject_PVMainArray=pvMainArray\nPVObject_SystemCircuit=pvCircuit\n"
-            "  Version=8.0.0\n  BaseNode=Start\nInjectionPointNode Start;\n"
-            "Children=Start\n" + groups + "Children=End\nInjectionPointNode End;\n"
-            "  BaseNode=End\nEnd of PVObject pvCircuit\n" + arrays +
-            "End of PVObject pvMainArray\nPVObject_System=pvSystem\n"
+    return ("PVObject_=pvVCalcul\n  Version=8.1.6\n" "PVObject_=pvOrient\n  NoOrient=1\n  FieldType=FixedPlane\n"
+            "  FieldTilt=20\n  FieldAzim=0\nEnd of TOrientGroup\n" "PVObject_PVMainArray=pvMainArray\nPVObject_SystemCircuit=pvCircuit\n"
+            "  Version=8.0.0\n  BaseNode=Start\nInjectionPointNode Start;\n" "Children=Start\n" + groups + "Children=End\nInjectionPointNode End;\n"
+            "  BaseNode=End\nEnd of PVObject pvCircuit\n" + arrays + "End of PVObject pvMainArray\nPVObject_System=pvSystem\n"
             "  SystemType=Grid\nEnd of PVObject pvSystem\nEnd of PVObject pvVCalcul\n")
-
-
 class GridTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         (self.root / "Projects").mkdir()
-        (self.root / "Projects" / "Example.PRJ").write_text(
-            "PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
+        (self.root / "Projects" / "Example.PRJ").write_text("PVObject_=pvProject\nEnd of PVObject pvProject\n", encoding="utf-8")
         self.path = self.root / "Projects" / "Example.VC0"
         self.store = VariantStore(self.root, ComponentStore(self.root))
-
     def inspect(self, text):
         data = b"\xef\xbb\xbf" + text.replace("\n", "\r\n").encode()
         self.path.write_bytes(data)
         result = self.store.validate_structure("Example.PRJ", "VC0")
         self.assertEqual(self.path.read_bytes(), data)
         return result
-
     def revert(self, backup_name, expected):
         snapshot = (self.root / "Projects" / ".mcp-variant-backups" / backup_name).read_bytes()
         self.assertEqual(snapshot, expected)
         self.path.write_bytes(snapshot)
-
     def test_circuit_inventory_counts_metadata_and_structural_guards(self):
         with self.subTest(case="uneven_groups_same_array"):
             groups = GROUP + GROUP.replace("NElements=2", "NElements=1").replace("NElements=3", "NElements=4")
@@ -81,7 +66,6 @@ class GridTests(unittest.TestCase):
             self.assertEqual(r["grid_circuit"]["totals"], {"inverters": 3, "strings": 10, "explicit_mppt_inputs": 0})
             self.assertEqual(r["grid_circuit"]["subarrays"][0]["declared_module_count"], 120)
             self.assertEqual(len(r["grid_circuit"]["inverter_groups"]), 2)
-
         with self.subTest(case="count_disagreement"):
             r = self.inspect(grid_text(arrays=ARRAY.replace("NStringCh=6", "NStringCh=8").replace("NInverter=2", "NInverter=1")))
             self.assertFalse(r["valid"])
@@ -90,7 +74,6 @@ class GridTests(unittest.TestCase):
             row = r["grid_circuit"]["subarrays"][0]
             self.assertEqual(row["declared_module_count"], 96)
             self.assertEqual(row["circuit_module_count"], 72)
-
         with self.subTest(case="multiple_arrays_separate_counts"):
             group2 = GROUP.replace("SubArrayId=1", "SubArrayId=2").replace("Array A", "Array B")
             array2 = ARRAY.replace("SubArrayId=1", "SubArrayId=2").replace("Array A", "Array B")
@@ -98,7 +81,6 @@ class GridTests(unittest.TestCase):
             self.assertTrue(r["valid"])
             self.assertEqual(r["grid_circuit"]["totals"]["strings"], 12)
             self.assertEqual([sub["circuit"]["inverters"] for sub in r["grid_circuit"]["subarrays"]], [2, 2])
-
         with self.subTest(case="metadata_cannot_supply_fields"):
             group_meta = GROUP.replace("  NElements=2", "  CableDefinition=Start\nNElements=999\nSubArrayId=99\nCableDefinition=End\n  NElements=2")
             arrays_meta = ARRAY.replace("  NStringCh=6", "PVObject_Metadata=pvExtra\nNStringCh=6\nEnd of PVObject pvExtra")
@@ -108,7 +90,6 @@ class GridTests(unittest.TestCase):
             self.assertEqual(r["issues"], [])
             self.assertEqual(r["grid_circuit"]["totals"]["strings"], 6)
             self.assertIn("missing NStringCh", " ".join(r["unchecked_checks"]))
-
         for value in ("0", "-1", "1.0", "nan", "2147483648", "1\nNElements=2"):
             with self.subTest(case="invalid_count", value=value):
                 r = self.inspect(grid_text(GROUP.replace("NElements=2", "NElements=" + value)))
@@ -119,7 +100,6 @@ class GridTests(unittest.TestCase):
             r = self.inspect(grid_text(GROUP.replace("NElements=2", "NElements=2147483647")))
             self.assertFalse(r["valid"])
             self.assertIn("Expanded circuit count", " ".join(r["issues"]))
-
         with self.subTest(case="nested_metadata_nodes"):
             nested_group = GROUP.replace("  Children=Start", "  CableDefinition=Start\n  Children=Start")
             nested_group = nested_group.replace("  Children=End", "  Children=End\n  CableDefinition=End")
@@ -127,15 +107,12 @@ class GridTests(unittest.TestCase):
             self.assertFalse(r["valid"])
             self.assertIn("nested metadata", " ".join(r["issues"]))
             self.assertIsNone(r["grid_circuit"]["totals"])
-
         with self.subTest(case="repeated_injection_unchecked"):
             r = self.inspect(grid_text().replace("InjectionPointNode Start;", "InjectionPointNode Start;\nNElements=2"))
             self.assertIsNone(r["valid"])
             self.assertIn("repeated transformer/injection", " ".join(r["unchecked_checks"]))
             self.assertIsNone(r["grid_circuit"]["totals"])
-
-        for idx, bad_group in enumerate((GROUP.replace("SubArrayId=1", "SubArrayId=99"),
-                                         GROUP.replace("SubArrayName=Array A", "SubArrayName=Wrong"),
+        for idx, bad_group in enumerate((GROUP.replace("SubArrayId=1", "SubArrayId=99"), GROUP.replace("SubArrayName=Array A", "SubArrayName=Wrong"),
                                          GROUP.replace("  SubArrayId=1", "  SubArrayId=1\nSubArrayId=1", 1))):
             with self.subTest(case="bad_reference", idx=idx):
                 r = self.inspect(grid_text(bad_group))
@@ -143,9 +120,7 @@ class GridTests(unittest.TestCase):
                 self.assertTrue(r["issues"])
         for name in ("Start", "End"):
             with self.subTest(case="start_end_array_name", name=name):
-                self.assertTrue(self.inspect(grid_text(GROUP.replace("Array A", name),
-                                                      ARRAY.replace("Array A", name)))["valid"])
-
+                self.assertTrue(self.inspect(grid_text(GROUP.replace("Array A", name), ARRAY.replace("Array A", name)))["valid"])
         with self.subTest(case="unknown_node_unchecked"):
             r = self.inspect(grid_text(GROUP.replace("StringNode", "OptimizerNode")))
             self.assertIsNone(r["valid"])
@@ -157,25 +132,18 @@ class GridTests(unittest.TestCase):
                 r = self.inspect(source)
                 self.assertFalse(r["valid"])
                 self.assertIsNone(r["grid_circuit"]["totals"])
-
-        for idx, text in enumerate((grid_text(groups=""),
-                                    grid_text().replace("PVObject_SystemCircuit=pvCircuit", "PVObject_Other=pvCircuit"),
+        for idx, text in enumerate((grid_text(groups=""), grid_text().replace("PVObject_SystemCircuit=pvCircuit", "PVObject_Other=pvCircuit"),
                                     grid_text().replace("PVObject_SystemCircuit=pvCircuit", "PVObject_SystemCircuit=pvCircuit\nPVObject_SystemCircuit=pvCircuit"))):
             with self.subTest(case="empty_missing_duplicate_circuit", idx=idx):
                 r = self.inspect(text)
                 self.assertFalse(r["valid"])
                 self.assertTrue(r["issues"])
-
     def test_missing_root_block_raises_value_error_not_stop_iteration(self):
         from pvsyst_auto.components.editor import root_block
         from pvsyst_auto.project import tracking
-        with self.assertRaisesRegex(ValueError, "no root PVObject block"):
-            root_block(["no objects here"])
-        with self.assertRaisesRegex(ValueError, "no root PVObject block"):
-            root_block(["no objects here"], (0, 0))
-        with self.assertRaisesRegex(ValueError, "no root PVObject block"):
-            tracking._require_scope(None, ["no objects here"], {}, None)
-
+        with self.assertRaisesRegex(ValueError, "no root PVObject block"): root_block(["no objects here"])
+        with self.assertRaisesRegex(ValueError, "no root PVObject block"): root_block(["no objects here"], (0, 0))
+        with self.assertRaisesRegex(ValueError, "no root PVObject block"): tracking._require_scope(None, ["no objects here"], {}, None)
     def test_multiplication_and_missing_nelements_default_to_one(self):
         group = GROUP.replace("    StringNode Start;", "MPPTNode Start;\nNElements=3\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n    StringNode Start;")
         group = group.replace("      NElements=3\n", "").replace("    StringNode End;", "    StringNode End;\nChildren=End\nMPPTNode End;")
@@ -191,8 +159,7 @@ class GridTests(unittest.TestCase):
             before = self.inspect(text)
             original = self.path.read_bytes()
             self.assertEqual(before["grid_circuit"]["subarrays"][0]["declared"]["Flags"], flags)
-            with self.assertRaisesRegex(ValueError, "MPPT"):
-                self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"], clone_orientation=True)
+            with self.assertRaisesRegex(ValueError, "MPPT"): self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"], clone_orientation=True)
             self.assertEqual(self.path.read_bytes(), original)
             copied = self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"])
             checked = self.store.validate_structure("Example.PRJ", "VC0")
@@ -202,15 +169,10 @@ class GridTests(unittest.TestCase):
             self.assertTrue(all(row["declared"]["Flags"] == flags for row in checked["grid_circuit"]["subarrays"]))
             self.store.remove_subarray("Example.PRJ", "VC0", copied["subarray_id"], copied["sha256"])
             self.assertEqual(self.path.read_bytes(), original)
-
-        for version, flags, inputs, valid, match in (
-                ("8.1.0", "$001E0402", 6, True, True),
-                ("8.1.0", "$001E0402", 1, False, False),
-                ("8.1.0", "$001E0002", 1, True, None),
-                ("8.1.6", "$001E0402", 6, True, True),
-                ("8.1.6", "$001E0402", 1, False, False),
-                ("8.1.6", "$001E0002", 1, True, None),
-                ("8.1.5", "$001E0402", 1, True, None)):
+        for version, flags, inputs, valid, match in (("8.1.0", "$001E0402", 6, True, True),
+                ("8.1.0", "$001E0402", 1, False, False), ("8.1.0", "$001E0002", 1, True, None),
+                ("8.1.6", "$001E0402", 6, True, True), ("8.1.6", "$001E0402", 1, False, False),
+                ("8.1.6", "$001E0002", 1, True, None), ("8.1.5", "$001E0402", 1, True, None)):
             arrays = ARRAY.replace("NInvMPPT=1", f"Version={version}\nFlags={flags}\nNInvMPPT={inputs}")
             checked = self.inspect(grid_text(group, arrays))
             self.assertEqual(checked["valid"], valid)
@@ -221,8 +183,7 @@ class GridTests(unittest.TestCase):
                     "PVObject_Ombrage=pvShading\nFlags=$00\nEnd of PVObject pvShading\nEnd of PVObject pvVCalcul")
                 before = self.inspect(text)
                 original = self.path.read_bytes()
-                with self.assertRaisesRegex(ValueError, "Independent MPPT layout"):
-                    self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"])
+                with self.assertRaisesRegex(ValueError, "Independent MPPT layout"): self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"])
                 self.assertEqual(self.path.read_bytes(), original)
         arrays = ARRAY.replace("NInvMPPT=1", "Version=8.1.0\nFlags=$001E0402\nNInvMPPT=1")
         checked = self.inspect(grid_text(arrays=arrays))
@@ -255,8 +216,7 @@ class GridTests(unittest.TestCase):
             self.revert(changed["backup_name"], original)
         for updates in ({"NInvMPPT": 1}, {"NInvMPPT": 6.5}, {"NInvMPPT": 12, "NStringCh": 12},
                         {"NInverter": 4, "NStringCh": 12}, {"NInverter": 4, "NInvMPPT": 12}):
-            with self.assertRaises(ValueError):
-                self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, updates)
+            with self.assertRaises(ValueError): self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, updates)
             self.assertEqual(self.path.read_bytes(), original)
         grouped = grid_text(group + group, arrays.replace("NInverter=2", "NInverter=4").replace("NInvMPPT=6", "NInvMPPT=12").replace("NStringCh=6", "NStringCh=12").replace("NStrOrient1=6", "NStrOrient1=12")).replace("End of PVObject pvVCalcul", "PVObject_Ombrage=pvShading\nFlags=$00\nEnd of PVObject pvShading\nEnd of PVObject pvVCalcul")
         grouped_report = self.inspect(grouped)
@@ -265,14 +225,11 @@ class GridTests(unittest.TestCase):
             self.store.update_parameters("Example.PRJ", "VC0", grouped_report["sha256"], 1, 1, {"NInverter": 3})
         self.assertEqual(self.path.read_bytes(), grouped_bytes)
         for altered in (text.replace("$001E0402", "$001E0002"), text.replace("Version=8.1.0", "Version=8.1.5"),
-                        text.replace("PowerSharingInverterId=-1", "PowerSharingInverterId=0"),
-                        text.replace("PowerSharingInverterId=-1\n", "")):
+                        text.replace("PowerSharingInverterId=-1", "PowerSharingInverterId=0"), text.replace("PowerSharingInverterId=-1\n", "")):
             before = self.inspect(altered)
             original = self.path.read_bytes()
-            with self.assertRaises(ValueError):
-                self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NInvMPPT": 12})
+            with self.assertRaises(ValueError): self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NInvMPPT": 12})
             self.assertEqual(self.path.read_bytes(), original)
-
         explicit = text.replace("    StringNode Start;", "    StringNode Start;\nNElements=1")
         for version in NATIVE_TEXT_OR_SEED:
             before = self.inspect(explicit.replace("Version=8.1.0", "Version=" + version))
@@ -289,13 +246,11 @@ class GridTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "integral"):
                 self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NStringCh": 9})
             self.assertEqual(self.path.read_bytes(), original)
-        for candidate, reason in (
-                (explicit.replace("Version=8.1.0", "Version=8.1.5"), re.escape(f"verified Version={SEED_LABEL}")),
+        for candidate, reason in ((explicit.replace("Version=8.1.0", "Version=8.1.5"), re.escape(f"verified Version={SEED_LABEL}")),
                 (text.replace("Version=8.1.0", "Version=8.1.6"), "explicit StringNode NElements")):
             before = self.inspect(candidate)
             original = self.path.read_bytes()
-            with self.assertRaisesRegex(ValueError, reason):
-                self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NStringCh": 12})
+            with self.assertRaisesRegex(ValueError, reason): self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NStringCh": 12})
             self.assertEqual(self.path.read_bytes(), original)
         planes = text.replace("PVObject_=pvOrient", "Orientations, list of=1 TOrientGroup\nPVObject_=pvOrient").replace(
             "End of TOrientGroup\n", "End of TOrientGroup\nEnd of Orientations\n").replace("FieldType=FixedPlane", "Flags=$00\nFieldType=FixedPlane")
@@ -310,12 +265,10 @@ class GridTests(unittest.TestCase):
             self.assertEqual(result["grid_circuit"]["totals"], {"inverters": 4, "strings": 12, "explicit_mppt_inputs": 12})
             self.assertTrue(all(row["declared"]["Flags"] == "$001E0402" and row["declared"]["NInvMPPT"] == "6" for row in result["grid_circuit"]["subarrays"]))
             two_planes = self.path.read_bytes()
-            with self.assertRaises(ValueError):
-                self.store.update_parameters("Example.PRJ", "VC0", copied_plane["sha256"], 2, 2, {"NoOrientation": 1})
+            with self.assertRaises(ValueError): self.store.update_parameters("Example.PRJ", "VC0", copied_plane["sha256"], 2, 2, {"NoOrientation": 1})
             self.assertEqual(self.path.read_bytes(), two_planes)
             two_text = two_planes.decode("utf-8-sig").replace("\r\n", "\n")
-            for altered, reason in (
-                    (two_text.replace("NoOrient=2\n", "NoOrient=2\nUsesTiltAver=True\n"), "Averaged orientations"),
+            for altered, reason in ((two_text.replace("NoOrient=2\n", "NoOrient=2\nUsesTiltAver=True\n"), "Averaged orientations"),
                     (two_text.replace("SubArrayName=Array A\n", "SubArrayName=Array A\nOrientationId=2\n", 1), "outside owned records"),
                     (two_text.replace("Version=" + version, "Version=8.1.5"), "verified exclusive explicit MPPT")):
                 guard = self.inspect(altered)
@@ -385,16 +338,13 @@ class GridTests(unittest.TestCase):
             self.assertEqual(self.path.read_bytes(), original)
             self.revert(enabled["backup_name"], original)
         for options in ({"independent_mppt_enabled": 1}, {"independent_mppt_enabled": True, "power_sharing_enabled": True}):
-            with self.assertRaises(ValueError):
-                self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, **options)
+            with self.assertRaises(ValueError): self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, **options)
             self.assertEqual(self.path.read_bytes(), original)
-
         before = self.inspect(whole.replace("Version=8.1.0", "Version=8.1.5"))
         original = self.path.read_bytes()
         with self.assertRaisesRegex(ValueError, re.escape(f"verified Version={SEED_LABEL}")):
             self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, independent_mppt_enabled=True)
         self.assertEqual(self.path.read_bytes(), original)
-
         mixed_arrays = ARRAY.replace("NInverter=2", "NInverter=4").replace("NStringCh=6", "NStringCh=12").replace("NStrOrient1=6", "NStrOrient1=12").replace("NInvMPPT=1", "NInvMPPT=1\nVersion=8.1.0\nFlags=$001E0002\nPowerSharingInverterId=-1")
         mixed = grid_text(group + GROUP, mixed_arrays).replace("End of PVObject pvVCalcul",
             "PVObject_Ombrage=pvShading\nFlags=$00\nEnd of PVObject pvShading\nEnd of PVObject pvVCalcul")
@@ -404,7 +354,6 @@ class GridTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "direct explicit MPPT children"):
             self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, independent_mppt_enabled=True)
         self.assertEqual(self.path.read_bytes(), original)
-
     def test_shared_allocation_counts_only_verified_layouts(self):
         # A shared inverter cannot be charged in full to both subarrays.
         group = GROUP.replace("  SubArrayId=1", "  SubArrayId=0", 1)
@@ -443,8 +392,7 @@ class GridTests(unittest.TestCase):
                 self.assertEqual(after["grid_circuit"]["subarrays"][1], before["grid_circuit"]["subarrays"][1])
                 self.revert(edited["backup_name"], original)
                 for updates in ({"NStringCh": 7}, {"NInvMPPT": 4}, {"NInverter": 4}):
-                    with self.assertRaises(ValueError):
-                        self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, updates)
+                    with self.assertRaises(ValueError): self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, updates)
                     self.assertEqual(self.path.read_bytes(), original)
             solo_array = first.replace("NInverter=2", "NInverter=1").replace("NInvMPPT=2", "NInvMPPT=1").replace("NStringCh=6", "NStringCh=3").replace("NStrOrient1=6", "NStrOrient1=3").replace("PowerSharingInverterId=0", "PowerSharingInverterId=-1")
             solo_group = "InverterNode Start;\nNElements=1\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n" + port + "Children=End\nInverterNode End;\n"
@@ -464,12 +412,10 @@ class GridTests(unittest.TestCase):
             self.assertEqual(self.path.read_bytes(), original)
             self.revert(removed["backup_name"], parent_bytes)
             for options in ({"shared_member": 1}, {"shared_member": True, "remove_orientation": True}):
-                with self.assertRaises(ValueError):
-                    self.store.remove_subarray("Example.PRJ", "VC0", 2, copied["sha256"], **options)
+                with self.assertRaises(ValueError): self.store.remove_subarray("Example.PRJ", "VC0", 2, copied["sha256"], **options)
                 self.assertEqual(self.path.read_bytes(), parent_bytes)
             enabled = self.store.update_parameters("Example.PRJ", "VC0", copied["sha256"], 1, 1, power_sharing_enabled=True)
-            with self.assertRaises(ValueError):
-                self.store.remove_subarray("Example.PRJ", "VC0", 2, enabled["sha256"], shared_member=True)
+            with self.assertRaises(ValueError): self.store.remove_subarray("Example.PRJ", "VC0", 2, enabled["sha256"], shared_member=True)
             active_bytes = self.path.read_bytes()
             disabled = self.store.update_parameters("Example.PRJ", "VC0", enabled["sha256"], 1, 1, power_sharing_enabled=False)
             disabled_bytes = self.path.read_bytes()
@@ -486,15 +432,13 @@ class GridTests(unittest.TestCase):
             self.revert(first_removed["backup_name"], parent_bytes)
             self.path.write_bytes(original)
             for options in ({"share_inverter": 1}, {"share_inverter": True, "clone_orientation": True}):
-                with self.assertRaises(ValueError):
-                    self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"], **options)
+                with self.assertRaises(ValueError): self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"], **options)
                 self.assertEqual(self.path.read_bytes(), original)
             for altered in (solo.replace("$001E0402", "$001E0002"), solo.replace("NInvMPPT=1", "NInvMPPT=2"),
                             solo.replace("NInverter=1", "NInverter=2"), solo.replace("Version=" + version, "Version=8.1.5")):
                 before = self.inspect(altered)
                 original = self.path.read_bytes()
-                with self.assertRaises(ValueError):
-                    self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"], share_inverter=True)
+                with self.assertRaises(ValueError): self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"], share_inverter=True)
                 self.assertEqual(self.path.read_bytes(), original)
             disabled = (first + second).replace("PowerSharingInverterId=0", "PowerSharingInverterId=-1")
             text = grid_text(shared, disabled).replace("End of PVObject pvVCalcul",
@@ -513,8 +457,7 @@ class GridTests(unittest.TestCase):
             self.assertEqual(self.path.read_bytes(), original)
             self.revert(enabled["backup_name"], original)
             for value in (1, "false"):
-                with self.assertRaises(ValueError):
-                    self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, power_sharing_enabled=value)
+                with self.assertRaises(ValueError): self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, power_sharing_enabled=value)
             with self.assertRaises(ValueError):
                 self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NInvMPPT": 4}, power_sharing_enabled=True)
             self.assertEqual(self.path.read_bytes(), original)
@@ -526,16 +469,14 @@ class GridTests(unittest.TestCase):
                             text.replace("SubArrayId=2\n  NoOrientation=1", "SubArrayId=2\n  NoOrientation=2")):
                 before = self.inspect(altered)
                 original = self.path.read_bytes()
-                with self.assertRaises(ValueError):
-                    self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, power_sharing_enabled=True)
+                with self.assertRaises(ValueError): self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, power_sharing_enabled=True)
                 self.assertEqual(self.path.read_bytes(), original)
             for altered in (collisions.replace("PowerSharingInverterId=-1", "PowerSharingInverterId=0"),
                             text.replace("Comment=Array B\n", "Comment=Array B\nNStrOrient2=1\n"),
                             text.replace("SubArrayId=2\n  NoOrientation=1", "SubArrayId=2\n  NoOrientation=2")):
                 before = self.inspect(altered)
                 original = self.path.read_bytes()
-                with self.assertRaises(ValueError):
-                    self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NStringCh": 12})
+                with self.assertRaises(ValueError): self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NStringCh": 12})
                 self.assertEqual(self.path.read_bytes(), original)
             for altered in (second.replace("NInvMPPT=2", "NInvMPPT=1"), second.replace("NStringCh=6", "NStringCh=5")):
                 self.assertFalse(self.inspect(grid_text(shared, first + altered))["valid"])
@@ -553,21 +494,17 @@ class GridTests(unittest.TestCase):
             r = self.inspect(grid_text(shared.replace("SubArrayName=Array A; Array B", "SubArrayName=Wrong"), first + second))
             self.assertFalse(r["valid"])
             self.assertIsNone(r["grid_circuit"]["totals"])
-
     def test_capacity_resize_preserves_uneven_groups_and_syncs_strings(self):
         groups = GROUP + GROUP.replace("NElements=2", "NElements=4").replace("NElements=3", "NElements=5")
         groups = groups.replace("      SubArrayId=1", "      CableDefinition=Start\n        NElements=99\n        SubArrayName=metadata\n      CableDefinition=End\n      SubArrayId=1")
         arrays = ARRAY.replace("NInverter=2", "NInverter=6").replace("NStringCh=6", "NStringCh=26").replace("NStrOrient1=6", "NStrOrient1=26")
         text = grid_text(groups, arrays).replace("End of PVObject pvVCalcul",
             "PVObject_Ombrage=pvShading\nFlags=$00\nEnd of PVObject pvShading\nEnd of PVObject pvVCalcul")
-        for updates, inverters, strings, parallel in (
-                ({"NInverter": 12}, [4, 8], 52, [3, 5]),
-                ({"NStringCh": 52}, [2, 4], 52, [6, 10]),
-                ({"NInverter": 12, "NStringCh": 104}, [4, 8], 104, [6, 10])):
+        for updates, inverters, strings, parallel in (({"NInverter": 12}, [4, 8], 52, [3, 5]),
+                ({"NStringCh": 52}, [2, 4], 52, [6, 10]), ({"NInverter": 12, "NStringCh": 104}, [4, 8], 104, [6, 10])):
             with self.subTest(updates=updates):
                 before = self.inspect(text)
-                preview = self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1,
-                                                       updates, dry_run=True)
+                preview = self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, updates, dry_run=True)
                 self.assertEqual(preview["capacity"]["strings_after"], strings)
                 self.assertEqual(self.store.validate_structure("Example.PRJ", "VC0")["grid_circuit"]["totals"]["inverters"], 6)
                 self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, updates)
@@ -578,7 +515,6 @@ class GridTests(unittest.TestCase):
                 self.assertEqual([g["inverters"] for g in result["grid_circuit"]["inverter_groups"]], inverters)
                 self.assertEqual([g["strings"] for g in result["grid_circuit"]["inverter_groups"]],
                                  [count * load for count, load in zip(inverters, parallel)])
-
         before = self.inspect(text)
         original = self.path.read_bytes()
         copied = self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"])
@@ -586,44 +522,36 @@ class GridTests(unittest.TestCase):
         self.assertTrue(checked["valid"])
         self.assertEqual(checked["subarray_ids"], [1, 2])
         groups = checked["grid_circuit"]["inverter_groups"]
-        for identifier in (1, 2):
-            self.assertEqual([(g["inverters"], g["strings"]) for g in groups if g["subarray_id"] == identifier],
-                             [(2, 6), (4, 20)])
+        for identifier in (1, 2): self.assertEqual([(g["inverters"], g["strings"]) for g in groups if g["subarray_id"] == identifier], [(2, 6), (4, 20)])
         self.assertEqual(self.path.read_bytes().count(b"SubArrayName=metadata"), 4)
         with self.assertRaisesRegex(ValueError, "still referenced"):
             self.store.remove_subarray("Example.PRJ", "VC0", copied["subarray_id"], copied["sha256"], remove_orientation=True)
         self.store.remove_subarray("Example.PRJ", "VC0", copied["subarray_id"], copied["sha256"])
         self.assertEqual(self.path.read_bytes(), original)
-
         source = text.replace("PVObject_=pvOrient", "Orientations, list of=1 TOrientGroup\nPVObject_=pvOrient").replace(
-            "End of TOrientGroup\n", "End of TOrientGroup\nEnd of Orientations\n").replace(
-            "FieldType=FixedPlane", "Flags=$00\nFieldType=FixedPlane")
+            "End of TOrientGroup\n", "End of TOrientGroup\nEnd of Orientations\n").replace("FieldType=FixedPlane", "Flags=$00\nFieldType=FixedPlane")
         before = self.inspect(source)
         original = self.path.read_bytes()
         copied = self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"], clone_orientation=True)
         self.assertEqual(copied["orientation_id"], 2)
         self.assertEqual(self.store.validate_structure("Example.PRJ", "VC0")["orientation_ids"], [1, 2])
-        changed = self.store.update_parameters("Example.PRJ", "VC0", copied["sha256"], 2, 2,
-                                               orientation_updates={"FieldTilt": 60})
+        changed = self.store.update_parameters("Example.PRJ", "VC0", copied["sha256"], 2, 2, orientation_updates={"FieldTilt": 60})
         parameters = self.store.inspect_parameters("Example.PRJ", "VC0")
         self.assertEqual([o["values"]["FieldTilt"] for o in parameters["orientations"]], ["20", "60.000"])
         self.assertEqual([a["values"]["NoOrientation"] for a in parameters["subarrays"]], ["1", "2"])
-        with self.assertRaisesRegex(ValueError, "must remain in use"):
-            self.store.remove_subarray("Example.PRJ", "VC0", 2, changed["sha256"])
+        with self.assertRaisesRegex(ValueError, "must remain in use"): self.store.remove_subarray("Example.PRJ", "VC0", 2, changed["sha256"])
         two_arrays = self.path.read_bytes()
         with self.assertRaisesRegex(ValueError, "no assigned subarray"):
             self.store.update_parameters("Example.PRJ", "VC0", changed["sha256"], 2, 1, {"NoOrientation": 1})
         self.assertEqual(self.path.read_bytes(), two_arrays)
         third = self.store.clone_subarray("Example.PRJ", "VC0", 1, changed["sha256"])
         before_assignment = self.path.read_bytes()
-        preview = self.store.update_parameters("Example.PRJ", "VC0", third["sha256"], 3, 1,
-            {"NoOrientation": 2, "NStringCh": 52}, dry_run=True)
+        preview = self.store.update_parameters("Example.PRJ", "VC0", third["sha256"], 3, 1, {"NoOrientation": 2, "NStringCh": 52}, dry_run=True)
         self.assertEqual(preview["orientation_assignment"], {"subarray_id": 3, "before": 1, "after": 2})
         self.assertEqual(preview["capacity"]["strings_after"], 52)
         self.assertEqual(self.path.read_bytes(), before_assignment)
         reassigned = self.store.update_parameters("Example.PRJ", "VC0", third["sha256"], 3, 1, {"NoOrientation": 2})
-        self.assertEqual(self.path.read_bytes(), before_assignment.replace(
-            b"SubArrayId=3\r\n  NoOrientation=1", b"SubArrayId=3\r\n  NoOrientation=2"))
+        self.assertEqual(self.path.read_bytes(), before_assignment.replace(b"SubArrayId=3\r\n  NoOrientation=1", b"SubArrayId=3\r\n  NoOrientation=2"))
         checked = self.store.validate_structure("Example.PRJ", "VC0")
         self.assertTrue(checked["valid"])
         self.assertEqual(checked["orientation_ids"], [1, 2])
@@ -634,19 +562,16 @@ class GridTests(unittest.TestCase):
         removed = self.store.remove_subarray("Example.PRJ", "VC0", 3, third["sha256"])
         self.assertEqual(self.path.read_bytes(), two_arrays)
         third_plane = self.store.clone_subarray("Example.PRJ", "VC0", 1, removed["sha256"], clone_orientation=True)
-        third_tilt = self.store.update_parameters("Example.PRJ", "VC0", third_plane["sha256"], 3, 3,
-            orientation_updates={"FieldTilt": 35})
+        third_tilt = self.store.update_parameters("Example.PRJ", "VC0", third_plane["sha256"], 3, 3, orientation_updates={"FieldTilt": 35})
         before_delete = self.path.read_bytes()
-        outside = before_delete.decode("utf-8-sig").replace(
-            "End of PVObject pvMainArray", "NoOrientation=3\r\nEnd of PVObject pvMainArray")
+        outside = before_delete.decode("utf-8-sig").replace("End of PVObject pvMainArray", "NoOrientation=3\r\nEnd of PVObject pvMainArray")
         checked = self.inspect(outside.replace("\r\n", "\n"))
         external_bytes = self.path.read_bytes()
         with self.assertRaisesRegex(ValueError, "outside owned records"):
             self.store.remove_subarray("Example.PRJ", "VC0", 2, checked["sha256"], remove_orientation=True)
         self.assertEqual(self.path.read_bytes(), external_bytes)
         self.path.write_bytes(before_delete)
-        for selected, mapping, tilts in ((2, {"3": 2}, ["20", "35.000"]),
-                                         (1, {"2": 1, "3": 2}, ["60.000", "35.000"])):
+        for selected, mapping, tilts in ((2, {"3": 2}, ["20", "35.000"]), (1, {"2": 1, "3": 2}, ["60.000", "35.000"])):
             deleted = self.store.remove_subarray("Example.PRJ", "VC0", selected, third_tilt["sha256"], remove_orientation=True)
             self.assertEqual(deleted["orientation_id_map"], mapping)
             checked = self.store.validate_structure("Example.PRJ", "VC0")
@@ -666,7 +591,6 @@ class GridTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "list count differs"):
             self.store.clone_subarray("Example.PRJ", "VC0", 1, checked["sha256"], clone_orientation=True)
         self.assertEqual(self.path.read_bytes(), wrong.replace("\n", "\r\n").encode("utf-8-sig"))
-
     def test_capacity_resize_stops_at_fractional_allocation_mppt_and_shading(self):
         base = grid_text().replace("End of PVObject pvVCalcul",
             "PVObject_Ombrage=pvShading\nFlags=$00\nEnd of PVObject pvShading\nEnd of PVObject pvVCalcul")
@@ -676,32 +600,24 @@ class GridTests(unittest.TestCase):
             "    StringNode End;", "    StringNode End;\nChildren=End\nMPPTNode End;")
         fractional = base.replace(GROUP, GROUP + GROUP.replace("NElements=2", "NElements=1"))
         fractional = fractional.replace("NInverter=2", "NInverter=3").replace("NStringCh=6", "NStringCh=9").replace("NStrOrient1=6", "NStrOrient1=9")
-        for text, updates, message in (
-                (fractional, {"NInverter": 1}, "integral string/group allocation"),
-                (base, {"NStringCh": 7}, "integral string/group allocation"),
-                (base, {"NInverter": 4, "NStringCh": 6}, "integral string/group allocation"),
+        for text, updates, message in ((fractional, {"NInverter": 1}, "integral string/group allocation"),
+                (base, {"NStringCh": 7}, "integral string/group allocation"), (base, {"NInverter": 4, "NStringCh": 6}, "integral string/group allocation"),
                 (base.replace("  NoOrientation=1", "PVObject_Metadata=pvExtra\nNoOrientation=1\nEnd of PVObject pvExtra"),
                  {"NStringCh": 12}, "Capacity editing requires one fixed-plane orientation"),
                 (base.replace("NInvMPPT=1", "NInvMPPT=4"), {"NStringCh": 12}, "ordinary NInvMPPT"),
                 (base.replace("NInvMPPT=1", "NInvMPPT=1\nFlags=$001E0402"), {"NStringCh": 12}, "verified Version=8.1.0"),
                 (base.replace("NInvMPPT=1", "NInvMPPT=1\nFlags=wrong"), {"NStringCh": 12}, "Unsupported subarray Flags"),
-                (base.replace(GROUP, mppt), {"NStringCh": 12}, "Explicit MPPT"),
-                (layout, {"NStringCh": 12}, "module layout"),
-                (layout, {"NInverter": 4}, "module layout"),
-                (layout, {"NModSerie": 15}, "module layout"),
+                (base.replace(GROUP, mppt), {"NStringCh": 12}, "Explicit MPPT"), (layout, {"NStringCh": 12}, "module layout"),
+                (layout, {"NInverter": 4}, "module layout"), (layout, {"NModSerie": 15}, "module layout"),
                 (base.replace("Flags=$00", "Flags=$20"), {"NStringCh": 12}, "Shading is active")):
             with self.subTest(message=message):
                 before = self.inspect(text)
                 original = self.path.read_bytes()
-                with self.assertRaisesRegex(ValueError, message):
-                    self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, updates)
+                with self.assertRaisesRegex(ValueError, message): self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, updates)
                 self.assertEqual(self.path.read_bytes(), original)
-
         assignment_base = base.replace("PVObject_=pvOrient", "Orientations, list of=1 TOrientGroup\nPVObject_=pvOrient").replace(
-            "End of TOrientGroup\n", "End of TOrientGroup\nEnd of Orientations\n").replace(
-            "FieldType=FixedPlane", "Flags=$00\nFieldType=FixedPlane")
-        for text, destination, message in (
-                (assignment_base, 2.5, "Invalid NoOrientation"),
+            "End of TOrientGroup\n", "End of TOrientGroup\nEnd of Orientations\n").replace("FieldType=FixedPlane", "Flags=$00\nFieldType=FixedPlane")
+        for text, destination, message in ((assignment_base, 2.5, "Invalid NoOrientation"),
                 (assignment_base, 99, "Orientation ID must occur exactly once"),
                 (assignment_base.replace("Flags=$00\nFieldType", "Flags=$20\nFieldType"), 1, "ordinary Flags"),
                 (assignment_base.replace("FieldType=FixedPlane", "FieldType=FixedPlane\nUsesTiltAver=True"), 1, "Averaged"),
@@ -711,15 +627,13 @@ class GridTests(unittest.TestCase):
                 (assignment_base.replace(GROUP, mppt), 1, "ordinary branches without explicit MPPT"),
                 (assignment_base.replace("End of PVObject pvVCalcul", layout_block + "End of PVObject pvVCalcul"), 1, "module layout"),
                 (assignment_base.replace("Flags=$00", "Flags=$20"), 1, "Shading is active"),
-                (assignment_base.replace("  SubArrayName=Array A", "  SubArrayName=Array A\nNoOrientation=1", 1),
-                 1, "Circuit-level orientation")):
+                (assignment_base.replace("  SubArrayName=Array A", "  SubArrayName=Array A\nNoOrientation=1", 1), 1, "Circuit-level orientation")):
             with self.subTest(message=message):
                 before = self.inspect(text)
                 original = self.path.read_bytes()
                 with self.assertRaisesRegex(ValueError, message):
                     self.store.update_parameters("Example.PRJ", "VC0", before["sha256"], 1, 1, {"NoOrientation": destination})
                 self.assertEqual(self.path.read_bytes(), original)
-
         before = self.inspect(base)
         self.store.clone_subarray("Example.PRJ", "VC0", 1, before["sha256"])
         copied = self.path.read_bytes().decode("utf-8-sig").replace("\r\n", "\n")
@@ -729,11 +643,9 @@ class GridTests(unittest.TestCase):
         for operation in (lambda: self.store.clone_subarray("Example.PRJ", "VC0", 1, blocked["sha256"]),
                           lambda: self.store.remove_subarray("Example.PRJ", "VC0", 2, blocked["sha256"]),
                           lambda: self.store.update_parameters("Example.PRJ", "VC0", blocked["sha256"], 1, 1, independent_mppt_enabled=True)):
-            with self.assertRaisesRegex(ValueError, "module layout"):
-                operation()
+            with self.assertRaisesRegex(ValueError, "module layout"): operation()
             self.assertEqual(self.path.read_bytes(), original)
             self.assertEqual(list((self.root / "Projects" / ".mcp-variant-backups").iterdir()), backups)
-
     def test_explicit_counts_and_flag_spelling_are_preserved(self):
         port = ("MPPTNode Start;\nNElements=1\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n"
                 "StringNode Start;\nSubArrayId=1\nSubArrayName=Array A\nStringNode End;\nChildren=End\nMPPTNode End;\n")
@@ -744,7 +656,6 @@ class GridTests(unittest.TestCase):
         for item in added:
             self.assertEqual(base_lines[item["line"] - 1].strip(), "NElements=1")
             self.assertEqual(base_lines[item["line"] - 2].strip(), f"{item['node']} Start;")
-
         exclusive = ("InverterNode Start;\nNElements=2\nSubArrayId=1\nSubArrayName=Array A\nChildren=Start\n"
                      + port.replace("NElements=1", "NElements=3") + "Children=End\nInverterNode End;\n")
         for before, after in (("$019e1002", "$019e1402"), ("$0000080a", "$00000c0a"), ("$019E1002", "$019E1402")):
@@ -755,7 +666,6 @@ class GridTests(unittest.TestCase):
             self.assertIn(f"  Flags={after}\n", lines)
             set_independent_mppt(lines, arrays, 1, False)
             self.assertEqual(lines, orig)
-
         shared = ("InverterNode Start;\nNElements=2\nSubArrayName=Array A; Array B\nChildren=Start\n"
                   + port.replace("StringNode Start;", "StringNode Start;\nNElements=3")
                   + port.replace("SubArrayId=1", "SubArrayId=2").replace("Array A", "Array B").replace("StringNode Start;", "StringNode Start;\nNElements=3")
@@ -770,33 +680,14 @@ class GridTests(unittest.TestCase):
         self.assertEqual([l.strip() for l in lines if l.strip().startswith("Flags=")], ["Flags=$001e0502"] * 2)
         set_power_sharing(lines, arrays, 1, False)
         self.assertEqual(lines, orig)
-
     def test_grid_limit_load_horizon_and_p50_edge_guards(self):
         import math
-        from pvsyst_auto.native.load import (
-            _horizon_number as horizon_number,
-            _number as load_number,
-            _p50_step as p50_step,
-            create_native_load_variant,
-            grid_limit_state,
-            native_load_block,
-            p50_state,
-            replace_grid_limit,
-            replace_horizon,
-            replace_p50,
-        )
-
+        from pvsyst_auto.native.load import (_horizon_number as horizon_number, _number as load_number, _p50_step as p50_step,
+            create_native_load_variant, grid_limit_state, native_load_block, p50_state, replace_grid_limit, replace_horizon, replace_p50)
         # 1. grid_limit clears full 0x05000000 mask on mode="none" (no orphan 0x04000000)
-        gl_lines = [
-            "PVObject_=pvVCalcul\n",
-            "  Version=8.1.6\n",
-            "  Flags=$00100000\n",
-            "  PVObject_System=pvSystem\n",
-            "    Flags=$04000000\n",
-            "    SystemType=Grid\n",
-            "  End of PVObject pvSystem\n",
-            "End of PVObject pvVCalcul\n",
-        ]
+        gl_lines = ["PVObject_=pvVCalcul\n", "  Version=8.1.6\n", "  Flags=$00100000\n",
+            "  PVObject_System=pvSystem\n", "    Flags=$04000000\n", "    SystemType=Grid\n", "  End of PVObject pvSystem\n",
+            "End of PVObject pvVCalcul\n"]
         sys_bounds = (3, 6)
         en = replace_grid_limit(gl_lines, sys_bounds, {"mode": "constant", "limit_kw": 12.5})
         self.assertEqual(en["after"], {"mode": "constant", "limit_kw": 12.5, "point": "injection", "separate_loss": True})
@@ -805,97 +696,54 @@ class GridTests(unittest.TestCase):
         self.assertEqual(dis["after"], {"mode": "none", "limit_kw": None, "point": "inverter", "separate_loss": None})
         self.assertIn("    Flags=$00\n", gl_lines)
         self.assertEqual(grid_limit_state(gl_lines, (3, 6))["point"], "inverter")
-
         # 2. load.py accepts 0x04000000 / 0x05000000 Grid flags, strips cache unconditionally, normalizes -0.0
         self.assertEqual(math.copysign(1.0, load_number(-0.0, "val")), 1.0)
-        monthly_blk = native_load_block(
-            {"mode": "monthly", "monthly_energy_kwh": [-0.0] * 11 + [10.0]}, "\n"
-        )
+        monthly_blk = native_load_block({"mode": "monthly", "monthly_energy_kwh": [-0.0] * 11 + [10.0]}, "\n")
         self.assertNotIn("-0.000", monthly_blk)
-        daily_blk = native_load_block(
-            {"mode": "daily", "daily_power_kw": [-0.0] * 23 + [1.5]}, "\n"
-        )
+        daily_blk = native_load_block({"mode": "daily", "daily_power_kw": [-0.0] * 23 + [1.5]}, "\n")
         self.assertNotIn("-0.000", daily_blk)
-
         for sys_flag in ("$04000000", "$05000000", "$05010000"):
-            vc_src = (
-                "PVObject_=pvVCalcul\n  Comment=LoadSrc\n  Version=8.1.6\n  Flags=$00100001\n"
+            vc_src = ("PVObject_=pvVCalcul\n  Comment=LoadSrc\n  Version=8.1.6\n  Flags=$00100001\n"
                 "  PVObject_PVMainArray=pvMainArray\n    Flags=$00100400\n    Flags2=$082A\n"
-                "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.6\n      Flags=$00\n"
-                "      InjectionPointNode Start;\n        Children=Start\n"
-                + GROUP
-                + "        Children=End\n      InjectionPointNode End;\n    End of PVObject pvCircuit\n"
-                + ARRAY.replace("NInvMPPT=1", "Version=8.1.6\n  Flags=$001E0002\n  NInvMPPT=1")
-                + "  End of PVObject pvMainArray\n"
+                "    PVObject_SystemCircuit=pvCircuit\n      Version=8.1.6\n      Flags=$00\n" "      InjectionPointNode Start;\n        Children=Start\n"
+                + GROUP + "        Children=End\n      InjectionPointNode End;\n    End of PVObject pvCircuit\n"
+                + ARRAY.replace("NInvMPPT=1", "Version=8.1.6\n  Flags=$001E0002\n  NInvMPPT=1") + "  End of PVObject pvMainArray\n"
                 "  PVObject_System=pvSystem\n    Flags=" + sys_flag + "\n    SystemType=Grid\n  End of PVObject pvSystem\n"
-                "  SimulPlots=Start\n  End of List SimulPlots\n"
-                "  Histogram=THistogramme\n    Ident=Test\n  End of THistogramme\n"
-                "End of PVObject pvVCalcul\n"
-            )
+                "  SimulPlots=Start\n  End of List SimulPlots\n" "  Histogram=THistogramme\n    Ident=Test\n  End of THistogramme\n"
+                "End of PVObject pvVCalcul\n")
             self.path.write_bytes(vc_src.replace("\n", "\r\n").encode("utf-8"))
             target_vc = self.root / "Projects" / "Example.VC1"
             target_vc.unlink(missing_ok=True)
-            created = create_native_load_variant(
-                self.store, project="Example.PRJ", source_variant="VC0", new_variant="VC1",
-                load={"mode": "constant", "constant_kw": 2.0}, dry_run=False,
-            )
+            created = create_native_load_variant(self.store, project="Example.PRJ", source_variant="VC0", new_variant="VC1",
+                load={"mode": "constant", "constant_kw": 2.0}, dry_run=False)
             self.assertEqual(created["status"], "created", created)
             out_raw = target_vc.read_bytes()
             self.assertNotIn(b"THistogramme", out_raw)
             self.assertIn(b"  Flags=$00180000\r\n", out_raw)
-
         # 3. horizon.py catches OverflowError, guards empty lines, normalizes -0.0
-        with self.assertRaises(ValueError):
-            horizon_number(10 ** 400, "huge", -180, 180)
+        with self.assertRaises(ValueError): horizon_number(10 ** 400, "huge", -180, 180)
         self.assertEqual(math.copysign(1.0, horizon_number(-0.0, "az", -180, 180, True)), 1.0)
         pts = [[-60.0, -0.0], [-20.0, 5.0], [-0.0, 8.0], [40.0, -0.0]]
-        with self.assertRaises(ValueError):
-            replace_horizon([], {"mode": "profile", "profile_name": "H1", "points": pts})
+        with self.assertRaises(ValueError): replace_horizon([], {"mode": "profile", "profile_name": "H1", "points": pts})
         hz_lines = ["PVObject_=pvVCalcul\n", "  PVObject_PVMainArray=pvMainArray\n", "  End of PVObject pvMainArray\n", "End of PVObject pvVCalcul\n"]
         hz_res = replace_horizon(hz_lines, {"mode": "profile", "profile_name": "H1", "points": pts})
         self.assertNotIn("-0.0", "".join(hz_lines))
         for px, py in hz_res["after"]["points"]:
             self.assertEqual(math.copysign(1.0, px) if px == 0 else 1.0, 1.0)
             self.assertEqual(math.copysign(1.0, py) if py == 0 else 1.0, 1.0)
-
         # 4. p50.py normalizes -0.0 to 0.0
         self.assertEqual(math.copysign(1.0, p50_step(-0.0, "YearDevFromAver", -100, 100)), 1.0)
-        p50_lines = [
-            "PVObject_=pvVCalcul\n",
-            "  Version=8.1.6\n",
-            "  Flags=$01800001\n",
-            "  P50_P90=TP50_P90\n",
-            "    MeteoKind=TMY\n",
-            "    P90Custom=90\n",
-            "    PxxCustom=95\n",
-            "    PxxReport=True\n",
-            "    PxxMainResults=False\n",
-            "    PlotKind=1\n",
-            "    YearDevFromAver=-0.000\n",
-            "    MeteoAnnualVariab=3.000\n",
-            "    PVModelVariab=1.000\n",
-            "    InverterVariab=0.500\n",
-            "    SoilingVariab=0.000\n",
-            "    DegradVariab=0.000\n",
-            "    CustomVariab=0.000\n",
-            "    CustomVarLabel=Grid\n",
-            "  EndTags\n",
-            "  SimulPlots=Start\n",
-            "End of PVObject pvVCalcul\n",
-        ]
+        p50_lines = ["PVObject_=pvVCalcul\n", "  Version=8.1.6\n", "  Flags=$01800001\n",
+            "  P50_P90=TP50_P90\n", "    MeteoKind=TMY\n", "    P90Custom=90\n", "    PxxCustom=95\n",
+            "    PxxReport=True\n", "    PxxMainResults=False\n", "    PlotKind=1\n", "    YearDevFromAver=-0.000\n",
+            "    MeteoAnnualVariab=3.000\n", "    PVModelVariab=1.000\n", "    InverterVariab=0.500\n", "    SoilingVariab=0.000\n",
+            "    DegradVariab=0.000\n", "    CustomVariab=0.000\n", "    CustomVarLabel=Grid\n", "  EndTags\n",
+            "  SimulPlots=Start\n", "End of PVObject pvVCalcul\n"]
         st = p50_state(p50_lines)
         self.assertEqual(math.copysign(1.0, st["values"]["YearDevFromAver"]), 1.0)
-        updates = {
-            **st["values"],
-            "P90Custom": 85,
-            "YearDevFromAver": -0.0,
-            "SoilingVariab": -0.0,
-        }
+        updates = {**st["values"], "P90Custom": 85, "YearDevFromAver": -0.0, "SoilingVariab": -0.0}
         rep = replace_p50(p50_lines, updates)
         self.assertNotIn("-0.000", "".join(p50_lines))
         self.assertEqual(math.copysign(1.0, rep["after"]["YearDevFromAver"]), 1.0)
         self.assertEqual(math.copysign(1.0, rep["after"]["SoilingVariab"]), 1.0)
-
-
-if __name__ == "__main__":
-    unittest.main()
+if __name__ == "__main__": unittest.main()

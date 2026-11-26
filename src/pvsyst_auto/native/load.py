@@ -20,7 +20,7 @@ from pvsyst_auto.components.editor import (
 )
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import inventory as grid_inventory
-from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
 
 # --------------------------------------------------------------------- flat / household load
 START = "PVObject_UserNeeds=pvLoad"

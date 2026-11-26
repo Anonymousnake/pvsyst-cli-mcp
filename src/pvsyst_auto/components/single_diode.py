@@ -10,7 +10,7 @@ import math
 from typing import Any
 
 from pvsyst_auto.validation import pos_finite as _pos_finite
-from pvsyst_auto.versions import SYNTH_VERSION
+from pvsyst_auto.validation import SYNTH_VERSION
 
 # Boltzmann constant * 298.15 K / elementary charge (thermal voltage at 25 degC STC)
 _VT_25C = 1.380649e-23 * 298.15 / 1.602176634e-19

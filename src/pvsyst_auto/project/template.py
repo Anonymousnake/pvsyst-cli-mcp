@@ -15,7 +15,7 @@ from pvsyst_auto.project.synthesize import (
 )
 from pvsyst_auto.scene.reader import pv_shading_header
 from pvsyst_auto.validation import append_issue as _issue, finite_number as _finite
-from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 SEED_STEM, SEED_VARIANT, SEED_SUBARRAY = "_DEMO_Residential", "VC0", 1
 SEED_VERSIONS = NATIVE_TEXT_OR_SEED

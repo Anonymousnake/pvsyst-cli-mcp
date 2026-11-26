@@ -14,7 +14,7 @@ from pvsyst_auto.scene.mapping import (ANGLE_TOL, COORD_TOL, source_string_range
                                        verify_house_geometry, verify_module_layout, verify_pv_geometry,
                                        verify_tree_obstacles)
 from pvsyst_auto.scene.reader import read_house_pv_scene, shading_state
-from pvsyst_auto.versions import HEADLESS_RECORD_VERSION, NATIVE_TEXT_OR_SEED
+from pvsyst_auto.validation import HEADLESS_RECORD_VERSION, NATIVE_TEXT_OR_SEED
 
 # $20100900 (fine shading + ShdElec) requires pvModuleLayout on native 8.1.6 records.
 SHADING_FLAGS = {"linear": "$20000100", "module_layout": "$20100900"}

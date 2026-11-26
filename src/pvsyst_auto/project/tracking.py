@@ -10,7 +10,7 @@ from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.variant_updates import run_new_variant_transaction
 from pvsyst_auto.validation import bounded_number as _finite
-from pvsyst_auto.versions import NATIVE_TEXT, SYNTH_VERSION, TEXT_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT, SYNTH_VERSION, TEXT_LABEL
 
 STEP = Decimal("0.1")
 RANGES = {"AxisAzim": (Decimal("-20"), Decimal("20")), "MinPhi": (Decimal("-60"), Decimal("-45")), "MaxPhi": (Decimal("45"), Decimal("60"))}

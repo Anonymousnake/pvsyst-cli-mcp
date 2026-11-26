@@ -19,7 +19,7 @@ from pvsyst_auto.project.circuit import circuit_nodes, positive_integer
 from pvsyst_auto.project.paths import battery_reference_name
 from pvsyst_auto.project.tracking import _decimal, _require_scope
 from pvsyst_auto.project.variant_updates import run_new_variant_transaction
-from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, TEXT_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, TEXT_LABEL
 
 _HEX_FLAG = re.compile(r"\$[0-9a-fA-F]{1,8}")
 

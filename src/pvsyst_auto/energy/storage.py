@@ -13,7 +13,7 @@ from pvsyst_auto.energy.profiles import PEAK_SHAVING_LOAD_ERROR, has_peak_shavin
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.variant_updates import run_new_variant_transaction
 from pvsyst_auto.validation import pos_finite as _pos_finite
-from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 SUBHOUR_TARGET_TOKEN = 90_000

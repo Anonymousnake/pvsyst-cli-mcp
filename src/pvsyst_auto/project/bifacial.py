@@ -10,7 +10,7 @@ from pvsyst_auto.components.editor import ASSIGNMENT, direct_fields, finite, obj
 from pvsyst_auto.project.tracking import _check_single_orient_subarray_strings, _decimal, _single_orient_record
 from pvsyst_auto.project.variant_updates import run_new_variant_transaction
 from pvsyst_auto.validation import finite_number as _finite
-from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
 
 # --- Bifacial ---
 

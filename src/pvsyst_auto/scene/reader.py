@@ -15,7 +15,7 @@ from pvsyst_auto.scene.author import (AUTHORING_TOOL, MAX_OBSTACLES, MAX_PARTS, 
                                       _string_layout_profile, build_scene, caller_geometry, check_tables,
                                       house_profile, layout_profile, obstacle_profiles, table_profiles)
 from pvsyst_auto.scene.mapping import PV_TABLE_SOURCES, assess_module_layout
-from pvsyst_auto.versions import SEED_RECORD_VERSION, SYNTH_VERSION
+from pvsyst_auto.validation import SEED_RECORD_VERSION, SYNTH_VERSION
 
 XML_NS = {"n": NS, "pv": PV}
 MAX_BYTES = 64 * 1024 * 1024

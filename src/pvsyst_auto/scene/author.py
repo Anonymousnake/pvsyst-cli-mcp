@@ -11,7 +11,7 @@ from pvsyst_auto.components.editor import objects, pan_validation_fields, root_b
 from pvsyst_auto.project.circuit import _walk, circuit_nodes, inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.validation import finite_number as _finite
-from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED
+from pvsyst_auto.validation import NATIVE_TEXT_OR_SEED
 
 NS = "http://www.collada.org/2008/03/COLLADASchema"
 PV = "https://pvcollada.org/2026/XMLSchema"

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 from threading import Lock
 from typing import Any
 
@@ -102,9 +103,9 @@ DEFAULT_TOOL_GROUPS = (
 )
 GROUP_IMPORT_MODULES = {
     "setup": ("projects",), "admin": ("projects",), "projects": ("projects",), "components": ("projects",),
-    "weather": ("weather",), "storage": ("weather",), "results": ("weather",),
+    "weather": ("simulation",), "storage": ("simulation",), "results": ("simulation",),
     "simulation": ("simulation",), "engineering": ("simulation",),
-    "expert": ("projects", "weather", "simulation"),
+    "expert": ("projects", "simulation"),
 }
 
 _EXPERT_DIRECT_WRITERS = ("pvsyst_create_site", "pvsyst_build_monthly_weather", "pvsyst_convert_meteo")
@@ -657,3 +658,22 @@ def result_path(folder: str, csv_name: str) -> Path:
     if folder not in ("Results", "UserHourly"):
         raise ValueError("Results folder must be Results or UserHourly")
     return workspace_path(folder, csv_name, ".csv")
+
+
+def load_active_tools() -> MCPServer:
+    for mod in import_modules_for_groups(ACTIVE_TOOL_GROUPS):
+        import_module(f".{mod}", __package__)
+    if set(_strict_arguments) != ACTIVE_TOOL_NAMES:
+        raise RuntimeError(f"Unregistered strict entry points: {sorted(ACTIVE_TOOL_NAMES - set(_strict_arguments))}")
+    return mcp
+
+
+def main():
+    load_active_tools().run(transport="stdio")
+
+
+if not any(f"{__package__}.{m}" in sys.modules for m in ("projects", "simulation")):
+    load_active_tools()
+
+if __name__ == "__main__":
+    main()
