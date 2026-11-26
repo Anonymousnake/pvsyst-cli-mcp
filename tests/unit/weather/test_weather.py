@@ -1904,6 +1904,34 @@ class MultiProviderWeatherTests(unittest.TestCase):
             self.assertEqual(strict["status"], "blocked")
             self.assertTrue(any("DHI (17.26) > GHI (14.48)" in i for i in strict["issues"]))
 
+    def test_pvgis_and_nasa_power_reject_sub_absolute_zero_temperature(self):
+        """Issue #275: sub-absolute-zero temperatures from PVGIS / NASA POWER fail closed."""
+        pvgis_payload, raw_pvgis = _fake_pvgis_payload()
+        pvgis_payload["outputs"]["tmy_hourly"][0]["T2m"] = -300.0
+        with patch.object(acquisition, "_provider_get", return_value=(pvgis_payload, raw_pvgis, "https://re.jrc.ec.europa.eu/api/v5_3/tmy?bad=1")):
+            res_pvgis = acquisition.download_weather(
+                self.root, csv_name="pvgis_abszero.csv", year=2021,
+                latitude=31.32, longitude=120.72, site_name="Suzhou",
+                country_code="CN", timezone_name="Asia/Shanghai",
+                provider="pvgis_tmy", dry_run=False,
+            )
+        self.assertEqual(res_pvgis["status"], "blocked")
+        self.assertIn("absolute zero", " ".join(res_pvgis["issues"]).lower())
+
+        nasa_payload, raw_nasa = _fake_nasa_payload()
+        nasa_keys = sorted(nasa_payload["properties"]["parameter"]["T2M"])
+        nasa_year = int(nasa_keys[24][:4])
+        nasa_payload["properties"]["parameter"]["T2M"][nasa_keys[24]] = -300.0
+        with patch.object(acquisition, "_provider_get", return_value=(nasa_payload, raw_nasa, "https://power.larc.nasa.gov/api/temporal/hourly/point?bad=1")):
+            res_nasa = acquisition.download_weather(
+                self.root, csv_name="nasa_abszero.csv", year=nasa_year,
+                latitude=31.32, longitude=120.72, site_name="Suzhou",
+                country_code="CN", timezone_name="Asia/Shanghai",
+                provider="nasa_power", dry_run=False,
+            )
+        self.assertEqual(res_nasa["status"], "blocked")
+        self.assertIn("absolute zero", " ".join(res_nasa["issues"]).lower())
+
 
 if __name__ == "__main__":
     unittest.main()

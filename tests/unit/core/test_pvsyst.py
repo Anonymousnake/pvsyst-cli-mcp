@@ -1563,5 +1563,53 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
         )
 
 
+class CapabilitiesLookupTests(unittest.TestCase):
+    """Issue #277: optional single-command pvsyst_capabilities avoids enumerating all subcommands."""
+
+    def test_single_command_lookup_caches_and_rejects_invalid_command(self) -> None:
+        from pvsyst_auto.api.setup import pvsyst_capabilities
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            ws.mkdir()
+            fake_exe = Path(tmp) / "PVsystCLI.exe"
+            fake_exe.write_bytes(b"stub")
+            client = PVsystCLI(fake_exe, ws)
+            calls: list[list[str]] = []
+
+            def fake_run(label, *args, allow_window_creation=None):
+                calls.append(list(args))
+                if args == ("version",):
+                    return subprocess.CompletedProcess(args, 0, stdout="PVsystCLI 8.1.7\n", stderr="")
+                if args == ("help", "run-simulation"):
+                    return subprocess.CompletedProcess(
+                        args,
+                        0,
+                        stdout="  --input-sfi-file|-isf: input\n  --output-csv-file|-ocf: output\n",
+                        stderr="",
+                    )
+                raise AssertionError(f"Unexpected CLI invocation: {args!r}")
+
+            with patch.object(client, "_checked_run", side_effect=fake_run), \
+                 patch("pvsyst_auto.api.setup.cli", return_value=client):
+                cold = pvsyst_capabilities(command="run-simulation")
+                self.assertEqual(calls, [["help", "run-simulation"], ["version"]])
+                self.assertEqual(cold["version"], "PVsystCLI 8.1.7")
+                self.assertEqual(list(cold["commands"].keys()), ["run-simulation"])
+                self.assertIn("input-sfi-file", cold["commands"]["run-simulation"])
+
+                warm = client.capabilities("run-simulation")
+                self.assertEqual(calls, [["help", "run-simulation"], ["version"]])
+                self.assertEqual(warm, cold["commands"])
+                warm_tool = pvsyst_capabilities(command="run-simulation")
+                self.assertEqual(warm_tool, cold)
+                self.assertEqual(len(calls), 3)
+
+                for bad_cmd in ("", "bad cmd", "--help", "run_simulation"):
+                    with self.assertRaises(ValueError):
+                        pvsyst_capabilities(command=bad_cmd)
+                self.assertEqual(len(calls), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

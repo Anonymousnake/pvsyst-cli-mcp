@@ -20,6 +20,13 @@ from pvsyst_auto.project.synthesize import synthesize_house_source
 PHASES = ("initialized", "project_created", "scene_created", "prepared", "native_saved", "simulated", "completed")
 
 
+def _normalize_house_request(req):
+    """Strip legacy default scene_import_method='native' / None so v0.7.0 and current requests compare equal."""
+    if isinstance(req, dict) and "scene_import_method" in req and req.get("scene_import_method") in ("native", None):
+        return {k: v for k, v in req.items() if k != "scene_import_method"}
+    return req
+
+
 def _public(record):
     public = {key: value for key, value in record.items() if key not in ("request", "guards")}
     request = record.get("request", {})
@@ -255,6 +262,13 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
         try:
             if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation)):
                 raise ValueError("Use strict booleans")
+            import_method = request.get("scene_import_method") if isinstance(request, dict) else None
+            if import_method is not None and import_method != "native":
+                raise ValueError(
+                    "Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; "
+                    "use scene_import_method='native' or omit it"
+                )
+            request = _normalize_house_request(request)
             if not resume and request.get("allow_window_creation") is False:
                 raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
             # Any value except an explicit False keeps the original CSV+PDF contract
@@ -271,11 +285,15 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 record = json.loads(paths["manifest"].read_text(encoding="utf-8"))
                 if not isinstance(record, dict):
                     raise ValueError("House checkpoint must contain an object")
-                if (record.get("schema") != 1 or record.get("request") != request or record.get("phase") not in PHASES
+                if record.get("schema") == 1 and record.get("phase") == "gui_closed":
+                    record["phase"] = "native_saved"
+                if (record.get("schema") != 1 or _normalize_house_request(record.get("request")) != request
+                        or record.get("phase") not in PHASES
                         or not isinstance(record.get("guards"), dict) or not isinstance(record.get("issues"), list)
                         or not isinstance(record.get("artifacts"), dict) or not isinstance(record.get("runs"), list)
                         or len(record["runs"]) > 99 or any(not isinstance(run, dict) for run in record["runs"])):
                     raise ValueError("Checkpoint schema/request/phase differs; it is not a resumable task")
+                record["request"] = request
                 simulated = PHASES.index(record["phase"]) >= PHASES.index("simulated")
                 if not simulated and request.get("allow_window_creation") is False:
                     raise ValueError("House shading recomputation requires allow_window_creation=true or unset; start a new task with that policy")

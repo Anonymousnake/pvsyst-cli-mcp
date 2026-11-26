@@ -323,6 +323,97 @@ def _render_transformer_node(spec: dict[str, Any], *, is_hv: bool, children_line
     return out
 
 
+def _walk_nodes(node):
+    yield node
+    for child in node.children:
+        yield from _walk_nodes(child)
+
+
+def _toggle_existing_mv_night_disconnect(
+    clean_lines: list[str],
+    main_block,
+    flags_val: int,
+    *,
+    night_disconnect: Any,
+    has_bom: bool,
+    ref_kw: float | None,
+    ref_source: str,
+    inverter_ac_kw: float | None,
+    ac_source: str,
+    grid_limit_kw: float | None,
+) -> tuple[list[str], dict[str, Any]] | None:
+    """In-place NightDisconnect toggle when mv only sets night_disconnect on an existing MV variant."""
+    if type(night_disconnect) is not bool:
+        raise ValueError("mv.night_disconnect must be a strict boolean")
+    if not (flags_val & MV_FLAG) or (flags_val & HV_FLAG):
+        return None
+    trf_nodes = [n for r in circuit_nodes(clean_lines) for n in _walk_nodes(r) if n.kind == "TransformerNode"]
+    flags_entries = main_block.fields.get("Flags", ())
+    if (
+        len(trf_nodes) != 1
+        or trf_nodes[0].fields.get("IsHVTransformer") != ["False"]
+        or len(trf_nodes[0].field_lines.get("NightDisconnect", ())) != 1
+        or len(flags_entries) != 1
+    ):
+        return None
+    mv_node = trf_nodes[0]
+    new_flags = (flags_val | NIGHT_FLAG) if night_disconnect else (flags_val & ~NIGHT_FLAG)
+    cand = list(clean_lines)
+    flags_line = flags_entries[0][0]
+    cand[flags_line] = replace_value(cand[flags_line], f"${new_flags:08X}")
+    nd_line = mv_node.field_lines["NightDisconnect"][0]
+    cand[nd_line] = replace_value(cand[nd_line], "True" if night_disconnect else "False")
+    cand, _ = strip_result_cache(cand)
+    objects("".join(cand))
+    state = transformer_state(cand)
+    if state["issues"] or state["count"] != 1:
+        raise ValueError("Generated transformer circuit failed validation: " + "; ".join(state["issues"] or ["expected 1 MV layer"]))
+
+    def _opt_float(block, key: str) -> float | None:
+        if key not in block.fields:
+            return None
+        try:
+            raw = block.one(key)
+            val = raw[1] if isinstance(raw, tuple) else raw
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    v_out_mv = _opt_float(main_block, "VOutTransfo")
+    mv_count = int(main_block.one("MVNbTransfos")[1]) if "MVNbTransfos" in main_block.fields else 1
+    stc_ref = _opt_float(mv_node, "STCRefPower") or ref_kw
+    mv_summary = {
+        "count": mv_count,
+        "output_voltage_kv": round(v_out_mv / 1000.0, 5) if v_out_mv is not None else None,
+        "output_voltage_v": int(round(v_out_mv)) if v_out_mv is not None else None,
+        "stc_ref_power_kw": stc_ref,
+        "iron_loss_frac": _opt_float(mv_node, "STCIronLossFrac") or _opt_float(main_block, "TrfIronLossFrac"),
+        "copper_loss_frac": _opt_float(mv_node, "STCCopperLossFrac") or _opt_float(main_block, "TrfResLossFrac"),
+        "iron_loss_kw": _opt_float(mv_node, "STCIronLoss"),
+        "from_datasheet": bool(new_flags & MV_DS_FLAG),
+        "night_disconnect": night_disconnect,
+        "preserved_existing_mv": True,
+    }
+    if has_bom and cand:
+        cand[0] = "\ufeff" + cand[0]
+    return cand, {
+        "remove_transformers": False,
+        "main_array_flags": f"${new_flags:08X}",
+        "stc_ref_power_kw": stc_ref,
+        "stc_ref_power_source": ref_source,
+        "inverter_ac_power_kw": inverter_ac_kw,
+        "inverter_ac_power_source": ac_source,
+        "grid_limit_kw": grid_limit_kw,
+        "mv": mv_summary,
+        "hv": None,
+        "transformer_state": state,
+        "warnings": [
+            "Toggled MV NightDisconnect and pvMainArray bit 29 in-place; "
+            "existing MV rating, losses, default-loss flags, and cable configuration were preserved."
+        ],
+    }
+
+
 def apply_transformers_to_variant_lines(lines: list[str], *, mv: dict[str, Any] | None = None, hv: dict[str, Any] | None = None,
                                         remove_transformers: bool = False, default_ref_power_kw: float | None = None, components=None) -> tuple[list[str], dict[str, Any]]:
     """Pure text transformer builder/editor operating on parsed .VCx lines."""
@@ -348,6 +439,14 @@ def apply_transformers_to_variant_lines(lines: list[str], *, mv: dict[str, Any] 
     ref_kw, ref_source = _infer_ref_power_kw(clean_lines, default_ref_power_kw, components=components)
     inverter_ac_kw, ac_source = _infer_inverter_ac_power_kw(clean_lines, components=components)
     grid_limit_kw = _infer_grid_limit_kw(clean_lines)
+    if not remove_transformers and hv is None and isinstance(mv, dict) and set(mv.keys()) == {"night_disconnect"}:
+        in_place = _toggle_existing_mv_night_disconnect(
+            clean_lines, mains[0], flags_val, night_disconnect=mv["night_disconnect"], has_bom=has_bom,
+            ref_kw=ref_kw, ref_source=ref_source, inverter_ac_kw=inverter_ac_kw, ac_source=ac_source,
+            grid_limit_kw=grid_limit_kw,
+        )
+        if in_place is not None:
+            return in_place
     mv_norm = None if remove_transformers else _normalize_mv(mv, ref_kw, inverter_ac_kw=inverter_ac_kw, grid_limit_kw=grid_limit_kw)  # type: ignore[arg-type]
     hv_default_ref = ref_kw if ref_kw is not None else (mv_norm["stc_ref_power_kw"] if mv_norm is not None else None)
     hv_norm = None if (remove_transformers or hv is None) else _normalize_hv(hv, hv_default_ref, inverter_ac_kw=inverter_ac_kw, grid_limit_kw=grid_limit_kw)

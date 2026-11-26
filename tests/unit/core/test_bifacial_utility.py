@@ -804,6 +804,50 @@ class BifacialAndUtilityTests(unittest.TestCase):
         self.assertEqual(len(cli.runs), 1)
         self.assertEqual(cli.runs[0]["report_language"], "zh")
 
+    def test_site_polygon_module_mismatch_blocked_and_ground_clearance_sets_dorigine_z(self):
+        """Issue #275: polygon layout mismatch blocks before write; ground_clearance_m sets 3D shed Z."""
+        cli = _FakeUtilityCLI(self.root, year=2024)
+        fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
+
+        poly_req = SingleDesignRequest(
+            scope="ground_sheds",
+            new_project="PolyMismatch.PRJ",
+            year=2024,
+            target_dc_kw=100.0,
+            tilt=20.0,
+            azimuth=0.0,
+            module={"file_name": "Lab440.PAN"},
+            inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            capacity=_capacity_spec(),
+            ground_layout={
+                "model_mode": "3d",
+                "site_polygon": [[-20, -15], [20, -15], [20, 15], [-20, 15]],
+                "setback_m": 1.0,
+            },
+        ).model_dump(exclude_none=True)
+        with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
+            for dry_run in (True, False):
+                res = prepare_design_project(cli, self.store, spec=poly_req, dry_run=dry_run)
+                self.assertEqual(res["status"], "blocked", res)
+                msg = " ".join(i["message"] for i in res["issues"])
+                self.assertIn("216", msg)
+                self.assertIn("228", msg)
+            self.assertEqual(list((self.root / "Projects").iterdir()), [])
+
+        for gc, expected_z in ((0.5, "0.500000"), (2.0, "2.000000")):
+            with self.subTest(ground_clearance_m=gc):
+                synth = synthesize_utility_project(
+                    self.store,
+                    site_name="Geneva_MN90.SIT",
+                    met_name="Geneva_MN90_SYN.MET",
+                    field_type="RegularSheds",
+                    pan_name="Lab440.PAN",
+                    ond_name="Lab50.OND",
+                    ground_clearance_m=gc,
+                )
+                self.assertIn(f"DOrigine=0.000000,0.000000,{expected_z}", synth["vc0_text"])
+
 
 if __name__ == "__main__":
     unittest.main()

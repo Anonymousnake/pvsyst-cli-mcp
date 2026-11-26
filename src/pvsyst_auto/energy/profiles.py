@@ -742,28 +742,44 @@ def _materialize_random_periods(cfg: dict) -> list[tuple[str, float]]:
     cap = float(max_d - min_d)
     if cap > 0.0:
         for idx in indices:
-            if rem <= 0.0:
+            if rem <= 1e-6:
                 break
-            take = min(cap, rng.uniform(0.0, min(cap, rem))) if n > 1 else min(cap, rem)
-            durs[idx] += round(take, 1)
+            take = min(cap, round(rng.uniform(0.0, min(cap, rem)), 1), rem) if n > 1 else min(cap, rem)
+            durs[idx] = round(durs[idx] + take, 3)
             rem = max(0.0, target_total - sum(durs))
         for idx in indices:
-            if rem <= 0.05:
+            if rem <= 1e-6:
                 break
             room = float(max_d) - durs[idx]
             if room > 0.0:
                 add = min(room, rem)
-                durs[idx] = round(durs[idx] + add, 1)
-                rem -= add
+                durs[idx] = round(durs[idx] + add, 3)
+                rem = max(0.0, target_total - sum(durs))
     start_year, slot, periods, last_end_h = datetime(1990, 1, 1, 0, 0), 8760.0 / n, [], 0.0
     for idx, dur in enumerate(durs):
-        win_start = max(last_end_h + 1.0, idx * slot)
-        win_end = max(win_start, (idx + 1) * slot - dur - 1.0)
-        start_h = int(round(rng.uniform(win_start, min(8759.0 - dur, win_end)))) if win_end > win_start else int(round(win_start))
-        start_h = max(int(math.ceil(last_end_h)), min(8759, start_h))
-        dur_clamped = max(0.5, min(dur, float(8760 - start_h)))
-        periods.append(((start_year + timedelta(hours=start_h)).strftime("%d/%m/%y %H:%M"), round(dur_clamped, 3)))
-        last_end_h = start_h + dur_clamped
+        dur_rounded = round(dur, 3)
+        remaining_after = sum(durs[idx + 1:])
+        earliest_f = 0.0 if idx == 0 else last_end_h
+        latest_f = max(earliest_f, 8760.0 - dur_rounded - remaining_after)
+        earliest_h = int(math.ceil(earliest_f - 1e-9))
+        latest_h = int(math.floor(latest_f + 1e-9))
+        if earliest_h <= latest_h:
+            win_start = max(earliest_h, min(latest_h, int(round(idx * slot))))
+            win_end = max(win_start, min(latest_h, int(round((idx + 1) * slot - dur_rounded))))
+            start_min = int(round(rng.uniform(win_start, win_end))) * 60 if win_end > win_start else win_start * 60
+        else:
+            min_start_min = int(math.ceil(earliest_f * 60.0 - 1e-9))
+            max_start_min = int(math.floor(latest_f * 60.0 + 1e-9))
+            start_min = min(max_start_min, max(0, min_start_min))
+        stamp = start_year + timedelta(minutes=start_min)
+        actual_start_h = start_min / 60.0
+        periods.append((stamp.strftime("%d/%m/%y %H:%M"), dur_rounded))
+        last_end_h = actual_start_h + dur_rounded
+    total_dur = sum(d for _, d in periods)
+    if len(periods) != n or any(d < min_d - 1e-6 or d > max_d + 1e-6 for _, d in periods):
+        raise ValueError("Unable to materialize random outage periods within requested duration bounds")
+    if abs(total_dur - target_total) > 0.1 or last_end_h > 8760.0 + 1e-6:
+        raise ValueError(f"Random outage placement could not fit requested total ({total_dur:.2f} h vs target {target_total:.2f} h)")
     return periods
 
 
@@ -783,10 +799,8 @@ def _validate_random_settings(updates: dict) -> dict:
     seed = updates.get("random_seed", 7)
     if type(seed) is not int or not 0 <= seed <= 999999:
         raise ValueError("random_seed must be an integer in 0..999999")
-    return {
-        "time_fraction": float(tf_pct) / 100.0, "period_count": n_per,
-        "min_duration_hours": min_d, "max_duration_hours": max_d, "random_seed": seed,
-    }
+    return {"time_fraction": float(tf_pct) / 100.0, "period_count": n_per, "min_duration_hours": min_d,
+            "max_duration_hours": max_d, "random_seed": seed}
 
 
 def replace_system_unavailability(lines, system, updates):
@@ -828,10 +842,7 @@ def replace_system_unavailability(lines, system, updates):
         if root.one("SystemUnavail")[1] != "TUnavailability" or len(blocks) != 2:
             raise ValueError("Require exactly one directly owned SystemUnavail object")
         child = blocks[1]
-        if (
-            child.path != "PVObject_" or child.object_type != "pvUnavail"
-            or child.one("Version")[1] not in NATIVE_TEXT_OR_SEED or child.one("Flags")[1] != "$00"
-        ):
+        if child.path != "PVObject_" or child.object_type != "pvUnavail" or child.one("Version")[1] not in NATIVE_TEXT_OR_SEED or child.one("Flags")[1] != "$00":
             raise ValueError(f"Require a valid {SEED_LABEL} pvUnavail record")
         first, last = root.one("SystemUnavail")[0], child.end_line
         if not 0 < first < child.line - 1 < last < root.end_line:
@@ -842,27 +853,20 @@ def replace_system_unavailability(lines, system, updates):
     candidate = list(lines)
     ending = "\r\n" if lines[system[0]].endswith("\r\n") else "\n"
     if mode == "none":
-        if before["configured"]:
-            if flags_val & 0x00010000:
-                candidate[system[0] + flag_index] = replace_value(candidate[system[0] + flag_index], f"${flags_val & ~0x00010000:08X}")
-            del candidate[system[0] + first:system[0] + last]
-        elif flags_val & 0x00010000:
+        if flags_val & 0x00010000:
             candidate[system[0] + flag_index] = replace_value(candidate[system[0] + flag_index], f"${flags_val & ~0x00010000:08X}")
+        if before["configured"]:
+            del candidate[system[0] + first:system[0] + last]
     else:
         if mode == "random":
             random_periods = _materialize_random_periods(random_cfg)
-            new_block = _render_unavail_lines(
-                random_periods, time_fraction_str=f"{random_cfg['time_fraction']:.4f}",
-                min_d=random_cfg["min_duration_hours"], max_d=random_cfg["max_duration_hours"],
-                random_seed=random_cfg["random_seed"], ending=ending,
-            )
+            new_block = _render_unavail_lines(random_periods, time_fraction_str=f"{random_cfg['time_fraction']:.4f}", min_d=random_cfg["min_duration_hours"],
+                                              max_d=random_cfg["max_duration_hours"], random_seed=random_cfg["random_seed"], ending=ending)
         else:
             new_block = _format_unavail_block(periods, ending)
         candidate[system[0] + flag_index] = replace_value(candidate[system[0] + flag_index], f"${flags_val | 0x00010000:08X}")
-        if before["configured"]:
-            candidate[system[0] + first:system[0] + last] = new_block
-        else:
-            candidate[system[1]:system[1]] = new_block
+        target_slice = slice(system[0] + first, system[0] + last) if before["configured"] else slice(system[1], system[1])
+        candidate[target_slice] = new_block
 
     after = system_unavail_state(candidate, (system[0], system[1] + len(candidate) - len(lines)))
     if mode == "none" and after["configured"]:

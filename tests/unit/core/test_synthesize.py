@@ -698,6 +698,164 @@ class ZeroTemplateSynthesizerTests(unittest.TestCase):
         self.assertEqual(completed["phase"], "completed")
         self.assertTrue(completed["native_consumption_verified"])
 
+    def test_house_v070_compat_scene_import_and_gui_closed_resume(self):
+        """Issue #274: v0.7.0 scene_import_method='native' and phase='gui_closed' resume cleanly."""
+        import json
+        from unittest.mock import patch
+        from pvsyst_auto.api.projects import pvsyst_import_house_pv_scene
+        from pvsyst_auto.api.schemas import SourcedHouseTaskRequest
+        from pvsyst_auto.api.simulation import pvsyst_run_house_task, pvsyst_run_sourced_house_task
+        from pvsyst_auto.native.cli import PVsystError
+
+        house, layout = _south_roof_house_and_layout()
+
+        # 1. Schemas accept scene_import_method='native' and reject legacy non-native values.
+        model_native = HouseTaskRequest(
+            site_name="Geneva_MN90.SIT",
+            met_name="Geneva_MN90_SYN.MET",
+            pan_name="Lab440.PAN",
+            ond_name="Lab50.OND",
+            new_project="V070House.PRJ",
+            variant_name="V070 Compat",
+            year=1990,
+            house=house,
+            layout=layout,
+            scene_import_method="native",
+            report_pdf=False,
+            shading_mode="linear",
+        )
+        sourced_native = SourcedHouseTaskRequest(
+            prepare_mode="preserve_source_hardware",
+            source_project="V070House.PRJ",
+            source_variant="VC0",
+            design={"year": 1990},
+            new_project="V070Sourced.PRJ",
+            variant_name="V070 Sourced",
+            house=house,
+            layout=layout,
+            scene_import_method="native",
+            report_pdf=False,
+            shading_mode="linear",
+        )
+        self.assertEqual(model_native.scene_import_method, "native")
+        self.assertEqual(sourced_native.scene_import_method, "native")
+        with self.assertRaises(ValidationError):
+            HouseTaskRequest(**{**model_native.model_dump(exclude_none=True), "scene_import_method": "gui"})
+        with self.assertRaises(ValidationError):
+            SourcedHouseTaskRequest(**{**sourced_native.model_dump(exclude_none=True), "scene_import_method": "gui"})
+
+        # 2. pvsyst_import_house_pv_scene accepts method='native' and rejects non-native.
+        cli = FakeCLI(self.root / "PVsystCLI.exe", self.root)
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store), \
+             patch("pvsyst_auto.api.projects.cli", return_value=cli):
+            with self.assertRaisesRegex(ValueError, "native"):
+                pvsyst_import_house_pv_scene("Missing.pvc2", "Var1", dry_run=True, method="gui")
+
+        # 3. Create checkpoint at simulation boundary, rewrite as v0.7.0 phase='gui_closed', and resume.
+        class RefusingCLI(FakeCLI):
+            def run_simulation(self, *args, **kwargs):
+                raise PVsystError("Interrupted before run")
+
+        ref_cli = RefusingCLI(self.root / "PVsystCLI.exe", self.root)
+        saved = run_house_task(
+            self.store, self.components, ref_cli,
+            request=model_native.model_dump(exclude_none=True),
+            dry_run=False, confirm=True,
+        )
+        manifest_path = Path(saved["artifacts"]["manifest"])
+        record = json.loads(manifest_path.read_text(encoding="utf-8"))
+        record["phase"] = "gui_closed"
+        record["runs"] = []
+        record["request"]["scene_import_method"] = "native"
+        manifest_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+        model_omitted = HouseTaskRequest(
+            site_name="Geneva_MN90.SIT",
+            met_name="Geneva_MN90_SYN.MET",
+            pan_name="Lab440.PAN",
+            ond_name="Lab50.OND",
+            new_project="V070House.PRJ",
+            variant_name="V070 Compat",
+            year=1990,
+            house=house,
+            layout=layout,
+            report_pdf=False,
+            shading_mode="linear",
+        )
+        class SimCLI(FakeCLI):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.sim_calls = []
+
+            def run_simulation(self, *args, **kwargs):
+                from datetime import datetime, timedelta
+                from tests._fixtures import write_sfi_csv
+
+                self.sim_calls.append((args, kwargs))
+                out_csv = kwargs["out_csv"]
+                proj, var = args[0], args[1]
+                start = datetime(1990, 1, 1, 0, 0)
+                rows = []
+                for step in range(8760):
+                    dt = start + timedelta(hours=step)
+                    day = 8 <= dt.hour < 16
+                    rows.append([
+                        dt.strftime("%d/%m/%y %H:%M"),
+                        500.0 if day else 0.0,
+                        5.0 if day else 0.0,
+                        2.2704 if day else 0.0,
+                        2.2176 if day else 0.0,
+                        0.0,
+                        0.84 if day else 0.0,
+                    ])
+                write_sfi_csv(
+                    out_csv,
+                    [
+                        ("GlobInc", "W/m2"),
+                        ("GlobShd", "W/m2"),
+                        ("EArray", "kW"),
+                        ("E_Grid", "kW"),
+                        ("IL_Pmax", "kW"),
+                        ("PR", "ratio"),
+                    ],
+                    rows,
+                    project=proj,
+                    variant=f"{Path(proj).stem}.{var}",
+                    site="Geneva_MN90.SIT",
+                    met="Geneva_MN90_SYN.MET",
+                )
+                return {"csv": str(out_csv), "stdout": "Simulation done", "warnings": [], "returncode": 0}
+
+        run_cli = SimCLI(self.root / "PVsystCLI.exe", self.root)
+        with patch("pvsyst_auto.api.simulation.variant_store", return_value=self.store), \
+             patch("pvsyst_auto.api.simulation.cli", return_value=run_cli):
+            resumed_omit = pvsyst_run_house_task(model_omitted, dry_run=False, confirm=True, resume=True)
+            self.assertIn(resumed_omit["status"], ("completed", "needs_review"), resumed_omit)
+            self.assertEqual(resumed_omit["phase"], "completed")
+            self.assertEqual(len(run_cli.sim_calls), 1)
+
+            # Reset checkpoint to gui_closed again and resume with explicit scene_import_method='native'
+            Path(resumed_omit["artifacts"]["csv"]).unlink(missing_ok=True)
+            record2 = json.loads(manifest_path.read_text(encoding="utf-8"))
+            record2["phase"] = "gui_closed"
+            record2["runs"] = []
+            record2["request"]["scene_import_method"] = "native"
+            manifest_path.write_text(json.dumps(record2, indent=2), encoding="utf-8")
+            resumed_native = pvsyst_run_house_task(model_native, dry_run=False, confirm=True, resume=True)
+            self.assertIn(resumed_native["status"], ("completed", "needs_review"), resumed_native)
+            self.assertEqual(resumed_native["phase"], "completed")
+            self.assertEqual(len(run_cli.sim_calls), 2)
+
+            # pvsyst_run_sourced_house_task preserves native scene_import_method cleanly.
+            sourced_dry = pvsyst_run_sourced_house_task(sourced_native, dry_run=True)
+            self.assertEqual(sourced_dry["status"], "ready", sourced_dry)
+            self.assertFalse(sourced_dry["house"]["plan"]["synthesized"])
+
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
+            imp_ok = pvsyst_import_house_pv_scene(saved["plan"]["scene_name"], "V070 Import", dry_run=True, method="native")
+            self.assertEqual(imp_ok["method"], "native", imp_ok)
+            self.assertEqual(imp_ok["status"], "ready_to_import", imp_ok)
+
 
 if __name__ == "__main__":
     unittest.main()

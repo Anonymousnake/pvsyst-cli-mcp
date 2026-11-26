@@ -26,7 +26,7 @@ Two CLI flags are intentionally omitted from the MCP surface: `-cof` (options fi
 
 | Tool | What it does |
 |---|---|
-| `pvsyst_capabilities` | Inspect installed `PVsystCLI.exe` version and supported CLI commands/flags |
+| `pvsyst_capabilities` | Inspect installed `PVsystCLI.exe` version and supported CLI commands/flags (optionally for one `command`) |
 | `pvsyst_license_info` | Query CLI license status and remaining simulation quota (redacts key and Host ID) |
 
 ### Admin & Diagnostics (`admin`, opt-in: 4)
@@ -214,7 +214,7 @@ The following 18 legacy entry points were removed. The paths below follow the co
 | `pvsyst_copy_component` | `pvsyst_build_sourced_component` for PAN/OND template derivation; generic component copying was removed |
 | `pvsyst_create_dome_allocation_variant` | No direct replacement (removed; paired `dome` conversions are not supported by `pvsyst_convert_orientation`) |
 | `pvsyst_create_load_variant` | `pvsyst_create_native_load_variant` with `mode="hourly"` and a prepared load manifest |
-| `pvsyst_create_mv_night_disconnect_variant` | `pvsyst_configure_transformers` (`mv.night_disconnect`) |
+| `pvsyst_create_mv_night_disconnect_variant` | `pvsyst_configure_transformers` with `mv={"night_disconnect": ...}` (toggles `NightDisconnect` and bit 29 in-place on an existing MV variant; rebuilds MV settings when other `mv`/`hv` fields are given) |
 | `pvsyst_create_peak_shaving_variant` | `pvsyst_create_grid_storage_variant` with the `PeakShaving` limits or discharge-timing updates |
 | `pvsyst_open_native_project` | No direct replacement (removed) |
 | `pvsyst_restore_archived_component` | No direct replacement (removed) |

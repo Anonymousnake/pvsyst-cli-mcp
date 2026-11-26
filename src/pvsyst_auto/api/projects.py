@@ -240,12 +240,17 @@ def pvsyst_configure_transformers(
     transformers with remove_transformers=true). Enforces PVsyst 8.1.7 native rating (80%-200% PNomInvAC),
     voltage ordering, and loss bounds (<=1% iron, <=5% copper). Defaults to dry_run=true."""
     from pvsyst_auto.energy.transformers import configure_transformers
+    mv_payload = (
+        {"night_disconnect": mv.night_disconnect}
+        if (mv is not None and mv.model_fields_set == {"night_disconnect"})
+        else (mv.model_dump(exclude_none=True) if mv is not None else None)
+    )
     return configure_transformers(
         variant_store(),
         project=project,
         source_variant=source_variant,
         new_variant=new_variant,
-        mv=mv.model_dump(exclude_none=True) if mv is not None else None,
+        mv=mv_payload,
         hv=hv.model_dump(exclude_none=True) if hv is not None else None,
         remove_transformers=remove_transformers,
         dry_run=dry_run,
@@ -296,9 +301,12 @@ def pvsyst_read_house_pv_scene(scene_name: StrictStr) -> dict:
 @categorized_tool()
 def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
                                    dry_run: StrictBool = True, confirm: StrictBool = False,
-                                   shading_mode: Literal["linear", "module_layout"] = "linear") -> dict:
+                                   shading_mode: Literal["linear", "module_layout"] = "linear",
+                                   method: Literal["native"] = "native") -> dict:
     """Import a .pvc2 house/PV scene into a new variant via the headless native builder,
     supporting linear and module_layout shading."""
+    if method != "native":
+        raise ValueError("Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; use method='native'")
     store = variant_store()
     with store.lock:
         if shading_mode != "module_layout":
@@ -308,11 +316,11 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
             recovered = read_house_pv_scene(store.components, scene_name)
             binding = (recovered.get("create_arguments") or {}).get("string_layout")
             if binding is not None:
-                return {"status": "blocked", "stage": "preflight", "method": "native",
+                return {"status": "blocked", "stage": "preflight", "method": method,
                         "scene_name": scene_name, "dry_run": dry_run,
                         "native_consumption_verified": False,
                         "issues": ["This scene declares an explicit string_layout; it can only be "
-                                   "imported with shading_mode='module_layout'. "
+                                   "imported with method='native' and shading_mode='module_layout'. "
                                    "The linear importer auto-allocates strings and will not drop "
                                    "declared per-cell wiring silently."]}
         from pvsyst_auto.native.headless import import_house_pv_scene_native

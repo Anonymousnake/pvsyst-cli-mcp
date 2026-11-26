@@ -662,6 +662,78 @@ class DiagnosticsEngineTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, error):
                     diagnose_simulation_csv(path)
 
+    def test_coverage_and_rule_counts_distinguish_skip_reasons(self):
+        """Issue #276: coverage reports evaluated vs skipped rules and exact skip reasons."""
+        cases = (
+            (
+                "missing_il_pmax",
+                [("EArray", "kW"), ("E_Grid", "kW")],
+                [["01/01/90 10:00", 2.0, 1.0], ["01/01/90 11:00", 2.0, 1.0]],
+                1,
+                18,
+                "INVERTER_CLIPPING_HIGH",
+                False,
+                "missing_column",
+            ),
+            (
+                "il_pmax_zero",
+                [("EArray", "kW"), ("E_Grid", "kW"), ("IL_Pmax", "kW")],
+                [["01/01/90 10:00", 2.0, 1.0, 0.0], ["01/01/90 11:00", 2.0, 1.0, 0.0]],
+                2,
+                17,
+                "INVERTER_CLIPPING_HIGH",
+                True,
+                None,
+            ),
+            (
+                "il_pmax_only_no_denom",
+                [("IL_Pmax", "kW")],
+                [["01/01/90 10:00", 1.0], ["01/01/90 11:00", 1.0]],
+                0,
+                19,
+                "INVERTER_CLIPPING_HIGH",
+                False,
+                "no_denominator",
+            ),
+            (
+                "with_il_pmax",
+                [("EArray", "kW"), ("E_Grid", "kW"), ("IL_Pmax", "kW")],
+                [["01/01/90 10:00", 2.0, 1.0, 1.0], ["01/01/90 11:00", 2.0, 1.0, 1.0]],
+                2,
+                17,
+                "INVERTER_CLIPPING_HIGH",
+                True,
+                None,
+            ),
+            (
+                "unrecognized_unit",
+                [("GlobInc", "foo"), ("PR", "ratio")],
+                [["01/01/90 10:00", 500.0, 0.8], ["01/01/90 11:00", 500.0, 0.8]],
+                0,
+                19,
+                "PR_TOO_LOW",
+                False,
+                "unrecognized_unit",
+            ),
+        )
+        for name, cols, rows, exp_eval, exp_skip, rule_code, exp_rule_eval, exp_reason in cases:
+            with self.subTest(case=name):
+                path = self.root / "Results" / f"cov_{name}.csv"
+                _write_csv(path, cols, rows)
+                diag = diagnose_simulation_csv(path)
+                cov_by_code = {entry["code"]: entry for entry in diag["coverage"]}
+                self.assertEqual(len(diag["coverage"]), 19)
+                self.assertEqual(diag["evaluated_rule_count"], exp_eval)
+                self.assertEqual(diag["skipped_rule_count"], exp_skip)
+                entry = cov_by_code[rule_code]
+                self.assertEqual(entry["evaluated"], exp_rule_eval)
+                self.assertEqual(entry["reason"], exp_reason)
+                self.assertIn("columns", entry)
+                self.assertEqual(cov_by_code["LOAD_NOT_ENABLED"]["reason"], "missing_vc0")
+                compact = compact_diagnostics_summary(diag)
+                self.assertEqual(compact["evaluated_rule_count"], exp_eval)
+                self.assertEqual(compact["skipped_rule_count"], exp_skip)
+
 
 if __name__ == "__main__":
     unittest.main()

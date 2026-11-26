@@ -605,6 +605,8 @@ def _download_pvgis_tmy(workspace_path: Path, *, csv_name: str, year: int | None
             local_index = (int((utc_dt - base_start).total_seconds() // 3600) + offset_hours) % 8760
             ghi, dhi = _finite_number(item.get("G(h)"), f"PVGIS row {row_idx} G(h)"), _finite_number(item.get("Gd(h)"), f"PVGIS row {row_idx} Gd(h)")
             tamb = _finite_number(item.get("T2m"), f"PVGIS row {row_idx} T2m")
+            if tamb <= -273.15:
+                raise WeatherAcquisitionError(f"PVGIS row {row_idx} has temperature at or below absolute zero (T2m={tamb})")
             if ghi < 0 or dhi < 0:
                 raise WeatherAcquisitionError(f"Negative irradiance in PVGIS row {row_idx}")
             if dhi > ghi:
@@ -676,6 +678,8 @@ def _download_nasa_power(workspace_path: Path, *, csv_name: str, year: int | Non
             tamb = _finite_number(t2m_map[key], f"NASA POWER T2M {key}")
             if ghi <= -900.0 or dhi <= -900.0 or tamb <= -900.0:
                 raise WeatherAcquisitionError(f"NASA POWER sentinel missing value at UTC hour {key}")
+            if tamb <= -273.15:
+                raise WeatherAcquisitionError(f"NASA POWER temperature at or below absolute zero at UTC hour {key} (T2M={tamb})")
             if ghi < 0 or dhi < 0:
                 raise WeatherAcquisitionError(f"NASA POWER negative irradiance at UTC hour {key}")
             if dhi > ghi:

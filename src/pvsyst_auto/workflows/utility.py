@@ -670,6 +670,16 @@ def run_utility_design(
             )
             synth_preview = synthesize_utility_project(store, **kwargs)
             result["utility_summary"] = synth_preview["utility_summary"]
+            ground_3d = synth_preview["utility_summary"].get("ground_3d_layout")
+            if isinstance(ground_3d, dict) and "total_modules" in ground_3d:
+                scene_modules = int(ground_3d["total_modules"])
+                electrical_modules = int(capacity_plan["module_count"])
+                if scene_modules != electrical_modules:
+                    raise ValueError(
+                        f"3D site_polygon scene module count ({scene_modules}) "
+                        f"disagrees with electrical module count ({electrical_modules}); "
+                        "adjust site_polygon/setback_m/pitch_m/module_rows or target capacity to match the electrical design"
+                    )
             if synth_preview["utility_summary"]["bifacial_enabled"]:
                 is_bifi_pan = _pan_is_bifacial(store, pan_info)
                 if is_bifi_pan is False:

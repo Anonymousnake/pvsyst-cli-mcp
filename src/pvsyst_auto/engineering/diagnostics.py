@@ -290,6 +290,13 @@ def _extract_grid_limit_context(
     }
 
 
+_LOCAL_USE_COLUMNS = (
+    "E_User", "E_Solar", "EFrGrid", "E_Miss", "EUseful", "EDirUse",
+    "EBatCh", "EBatDis", "SOC", "SOC_End", "SOC_Beg", "SOCmean",
+)
+_GENERATION_COLUMNS = ("EArray", "EOutInv", "E_Avail")
+
+
 def diagnose_simulation_csv(
     csv_path: str | Path,
     *,
@@ -418,14 +425,12 @@ def diagnose_simulation_csv(
             # Grid export alone does not measure generation when load or storage is present.
             if gi_w_m2 is not None and gi_w_m2 >= cfg["zero_output_irrad_min_w_m2"]:
                 out_val = None
-                for col in ("EArray", "EOutInv", "E_Avail"):
+                for col in _GENERATION_COLUMNS:
                     value = row[idx[col]] if col in idx else None
                     if isinstance(value, (int, float)) and math.isfinite(value):
                         out_val = float(value)
                         break
-                local_use_columns = ("E_User", "E_Solar", "EFrGrid", "E_Miss", "EUseful", "EDirUse",
-                                     "EBatCh", "EBatDis", "SOC", "SOC_End", "SOC_Beg", "SOCmean")
-                if out_val is None and not has_local_use and not any(col in idx for col in local_use_columns):
+                if out_val is None and not has_local_use and not any(col in idx for col in _LOCAL_USE_COLUMNS):
                     out_val = float(eg_raw) if eg_ok else None
                 if out_val is not None and out_val <= 1e-6:
                     zero_out_count += 1
@@ -463,6 +468,9 @@ def diagnose_simulation_csv(
             "analyzed_columns": [h for h in reader.headers[1:]],
             "variant_attribution_used": vc_info is not None,
             "grid_limit_context": None,
+            "coverage": [],
+            "evaluated_rule_count": 0,
+            "skipped_rule_count": 0,
             "findings": [],
         }
 
@@ -506,6 +514,20 @@ def diagnose_simulation_csv(
     )
 
     findings: list[dict] = []
+    coverage: list[dict] = []
+
+    def record_coverage(
+        code: str,
+        evaluated: bool,
+        columns: list[str],
+        reason: str | None = None,
+    ) -> None:
+        coverage.append({
+            "code": code,
+            "evaluated": evaluated,
+            "reason": None if evaluated else reason,
+            "columns": list(columns),
+        })
 
     def add(
         *,
@@ -540,10 +562,23 @@ def diagnose_simulation_csv(
     earray_kwh = _to_kwh(sums["EArray"], units.get("EArray", ""), step_hours) if "EArray" in idx else None
     egrid_kwh = _to_kwh(sums["E_Grid"], units.get("E_Grid", ""), step_hours) if "E_Grid" in idx else None
     globinc_kwh_m2 = _to_kwh_m2(sums["GlobInc"], units.get("GlobInc", ""), step_hours) if "GlobInc" in idx else None
+    base_kwh = earray_kwh if (earray_kwh is not None and earray_kwh > 0) else egrid_kwh
+    base_denom_col = "EArray" if (earray_kwh is not None and earray_kwh > 0) else "E_Grid"
+
+    def _base_denom_skip() -> tuple[str, list[str]]:
+        bad_units = [
+            col for col in ("EArray", "E_Grid")
+            if col in idx and _to_kwh(sums[col], units.get(col, ""), step_hours) is None
+        ]
+        if bad_units and base_kwh is None:
+            return "unrecognized_unit", bad_units
+        return "no_denominator", ["EArray", "E_Grid"]
 
     # --- 1. PR & Energy Integrity ---
     weighted_pr = (weighted_pr_num / weighted_pr_den) if weighted_pr_den > 0 else None
     if weighted_pr is not None:
+        record_coverage("PR_TOO_LOW", True, ["PR", "GlobInc"])
+        record_coverage("PR_TOO_HIGH", True, ["PR", "GlobInc"])
         pr_min = cfg["bifacial_pr_min"] if is_bifacial else cfg["pr_min"]
         pr_max = cfg["bifacial_pr_max"] if is_bifacial else cfg["pr_max"]
         if weighted_pr < pr_min:
@@ -580,7 +615,41 @@ def diagnose_simulation_csv(
                     "Confirm whether bifaciality or temperature-corrected PR (PRCorrTemp) is enabled.",
                 ],
             )
+    else:
+        missing_pr = [c for c in ("PR", "GlobInc") if c not in idx]
+        if missing_pr:
+            pr_reason, pr_cols = "missing_column", missing_pr
+        elif (
+            _PR_SCALE.get(units.get("PR", "")) is None
+            or _to_w_m2(1.0, units.get("GlobInc", ""), step_hours) is None
+        ):
+            bad_pr_cols = [
+                c for c, ok in (
+                    ("PR", _PR_SCALE.get(units.get("PR", "")) is not None),
+                    ("GlobInc", _to_w_m2(1.0, units.get("GlobInc", ""), step_hours) is not None),
+                )
+                if not ok
+            ]
+            pr_reason, pr_cols = "unrecognized_unit", bad_pr_cols
+        else:
+            pr_reason, pr_cols = "no_denominator", ["PR", "GlobInc"]
+        record_coverage("PR_TOO_LOW", False, pr_cols, reason=pr_reason)
+        record_coverage("PR_TOO_HIGH", False, pr_cols, reason=pr_reason)
 
+    storage_missing_ebatdis = has_grid_storage and counts.get("EBatDis", 0) == 0
+    if "E_Grid" in idx and "EArray" in idx:
+        eg_u, ea_u = units.get("E_Grid", ""), units.get("EArray", "")
+        if _to_kwh(1.0, eg_u, step_hours) is None or _to_kwh(1.0, ea_u, step_hours) is None or eg_u != ea_u:
+            record_coverage("E_GRID_EXCEEDS_EARRAY", False, ["E_Grid", "EArray"], reason="unrecognized_unit")
+        elif storage_missing_ebatdis:
+            record_coverage("E_GRID_EXCEEDS_EARRAY", False, ["EBatDis"], reason="missing_column")
+        else:
+            record_coverage("E_GRID_EXCEEDS_EARRAY", True, ["E_Grid", "EArray"])
+    else:
+        record_coverage(
+            "E_GRID_EXCEEDS_EARRAY", False, [c for c in ("E_Grid", "EArray") if c not in idx],
+            reason="missing_column",
+        )
     if egrid_exceeds_earray_count > 0:
         add(
             code="E_GRID_EXCEEDS_EARRAY",
@@ -597,6 +666,24 @@ def diagnose_simulation_csv(
             recommended_actions=["Verify SFI column units and inspect pvSystem for backup generator or storage."],
         )
 
+    if "GlobInc" in idx and "E_Grid" in idx:
+        gi_unit_ok = _to_w_m2(1.0, units.get("GlobInc", ""), step_hours) is not None
+        eg_unit_ok = _to_kwh(1.0, units.get("E_Grid", ""), step_hours) is not None
+        if not gi_unit_ok or not eg_unit_ok:
+            record_coverage(
+                "NIGHTTIME_EXPORT", False,
+                [c for c, ok in (("GlobInc", gi_unit_ok), ("E_Grid", eg_unit_ok)) if not ok],
+                reason="unrecognized_unit",
+            )
+        elif storage_missing_ebatdis:
+            record_coverage("NIGHTTIME_EXPORT", False, ["EBatDis"], reason="missing_column")
+        else:
+            record_coverage("NIGHTTIME_EXPORT", True, ["GlobInc", "E_Grid"])
+    else:
+        record_coverage(
+            "NIGHTTIME_EXPORT", False, [c for c in ("GlobInc", "E_Grid") if c not in idx],
+            reason="missing_column",
+        )
     if night_export_count > 0 and "E_Grid" in idx:
         night_kwh = _to_kwh(night_export_kwh_raw, units.get("E_Grid", ""), step_hours) or 0.0
         if night_kwh > cfg["night_export_max_kwh"]:
@@ -616,77 +703,96 @@ def diagnose_simulation_csv(
             )
 
     # --- 2. Inverter Limit Losses ---
-    base_kwh = earray_kwh if (earray_kwh is not None and earray_kwh > 0) else egrid_kwh
     if "IL_Vmax" in idx:
-        il_vmax_kwh = _to_kwh(sums["IL_Vmax"], units.get("IL_Vmax", ""), step_hours) or 0.0
-        if il_vmax_kwh > cfg["overvoltage_loss_max_kwh"]:
-            n_ser = sub0.get("NModSerie")
-            hint = (f"String voltage exceeded inverter VMPPMax/VAbsMax (current NModSerie={n_ser})."
-                    if n_ser else "String open-circuit or MPP voltage exceeded inverter upper voltage limit.")
-            add(
-                code="INVERTER_OVERVOLTAGE",
-                severity="critical" if (base_kwh and il_vmax_kwh / base_kwh > 0.01) else "high",
-                category="inverter_limits",
-                metric="IL_Vmax",
-                observed=il_vmax_kwh,
-                threshold=cfg["overvoltage_loss_max_kwh"],
-                unit="kWh",
-                message=f"Inverter over-voltage loss IL_Vmax = {il_vmax_kwh:.2f} kWh detected.",
-                root_cause_hint=hint,
-                recommended_actions=[
-                    "Reduce NModSerie via pvsyst_update_variant_parameters (or re-run pvsyst_suggest_sizing with colder min_ambient_c).",
-                ],
-            )
+        il_vmax_kwh = _to_kwh(sums["IL_Vmax"], units.get("IL_Vmax", ""), step_hours)
+        if il_vmax_kwh is None:
+            record_coverage("INVERTER_OVERVOLTAGE", False, ["IL_Vmax"], reason="unrecognized_unit")
+        else:
+            record_coverage("INVERTER_OVERVOLTAGE", True, ["IL_Vmax"])
+            if il_vmax_kwh > cfg["overvoltage_loss_max_kwh"]:
+                n_ser = sub0.get("NModSerie")
+                hint = (f"String voltage exceeded inverter VMPPMax/VAbsMax (current NModSerie={n_ser})."
+                        if n_ser else "String open-circuit or MPP voltage exceeded inverter upper voltage limit.")
+                add(
+                    code="INVERTER_OVERVOLTAGE",
+                    severity="critical" if (base_kwh and il_vmax_kwh / base_kwh > 0.01) else "high",
+                    category="inverter_limits",
+                    metric="IL_Vmax",
+                    observed=il_vmax_kwh,
+                    threshold=cfg["overvoltage_loss_max_kwh"],
+                    unit="kWh",
+                    message=f"Inverter over-voltage loss IL_Vmax = {il_vmax_kwh:.2f} kWh detected.",
+                    root_cause_hint=hint,
+                    recommended_actions=[
+                        "Reduce NModSerie via pvsyst_update_variant_parameters (or re-run pvsyst_suggest_sizing with colder min_ambient_c).",
+                    ],
+                )
+    else:
+        record_coverage("INVERTER_OVERVOLTAGE", False, ["IL_Vmax"], reason="missing_column")
 
-    if base_kwh and base_kwh > 0:
-        for col, code, thresh_key, sev, desc, action in (
-            (
-                "IL_Pmax", "INVERTER_CLIPPING_HIGH", "clipping_loss_max_pct", "medium",
-                "Inverter overpower clipping loss (IL_Pmax)",
-                "Review DC/AC ratio (NInverter / NStringCh / GInverter) or evaluate PeakShaving storage.",
-            ),
-            (
-                "IL_Vmin", "INVERTER_UNDERVOLTAGE", "undervoltage_loss_max_pct", "high",
-                "Inverter under-voltage loss (IL_Vmin)",
-                "Increase NModSerie so hot string Vmp stays above inverter VMppMin.",
-            ),
-            (
-                "IL_Imax", "INVERTER_CURRENT_LIMIT", "current_limit_loss_max_pct", "high",
-                "Inverter current-limit loss (IL_Imax)",
-                "Reduce parallel strings per MPPT or select an inverter with higher IDCMax.",
-            ),
-            (
-                "IL_Pmin", "INVERTER_THRESHOLD_LOSS", "threshold_loss_max_pct", "medium",
-                "Inverter power-threshold loss (IL_Pmin)",
-                "Verify inverter is not oversized relative to installed DC capacity.",
-            ),
-        ):
-            if col in idx:
-                loss_kwh = _to_kwh(sums[col], units.get(col, ""), step_hours)
-                if loss_kwh is not None:
-                    pct = (loss_kwh / base_kwh) * 100.0
-                    if pct > cfg[thresh_key]:
-                        final_sev = "high" if (col == "IL_Pmax" and pct > cfg[thresh_key] * 2.5) else sev
-                        extra = f" (NInverter={sub0.get('NInverter')}, NModSerie={sub0.get('NModSerie')})" if sub0 else ""
-                        add(
-                            code=code,
-                            severity=final_sev,
-                            category="inverter_limits",
-                            metric=f"{col} / EArray",
-                            observed=pct,
-                            threshold=cfg[thresh_key],
-                            unit="%",
-                            message=f"{desc} is {pct:.2f}% ({loss_kwh:.1f} kWh), above threshold {cfg[thresh_key]:.2f}%{extra}.",
-                            root_cause_hint=f"{col} accounts for {pct:.2f}% of array energy.",
-                            recommended_actions=[action],
-                        )
+    for col, code, thresh_key, sev, desc, action in (
+        (
+            "IL_Pmax", "INVERTER_CLIPPING_HIGH", "clipping_loss_max_pct", "medium",
+            "Inverter overpower clipping loss (IL_Pmax)",
+            "Review DC/AC ratio (NInverter / NStringCh / GInverter) or evaluate PeakShaving storage.",
+        ),
+        (
+            "IL_Vmin", "INVERTER_UNDERVOLTAGE", "undervoltage_loss_max_pct", "high",
+            "Inverter under-voltage loss (IL_Vmin)",
+            "Increase NModSerie so hot string Vmp stays above inverter VMppMin.",
+        ),
+        (
+            "IL_Imax", "INVERTER_CURRENT_LIMIT", "current_limit_loss_max_pct", "high",
+            "Inverter current-limit loss (IL_Imax)",
+            "Reduce parallel strings per MPPT or select an inverter with higher IDCMax.",
+        ),
+        (
+            "IL_Pmin", "INVERTER_THRESHOLD_LOSS", "threshold_loss_max_pct", "medium",
+            "Inverter power-threshold loss (IL_Pmin)",
+            "Verify inverter is not oversized relative to installed DC capacity.",
+        ),
+    ):
+        if col not in idx:
+            record_coverage(code, False, [col], reason="missing_column")
+            continue
+        loss_kwh = _to_kwh(sums[col], units.get(col, ""), step_hours)
+        if loss_kwh is None:
+            record_coverage(code, False, [col], reason="unrecognized_unit")
+            continue
+        if not (base_kwh and base_kwh > 0):
+            skip_reason, denom_cols = _base_denom_skip()
+            record_coverage(code, False, [col, *denom_cols], reason=skip_reason)
+            continue
+        record_coverage(code, True, [col, base_denom_col])
+        pct = (loss_kwh / base_kwh) * 100.0
+        if pct > cfg[thresh_key]:
+            final_sev = "high" if (col == "IL_Pmax" and pct > cfg[thresh_key] * 2.5) else sev
+            extra = f" (NInverter={sub0.get('NInverter')}, NModSerie={sub0.get('NModSerie')})" if sub0 else ""
+            add(
+                code=code,
+                severity=final_sev,
+                category="inverter_limits",
+                metric=f"{col} / EArray",
+                observed=pct,
+                threshold=cfg[thresh_key],
+                unit="%",
+                message=f"{desc} is {pct:.2f}% ({loss_kwh:.1f} kWh), above threshold {cfg[thresh_key]:.2f}%{extra}.",
+                root_cause_hint=f"{col} accounts for {pct:.2f}% of array energy.",
+                recommended_actions=[action],
+            )
 
     # --- 3. Shading, Soiling & Grid Curtailment ---
     before = "GlobHrz" if counts.get("GlobHrz") == rows else "GlobInc"
     if all(counts.get(col) == rows for col in (before, "GlobShd")):
         before_shd = _to_kwh_m2(sums[before], units.get(before, ""), step_hours)
         after_shd = _to_kwh_m2(sums["GlobShd"], units.get("GlobShd", ""), step_hours)
-        if before_shd and after_shd is not None:
+        if before_shd is None or after_shd is None:
+            bad_shd_cols = [c for c, v in ((before, before_shd), ("GlobShd", after_shd)) if v is None]
+            record_coverage("SHADING_LOSS_HIGH", False, bad_shd_cols, reason="unrecognized_unit")
+        elif not (before_shd and before_shd > 0):
+            record_coverage("SHADING_LOSS_HIGH", False, [before, "GlobShd"], reason="no_denominator")
+        else:
+            record_coverage("SHADING_LOSS_HIGH", True, [before, "GlobShd"])
             shd_kwh_m2 = before_shd - after_shd
             pct = shd_kwh_m2 / before_shd * 100.0
             if pct > cfg["shading_loss_max_pct"]:
@@ -705,10 +811,23 @@ def diagnose_simulation_csv(
                         "Increase row pitch (lower GCR), enable backtracking on trackers, or adjust 3D obstacle clearance.",
                     ],
                 )
+    else:
+        record_coverage(
+            "SHADING_LOSS_HIGH", False, [col for col in (before, "GlobShd") if counts.get(col) != rows],
+            reason="missing_column",
+        )
 
-    if "ShdElec" in idx and base_kwh and base_kwh > 0:
+    if "ShdElec" not in idx:
+        record_coverage("ELECTRICAL_SHADING_HIGH", False, ["ShdElec"], reason="missing_column")
+    else:
         shd_elec_kwh = _to_kwh(sums["ShdElec"], units.get("ShdElec", ""), step_hours)
-        if shd_elec_kwh is not None:
+        if shd_elec_kwh is None:
+            record_coverage("ELECTRICAL_SHADING_HIGH", False, ["ShdElec"], reason="unrecognized_unit")
+        elif not (base_kwh and base_kwh > 0):
+            skip_reason, denom_cols = _base_denom_skip()
+            record_coverage("ELECTRICAL_SHADING_HIGH", False, ["ShdElec", *denom_cols], reason=skip_reason)
+        else:
+            record_coverage("ELECTRICAL_SHADING_HIGH", True, ["ShdElec", base_denom_col])
             pct = (abs(shd_elec_kwh) / base_kwh) * 100.0
             if pct > cfg["electrical_shading_max_pct"]:
                 add(
@@ -726,9 +845,18 @@ def diagnose_simulation_csv(
                     ],
                 )
 
-    if "SlgLoss" in idx and globinc_kwh_m2 and globinc_kwh_m2 > 0:
+    if "SlgLoss" not in idx:
+        record_coverage("SOILING_LOSS_HIGH", False, ["SlgLoss"], reason="missing_column")
+    else:
         slg_kwh_m2 = _to_kwh_m2(sums["SlgLoss"], units.get("SlgLoss", ""), step_hours)
-        if slg_kwh_m2 is not None:
+        if slg_kwh_m2 is None:
+            record_coverage("SOILING_LOSS_HIGH", False, ["SlgLoss"], reason="unrecognized_unit")
+        elif "GlobInc" in idx and globinc_kwh_m2 is None:
+            record_coverage("SOILING_LOSS_HIGH", False, ["SlgLoss", "GlobInc"], reason="unrecognized_unit")
+        elif not (globinc_kwh_m2 and globinc_kwh_m2 > 0):
+            record_coverage("SOILING_LOSS_HIGH", False, ["SlgLoss", "GlobInc"], reason="no_denominator")
+        else:
+            record_coverage("SOILING_LOSS_HIGH", True, ["SlgLoss", "GlobInc"])
             pct = (abs(slg_kwh_m2) / globinc_kwh_m2) * 100.0
             if pct > cfg["soiling_loss_max_pct"]:
                 add(
@@ -744,39 +872,54 @@ def diagnose_simulation_csv(
                     recommended_actions=["Review soiling_updates in pvsyst_update_variant_parameters."],
                 )
 
-    for curt_col in ("EGrdLim", "EUnused"):
-        if curt_col in idx and base_kwh and base_kwh > 0:
-            curt_kwh = _to_kwh(sums[curt_col], units.get(curt_col, ""), step_hours)
-            if curt_kwh is not None:
-                pct = (abs(curt_kwh) / base_kwh) * 100.0
-                if pct > cfg["curtailment_max_pct"]:
-                    if grid_limit_context and grid_limit_context["quantity"] == "apparent":
-                        hint = (
-                            f"Apparent grid limit {grid_limit_context['configured_limit']:g} kVA "
-                            f"with cos(phi)={grid_limit_context['cos_phi']:.4f} caps active dispatch at "
-                            f"{grid_limit_context['active_dispatch_cap_kw']:.2f} kW "
-                            f"(not {grid_limit_context['configured_limit']:g} kW); native EApGrid can "
-                            f"legitimately exceed {grid_limit_context['configured_limit']:g} kVA."
-                        )
-                    else:
-                        hint = "Active grid injection limit (PLimGrid) or full battery preventing PV export."
-                    add(
-                        code="GRID_CURTAILMENT_HIGH",
-                        severity="medium",
-                        category="shading_soiling_curtailment",
-                        metric=f"{curt_col} / EArray",
-                        observed=pct,
-                        threshold=cfg["curtailment_max_pct"],
-                        unit="%",
-                        message=f"Grid limit / unused energy ({curt_col}) is {pct:.2f}% ({abs(curt_kwh):.1f} kWh).",
-                        root_cause_hint=hint,
-                        recommended_actions=[
-                            "Evaluate PeakShaving or larger battery capacity via pvsyst_create_grid_storage_system.",
-                        ],
+    present_curt_cols = [c for c in ("EGrdLim", "EUnused") if c in idx]
+    if not present_curt_cols:
+        record_coverage("GRID_CURTAILMENT_HIGH", False, ["EGrdLim", "EUnused"], reason="missing_column")
+    else:
+        curt_col = next(
+            (c for c in present_curt_cols if _to_kwh(sums[c], units.get(c, ""), step_hours) is not None),
+            present_curt_cols[0],
+        )
+        curt_kwh = _to_kwh(sums[curt_col], units.get(curt_col, ""), step_hours)
+        if curt_kwh is None:
+            record_coverage("GRID_CURTAILMENT_HIGH", False, present_curt_cols, reason="unrecognized_unit")
+        elif not (base_kwh and base_kwh > 0):
+            skip_reason, denom_cols = _base_denom_skip()
+            record_coverage("GRID_CURTAILMENT_HIGH", False, [curt_col, *denom_cols], reason=skip_reason)
+        else:
+            record_coverage("GRID_CURTAILMENT_HIGH", True, [curt_col, base_denom_col])
+            pct = (abs(curt_kwh) / base_kwh) * 100.0
+            if pct > cfg["curtailment_max_pct"]:
+                if grid_limit_context and grid_limit_context["quantity"] == "apparent":
+                    hint = (
+                        f"Apparent grid limit {grid_limit_context['configured_limit']:g} kVA "
+                        f"with cos(phi)={grid_limit_context['cos_phi']:.4f} caps active dispatch at "
+                        f"{grid_limit_context['active_dispatch_cap_kw']:.2f} kW "
+                        f"(not {grid_limit_context['configured_limit']:g} kW); native EApGrid can "
+                        f"legitimately exceed {grid_limit_context['configured_limit']:g} kVA."
                     )
-                    break
+                else:
+                    hint = "Active grid injection limit (PLimGrid) or full battery preventing PV export."
+                add(
+                    code="GRID_CURTAILMENT_HIGH",
+                    severity="medium",
+                    category="shading_soiling_curtailment",
+                    metric=f"{curt_col} / EArray",
+                    observed=pct,
+                    threshold=cfg["curtailment_max_pct"],
+                    unit="%",
+                    message=f"Grid limit / unused energy ({curt_col}) is {pct:.2f}% ({abs(curt_kwh):.1f} kWh).",
+                    root_cause_hint=hint,
+                    recommended_actions=[
+                        "Evaluate PeakShaving or larger battery capacity via pvsyst_create_grid_storage_system.",
+                    ],
+                )
 
     # --- 4. Storage & Load Balance ---
+    if vc_info is None:
+        record_coverage("LOAD_NOT_ENABLED", False, [], reason="missing_vc0")
+    else:
+        record_coverage("LOAD_NOT_ENABLED", True, [c for c in ("E_User", "E_Solar", "EFrGrid") if c in idx])
     if load_ctx and load_ctx.get("has_pvload") and load_ctx.get("load_flag_enabled") is False:
         load_cols_present = any(col in idx for col in ("E_User", "E_Solar", "EFrGrid"))
         e_user_total = (
@@ -803,10 +946,18 @@ def diagnose_simulation_csv(
                     "Rebind the hourly load via pvsyst_create_native_load_variant (sets bit 19 $00080000) and re-run.",
                 ],
             )
-    if "E_Miss" in idx and "E_User" in idx:
+    if "E_Miss" not in idx:
+        record_coverage("UNMET_LOAD_HIGH", False, ["E_Miss"], reason="missing_column")
+    else:
         miss_kwh = _to_kwh(sums["E_Miss"], units.get("E_Miss", ""), step_hours)
-        user_kwh = _to_kwh(sums["E_User"], units.get("E_User", ""), step_hours)
-        if miss_kwh is not None and user_kwh and user_kwh > 0:
+        user_kwh = _to_kwh(sums["E_User"], units.get("E_User", ""), step_hours) if "E_User" in idx else None
+        if miss_kwh is None or ("E_User" in idx and user_kwh is None):
+            bad_load_cols = [c for c, ok in (("E_Miss", miss_kwh is not None), ("E_User", user_kwh is not None or "E_User" not in idx)) if not ok]
+            record_coverage("UNMET_LOAD_HIGH", False, bad_load_cols, reason="unrecognized_unit")
+        elif not (user_kwh and user_kwh > 0):
+            record_coverage("UNMET_LOAD_HIGH", False, ["E_Miss", "E_User"], reason="no_denominator")
+        else:
+            record_coverage("UNMET_LOAD_HIGH", True, ["E_Miss", "E_User"])
             pct = (miss_kwh / user_kwh) * 100.0
             if pct > cfg["unmet_load_max_pct"]:
                 add(
@@ -822,7 +973,10 @@ def diagnose_simulation_csv(
                     recommended_actions=["Review battery parallel_count, max_discharge_ac_kw, or WeakGrid/PowerShift schedule."],
                 )
 
-    if soc_total > 0:
+    active_soc_col = "SOC_End" if "SOC_End" in idx else ("SOC" if "SOC" in idx else None)
+    if soc_total > 0 and active_soc_col is not None:
+        record_coverage("SOC_PINNED_LOW", True, [active_soc_col])
+        record_coverage("SOC_PINNED_HIGH", True, [active_soc_col])
         low_pct = (soc_low_count / soc_total) * 100.0
         high_pct = (soc_high_count / soc_total) * 100.0
         if low_pct > cfg["soc_pinned_max_pct"]:
@@ -853,8 +1007,26 @@ def diagnose_simulation_csv(
                 root_cause_hint="Battery rarely discharges (e.g., restrictive discharge window or oversized battery).",
                 recommended_actions=["Check discharging_strategy, discharge_start_hour/end_hour, or battery sizing."],
             )
+    else:
+        record_coverage("SOC_PINNED_LOW", False, ["SOC_End", "SOC"], reason="missing_column")
+        record_coverage("SOC_PINNED_HIGH", False, ["SOC_End", "SOC"], reason="missing_column")
 
     # --- 5. Time-Series Anomalies ---
+    local_use_in_csv = any(col in idx for col in _LOCAL_USE_COLUMNS)
+    usable_gen_col = next((col for col in _GENERATION_COLUMNS if counts.get(col, 0) > 0), None)
+    if usable_gen_col is None and not has_local_use and not local_use_in_csv and counts.get("E_Grid", 0) > 0:
+        usable_gen_col = "E_Grid"
+    if "GlobInc" not in idx:
+        record_coverage("HIGH_IRRADIANCE_ZERO_OUTPUT", False, ["GlobInc"], reason="missing_column")
+    elif _to_w_m2(1.0, units.get("GlobInc", ""), step_hours) is None:
+        record_coverage("HIGH_IRRADIANCE_ZERO_OUTPUT", False, ["GlobInc"], reason="unrecognized_unit")
+    elif usable_gen_col is None:
+        missing_out = list(_GENERATION_COLUMNS)
+        if not has_local_use and not local_use_in_csv:
+            missing_out.append("E_Grid")
+        record_coverage("HIGH_IRRADIANCE_ZERO_OUTPUT", False, missing_out, reason="missing_column")
+    else:
+        record_coverage("HIGH_IRRADIANCE_ZERO_OUTPUT", True, ["GlobInc", usable_gen_col])
     zero_out_hours = zero_out_count * step_hours
     if zero_out_hours > cfg["zero_output_max_hours"]:
         sev = "info" if has_planned_unavail else ("critical" if zero_out_hours > 200 else "high")
@@ -880,6 +1052,18 @@ def diagnose_simulation_csv(
             ],
         )
 
+    phase_out_col = "EArray" if "EArray" in idx else ("E_Grid" if "E_Grid" in idx else None)
+    if "GlobInc" not in idx or phase_out_col is None:
+        missing_phase = [c for c in ("GlobInc",) if c not in idx]
+        if phase_out_col is None:
+            missing_phase.extend(["EArray", "E_Grid"])
+        record_coverage("IRRADIANCE_OUTPUT_PHASE_MISMATCH", False, missing_phase, reason="missing_column")
+    elif _to_w_m2(1.0, units.get("GlobInc", ""), step_hours) is None:
+        record_coverage("IRRADIANCE_OUTPUT_PHASE_MISMATCH", False, ["GlobInc"], reason="unrecognized_unit")
+    elif irrad_hour_den <= 0 or power_hour_den <= 0:
+        record_coverage("IRRADIANCE_OUTPUT_PHASE_MISMATCH", False, ["GlobInc", phase_out_col], reason="no_denominator")
+    else:
+        record_coverage("IRRADIANCE_OUTPUT_PHASE_MISMATCH", True, ["GlobInc", phase_out_col])
     if irrad_hour_den > 0 and power_hour_den > 0:
         irrad_center = irrad_hour_num / irrad_hour_den
         power_center = power_hour_num / power_hour_den
@@ -923,6 +1107,9 @@ def diagnose_simulation_csv(
         "analyzed_columns": [h for h in headers[1:]],
         "variant_attribution_used": vc_info is not None,
         "grid_limit_context": grid_limit_context,
+        "evaluated_rule_count": sum(1 for item in coverage if item["evaluated"]),
+        "skipped_rule_count": sum(1 for item in coverage if not item["evaluated"]),
+        "coverage": coverage,
         "findings": findings,
     }
 
@@ -933,11 +1120,16 @@ def compact_diagnostics_summary(diag: dict, *, max_findings: int = 5) -> dict:
         diag.get("findings") or [],
         key=lambda f: -SEVERITY_ORDER.get(f.get("severity", "info"), 0),
     )
+    coverage = diag.get("coverage") or []
+    evaluated_count = diag.get("evaluated_rule_count", sum(1 for item in coverage if item.get("evaluated")))
+    skipped_count = diag.get("skipped_rule_count", sum(1 for item in coverage if not item.get("evaluated")))
     summary = {
         "status": diag["status"],
         "max_severity": diag["max_severity"],
         "finding_count": diag["finding_count"],
         "needs_review": diag["needs_review"],
+        "evaluated_rule_count": evaluated_count,
+        "skipped_rule_count": skipped_count,
         "top_findings": [
             {
                 "code": f["code"],
