@@ -849,8 +849,8 @@ def _parse_batch_param_value(raw: str) -> int | float | str:
 
 
 def parse_batch_results(path: str | os.PathLike,
-                        columns: tuple[str, ...] = ("E_Grid", "PR")) -> dict:
-    """Read the SIM_* rows of a PVsyst UserBatch/*Results.CSV summary."""
+                        columns: tuple[str, ...] | None = ("E_Grid", "PR")) -> dict:
+    """Read SIM_* rows. With columns=None, select the outputs following Error."""
     encoding = _csv_encoding(path)
     headers: list[str] = []
     units: dict[str, str] = {}
@@ -862,6 +862,14 @@ def parse_batch_results(path: str | os.PathLike,
         for fields in csv.reader(stream, delimiter=";"):
             if len(fields) > 1 and fields[0].strip() == "Ident" and fields[1].strip() == "Create hourly":
                 headers = [field.strip() for field in fields]
+                if columns is None:
+                    if "Error" in headers:
+                        columns = tuple(name for name in headers[headers.index("Error") + 1:] if name)
+                    else:
+                        # Without a delimiter only known result columns can be distinguished from inputs.
+                        columns = tuple(name for name in ("E_Grid", "PR") if name in headers)
+                    if not columns:
+                        raise ValueError("No identifiable batch result columns")
                 for column in columns:
                     if column not in headers:
                         raise ValueError(f"Batch result column {column!r} missing")
