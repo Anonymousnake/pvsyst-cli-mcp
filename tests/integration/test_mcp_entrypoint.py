@@ -157,6 +157,21 @@ class PackageEntrypointTests(unittest.TestCase):
         finally:
             sys.path[:] = original_path
 
+    def test_submodule_import_order_and_schema_exports(self):
+        env = dict(os.environ, PYTHONPATH=str(REPO / "src"), PYTHONDONTWRITEBYTECODE="1")
+        env.pop("PVSYST_TOOL_GROUPS", None)
+        checks = (
+            "import pvsyst_auto.api.projects, pvsyst_auto.api.context as c; assert len(c._strict_arguments) == 48, len(c._strict_arguments)",
+            "import pvsyst_auto.api.simulation, pvsyst_auto.api.context as c; assert len(c._strict_arguments) == 48, len(c._strict_arguments)",
+            "import pvsyst_auto.api.schemas as s, pvsyst_auto.api.context as c; assert 'PVTableLayout' in dir(s) and 'EngineeringChanges' in dir(s); ns = {}; exec('from pvsyst_auto.api.schemas import *', ns); assert 'PVTableLayout' in ns and 'EngineeringChanges' in ns and len(c._strict_arguments) == 48",
+            "import runpy; from unittest.mock import patch; from mcp.server.mcpserver import MCPServer\nwith patch.object(MCPServer, 'run') as r:\n    runpy.run_module('pvsyst_auto.api.context', run_name='__main__')\nassert r.call_count == 1",
+        )
+        for code in checks:
+            with self.subTest(code=code.splitlines()[0]):
+                proc = subprocess.run([sys.executable, "-c", code], cwd=str(REPO), env=env,
+                                      capture_output=True, text=True, timeout=30)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
 
 class ToolGroupsTests(unittest.TestCase):
     def test_explicit_groups_preserve_default_and_strict_calls(self):

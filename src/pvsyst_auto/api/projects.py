@@ -15,7 +15,7 @@ from pvsyst_auto.api.schemas import (
     SourceDeclarationRequest, SourceTextRequest, StrictNum, StringLayoutBinding,
     TrackingControls, _StrictModel, RoofSpec,
 )
-from pvsyst_auto.api.context import categorized_tool, cli, component_call, components, variant_call, variant_store
+from pvsyst_auto.api.context import _maybe_autoload_active_tools, categorized_tool, cli, component_call, components, variant_call, variant_store
 class GeneratorUpdates(_StrictModel):
     enabled: StrictBool | None = None
     filename: str | None = None
@@ -663,3 +663,7 @@ def pvsyst_export_logs() -> dict:
     if root not in folder.parents:
         raise ValueError("Results folder resolves outside the workspace")
     return {"zip": str(cli().export_logs(folder))}
+
+
+_TOOLS_READY = True
+_maybe_autoload_active_tools()

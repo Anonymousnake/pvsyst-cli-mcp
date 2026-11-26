@@ -668,12 +668,28 @@ def load_active_tools() -> MCPServer:
     return mcp
 
 
+_AUTOLOAD_DONE = False
+
+
+def _maybe_autoload_active_tools() -> None:
+    global _AUTOLOAD_DONE
+    if _AUTOLOAD_DONE:
+        return
+    pkg = __package__ or "pvsyst_auto.api"
+    for mod_name in ("projects", "simulation"):
+        mod = sys.modules.get(f"{pkg}.{mod_name}")
+        if mod is not None and not getattr(mod, "_TOOLS_READY", False):
+            return
+    _AUTOLOAD_DONE = True
+    load_active_tools()
+
+
 def main():
     load_active_tools().run(transport="stdio")
 
 
-if not any(f"{__package__}.{m}" in sys.modules for m in ("projects", "simulation")):
-    load_active_tools()
-
 if __name__ == "__main__":
-    main()
+    from pvsyst_auto.api.context import main as _run_main
+    _run_main()
+else:
+    _maybe_autoload_active_tools()

@@ -36,7 +36,7 @@ from pvsyst_auto.api.schemas import (
     TrackingControls, _StrictModel,
 )
 from pvsyst_auto.api.context import (
-    categorized_tool, cli, components, optional_path, result_path,
+    _maybe_autoload_active_tools, categorized_tool, cli, components, optional_path, result_path,
     simulation_csv_path, variant_store, workspace_path,
 )
 class EngineeringChanges(_StrictModel):
@@ -823,3 +823,7 @@ def pvsyst_diagnose_results(
     return diagnose_simulation_csv(
         target, store=store, project=project, variant=variant, thresholds=thresholds,
     )
+
+
+_TOOLS_READY = True
+_maybe_autoload_active_tools()

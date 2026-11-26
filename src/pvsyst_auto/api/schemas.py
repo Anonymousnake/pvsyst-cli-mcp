@@ -823,24 +823,34 @@ class FeasibilityBessSizingConfig(_StrictModel):
     rank_by: Literal["npv", "irr", "lcoe", "simple_payback_years", "discounted_payback_years"] = "npv"
     verify_top_k: Annotated[StrictInt, Field(ge=0, le=5)] = 0
     verify_config: BessVerifyConfig | None = None
+_PROJECTS_MODELS = (
+    "ACCablingUpdates", "AgeingUpdates", "AuxiliaryUpdates", "DCCablingUpdates",
+    "GeneratorUpdates", "GridLimitUpdates", "HorizonUpdates", "HouseSpec",
+    "IamUpdates", "InverterTemperatureUpdates", "NativeEconomicsUpdates",
+    "OrientationConvertParams", "P50P90Updates", "PVTableLayout",
+    "PowerControlLimitUpdates", "PowerControlsUpdates", "PowerFactorUpdates",
+    "SeasonalUpdates", "ShedGeometryUpdates", "SoilingUpdates",
+    "SpectralUpdates", "StringMismatchUpdates", "SystemUnavailabilityUpdates",
+    "UnavailabilityPeriod",
+)
+_SIMULATION_MODELS = (
+    "BatchSweepRequest", "EngineeringBlock", "EngineeringChanges",
+    "EngineeringRevisionRequest", "EngineeringScenario",
+    "FeasibilityReportConfig", "FeasibilityStudyRequest",
+)
+__all__ = sorted(
+    {"StrictNum"}
+    | {k for k, v in list(globals().items()) if not k.startswith("_") and isinstance(v, type) and issubclass(v, _StrictModel)}
+    | set(_PROJECTS_MODELS)
+    | set(_SIMULATION_MODELS)
+)
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_PROJECTS_MODELS) | set(_SIMULATION_MODELS))
 def __getattr__(name: str):
-    if name in {
-        "ACCablingUpdates", "AgeingUpdates", "AuxiliaryUpdates", "DCCablingUpdates",
-        "GeneratorUpdates", "GridLimitUpdates", "HorizonUpdates", "HouseSpec",
-        "IamUpdates", "InverterTemperatureUpdates", "NativeEconomicsUpdates",
-        "OrientationConvertParams", "P50P90Updates", "PVTableLayout",
-        "PowerControlLimitUpdates", "PowerControlsUpdates", "PowerFactorUpdates",
-        "SeasonalUpdates", "ShedGeometryUpdates", "SoilingUpdates",
-        "SpectralUpdates", "StringMismatchUpdates", "SystemUnavailabilityUpdates",
-        "UnavailabilityPeriod",
-    }:
+    if name in _PROJECTS_MODELS:
         from . import projects
         return getattr(projects, name)
-    if name in {
-        "BatchSweepRequest", "EngineeringBlock", "EngineeringChanges",
-        "EngineeringRevisionRequest", "EngineeringScenario",
-        "FeasibilityReportConfig", "FeasibilityStudyRequest",
-    }:
+    if name in _SIMULATION_MODELS:
         from . import simulation
         return getattr(simulation, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

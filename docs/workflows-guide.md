@@ -18,13 +18,13 @@
 | `tilt` / `azimuth` | 固定倾角（`0..90°`）与方位角（`-180..180°`，遵循 PVsyst 惯例：正南为 `0°`，偏西为正，偏东为负） |
 | `module` / `inverter` | 组件与逆变器标识：可传精确的 `{"manufacturer": "...", "model": "..."}` 或直接传工作区文件名 `{"file_name": "..."}` |
 | `template_project` / `variant` | 可选；指定作为底板的模板工程与变体，不传则自动扫描工作区择优或使用内置标准种子 |
-| `weather` | 气象数据模式：`existing`（已有 `.SIT`/`.MET`）、`csv`（本地标准逐时 CSV）、`open_meteo`（Open-Meteo ERA5）、`pvgis_tmy`（PVGIS v5.3 TMY）或 `nasa_power`（NASA POWER） |
-| `capacity` / `electrical_design` | **二选一必填**：`capacity` 直接给算好的电压/电流边界；`electrical_design` 给带出处的温度系数与极值，由工具推导边界 |
+| `weather` | 气象数据模式：`existing`（已有 `.SIT`/`.MET`）、`synthetic_from_site`（基于已有 `.SIT` 原生合成逐时气象）、`csv`（本地标准逐时 CSV）、`open_meteo`（Open-Meteo ERA5）、`pvgis_tmy`（PVGIS v5.3 TMY）或 `nasa_power`（NASA POWER） |
+| `capacity` / `electrical_design` | 默认严格模式（`sizing_mode="strict"`）下**二选一必填**：`capacity` 直接给电压/电流边界，`electrical_design` 给温度系数与极值推导；若设 `sizing_mode="auto_from_components"` 则**两者都必须省略**，由工具按组件参数自动推导 |
 | `losses` | 可选损失参数覆盖，支持 `LIDLoss`、`PMismMPP`、`ModuleQualityLoss` 与主阵列 `UFactor` |
 | `scope` | 可选场景范围：`fixed_unshaded_grid`（默认）、`ground_sheds`、`ground_tracker` 或 `stand_alone`（仅 `pvsyst_simulate_design`） |
 | `ground_layout` | 地面电站布局配置（`ground_sheds`/`ground_tracker`）：支持 `model_mode="unlimited"\|"3d"`、多朝向无限棚架 `sub_orientations`、有限地块 `site_polygon`、`obstacles`、`base_slope_deg` 与 3D DEM `terrain` |
 | `bifacial` / `transformers` / `standalone` | 可选双面组件参数、MV/HV 多级变压器配置（含 PVsyst 8.1.7 原生容量与损耗预检）及离网光储柴 `standalone` 规格 |
-| `report_pages` / `report_language` | 可选 PDF 报告页名列表与输出语言代码（如 `en`/`zh`/`fr`/`de` 等） |
+| `report_pages` / `report_language` | 可选 PDF 报告页名列表与输出语言代码（仅支持 `"en"` 或 `"zh"`） |
 
 调用示例：
 
@@ -60,14 +60,14 @@
 }
 ```
 
-### 组件检索、模板筛选、边界写法与五种气象模式
+### 组件检索、模板筛选、边界写法与六种气象模式
 
 1. **组件匹配**：按大小写不敏感精确匹配查找 `manufacturer + model`（或 `file_name`）。工作区 `ComposPV` 散文件优先级高于 `DataRO` 内置库；同优先级目录出现多个同名同型号文件时需改用明确 `file_name`。
 2. **模板排序与空工作区打底（Bootstrap）**：不传 `template_project` 时按“逆变器台数改动最少 → 参数修改步数最少 → 容量偏差最小 → 名称字典序”自动择优；对刚建好的空工作区（根目录名为 `PVsyst8.1_Data`），`dry_run=false` 会自动补齐 26 个标准子目录并从内置标准种子派生基础工程。
 3. **两种容量边界写法**：
    - **直接传 `capacity`**：直接给出冷态 $V_{oc}$、冷/热态 $V_{mp}$、组件与单路 MPPT 最大工作/短路电流（IEC 62548 / NEC 690）。
    - **传 `electrical_design`**：温度系数必须写明单位和出处（不能拿 $\beta_{P\max}$ 冒充 $\beta_{Vmp}$）；整机 `IDCMax` 不能直接充当单路 MPPT 最大电流；用 $\alpha_{Isc}$ 推导最大电流必须同时给出 `max_irradiance_w_m2` 和 `rear_gain_factor`；温度须满足 `-100 ≤ 最低环境温度 ≤ 最低组件工作温度 ≤ 最高组件工作温度 ≤ 150 °C` 并附 `min_ambient_basis`。
-4. **五种 `weather.mode`**：`existing`、`csv`、`open_meteo`（取前后整点均值 `endpoint_mean` 并保留 `needs_review` 说明）、`pvgis_tmy`（仅非闰年）、`nasa_power`。三种在线模式支持传唯一 `location_id` 或完整坐标+时区（二选一），自动对齐当地冬季标准时（`LegalTime`，拦截半小时或负夏令时区）；`dry_run=true` 时在线模式返回 `status="ready_for_weather"` 与 `execution_preflight_complete=false`。
+4. **六种 `weather.mode`**：`existing`、`synthetic_from_site`（基于工作区已有 `.SIT` 由 PVsyst MeteoTables 原生合成逐时气象）、`csv`、`open_meteo`（取前后整点均值 `endpoint_mean` 并保留 `needs_review` 说明）、`pvgis_tmy`（仅非闰年）、`nasa_power`。三种在线模式支持传唯一 `location_id`，或显式传齐 `latitude`、`longitude`、`site_label`、`altitude` 与 `timezone_name`（二选一），自动对齐当地冬季标准时（`LegalTime`，拦截半小时或负夏令时区）；`dry_run=true` 时在线模式返回 `status="ready_for_weather"` 与 `execution_preflight_complete=false`。
 
 ---
 
@@ -83,12 +83,14 @@
 | 组件类型 | 字段名 | 允许单位与换算规则 |
 |---|---|---|
 | `PAN` | `PNom` / `ISC`, `Imp` / `Voc`, `Vmp` | `W`（原文 `Wp` 可用 `source_unit_text="Wp"`）/ `A` / `V` |
-| `PAN` | `muIsc`, `muVocSpec`, `muPmpReq` | `%/degC`、`mA/degC`、`A/degC`、`mV/degC`、`V/degC` |
-| `PAN` | `BifacialityFactor`, `NCelS`, `NCelP` | `0..1` 或 `%` 与串/并联电池片数 |
+| `PAN` | `MuISC` | `mA/degC`、`mA/C`、`A_per_degC`、`pct_per_degC`（正值） |
+| `PAN` | `muVocSpec` | `mV/degC`、`mV/C`、`V_per_degC`、`pct_per_degC`（**负值**） |
+| `PAN` | `muPmpReq` | 仅 `pct_per_degC`（**负值**） |
+| `PAN` | `BifacialityFactor`, `NCelS`, `NCelP` | `ratio`（`0..1`）或 `%`，与 `count`/`cells`/`strings` |
 | `OND` | `PNomConv`, `PMaxOUT` / `VMppMin`, `VMPPMax`, `VAbsMax`, `VNomEff` / `IDCMax`, `IMaxDC`, `NbMPPT` / `EfficMax`, `EfficEuro` | `kW` / `V` / `A` / `%`（如 `97.8`） |
 | 通用商业字段（8.1.6） | `Width`, `Height`, `Depth`, `Weight` | `m` 或 `mm`（`mm` 自动 `/1000` 并记录 `unit_conversions`）、`kg` |
 
-所有数值为正数且强制校验 `Vmp < Voc`、`Imp < ISC`、`VMppMin < VMPPMax <= VAbsMax`、`PMaxOUT >= PNomConv`、`EfficEuro <= EfficMax < 100`。`Manufacturer`/`Model`/`DataSource`/根 `Comment` 同步更新（非 ASCII 自动加 UTF-8 BOM）并保留原 `Remarks`。官方参考：[PV modules basic data](https://www.pvsyst.com/help-pvsyst7/pvmodule_basicdata.htm)、[Determination of model parameters](https://www.pvsyst.com/help-pvsyst7/pvmodule_parameters.htm)。
+除温度系数 `muVocSpec`、`muPmpReq` 必须为**负值**外，其余电学/尺寸数值均须为正数（`EfficMax`/`EfficEuro` 在 `(0, 100]`），且强制校验 `Vmp < Voc`、`Imp < ISC`、`VMppMin < VMPPMax <= VAbsMax`、`PMaxOUT >= PNomConv`、`EfficEuro <= EfficMax`。`Manufacturer`/`Model`/`DataSource`/根 `Comment` 同步更新（非 ASCII 自动加 UTF-8 BOM）并保留原 `Remarks`。官方参考：[PV modules basic data](https://www.pvsyst.com/help-pvsyst7/pvmodule_basicdata.htm)、[Determination of model parameters](https://www.pvsyst.com/help-pvsyst7/pvmodule_parameters.htm)。
 
 ---
 
@@ -106,14 +108,14 @@
 
 ## 4. 住宅 3D 场景端到端任务（`pvsyst_run_house_task`）
 
-`pvsyst_run_house_task(spec, dry_run=True, confirm=False, resume=False, retry_simulation=False)` 全程无桌面 GUI 自动化，串联工作工程克隆、`.pvc2` 生成（含屋顶网格与 `building`/`tree`/`wall`/`mesh` 四类 `obstacles`）、免头写入含 3D 阴影/组件布局的 `.VCx`，再调 `PVsystCLI.exe` 跑全年仿真并支持断点续跑。若需同时绑定规格书，可用 `pvsyst_run_sourced_house_task`（正式执行时需在审核完规格书绑定后显式传入 `accept_source_review=true`）。
+`pvsyst_run_house_task(spec, dry_run=True, confirm=False, resume=False, retry_simulation=False)` 全程无桌面 GUI 自动化，串联工作工程克隆、`.pvc2` 生成（含屋顶网格与 `building`/`tree`/`wall`/`mesh` 四类 `obstacles`）、免头写入含 3D 阴影/组件布局的 `.VCx`，再调 `PVsystCLI.exe` 跑全年仿真并支持断点续跑；正式执行（`dry_run=False`）与断点续跑（`resume=True`）都必须同时传入 `confirm=True`（未确认时返回 `status="confirmation_required"`）。若需同时绑定规格书，可用 `pvsyst_run_sourced_house_task`（正式执行时需在审核完规格书绑定后显式传入 `accept_source_review=true`）。
 
 ### 关键特性与边界
 
 - **多屋面与坐标基准**：单/多固定朝向屋面均需符合 `anchor0` 约束（原生多朝向中朝向 1 使用 `FieldAzim=0` 作为参考系）；源 `.PRJ` 与 `.VCx` 必须引用同一对工作区 `.SIT`/`.MET`。
 - **Module Layout 与显式 `string_layout`**：传入 `"shading_mode": "module_layout"` 启用原生组件布局与精细电气阴影（导出 `ShdElec`）。无 `string_layout` 时支持单朝向双表双串或分组多朝向每子阵 1 串 1 表（`PowerSharingInverterId >= 0`）；提供同级 `string_layout={tables:[{name,subarray_id,cells:[{row,col,global_string}]}]}`（`row`/`col` 1 基，`global_string=0` 草稿禁止直接导入）可支持 `1..64` 张表跨表/一表多串，且 `linear` 模式会在写入前拒绝带有 `string_layout` 的场景避免静默忽略。
 - **CSV-only 输出（`report_pdf=False`）**：严格布尔可选参数；复用纯 CSV 单出口（不传 `-rpf:`），不产 PDF 也不列 PDF 守卫，阴影重算仍在私有非交互桌面允许建窗（若同时设置 `allow_window_creation=false` 会在预检拦截）。损失图 PDF 渲染仍依赖 CLI 创建窗口权限。
-- **阶段与续跑**：产物统一使用 `<stem>_house` 前缀，阶段依次为 `initialized` → `project_created` → `scene_created` → `prepared` → `native_saved`（`stored_geometry_verified`/`stored_module_layout_verified` 为 `true`，但 `native_consumption_verified` 仍为 `false`）→ `simulated` → `completed`。支持 `resume=true` 断点续跑、`native_save_reconciliation` 保护未登记变体以及 `resume=true, retry_simulation=true` 递增 `_run02` 重试仿真。
+- **阶段与续跑**：产物统一使用 `<stem>_house` 前缀，阶段依次为 `initialized` → `project_created` → `scene_created` → `prepared` → `native_saved`（`stored_geometry_verified` 为 `true`；仅 `shading_mode="module_layout"` 时 `stored_module_layout_verified` 为 `true`，`linear` 模式下保持 `false`；此时 `native_consumption_verified` 仍为 `false`）→ `simulated` → `completed`。支持 `resume=true, confirm=true` 断点续跑、`native_save_reconciliation` 保护未登记变体以及 `resume=true, confirm=true, retry_simulation=true` 递增 `_run02` 重试仿真。
 
 ---
 
