@@ -773,10 +773,18 @@ class GridTests(unittest.TestCase):
 
     def test_grid_limit_load_horizon_and_p50_edge_guards(self):
         import math
-        from pvsyst_auto.native.grid_limit import grid_limit_state, replace_grid_limit
-        from pvsyst_auto.native.horizon import _number as horizon_number, replace_horizon
-        from pvsyst_auto.native.load import _number as load_number, create_native_load_variant, native_load_block
-        from pvsyst_auto.native.p50 import _step as p50_step, p50_state, replace_p50
+        from pvsyst_auto.native.load import (
+            _horizon_number as horizon_number,
+            _number as load_number,
+            _p50_step as p50_step,
+            create_native_load_variant,
+            grid_limit_state,
+            native_load_block,
+            p50_state,
+            replace_grid_limit,
+            replace_horizon,
+            replace_p50,
+        )
 
         # 1. grid_limit clears full 0x05000000 mask on mode="none" (no orphan 0x04000000)
         gl_lines = [

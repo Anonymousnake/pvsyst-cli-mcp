@@ -266,7 +266,7 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
         if scope != "ground_sheds":
             bad("ground_layout.site_polygon", "site_polygon finite 3D layout is currently supported for scope='ground_sheds'")
         else:
-            from pvsyst_auto.scene.ground import validate_site_polygon
+            from pvsyst_auto.scene.reader import validate_site_polygon
             try:
                 validate_site_polygon(layout["site_polygon"])
             except ValueError as exc:

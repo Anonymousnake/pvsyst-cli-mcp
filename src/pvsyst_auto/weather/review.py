@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pvsyst_auto.native.cli import result_units
 from pvsyst_auto.project.paths import workspace_file
-from pvsyst_auto.weather.csv import inspect_weather_values
+from pvsyst_auto.weather.preparation import inspect_weather_values
 from pvsyst_auto.weather.acquisition import TEMPERATURE_METHODS, WeatherAcquisitionError, _build_rows, _index_payload, standard_utc_offset_hours
 from pvsyst_auto.weather.preparation import compare_native_weather, declared_fields, normalized_rows, read_object_prefix
 

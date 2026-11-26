@@ -10,14 +10,11 @@ from unittest.mock import patch
 from pvsyst_auto.api.schemas import SingleDesignRequest
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.components.store import ComponentStore
-from pvsyst_auto.native._prep import _verify_new
-from pvsyst_auto.native.headless import import_house_pv_scene_native
+from pvsyst_auto.native.headless import _verify_new, import_house_pv_scene_native
 from pvsyst_auto.project.template import synthesize_utility_project
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.scene.author import SceneValidationError, create_house_pv_scene, obstacle_profiles
-from pvsyst_auto.scene.ground import plan_ground_polygon_layout
-from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.scene.state import shading_state
+from pvsyst_auto.scene.reader import plan_ground_polygon_layout, read_house_pv_scene, shading_state
 from pvsyst_auto.scene.terrain import build_terrain_mesh, emit_pvshd_ground
 from pvsyst_auto.workflows.house import run_house_task
 from pvsyst_auto.workflows.utility import validate_utility_spec
@@ -756,6 +753,15 @@ class TerrainDemTests(unittest.TestCase):
         fields = {i["field"] for i in trk_issues}
         self.assertIn("ground_layout.site_polygon", fields)
         self.assertIn("ground_layout.base_slope_deg", fields)
+
+        # Boundary float-grouping regression: 30 modules fit cleanly across the exact polygon span
+        boundary = plan_ground_polygon_layout(
+            [[500000.0, 0.0], [500017.28999990004, 0.0], [500017.28999990004, 10.0], [500000.0, 10.0]],
+            tilt_deg=0.0, azimuth_deg=0.0, pitch_m=6.0,
+            module_width_m=1.134, module_length_m=2.0, module_rows=1,
+            spacing_x_m=0.02, setback_m=0.0,
+        )
+        self.assertEqual(boundary["total_modules"], 30)
 
 
 if __name__ == "__main__":

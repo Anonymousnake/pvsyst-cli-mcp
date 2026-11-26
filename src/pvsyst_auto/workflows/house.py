@@ -14,7 +14,7 @@ from pvsyst_auto.project.paths import safe_filename, variant_id, workspace_file,
 from pvsyst_auto.results import annual_summary, fingerprint, verify_native_csv_context, verify_pdf_header
 from pvsyst_auto.scene.author import create_house_pv_scene, house_profile, obstacle_profiles, table_profiles, check_tables
 from pvsyst_auto.scene.reader import read_house_pv_scene
-from pvsyst_auto.native._prep import _source_snapshot, _source_snapshot_bytes, _verify_new
+from pvsyst_auto.native.headless import _source_snapshot, _source_snapshot_bytes, _verify_new
 from pvsyst_auto.project.synthesize import synthesize_house_source
 
 PHASES = ("initialized", "project_created", "scene_created", "prepared", "native_saved", "simulated", "completed")

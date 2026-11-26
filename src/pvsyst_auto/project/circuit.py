@@ -11,20 +11,13 @@ from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 NODE = re.compile(r"([A-Za-z][A-Za-z0-9_]*Node) (Start|End);")
 KINDS = {"InjectionPointNode", "TransformerNode", "InverterNode", "MPPTNode", "StringNode"}
-CHILDREN = {
-    "InjectionPointNode": {"TransformerNode", "InverterNode"},
-    "TransformerNode": {"TransformerNode", "InverterNode"},
-    "InverterNode": {"MPPTNode", "StringNode"},
-    "MPPTNode": {"StringNode"},
-    "StringNode": set(),
-}
+CHILDREN = {"InjectionPointNode": {"TransformerNode", "InverterNode"}, "TransformerNode": {"TransformerNode", "InverterNode"},
+            "InverterNode": {"MPPTNode", "StringNode"}, "MPPTNode": {"StringNode"}, "StringNode": set()}
 MAX_COUNT = 2147483647
 TRANSFORMER_KEYS = ("OutputVoltage", "STCRefPower", "STCIronLossFrac", "STCIronLoss", "STCCopperLossFrac", "NightDisconnect", "IsHVTransformer")
 
-
 class UnsupportedCircuit(ValueError):
     pass
-
 
 @dataclass
 class Node:
@@ -43,34 +36,28 @@ class Node:
             raise ValueError(f"Circuit line {self.line}: duplicate {key}")
         return values[0]
 
-
 def _walk(node):
     yield node
     for child in node.children:
         yield from _walk(child)
-
 
 def positive_integer(value, context):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,10}", value) or not 1 <= int(value) <= MAX_COUNT:
         raise ValueError(f"{context} must be a positive 32-bit integer")
     return int(value)
 
-
 def _require_single_orient_strings(root, msg: str, *, expected: str | None = None) -> None:
     target = expected if expected is not None else root.one("NStringCh")[1]
-    if root.one("NStrOrient1")[1] != target or any(
-            k.startswith("NStrOrient") and k != "NStrOrient1" and root.one(k)[1] != "0" for k in root.fields):
+    if root.one("NStrOrient1")[1] != target or any(k.startswith("NStrOrient") and k != "NStrOrient1" and root.one(k)[1] != "0" for k in root.fields):
         raise ValueError(msg)
-
 
 def _encode_candidate(data: bytes, lines: list[str]) -> bytes:
     return (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + "".join(lines).encode("utf-8")
 
-
 def circuit_nodes(lines):
-    """Fields in CableDefinition/other records never become node properties."""
-    starts = [i for i, line in enumerate(lines) if line.strip() == "PVObject_SystemCircuit=pvCircuit"]
-    ends = [i for i, line in enumerate(lines) if line.strip() == "End of PVObject pvCircuit"]
+    """Parse serialized pvCircuit node tree; CableDefinition/metadata records never become node properties."""
+    starts = [i for i, ln in enumerate(lines) if ln.strip() == "PVObject_SystemCircuit=pvCircuit"]
+    ends = [i for i, ln in enumerate(lines) if ln.strip() == "End of PVObject pvCircuit"]
     if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
         raise ValueError("Expected one closed PVObject_SystemCircuit=pvCircuit")
     roots, stack, count = [], [], 0
@@ -132,9 +119,8 @@ def circuit_nodes(lines):
         raise ValueError("Grid circuit has no nodes")
     return roots
 
-
 def transformer_state(lines):
-    """Read serialized MV/HV transformer layers exactly as stored."""
+    """Read serialized MV/HV transformer layers."""
     result = {"layers": [], "count": 0, "nested": False, "issues": []}
     try:
         roots = circuit_nodes(lines)
@@ -145,10 +131,9 @@ def transformer_state(lines):
 
     def walk_trf(node, depth):
         if node.kind == "TransformerNode":
-            missing = [k for k in TRANSFORMER_KEYS if k not in node.fields]
-            repeated = [k for k in TRANSFORMER_KEYS if len(node.fields.get(k, [])) > 1]
-            if missing or repeated:
-                result["issues"].append(f"TransformerNode at line {node.line} is missing or repeats {', '.join(sorted(missing + repeated))}")
+            bad = [k for k in TRANSFORMER_KEYS if k not in node.fields or len(node.fields.get(k, [])) > 1]
+            if bad:
+                result["issues"].append(f"TransformerNode at line {node.line} is missing or repeats {', '.join(sorted(bad))}")
             else:
                 found.append({"depth": depth, "fields": {k: node.one(k) for k in TRANSFORMER_KEYS}})
         for child in node.children:
@@ -159,13 +144,11 @@ def transformer_state(lines):
     result.update(layers=found, count=len(found), nested=any(layer["depth"] > 0 for layer in found))
     return result
 
-
 def topology_state(lines):
-    """Read the serialized native pvCircuit node tree exactly as stored."""
+    """Read the serialized native pvCircuit node tree."""
     result = {"present": False, "issues": [], "roots": []}
-    starts = [i for i, line in enumerate(lines) if line.strip() == "PVObject_SystemCircuit=pvCircuit"]
-    ends = [i for i, line in enumerate(lines) if line.strip() == "End of PVObject pvCircuit"]
-    if not starts and not ends:
+    if (not any(ln.strip() == "PVObject_SystemCircuit=pvCircuit" for ln in lines)
+            and not any(ln.strip() == "End of PVObject pvCircuit" for ln in lines)):
         return result
     result["present"] = True
     try:
@@ -175,21 +158,20 @@ def topology_state(lines):
         return result
 
     def node_state(node):
-        fields = {key: list(values) for key, values in node.fields.items()}
-        for key, values in node.fields.items():
-            if len(values) > 1:
+        fields = {k: list(v) for k, v in node.fields.items()}
+        for key, vals in node.fields.items():
+            if len(vals) > 1:
                 result["issues"].append(f"Circuit line {node.line}: repeated {key}")
         sub_id, nel = node.fields.get("SubArrayId", []), node.fields.get("NElements", [])
         return {
             "kind": node.kind, "line": node.line,
             "subarray_id": {"present": bool(sub_id), "value": sub_id[0] if len(sub_id) == 1 else None},
             "nelements": {"present": bool(nel), "value": nel[0] if len(nel) == 1 else None},
-            "fields": fields, "children": [node_state(child) for child in node.children],
+            "fields": fields, "children": [node_state(c) for c in node.children],
         }
 
-    result["roots"] = [node_state(node) for node in roots]
+    result["roots"] = [node_state(n) for n in roots]
     return result
-
 
 def inventory(lines, arrays):
     """Compare serialized inverter/string multiplicities with subarray declarations."""
@@ -209,14 +191,12 @@ def inventory(lines, arrays):
     for identifier, (start, end) in arrays.items():
         try:
             root = root_block(lines, (start, end))
-            declared[identifier] = {
-                k: root.one(k)[1] for k in ("Comment", "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT",
-                                             "Version", "Flags", "PNomAC_InMPPT", "PowerSharingInverterId", "GInverter") if k in root.fields
-            }
+            declared[identifier] = {k: root.one(k)[1] for k in (
+                "Comment", "NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT",
+                "Version", "Flags", "PNomAC_InMPPT", "PowerSharingInverterId", "GInverter") if k in root.fields}
         except ValueError as exc:
             issues.append(f"Subarray {identifier}: {exc}")
             declared[identifier] = {}
-
     counts = {identifier: {"inverters": 0, "strings": 0, "explicit_mppt_inputs": 0} for identifier in arrays}
     owned, sharing_parents = set(), set()
     elements = lambda node: positive_integer(node.one("NElements", "1"), f"Circuit line {node.line}: NElements")
@@ -230,8 +210,8 @@ def inventory(lines, arrays):
         all_nodes = list(_walk(node))
         members = list(dict.fromkeys(child.one("SubArrayId") for child in node.children))
         shared = (node.one("SubArrayId") in (None, "0", "-1") and len(members) > 1
-                  and all(child.kind == "MPPTNode" and child.children and child.one("SubArrayId") not in (None, "0", "-1")
-                          and all(item.one("SubArrayId") == child.one("SubArrayId") for item in _walk(child)) for child in node.children))
+                  and all(c.kind == "MPPTNode" and c.children and c.one("SubArrayId") not in (None, "0", "-1")
+                          and all(i.one("SubArrayId") == c.one("SubArrayId") for i in _walk(c)) for c in node.children))
         if shared:
             member_ids = [positive_integer(raw, f"Circuit line {node.line}: SubArrayId") for raw in members]
             configs = [declared.get(identifier, {}) for identifier in member_ids]
@@ -270,27 +250,27 @@ def inventory(lines, arrays):
         if not shared and (len(ids) != 1 or any(item.one("SubArrayId") in (None, "0", "-1") for item in all_nodes)):
             unchecked.append(f"Circuit line {node.line}: shared inverter allocation counts")
             return
-        if any(identifier not in counts for identifier in ids):
+        if any(i not in counts for i in ids):
             return
         group = {"line": node.line, "subarray_id": None if shared else next(iter(ids)), "inverters": elements(node), "strings": 0, "explicit_mppt_inputs": 0}
         if shared:
             group.update(subarray_ids=member_ids, power_sharing_id=group_id)
-        allocations = {identifier: {"inverters": group["inverters"], "strings": 0, "explicit_mppt_inputs": 0} for identifier in ids}
+        allocations = {i: {"inverters": group["inverters"], "strings": 0, "explicit_mppt_inputs": 0} for i in ids}
 
         def visit(item, multiplier):
             expanded = bounded(multiplier * elements(item))
-            identifier = positive_integer(item.one("SubArrayId"), f"Circuit line {item.line}: SubArrayId")
+            ident = positive_integer(item.one("SubArrayId"), f"Circuit line {item.line}: SubArrayId")
             if key := ("strings" if item.kind == "StringNode" else "explicit_mppt_inputs" if item.kind == "MPPTNode" else None):
                 group[key] = bounded(group[key] + expanded)
-                allocations[identifier][key] = bounded(allocations[identifier][key] + expanded)
+                allocations[ident][key] = bounded(allocations[ident][key] + expanded)
             for child in item.children:
                 visit(child, expanded)
 
         for child in node.children:
             visit(child, group["inverters"])
-        for identifier, allocated in allocations.items():
-            for key in counts[identifier]:
-                counts[identifier][key] = bounded(counts[identifier][key] + allocated[key])
+        for ident, allocated in allocations.items():
+            for key in counts[ident]:
+                counts[ident][key] = bounded(counts[ident][key] + allocated[key])
         result["inverter_groups"].append(group)
 
     def visit_root(node):
@@ -338,11 +318,11 @@ def inventory(lines, arrays):
                 unchecked.append(f"Subarray {identifier}: missing {key} for count checks")
                 continue
             try:
-                number = positive_integer(values[key], f"Subarray {identifier}: {key}")
-                if complete_circuit and count_key and number != counts[identifier][count_key]:
-                    issues.append(f"Subarray {identifier}: {key}={number} differs from circuit {count_key}={counts[identifier][count_key]}")
+                num = positive_integer(values[key], f"Subarray {identifier}: {key}")
+                if complete_circuit and count_key and num != counts[identifier][count_key]:
+                    issues.append(f"Subarray {identifier}: {key}={num} differs from circuit {count_key}={counts[identifier][count_key]}")
                 if key == "NModSerie" and complete_circuit:
-                    row["circuit_module_count"] = bounded(number * counts[identifier]["strings"])
+                    row["circuit_module_count"] = bounded(num * counts[identifier]["strings"])
             except ValueError as exc:
                 issues.append(str(exc))
         if "NModSerie" in values and "NStringCh" in values:
@@ -352,15 +332,12 @@ def inventory(lines, arrays):
                 pass
         result["subarrays"].append(row)
     if complete_circuit:
-        result["totals"] = {
-            **{key: sum(row[key] for row in counts.values()) for key in ("strings", "explicit_mppt_inputs")},
-            "inverters": sum(group["inverters"] for group in result["inverter_groups"]),
-        }
+        result["totals"] = {**{k: sum(r[k] for r in counts.values()) for k in ("strings", "explicit_mppt_inputs")},
+                            "inverters": sum(g["inverters"] for g in result["inverter_groups"])}
     result["unchecked_checks"] = list(dict.fromkeys(unchecked))
     result["counts_complete"] = not unchecked
     result["counts_valid"] = False if issues else None if unchecked else True
     return result
-
 
 def require_ordinary_mppt(root):
     if root.one("NInvMPPT")[1] != "1":
@@ -372,7 +349,6 @@ def require_ordinary_mppt(root):
         if int(flags[1:], 16) & 0x400:
             raise ValueError("Independent MPPT flag is not ordinary NInvMPPT=1 mode")
 
-
 def _set_flag_bit(flags, bit, enabled):
     if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
         raise ValueError("Flags must be a hexadecimal value of at most 32 bits")
@@ -381,29 +357,29 @@ def _set_flag_bit(flags, bit, enabled):
     old = flags[1:].rjust(len(digits), "0")
     return "$" + "".join(a if a.lower() == b.lower() else b for a, b in zip(old, digits))
 
+def _need(cond, msg):
+    if cond:
+        raise ValueError(msg)
 
 def set_independent_mppt(lines, arrays, subarray_id, enabled):
     """Switch a verified explicit exclusive layout without redrawing its circuit."""
     checked = inventory(lines, arrays)
-    if checked["counts_valid"] is not True:
-        raise ValueError("MPPT mode switching requires complete consistent grid counts")
-    row = next((row for row in checked["subarrays"] if row["id"] == subarray_id), None)
-    if row is None:
-        raise ValueError(f"Unknown subarray id {subarray_id}")
-    if row["shared_inverter_lines"] or not row["circuit"]["explicit_mppt_inputs"]:
-        raise ValueError("MPPT mode switching requires exclusive explicit MPPT inputs")
+    _need(checked["counts_valid"] is not True, "MPPT mode switching requires complete consistent grid counts")
+    row = next((r for r in checked["subarrays"] if r["id"] == subarray_id), None)
+    _need(row is None, f"Unknown subarray id {subarray_id}")
+    _need(bool(row["shared_inverter_lines"]) or not row["circuit"]["explicit_mppt_inputs"],
+          "MPPT mode switching requires exclusive explicit MPPT inputs")
     for root_node in circuit_nodes(lines):
         for node in _walk(root_node):
             if node.kind == "InverterNode" and node.one("SubArrayId") == str(subarray_id):
-                if not node.children or any(child.kind != "MPPTNode" for child in node.children):
-                    raise ValueError("MPPT mode switching requires only direct explicit MPPT children")
+                _need(not node.children or any(c.kind != "MPPTNode" for c in node.children),
+                      "MPPT mode switching requires only direct explicit MPPT children")
     start, end = arrays[subarray_id]
     root = root_block(lines, (start, end))
     flags = root.one("Flags")[1]
-    if root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
-        raise ValueError(f"MPPT mode switching requires verified Version={SEED_LABEL} Flags")
-    if root.one("PowerSharingInverterId")[1] != "-1":
-        raise ValueError("MPPT mode switching requires explicit unshared PowerSharingInverterId=-1")
+    _need(root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags),
+          f"MPPT mode switching requires verified Version={SEED_LABEL} Flags")
+    _need(root.one("PowerSharingInverterId")[1] != "-1", "MPPT mode switching requires explicit unshared PowerSharingInverterId=-1")
     _require_single_orient_strings(root, "MPPT mode switching requires all strings in one orientation")
     was_enabled = bool(int(flags[1:], 16) & 0x400)
     if not was_enabled:
@@ -412,45 +388,39 @@ def set_independent_mppt(lines, arrays, subarray_id, enabled):
     for key, rendered in (("Flags", _set_flag_bit(flags, 0x400, enabled)), ("NInvMPPT", str(quantity))):
         index = start + root.one(key)[0]
         lines[index] = replace_value(lines[index], rendered)
-    if inventory(lines, arrays)["counts_valid"] is not True:
-        raise ValueError("MPPT mode switching failed structure validation")
-    return {"subarray_id": subarray_id, "enabled_before": was_enabled, "enabled_after": enabled, "inputs_before": before_quantity, "inputs_after": quantity}
-
+    _need(inventory(lines, arrays)["counts_valid"] is not True, "MPPT mode switching failed structure validation")
+    return {"subarray_id": subarray_id, "enabled_before": was_enabled, "enabled_after": enabled,
+            "inputs_before": before_quantity, "inputs_after": quantity}
 
 def set_power_sharing(lines, arrays, subarray_id, enabled):
     """Toggle a verified existing shared parent without redesigning allocation."""
     checked = inventory(lines, arrays)
-    if checked["counts_valid"] is not True:
-        raise ValueError("Power sharing requires complete consistent grid counts")
-    groups = [group for group in checked["inverter_groups"] if subarray_id in group.get("subarray_ids", [])]
-    if len(groups) != 1:
-        raise ValueError("Power sharing requires exactly one existing shared inverter parent")
+    _need(checked["counts_valid"] is not True, "Power sharing requires complete consistent grid counts")
+    groups = [g for g in checked["inverter_groups"] if subarray_id in g.get("subarray_ids", [])]
+    _need(len(groups) != 1, "Power sharing requires exactly one existing shared inverter parent")
     group, members, plane, edits = groups[0], groups[0]["subarray_ids"], None, {}
     for row in checked["subarrays"]:
-        identifier = row["id"]
-        if identifier not in members:
-            if row["declared"].get("PowerSharingInverterId") == "0":
-                raise ValueError("Power-sharing group 0 is already referenced by another subarray")
+        ident = row["id"]
+        if ident not in members:
+            _need(row["declared"].get("PowerSharingInverterId") == "0", "Power-sharing group 0 is already referenced by another subarray")
             continue
-        if row["circuit"]["inverters"] != group["inverters"] or len(row["shared_inverter_lines"]) != 1:
-            raise ValueError("Power-sharing members must reference only the selected shared parent")
-        start, end = arrays[identifier]
+        _need(row["circuit"]["inverters"] != group["inverters"] or len(row["shared_inverter_lines"]) != 1,
+              "Power-sharing members must reference only the selected shared parent")
+        start, end = arrays[ident]
         root = root_block(lines, (start, end))
         orientation = root.one("NoOrientation")[1]
-        if plane is not None and plane != orientation:
-            raise ValueError("Power-sharing members require the same fixed-plane orientation")
+        _need(plane is not None and plane != orientation, "Power-sharing members require the same fixed-plane orientation")
         plane = orientation
         _require_single_orient_strings(root, "Power sharing requires all member strings in one orientation")
         flags = root.one("Flags")[1]
         for key, rendered in (("Flags", _set_flag_bit(flags, 0x100, enabled)), ("PowerSharingInverterId", "0" if enabled else "-1")):
             index = start + root.one(key)[0]
             edits[index] = replace_value(lines[index], rendered)
-    for index, value in edits.items():
-        lines[index] = value
-    if inventory(lines, arrays)["counts_valid"] is not True:
-        raise ValueError("Power-sharing settings failed structure validation")
-    return {"subarray_ids": members, "inverter_line": group["line"], "enabled_before": group["power_sharing_id"] == 0, "enabled_after": enabled}
-
+    for idx, val in edits.items():
+        lines[idx] = val
+    _need(inventory(lines, arrays)["counts_valid"] is not True, "Power-sharing settings failed structure validation")
+    return {"subarray_ids": members, "inverter_line": group["line"],
+            "enabled_before": group["power_sharing_id"] == 0, "enabled_after": enabled}
 
 def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_strings=None, target_mppt=None):
     """Scale ordinary groups or explicit independent inputs with integral allocation."""
@@ -463,8 +433,7 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
     flags = root.one("Flags")[1] if "Flags" in root.fields else ""
     independent = target_mppt is not None or ((target_strings is not None or target_inverters is not None)
                                               and re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags) and bool(int(flags[1:], 16) & 0x400))
-    inverter_scaling = independent and target_inverters is not None
-    shared_line = None
+    inverter_scaling, shared_line = independent and target_inverters is not None, None
     if independent:
         if (target_mppt is not None and (target_inverters is not None or target_strings is not None)) or (inverter_scaling and target_strings is not None):
             raise ValueError("Independent NInverter/NInvMPPT/NStringCh edits must be separate")
@@ -479,9 +448,9 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
             if target_mppt is not None or inverter_scaling or len(groups) != 1 or len(row["shared_inverter_lines"]) != 1 or row["circuit"]["inverters"] != groups[0]["inverters"]:
                 raise ValueError("Shared-parent capacity editing supports member strings only")
             shared_line = groups[0]["line"]
-            for identifier, bounds in arrays.items():
+            for ident, bounds in arrays.items():
                 peer = root_block(lines, bounds)
-                if identifier in groups[0]["subarray_ids"]:
+                if ident in groups[0]["subarray_ids"]:
                     if peer.one("NoOrientation")[1] != root.one("NoOrientation")[1]:
                         raise ValueError("Shared member strings require one common orientation")
                     _require_single_orient_strings(peer, "Shared member strings require one common orientation")
@@ -498,7 +467,8 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
     quantity = "NInvMPPT" if independent and not inverter_scaling else "NInverter"
     old, strings = positive_integer(root.one(quantity)[1], quantity), positive_integer(root.one("NStringCh")[1], "NStringCh")
     _require_single_orient_strings(root, "Capacity editing requires all strings in one orientation", expected=str(strings))
-    edits, target, scaled_inputs = {}, (old if target_mppt is None else target_mppt) if independent and not inverter_scaling else old if target_inverters is None else target_inverters, None
+    edits, scaled_inputs = {}, None
+    target = (old if target_mppt is None else target_mppt) if independent and not inverter_scaling else (old if target_inverters is None else target_inverters)
     if inverter_scaling:
         scaled_inputs, rem = divmod(positive_integer(root.one("NInvMPPT")[1], "NInvMPPT") * target, old)
         if rem or not 1 <= scaled_inputs <= MAX_COUNT:
@@ -509,15 +479,15 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
 
     def scale_node(node, numerator, denominator):
         current = positive_integer(node.one("NElements", "1"), f"{node.kind} NElements")
-        number, rem_n = divmod(current * numerator, denominator)
-        if rem_n or not 1 <= number <= MAX_COUNT:
+        num, rem_n = divmod(current * numerator, denominator)
+        if rem_n or not 1 <= num <= MAX_COUNT:
             raise ValueError("Target must preserve integral string/group allocation")
-        if number != current:
+        if num != current:
             locs = node.field_lines.get("NElements", [])
             if len(locs) != 1:
                 raise ValueError(f"Capacity editing requires explicit {node.kind} NElements")
-            edits[locs[0]] = replace_value(lines[locs[0]], str(number))
-        return {"line": node.line, "before": current, "after": number}
+            edits[locs[0]] = replace_value(lines[locs[0]], str(num))
+        return {"line": node.line, "before": current, "after": num}
 
     selected, string_groups, mppt_groups = [], [], []
     for node in (item for root_node in circuit_nodes(lines) for item in _walk(root_node)):
@@ -540,10 +510,9 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
             string_groups.extend(scale_node(sn, scaled_strings * old, strings * target) for sn in node.children)
     if not selected:
         raise ValueError("Subarray has no supported exclusive inverter groups")
-    quantities = [(quantity, target), ("NStringCh", scaled_strings), ("NStrOrient1", scaled_strings)] + ([("NInvMPPT", scaled_inputs)] if inverter_scaling else [])
-    for key, number in quantities:
+    for key, num in [(quantity, target), ("NStringCh", scaled_strings), ("NStrOrient1", scaled_strings)] + ([("NInvMPPT", scaled_inputs)] if inverter_scaling else []):
         idx = start + root.one(key)[0]
-        edits[idx] = replace_value(lines[idx], str(number))
+        edits[idx] = replace_value(lines[idx], str(num))
     for idx, line in edits.items():
         lines[idx] = line
     if inventory(lines, arrays)["counts_valid"] is not True:
@@ -554,14 +523,13 @@ def resize_capacity(lines, arrays, subarray_id, target_inverters=None, target_st
         "strings_before": strings, "strings_after": scaled_strings, "groups": selected, "string_groups": string_groups,
     }
     if independent:
-        result.update(mppt_inputs_before=positive_integer(root.one("NInvMPPT")[1], "NInvMPPT"), mppt_inputs_after=scaled_inputs if inverter_scaling else target, mppt_groups=mppt_groups)
+        result.update(mppt_inputs_before=positive_integer(root.one("NInvMPPT")[1], "NInvMPPT"),
+                      mppt_inputs_after=scaled_inputs if inverter_scaling else target, mppt_groups=mppt_groups)
     if shared_line is not None:
         result["shared_parent_line"] = shared_line
     return result
 
-
 # --- Subarray branch topology, cloning, and removal ---
-
 def subarray_branches(lines, arrays, identifier):
     start, end = arrays[identifier]
     root = next(b for b in objects("".join(lines[start:end + 1])) if not b.path)
@@ -587,7 +555,7 @@ def subarray_branches(lines, arrays, identifier):
             raise ValueError("Circuit branch names do not match the subarray")
         owned.update(idx for m in members for idx in m.field_lines["SubArrayId"])
         matches.append((node.line - 1, node.end_line - 1, members))
-    occurrences = {i for i, line in enumerate(lines) if (f := FIELD.fullmatch(line.rstrip("\r\n"))) and f[1] == "SubArrayId" and f[2] == str(identifier)}
+    occurrences = {i for i, ln in enumerate(lines) if (f := FIELD.fullmatch(ln.rstrip("\r\n"))) and f[1] == "SubArrayId" and f[2] == str(identifier)}
     if not matches or not occurrences.issubset(owned):
         raise ValueError("Subarray ID is referenced outside its complete inverter branches")
     checked = inventory(lines, arrays)
@@ -596,7 +564,6 @@ def subarray_branches(lines, arrays, identifier):
     if len(matches) > 1 and checked["counts_valid"] is not True:
         raise ValueError("Grouped subarray editing requires fully checked consistent grid counts")
     return matches, root
-
 
 def require_plane_branch_mode(root, branches):
     flags = root.one("Flags")[1] if "Flags" in root.fields else ""
@@ -612,7 +579,6 @@ def require_plane_branch_mode(root, branches):
     if any(set(m.fields) & {"NoOrientation", "NoOrient", "OrientationId"} for _, _, members in branches for m in members):
         raise ValueError("Circuit-level orientation references outside owned records require separate allocation handling")
 
-
 def _validate_clone_subarray_args(source_subarray_id: int, clone_orientation: bool, share_inverter: bool) -> None:
     if not isinstance(source_subarray_id, int) or isinstance(source_subarray_id, bool):
         raise ValueError("source_subarray_id must be an integer")
@@ -621,11 +587,9 @@ def _validate_clone_subarray_args(source_subarray_id: int, clone_orientation: bo
     if share_inverter and clone_orientation:
         raise ValueError("Shared-parent cloning requires the existing common orientation")
 
-
 def clone_subarray_data(store, data, source_subarray_id, *, clone_orientation=False, share_inverter=False, reserved_ids=()):
     """Build one cloned subarray in memory without reading or writing workspace files."""
     from pvsyst_auto.native.headless import strip_result_cache
-
     _validate_clone_subarray_args(source_subarray_id, clone_orientation, share_inverter)
     _, lines = store._text(data)
     arrays, system = store._sections(lines)
@@ -647,14 +611,12 @@ def clone_subarray_data(store, data, source_subarray_id, *, clone_orientation=Fa
     if share_inverter:
         flags = root.one("Flags")[1]
         if (root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags)
-                or not int(flags[1:], 16) & 0x400 or root.one("NInverter")[1] != "1"
-                or root.one("NInvMPPT")[1] != "1" or root.one("PowerSharingInverterId")[1] != "-1"
-                or inventory(lines, arrays)["counts_valid"] is not True or len(matches) != 1):
+                or not int(flags[1:], 16) & 0x400 or root.one("NInverter")[1] != "1" or root.one("NInvMPPT")[1] != "1"
+                or root.one("PowerSharingInverterId")[1] != "-1" or inventory(lines, arrays)["counts_valid"] is not True or len(matches) != 1):
             raise ValueError("Shared-parent cloning requires one verified independent unshared input/inverter")
         inv = matches[0][2][0]
-        if (positive_integer(inv.one("NElements", "1"), "inverter multiplicity") != 1
-                or len(inv.children) != 1 or inv.children[0].kind != "MPPTNode"
-                or positive_integer(inv.children[0].one("NElements", "1"), "MPPT multiplicity") != 1):
+        if (positive_integer(inv.one("NElements", "1"), "inverter multiplicity") != 1 or len(inv.children) != 1
+                or inv.children[0].kind != "MPPTNode" or positive_integer(inv.children[0].one("NElements", "1"), "MPPT multiplicity") != 1):
             raise ValueError("Shared-parent cloning requires one direct explicit MPPT input")
         _require_single_orient_strings(root, "Shared-parent cloning requires all strings in one orientation")
     new_id = max(set(arrays) | set(reserved_ids)) + 1
@@ -662,8 +624,7 @@ def clone_subarray_data(store, data, source_subarray_id, *, clone_orientation=Fa
         raise ValueError("No available subarray ID")
     new_name, new_array = f"Sub-array #{new_id}", lines[bounds[0]:bounds[1] + 1].copy()
     for key, val in (("SubArrayId", str(new_id)), ("Comment", new_name)):
-        idx = root.one(key)[0]
-        new_array[idx] = replace_value(new_array[idx], val)
+        new_array[root.one(key)[0]] = replace_value(new_array[root.one(key)[0]], val)
     new_orientation_id, insertions = int(orientation_id), [(bounds[1] + 1, new_array)]
     if clone_orientation:
         require_plane_branch_mode(root, matches)
@@ -678,20 +639,19 @@ def clone_subarray_data(store, data, source_subarray_id, *, clone_orientation=Fa
         if new_orientation_id > MAX_COUNT:
             raise ValueError("No available orientation ID")
         new_plane = lines[orientation[0]:orientation[1] + 1].copy()
-        idx = store._field_indices(lines, orientation, "NoOrient")[0] - orientation[0]
-        new_plane[idx] = replace_value(new_plane[idx], str(new_orientation_id))
-        idx = root.one("NoOrientation")[0]
-        new_array[idx] = replace_value(new_array[idx], str(new_orientation_id))
+        pidx = store._field_indices(lines, orientation, "NoOrient")[0] - orientation[0]
+        new_plane[pidx] = replace_value(new_plane[pidx], str(new_orientation_id))
+        aidx = root.one("NoOrientation")[0]
+        new_array[aidx] = replace_value(new_array[aidx], str(new_orientation_id))
         lines[header] = re.sub(r"(?<==)[0-9]+", str(new_orientation_id), lines[header], count=1)
         insertions.append((groups[-1][1] + 1, new_plane))
     for start, end, members in matches:
         if share_inverter:
-            inv = members[0]
-            port = inv.children[0]
+            inv, port = members[0], members[0].children[0]
             start, end, members = port.line - 1, port.end_line - 1, members[1:]
-            lines[inv.field_lines["SubArrayId"][0]] = replace_value(lines[inv.field_lines["SubArrayId"][0]], "0")
-            idx = inv.field_lines["SubArrayName"][0]
-            lines[idx] = replace_value(lines[idx], root.one("Comment")[1] + "; " + new_name)
+            sid_ln, snm_ln = inv.field_lines["SubArrayId"][0], inv.field_lines["SubArrayName"][0]
+            lines[sid_ln] = replace_value(lines[sid_ln], "0")
+            lines[snm_ln] = replace_value(lines[snm_ln], root.one("Comment")[1] + "; " + new_name)
         branch = lines[start:end + 1].copy()
         for member in members:
             for key, val in (("SubArrayId", str(new_id)), ("SubArrayName", new_name)):
@@ -702,8 +662,7 @@ def clone_subarray_data(store, data, source_subarray_id, *, clone_orientation=Fa
         lines[offset:offset] = block
     lines, _ = strip_result_cache(lines)
     candidate = _encode_candidate(data, lines)
-    _, checked = store._text(candidate)
-    checked_arrays, _ = store._sections(checked)
+    checked_arrays, _ = store._sections(checked := store._text(candidate)[1])
     if new_id not in checked_arrays or len(checked_arrays) != len(arrays) + 1:
         raise ValueError("Subarray structure validation failed")
     if share_inverter:
@@ -719,7 +678,6 @@ def clone_subarray_data(store, data, source_subarray_id, *, clone_orientation=Fa
     return candidate, {"subarray_id": new_id, "orientation_id": new_orientation_id, "orientation_cloned": clone_orientation,
                        "inverter_group_count": len(matches), "shared_parent_created": share_inverter}
 
-
 def clone_subarray(store, project: str, variant: str, source_subarray_id: int, expected_sha256: str | None = None,
                    clone_orientation: bool = False, share_inverter: bool = False) -> dict:
     """Duplicate a grid subarray with all its exclusively owned inverter groups."""
@@ -732,25 +690,19 @@ def clone_subarray(store, project: str, variant: str, source_subarray_id: int, e
         reserved_ids = set()
         for item in store._root().iterdir():
             if item.stem.casefold() == project[:-4].casefold() and re.fullmatch(r"\.VC[A-Za-z0-9]+", item.suffix, re.I):
-                _, other_lines = store._text(store._read(store._path(project, item.suffix[1:])))
-                reserved_ids.update(store._sections(other_lines)[0])
+                reserved_ids.update(store._sections(store._text(store._read(store._path(project, item.suffix[1:])))[1])[0])
         candidate, details = clone_subarray_data(store, data, source_subarray_id, clone_orientation=clone_orientation,
                                                  share_inverter=share_inverter, reserved_ids=reserved_ids)
         backup = store._replace_checked(path, data, candidate, prepare=lambda: store._backup(path, data))
         return {"project": project, "variant": variant.upper(), **details, "backup_name": backup, "sha256": hashlib.sha256(candidate).hexdigest()}
 
-
 def remove_subarray(store, project: str, variant: str, subarray_id: int, expected_sha256: str | None = None,
                     remove_orientation: bool = False, shared_member: bool = False) -> dict:
     """Remove a subarray and its owned groups, retaining an orientation still in use."""
     from pvsyst_auto.native.headless import strip_result_cache
-
-    if not isinstance(subarray_id, int) or isinstance(subarray_id, bool):
-        raise ValueError("subarray_id must be an integer")
-    if not isinstance(remove_orientation, bool) or not isinstance(shared_member, bool):
-        raise ValueError("remove_orientation and shared_member must be booleans")
-    if shared_member and remove_orientation:
-        raise ValueError("Shared-member deletion preserves the common orientation")
+    _need(not isinstance(subarray_id, int) or isinstance(subarray_id, bool), "subarray_id must be an integer")
+    _need(not isinstance(remove_orientation, bool) or not isinstance(shared_member, bool), "remove_orientation and shared_member must be booleans")
+    _need(shared_member and remove_orientation, "Shared-member deletion preserves the common orientation")
     with store.lock:
         store._check_project(project)
         path = store._path(project, variant)
@@ -758,57 +710,48 @@ def remove_subarray(store, project: str, variant: str, subarray_id: int, expecte
         store._check_hash(data, expected_sha256)
         _, lines = store._text(data)
         arrays, system = store._sections(lines)
-        if subarray_id not in arrays or len(arrays) < 2 or system is None:
-            raise ValueError("A target and another remaining subarray are required")
+        _need(subarray_id not in arrays or len(arrays) < 2 or system is None, "A target and another remaining subarray are required")
         kinds = store._field_indices(lines, system, "SystemType")
-        if len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid":
-            raise ValueError("Only grid subarrays are supported")
+        _need(len(kinds) != 1 or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid", "Only grid subarrays are supported")
         store._require_no_geometry(lines, require_shading_section=True)
         bounds = arrays[subarray_id]
         no_orient = store._field_indices(lines, bounds, "NoOrientation")
-        if len(no_orient) != 1:
-            raise ValueError("Subarray needs one orientation")
+        _need(len(no_orient) != 1, "Subarray needs one orientation")
         orientation = FIELD.fullmatch(lines[no_orient[0]].rstrip("\r\n"))[2]
-        if not orientation.isdigit() or not 1 <= int(orientation) <= MAX_COUNT:
-            raise ValueError("Orientation ID must be a positive 32-bit integer")
+        _need(not orientation.isdigit() or not 1 <= int(orientation) <= MAX_COUNT, "Orientation ID must be a positive 32-bit integer")
         shared = any(other != subarray_id and any((raw := FIELD.fullmatch(lines[i].rstrip("\r\n"))[2]).isdigit() and int(raw) == int(orientation)
                                                  for i in store._field_indices(lines, ob, "NoOrientation"))
                      for other, ob in arrays.items())
-        if shared and remove_orientation:
-            raise ValueError("Orientation is still referenced by another subarray")
-        if not shared and not remove_orientation:
-            raise ValueError("Orientation must remain in use by another subarray")
+        _need(shared and remove_orientation, "Orientation is still referenced by another subarray")
+        _need(not shared and not remove_orientation, "Orientation must remain in use by another subarray")
         remaining_member = None
         if shared_member:
             checked = inventory(lines, arrays)
             groups = [g for g in checked["inverter_groups"] if subarray_id in g.get("subarray_ids", [])]
-            if checked["counts_valid"] is not True or len(groups) != 1 or len(groups[0]["subarray_ids"]) != 2 or groups[0]["power_sharing_id"] != -1 or groups[0]["inverters"] != 1:
-                raise ValueError("Shared-member deletion requires one complete disabled two-member parent")
+            _need(checked["counts_valid"] is not True or len(groups) != 1 or len(groups[0]["subarray_ids"]) != 2
+                  or groups[0]["power_sharing_id"] != -1 or groups[0]["inverters"] != 1,
+                  "Shared-member deletion requires one complete disabled two-member parent")
             member_ids, roots = groups[0]["subarray_ids"], {}
-            for identifier, (first, last) in arrays.items():
+            for ident, (first, last) in arrays.items():
                 peer = next(b for b in objects("".join(lines[first:last + 1])) if not b.path)
-                if "PowerSharingInverterId" in peer.fields and peer.one("PowerSharingInverterId")[1] != "-1":
-                    raise ValueError("Disable all power sharing before shared-member deletion")
-                if identifier in member_ids:
-                    row = next(r for r in checked["subarrays"] if r["id"] == identifier)
-                    if peer.one("NInverter")[1] != "1" or peer.one("NInvMPPT")[1] != "1" or peer.one("NoOrientation")[1] != orientation or row["circuit"]["inverters"] != 1 or len(row["shared_inverter_lines"]) != 1:
-                        raise ValueError("Shared-member deletion requires single-input members in a common plane")
+                _need("PowerSharingInverterId" in peer.fields and peer.one("PowerSharingInverterId")[1] != "-1",
+                      "Disable all power sharing before shared-member deletion")
+                if ident in member_ids:
+                    row = next(r for r in checked["subarrays"] if r["id"] == ident)
+                    _need(peer.one("NInverter")[1] != "1" or peer.one("NInvMPPT")[1] != "1" or peer.one("NoOrientation")[1] != orientation
+                          or row["circuit"]["inverters"] != 1 or len(row["shared_inverter_lines"]) != 1,
+                          "Shared-member deletion requires single-input members in a common plane")
                     _require_single_orient_strings(peer, "Shared-member deletion requires single-input members in a common plane")
-                    roots[identifier] = peer
-            plane = store._orientation(lines, int(orientation))
-            types = store._field_indices(lines, plane, "FieldType")
-            if len(types) != 1 or FIELD.fullmatch(lines[types[0]].rstrip("\r\n"))[2] != "FixedPlane":
-                raise ValueError("Shared-member deletion requires a fixed plane")
+                    roots[ident] = peer
+            types = store._field_indices(lines, store._orientation(lines, int(orientation)), "FieldType")
+            _need(len(types) != 1 or FIELD.fullmatch(lines[types[0]].rstrip("\r\n"))[2] != "FixedPlane", "Shared-member deletion requires a fixed plane")
             parent = next(n for tree in circuit_nodes(lines) for n in _walk(tree) if n.line == groups[0]["line"])
-            if parent.one("SubArrayId") != "0":
-                raise ValueError("Shared-member deletion requires explicit parent owner 0")
+            _need(parent.one("SubArrayId") != "0", "Shared-member deletion requires explicit parent owner 0")
             port = next((n for n in parent.children if n.one("SubArrayId") == str(subarray_id)), None)
-            if port is None:
-                raise ValueError("Shared-member deletion requires a direct port with the exact SubArrayId")
+            _need(port is None, "Shared-member deletion requires a direct port with the exact SubArrayId")
             owned = {bounds[0] + roots[subarray_id].one("SubArrayId")[0]} | {idx for n in _walk(port) for idx in n.field_lines["SubArrayId"]}
             refs = {i for i, ln in enumerate(lines) if (f := FIELD.fullmatch(ln.rstrip("\r\n"))) and f[1] == "SubArrayId" and f[2] == str(subarray_id)}
-            if not refs.issubset(owned):
-                raise ValueError("Shared member has references outside its owned subtree")
+            _need(not refs.issubset(owned), "Shared member has references outside its owned subtree")
             remaining_member = next(i for i in member_ids if i != subarray_id)
             for key, val in (("SubArrayId", str(remaining_member)), ("SubArrayName", roots[remaining_member].one("Comment")[1])):
                 idx = parent.field_lines[key][0]
@@ -818,26 +761,25 @@ def remove_subarray(store, project: str, variant: str, subarray_id: int, expecte
             matches, root = subarray_branches(lines, arrays, subarray_id)
         deletions, orientation_id_map = [bounds] + [(s, e) for s, e, _ in matches], {}
         if remove_orientation:
-            if inventory(lines, arrays)["counts_valid"] is not True:
-                raise ValueError("Orientation removal requires complete consistent grid counts")
+            _need(inventory(lines, arrays)["counts_valid"] is not True, "Orientation removal requires complete consistent grid counts")
             header, groups = store._orientation_list(lines)
-            if len(groups) < 2 or [gid for _, _, gid in groups] != list(range(1, len(groups) + 1)):
-                raise ValueError("Another orientation must remain" if len(groups) < 2 else "Orientation removal requires sequential ordered IDs")
+            _need(len(groups) < 2, "Another orientation must remain")
+            _need([gid for _, _, gid in groups] != list(range(1, len(groups) + 1)), "Orientation removal requires sequential ordered IDs")
             plane = store._orientation(lines, int(orientation))
             fields = store._field_indices(lines, plane, "FieldType")
-            if len(fields) != 1 or FIELD.fullmatch(lines[fields[0]].rstrip("\r\n"))[2] != "FixedPlane":
-                raise ValueError("Only a fixed-plane orientation can be removed")
-            if [i for i, ln in enumerate(lines) if (f := FIELD.fullmatch(ln.rstrip("\r\n"))) and f[1] == "NoOrientation" and f[2].isdigit() and int(f[2]) == int(orientation)] != [bounds[0] + root.one("NoOrientation")[0]]:
-                raise ValueError("Orientation has references outside its owning subarray")
+            _need(len(fields) != 1 or FIELD.fullmatch(lines[fields[0]].rstrip("\r\n"))[2] != "FixedPlane", "Only a fixed-plane orientation can be removed")
+            _need([i for i, ln in enumerate(lines) if (f := FIELD.fullmatch(ln.rstrip("\r\n"))) and f[1] == "NoOrientation"
+                   and f[2].isdigit() and int(f[2]) == int(orientation)] != [bounds[0] + root.one("NoOrientation")[0]],
+                  "Orientation has references outside its owning subarray")
             owned_refs = set()
             for first, last, gid in groups:
                 store._ordinary_fixed_plane(lines, (first, last))
                 owned_refs.add(store._field_indices(lines, (first, last), "NoOrient")[0])
                 if gid > int(orientation):
                     orientation_id_map[str(gid)] = gid - 1
-            for identifier, (first, last) in arrays.items():
-                array_root = root if identifier == subarray_id else next(b for b in objects("".join(lines[first:last + 1])) if not b.path)
-                require_plane_branch_mode(array_root, subarray_branches(lines, arrays, identifier)[0])
+            for ident, (first, last) in arrays.items():
+                array_root = root if ident == subarray_id else next(b for b in objects("".join(lines[first:last + 1])) if not b.path)
+                require_plane_branch_mode(array_root, subarray_branches(lines, arrays, ident)[0])
                 _require_single_orient_strings(array_root, "Orientation removal requires all strings in one orientation")
                 owned_refs.add(first + array_root.one("NoOrientation")[0])
             for idx, ln in enumerate(lines):
@@ -852,24 +794,19 @@ def remove_subarray(store, project: str, variant: str, subarray_id: int, expecte
             del lines[first:last + 1]
         lines, _ = strip_result_cache(lines)
         candidate = _encode_candidate(data, lines)
-        _, checked = store._text(candidate)
-        checked_arrays, _ = store._sections(checked)
-        if subarray_id in checked_arrays or len(checked_arrays) != len(arrays) - 1:
-            raise ValueError("Subarray removal failed validation")
+        checked_arrays, _ = store._sections(checked := store._text(candidate)[1])
+        _need(subarray_id in checked_arrays or len(checked_arrays) != len(arrays) - 1, "Subarray removal failed validation")
         if shared_member:
             subarray_branches(checked, checked_arrays, remaining_member)
-        if (len(matches) > 1 or remove_orientation or shared_member) and inventory(checked, checked_arrays)["counts_valid"] is not True:
-            raise ValueError("Remaining grouped grid counts failed validation")
+        _need((len(matches) > 1 or remove_orientation or shared_member) and inventory(checked, checked_arrays)["counts_valid"] is not True,
+              "Remaining grouped grid counts failed validation")
         if remove_orientation:
             store._orientation_list(checked)
         backup = store._replace_checked(path, data, candidate, prepare=lambda: store._backup(path, data))
-        return {
-            "project": project, "variant": variant.upper(), "removed_subarray_id": subarray_id,
-            "removed_orientation_id": int(orientation) if remove_orientation else None,
-            "orientation_id_map": orientation_id_map, "remaining_member_id": remaining_member,
-            "inverter_group_count": len(matches), "backup_name": backup, "sha256": hashlib.sha256(candidate).hexdigest(),
-        }
-
+        return {"project": project, "variant": variant.upper(), "removed_subarray_id": subarray_id,
+                "removed_orientation_id": int(orientation) if remove_orientation else None,
+                "orientation_id_map": orientation_id_map, "remaining_member_id": remaining_member,
+                "inverter_group_count": len(matches), "backup_name": backup, "sha256": hashlib.sha256(candidate).hexdigest()}
 
 def validate_structure(store, project: str, variant: str) -> dict:
     """Check cross-object references inside a variant."""
@@ -898,11 +835,11 @@ def validate_structure(store, project: str, variant: str) -> dict:
                     store._orientation_list(lines)
                 except ValueError as exc:
                     issues.append(str(exc))
-        for identifier, bounds in arrays.items():
+        for ident, bounds in arrays.items():
             if len(indices := store._field_indices(lines, bounds, "NoOrientation")) != 1:
-                issues.append(f"Subarray {identifier} needs one NoOrientation")
+                issues.append(f"Subarray {ident} needs one NoOrientation")
             elif not (raw := FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) not in orientation_ids:
-                issues.append(f"Subarray {identifier} references unknown orientation {raw}")
+                issues.append(f"Subarray {ident} references unknown orientation {raw}")
         system_type, unchecked, circuit_res = None, list_unchecked, None
         if system is None:
             issues.append("Missing pvSystem section")
@@ -922,16 +859,12 @@ def validate_structure(store, project: str, variant: str) -> dict:
                 warnings.append(f"Circuit checks are not implemented for SystemType={system_type!r}")
         if any("PVObject_ShdTable" in ln or "ListeObjets, list of=" in ln for ln in lines):
             warnings.append("Shading geometry and derived factor tables require simulation verification")
-        return {
-            "project": project, "variant": variant.upper(), "sha256": hashlib.sha256(data).hexdigest(),
-            "valid": False if issues else None if unchecked else True, "checks_complete": not unchecked,
-            "unchecked_checks": unchecked, "system_type": system_type, "grid_circuit": circuit_res,
-            "issues": issues, "warnings": warnings, "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids),
-        }
-
+        return {"project": project, "variant": variant.upper(), "sha256": hashlib.sha256(data).hexdigest(),
+                "valid": False if issues else None if unchecked else True, "checks_complete": not unchecked,
+                "unchecked_checks": unchecked, "system_type": system_type, "grid_circuit": circuit_res,
+                "issues": issues, "warnings": warnings, "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids)}
 
 grid_inventory = inventory
-
 
 def __getattr__(name: str):
     if name == "strip_result_cache":

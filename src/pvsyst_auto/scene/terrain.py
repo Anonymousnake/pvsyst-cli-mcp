@@ -456,7 +456,7 @@ def build_terrain_tracker_shading(
 ) -> tuple[list[str], dict[str, Any]]:
     """Build a 3D pvShading scene with per-tracker draped pvShdArrayTracking + pvShdGround terrain."""
     from pvsyst_auto.scene.author import obstacle_profiles
-    from pvsyst_auto.scene.ground import emit_shading_obstacles, pv_shading_header
+    from pvsyst_auto.scene.reader import emit_shading_obstacles, pv_shading_header
 
     if module_orient == "moLandscape":
         dim_along_axis = module_length_m

@@ -5,9 +5,8 @@ from typing import Literal
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import StrictBool, StrictInt, StrictStr
 from pvsyst_auto.native.cli import build_monthly_weather_csv
-from pvsyst_auto.weather.csv import inspect_weather_csv
 from pvsyst_auto.weather.acquisition import download_weather, search_locations
-from pvsyst_auto.weather.preparation import prepare_weather
+from pvsyst_auto.weather.preparation import inspect_weather_csv, prepare_weather
 from pvsyst_auto.weather.review import review_weather
 from pvsyst_auto.api.schemas import StrictNum
 from pvsyst_auto.api.context import categorized_tool, cli, workspace_path
