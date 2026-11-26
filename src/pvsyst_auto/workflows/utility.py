@@ -174,6 +174,8 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
                     bad(f"{prefix}.cell_width_m", "cell_width_m must be >= 0.01 m")
                 if item.get("base_slope_deg") is not None and (not _is_number(item["base_slope_deg"]) or not -45 <= item["base_slope_deg"] <= 45):
                     bad(f"{prefix}.base_slope_deg", "base_slope_deg must lie in -45..45 degrees")
+                elif item.get("base_slope_deg"):
+                    bad(f"{prefix}.base_slope_deg", "Nonzero base_slope_deg requires a 3D ground-sheds layout")
             if len(share_modes) > 1:
                 bad("ground_layout.sub_orientations",
                     "Use either target_dc_kw on all sub_orientations or weight on all sub_orientations, not a mix")
@@ -292,6 +294,8 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
             bad("ground_layout.base_slope_deg", "base_slope_deg is supported for scope='ground_sheds'; use pitch_slope_deg for trackers")
         elif not _is_number(val) or not -45 <= val <= 45:
             bad("ground_layout.base_slope_deg", "base_slope_deg must lie in -45..45 degrees")
+        elif val and not resolve_utility_field_type(scope, layout)[1]:
+            bad("ground_layout.base_slope_deg", "Nonzero base_slope_deg requires a 3D ground-sheds layout")
 
     bifacial = spec.get("bifacial")
     if bifacial is not None:

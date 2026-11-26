@@ -718,6 +718,23 @@ class BifacialAndUtilityTests(unittest.TestCase):
         self.assertEqual(len(params["orientations"]), 3)
         self.assertEqual(len(params["subarrays"]), 3)
 
+    def test_unlimited_sheds_reject_unrepresented_base_slope(self):
+        cli = self._seed_multi_orientation_assets()
+        common = dict(scope="ground_sheds", year=2024, target_dc_kw=3600.0,
+                      module={"file_name": "TestSolar_TS600.PAN"}, inverter={"file_name": "TestInv_300K.OND"},
+                      sizing_mode="auto_from_components", weather={"mode": "synthetic_from_site", "sit_name": "TestSite.SIT"})
+        layouts = ({"sub_orientations": [{"tilt": 25, "azimuth": 0, "weight": 1, "base_slope_deg": 5},
+                                         {"tilt": 20, "azimuth": 90, "weight": 1, "base_slope_deg": -4}]},
+                   {"base_slope_deg": 5})
+        for idx, layout in enumerate(layouts):
+            with self.subTest(layout=layout):
+                project = f"Slope{idx}.PRJ"
+                spec = dict(common, new_project=project, ground_layout=layout, tilt=25, azimuth=0)
+                result = prepare_design_project(cli, self.store, spec=spec, dry_run=False)
+                self.assertEqual(result["status"], "blocked")
+                self.assertIn("base_slope_deg", str(result["issues"]))
+                self.assertFalse((self.root / "Projects" / project).exists())
+
     def test_synthetic_from_site_runs_simulation_without_met(self):
         cli = self._seed_multi_orientation_assets()
         spec = {
