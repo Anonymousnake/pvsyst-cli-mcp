@@ -25,7 +25,7 @@ from pvsyst_auto.workflows.design import _prune_empty
 from pvsyst_auto.workflows.sourced_house import run_sourced_house_task
 
 from tests._fixtures import FakeCliBase
-from tests.unit.workflows.test_design_inputs import FakeComponents, FakeVariants, template_spec
+from tests.unit.workflows.test_design_flow import FakeComponents, FakeVariants, template_spec
 
 CSV = """PVsyst export
 Project;{project}

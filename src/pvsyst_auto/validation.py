@@ -80,3 +80,8 @@ def is_printable_text(value: Any, limit: int | None = None) -> bool:
 def append_issue(result: dict[str, Any], field: str, message: Any) -> None:
     """Append a standardized validation issue entry to a structured result dict."""
     result["issues"].append({"field": field, "message": str(message)})
+
+
+def append_warning(result: dict[str, Any], field: str, message: Any) -> None:
+    """Append a ``{field, message}`` warning entry to ``result['warnings']``."""
+    result["warnings"].append({"field": field, "message": str(message)})
