@@ -471,6 +471,7 @@ def run_house_task(store, components, cli, *, request, dry_run=True, confirm=Fal
                 stage("native_saved", ("native_variant",))
             ran_simulation = False
             if record["phase"] == "native_saved":
+                unchanged()
                 bind_engineering_inputs()
                 if record["runs"] and not retry_simulation:
                     raise ValueError("Previous simulation attempt is retained; explicit retry_simulation=true creates new outputs")
