@@ -992,6 +992,65 @@ class CliTransientRetryAndResourcesTests(unittest.TestCase):
             with self.assertRaisesRegex(PVsystError, r"after 1 transient retry"):
                 cli.run_simulation("Demo.PRJ", "VC0", sfi=self.root / "Models" / "sim.SFI", out_csv=self.root / "Results" / "exh.csv", log_level=3)
         self.assertEqual(calls_exh["n"], 2)
+    def test_query_commands_retry_cold_start_empty_output_and_respect_deterministic_errors(self) -> None:
+        cli = PVsystCLI(self.fake_cli, self.root, max_transient_retries=1)
+        # license_info retries exit-0 empty stdout and succeeds on 2nd attempt
+        lic_calls = {"n": 0}
+        def fake_lic(label, *args, allow_window_creation=None):
+            lic_calls["n"] += 1
+            if lic_calls["n"] == 1:
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="Status: LICENSED\nRemaining days: 120\n", stderr="")
+        with patch.object(cli, "_checked_run", side_effect=fake_lic), patch("pvsyst_auto.native.cli.time.sleep") as mock_sleep:
+            info = cli.license_info()
+        self.assertEqual(lic_calls["n"], 2)
+        mock_sleep.assert_called_once()
+        self.assertEqual(info, {"status": "LICENSED", "remaining_days": 120})
+        # deterministic license error must never retry
+        det_lic_calls = {"n": 0}
+        def fake_det_lic(label, *args, allow_window_creation=None):
+            det_lic_calls["n"] += 1
+            return subprocess.CompletedProcess(args, 0, stdout="No license or license expired\n", stderr="")
+        with patch.object(cli, "_checked_run", side_effect=fake_det_lic), patch("pvsyst_auto.native.cli.time.sleep"):
+            with self.assertRaisesRegex(PVsystError, "no recognized fields"):
+                cli.license_info()
+        self.assertEqual(det_lic_calls["n"], 1)
+        # version retries empty output once, then succeeds
+        ver_calls = {"n": 0}
+        def fake_ver(label, *args, allow_window_creation=None):
+            ver_calls["n"] += 1
+            if ver_calls["n"] == 1:
+                return subprocess.CompletedProcess(args, 0, stdout="   \n", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="PVsystCLI 8.1.7\n", stderr="")
+        with patch.object(cli, "_checked_run", side_effect=fake_ver), patch("pvsyst_auto.native.cli.time.sleep"):
+            self.assertEqual(cli.version(), "PVsystCLI 8.1.7")
+        self.assertEqual(ver_calls["n"], 2)
+        # help / capabilities retries empty stdout once and caches only valid text; Unknown command never retries
+        help_calls = {"n": 0}
+        def fake_help(label, *args, allow_window_creation=None):
+            help_calls["n"] += 1
+            if args == ("help", "bogus"):
+                return subprocess.CompletedProcess(args, 0, stdout="Unknown command: bogus", stderr="")
+            if help_calls["n"] == 1:
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="  --output-csv-file|-ocf: CSV output\n", stderr="")
+        with patch.object(cli, "_checked_run", side_effect=fake_help), patch("pvsyst_auto.native.cli.time.sleep"):
+            caps = cli.capabilities("run-simulation")
+            self.assertEqual(caps, {"run-simulation": ["output-csv-file"]})
+            self.assertEqual(help_calls["n"], 2)
+            # cached hit makes no extra call
+            self.assertEqual(cli.capabilities("run-simulation"), {"run-simulation": ["output-csv-file"]})
+            self.assertEqual(help_calls["n"], 2)
+            with self.assertRaisesRegex(PVsystError, "CLI does not support bogus"):
+                cli.command_help("bogus")
+            self.assertEqual(help_calls["n"], 3)
+            self.assertNotIn("bogus", cli._help_cache)
+        # max_transient_retries=0 disables retries on empty stdout
+        cli_zero = PVsystCLI(self.fake_cli, self.root, max_transient_retries=0)
+        with patch.object(cli_zero, "_checked_run", return_value=subprocess.CompletedProcess([], 0, "", "")) as mock_run:
+            with self.assertRaisesRegex(PVsystError, "no output"):
+                cli_zero.version()
+        self.assertEqual(mock_run.call_count, 1)
     def test_public_simulation_stops_if_partial_output_cannot_be_removed(self) -> None:
         from pvsyst_auto.api.simulation import pvsyst_run_simulation
         cli = PVsystCLI(self.fake_cli, self.root, max_transient_retries=1)
