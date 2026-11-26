@@ -37,7 +37,7 @@ def _preserve_child_request(request):
     if design.get("report_pages") is not None:
         child["report_pages"] = design["report_pages"]
     for key in ("module_geometry", "obstacles", "string_layout", "report_pdf", "shading_mode",
-                "allow_window_creation"):
+                "scene_import_method", "allow_window_creation"):
         if request.get(key) is not None:
             child[key] = request[key]
     return child
@@ -118,6 +118,8 @@ def _run_preserve_source_hardware(store, components, cli, *, request, dry_run=Tr
     try:
         if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation)):
             raise ValueError("Use strict booleans")
+        if request.get("scene_import_method") not in (None, "native"):
+            raise ValueError("Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; use scene_import_method='native' or omit it")
         child = _preserve_child_request(request)
         if not resume and child.get("allow_window_creation") is False:
             raise ValueError("House shading recomputation requires allow_window_creation=true or unset")
@@ -221,6 +223,8 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
         try:
             if any(type(flag) is not bool for flag in (dry_run, confirm, resume, retry_simulation, accept_source_review)):
                 raise ValueError("Use strict booleans")
+            if request.get("scene_import_method") not in (None, "native"):
+                raise ValueError("Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; use scene_import_method='native' or omit it")
             # Reject an unusable explicit binding before any source-project write, rather than
             # preparing the source and only failing at the child house stage.
             if request.get("string_layout") is not None and (request.get("shading_mode") or "linear") != "module_layout":
@@ -313,7 +317,7 @@ def run_sourced_house_task(store, components, cli, *, request, binding=None, dry
             # Carry the native routing/selector, explicit per-cell binding and the per-request
             # window policy into the child house request; these stay absent for the historical
             # GUI/linear shape (is-not-None, so an explicit False is forwarded, never dropped).
-            for key in ("obstacles", "shading_mode", "string_layout", "allow_window_creation"):
+            for key in ("obstacles", "shading_mode", "scene_import_method", "string_layout", "allow_window_creation"):
                 if request.get(key) is not None:
                     child[key] = request[key]
             child_resume = house_manifest.exists()

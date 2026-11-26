@@ -742,28 +742,46 @@ def _materialize_random_periods(cfg: dict) -> list[tuple[str, float]]:
     cap = float(max_d - min_d)
     if cap > 0.0:
         for idx in indices:
-            if rem <= 0.0:
+            if rem <= 1e-6:
                 break
-            take = min(cap, rng.uniform(0.0, min(cap, rem))) if n > 1 else min(cap, rem)
-            durs[idx] += round(take, 1)
+            take = min(cap, round(rng.uniform(0.0, min(cap, rem)), 1), rem) if n > 1 else min(cap, rem)
+            durs[idx] = round(durs[idx] + take, 3)
             rem = max(0.0, target_total - sum(durs))
         for idx in indices:
-            if rem <= 0.05:
+            if rem <= 1e-6:
                 break
             room = float(max_d) - durs[idx]
             if room > 0.0:
                 add = min(room, rem)
-                durs[idx] = round(durs[idx] + add, 1)
-                rem -= add
+                durs[idx] = round(durs[idx] + add, 3)
+                rem = max(0.0, target_total - sum(durs))
     start_year, slot, periods, last_end_h = datetime(1990, 1, 1, 0, 0), 8760.0 / n, [], 0.0
     for idx, dur in enumerate(durs):
-        win_start = max(last_end_h + 1.0, idx * slot)
-        win_end = max(win_start, (idx + 1) * slot - dur - 1.0)
-        start_h = int(round(rng.uniform(win_start, min(8759.0 - dur, win_end)))) if win_end > win_start else int(round(win_start))
-        start_h = max(int(math.ceil(last_end_h)), min(8759, start_h))
-        dur_clamped = max(0.5, min(dur, float(8760 - start_h)))
-        periods.append(((start_year + timedelta(hours=start_h)).strftime("%d/%m/%y %H:%M"), round(dur_clamped, 3)))
-        last_end_h = start_h + dur_clamped
+        dur_rounded = round(dur, 3)
+        remaining_after = sum(durs[idx + 1:])
+        earliest_f = 0.0 if idx == 0 else last_end_h
+        latest_f = max(earliest_f, 8760.0 - dur_rounded - remaining_after)
+        earliest_h = int(math.ceil(earliest_f - 1e-9))
+        latest_h = int(math.floor(latest_f + 1e-9))
+        if earliest_h <= latest_h:
+            win_start = max(earliest_h, min(latest_h, int(round(idx * slot))))
+            win_end = max(win_start, min(latest_h, int(round((idx + 1) * slot - dur_rounded))))
+            start_min = int(round(rng.uniform(win_start, win_end))) * 60 if win_end > win_start else win_start * 60
+        else:
+            min_start_min = int(math.ceil(earliest_f * 60.0 - 1e-9))
+            max_start_min = int(math.floor(latest_f * 60.0 + 1e-9))
+            start_min = min(max_start_min, max(0, min_start_min))
+        stamp = start_year + timedelta(minutes=start_min)
+        actual_start_h = start_min / 60.0
+        periods.append((stamp.strftime("%d/%m/%y %H:%M"), dur_rounded))
+        last_end_h = actual_start_h + dur_rounded
+    total_dur = sum(d for _, d in periods)
+    if len(periods) != n or any(d < min_d - 1e-6 or d > max_d + 1e-6 for _, d in periods):
+        raise ValueError("Unable to materialize random outage periods within requested duration bounds")
+    if abs(total_dur - target_total) > 0.1 or last_end_h > 8760.0 + 1e-6:
+        raise ValueError(
+            f"Random outage placement could not fit requested total ({total_dur:.2f} h vs target {target_total:.2f} h)"
+        )
     return periods
 
 

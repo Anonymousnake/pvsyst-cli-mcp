@@ -136,8 +136,11 @@ class FakeCliBase:
     def version(self, *, allow_window_creation=None) -> str:
         return self._version
 
-    def capabilities(self, *, allow_window_creation=None) -> dict[str, list[str]]:
-        return {"run-simulation": ["start-date"], "create-site": []}
+    def capabilities(self, command: str | None = None, *, allow_window_creation=None) -> dict[str, list[str]]:
+        caps = {"run-simulation": ["start-date"], "create-site": []}
+        if command is not None:
+            return {command: caps.get(command, [])}
+        return caps
 
     def license_info(self, *, allow_window_creation=None) -> dict[str, Any]:
         info: dict[str, Any] = {"status": self._license_status}

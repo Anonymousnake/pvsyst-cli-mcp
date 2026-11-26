@@ -375,7 +375,13 @@ class PVsystCLI:
         return set(re.findall(r"(?m)^\s*--([a-z][a-z-]+)(?=\||:|\s)",
                               self.command_help(command, allow_window_creation=allow_window_creation)))
 
-    def capabilities(self, *, allow_window_creation: bool | None = None) -> dict[str, list[str]]:
+    def capabilities(self, command: str | None = None, *,
+                     allow_window_creation: bool | None = None) -> dict[str, list[str]]:
+        if command is not None:
+            cmd = command.strip()
+            if not cmd or not re.fullmatch(r"[a-z][a-z-]+", cmd):
+                raise ValueError("command must be a valid PVsystCLI subcommand name (e.g. 'run-simulation')")
+            return {cmd: sorted(self._options(cmd, allow_window_creation=allow_window_creation))}
         main = self.command_help(allow_window_creation=allow_window_creation)
         commands = re.findall(r"(?m)^\s+([a-z][a-z-]+):", main)
         return {name: sorted(self._options(name, allow_window_creation=allow_window_creation))

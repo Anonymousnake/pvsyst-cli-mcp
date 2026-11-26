@@ -1,14 +1,23 @@
 """Setup & License MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
-from pydantic import StrictBool
+import re
+
+from pydantic import StrictBool, StrictStr
 from pvsyst_auto.api.context import categorized_tool, cli
 
 
 @categorized_tool()
-def pvsyst_capabilities() -> dict:
-    """List commands and option names actually available in the installed CLI."""
-    return {"version": cli().version(), "commands": cli().capabilities()}
+def pvsyst_capabilities(command: StrictStr | None = None) -> dict:
+    """List commands and option names actually available in the installed CLI (or one named command)."""
+    cmd: str | None = None
+    if command is not None:
+        cmd = command.strip()
+        if not cmd or not re.fullmatch(r"[a-z][a-z-]+", cmd):
+            raise ValueError("command must be a valid PVsystCLI subcommand name (e.g. 'run-simulation')")
+    current = cli()
+    commands = current.capabilities() if cmd is None else current.capabilities(cmd)
+    return {"version": current.version(), "commands": commands}
 
 @categorized_tool()
 def pvsyst_license_info() -> dict:

@@ -337,5 +337,34 @@ class SimulationPreflightNoLaunchTests(unittest.TestCase):
             shutil.rmtree(directory, ignore_errors=True)
 
 
+class ToolGroupGuidanceTests(unittest.IsolatedAsyncioTestCase):
+    """Issue #277: tool-group guidance and prompt registration never advertise unloaded tools."""
+
+    async def test_instructions_and_prompts_respect_active_tool_groups(self):
+        import re
+        from pvsyst_auto.api.context import create_mcp_server
+
+        for groups, expected_prompt_nonempty in (
+            (None, True),
+            ("results", False),
+            ("admin", False),
+            ("expert", False),
+            ("all", True),
+        ):
+            with self.subTest(groups=groups):
+                server = create_mcp_server(groups)
+                active_names = {tool.name for tool in await server.list_tools()}
+                prompts = await server.list_prompts()
+                if expected_prompt_nonempty:
+                    self.assertTrue(prompts)
+                else:
+                    self.assertEqual(prompts, [])
+                instruction_refs = set(re.findall(r"\bpvsyst_\w+\b", server.instructions or ""))
+                self.assertLessEqual(instruction_refs, active_names, sorted(instruction_refs - active_names))
+                for prompt in prompts:
+                    desc_refs = set(re.findall(r"\bpvsyst_\w+\b", prompt.description or ""))
+                    self.assertLessEqual(desc_refs, active_names, sorted(desc_refs - active_names))
+
+
 if __name__ == "__main__":
     unittest.main()
