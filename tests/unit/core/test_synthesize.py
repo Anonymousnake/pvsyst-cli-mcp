@@ -22,7 +22,13 @@ from pvsyst_auto.scene.author import DEFAULT_MODULE_DEPTH_M, resolve_modules
 from pvsyst_auto.workflows.house import run_house_task
 from tests._fixtures import init_workspace, roof_mesh, write_utf8_crlf
 from tests.unit.core.test_components import OND, PAN
-from tests.unit.workflows.test_standard_template import CAPACITY, FakeCLI, FixtureComponents, PAN_TEXT, ond_text
+from tests.unit.workflows.test_design_flow import (
+    CAPACITY,
+    FixtureComponents,
+    _STD_PAN_TEXT as PAN_TEXT,
+    _StdTemplateFakeCLI as FakeCLI,
+    ond_text,
+)
 
 
 SITE_TEXT = """PVObject_=pvSite

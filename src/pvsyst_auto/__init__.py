@@ -54,6 +54,22 @@ _LEGACY_MODULE_ALIASES: dict[str, tuple[str, ...]] = {
     "pvsyst_auto.scene.ground": ("pvsyst_auto.scene.reader",),
     "pvsyst_auto.scene.state": ("pvsyst_auto.scene.reader",),
     "pvsyst_auto.weather.csv": ("pvsyst_auto.weather.preparation",),
+    "pvsyst_auto.engineering.handoff": ("pvsyst_auto.engineering.comparison",),
+    "pvsyst_auto.engineering.brief": ("pvsyst_auto.engineering.review",),
+    "pvsyst_auto.engineering.inputs": ("pvsyst_auto.engineering.review",),
+    "pvsyst_auto.engineering.envelope": ("pvsyst_auto.engineering.sizing",),
+    "pvsyst_auto.engineering.suggest": ("pvsyst_auto.engineering.sizing",),
+    "pvsyst_auto.workflows.blocks": ("pvsyst_auto.workflows.simulation",),
+    "pvsyst_auto.workflows.sourced_house": ("pvsyst_auto.workflows.house",),
+    "pvsyst_auto.workflows.feasibility": ("pvsyst_auto.workflows.optimize",),
+    "pvsyst_auto.workflows.storage": ("pvsyst_auto.workflows.revision",),
+    "pvsyst_auto.workflows.delivery": ("pvsyst_auto.workflows.revision",),
+    "pvsyst_auto.api.guidance": ("pvsyst_auto.api.context",),
+    "pvsyst_auto.api.components": ("pvsyst_auto.api.projects",),
+    "pvsyst_auto.api.setup": ("pvsyst_auto.api.projects",),
+    "pvsyst_auto.api.storage": ("pvsyst_auto.api.weather",),
+    "pvsyst_auto.api.results": ("pvsyst_auto.api.weather",),
+    "pvsyst_auto.api.engineering": ("pvsyst_auto.api.simulation",),
 }
 
 _LEGACY_ATTR_RENAMES: dict[str, dict[str, tuple[str, str]]] = {
@@ -190,6 +206,9 @@ _LEGACY_ATTR_RENAMES: dict[str, dict[str, tuple[str, str]]] = {
     "pvsyst_auto.project.variant_topology": {
         "grid_inventory": ("pvsyst_auto.project.circuit", "inventory"),
         "strip_result_cache": ("pvsyst_auto.native.headless", "strip_result_cache"),
+    },
+    "pvsyst_auto.workflows.delivery": {
+        "_result_path": ("pvsyst_auto.workflows.revision", "_delivery_result_path"),
     },
 }
 

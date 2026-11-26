@@ -17,7 +17,7 @@ from pvsyst_auto.native.cli import PVsystCLI, PVsystError, build_monthly_weather
 from pvsyst_auto.native import load as native_load
 from pvsyst_auto.api import app as _registered_app, context as server
 import pvsyst_auto.api.projects as api_projects
-import pvsyst_auto.api.results as api_results
+import pvsyst_auto.api.weather as api_results
 import pvsyst_auto.api.simulation as api_simulation
 import json
 from unittest.mock import patch
@@ -1354,6 +1354,22 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
         "pvsyst_auto.scene.ground",
         "pvsyst_auto.scene.state",
         "pvsyst_auto.weather.csv",
+        "pvsyst_auto.engineering.handoff",
+        "pvsyst_auto.engineering.brief",
+        "pvsyst_auto.engineering.inputs",
+        "pvsyst_auto.engineering.envelope",
+        "pvsyst_auto.engineering.suggest",
+        "pvsyst_auto.workflows.blocks",
+        "pvsyst_auto.workflows.sourced_house",
+        "pvsyst_auto.workflows.feasibility",
+        "pvsyst_auto.workflows.storage",
+        "pvsyst_auto.workflows.delivery",
+        "pvsyst_auto.api.guidance",
+        "pvsyst_auto.api.components",
+        "pvsyst_auto.api.setup",
+        "pvsyst_auto.api.storage",
+        "pvsyst_auto.api.results",
+        "pvsyst_auto.api.engineering",
     )
 
     def test_legacy_consolidated_module_imports_forward_cleanly(self) -> None:
@@ -1424,6 +1440,31 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
         self.assertIs(state.shading_state, reader.shading_state)
         self.assertIs(weather_csv.inspect_weather_csv, preparation.inspect_weather_csv)
         self.assertIs(variant_readback.shading_state, reader.shading_state)
+
+        from pvsyst_auto.engineering import brief, comparison, envelope, handoff, inputs, review, sizing, suggest
+        from pvsyst_auto.workflows import blocks, delivery, feasibility, house, optimize, revision, simulation as wf_sim, sourced_house, storage as wf_storage
+        from pvsyst_auto.api import components as api_comp, context as api_ctx, engineering as api_eng, guidance, projects as api_proj, results as api_res, setup as api_setup, simulation as api_sim, storage as api_stor, weather as api_weather
+        self.assertIs(handoff.build_project_handoff, comparison.build_project_handoff)
+        self.assertIs(brief.review_engineering_brief, review.review_engineering_brief)
+        self.assertIs(inputs.discover_design_inputs, review.discover_design_inputs)
+        self.assertIs(envelope.prepare_design_envelope, sizing.prepare_design_envelope)
+        self.assertIs(suggest.suggest_sizing, sizing.suggest_sizing)
+        self.assertIs(blocks.prepare_block_project, wf_sim.prepare_block_project)
+        self.assertIs(sourced_house.run_sourced_house_task, house.run_sourced_house_task)
+        self.assertIs(feasibility.run_feasibility_study, optimize.run_feasibility_study)
+        self.assertIs(wf_storage.prepare_storage_revision, revision.prepare_storage_revision)
+        self.assertIs(delivery._result_path, revision._delivery_result_path)
+        self.assertIs(delivery.export_engineering_delivery, revision.export_engineering_delivery)
+        self.assertIs(guidance.register_guidance, api_ctx.register_guidance)
+        self.assertIs(api_comp.pvsyst_build_sourced_component, api_proj.pvsyst_build_sourced_component)
+        self.assertIs(api_setup.pvsyst_capabilities, api_proj.pvsyst_capabilities)
+        self.assertIs(api_stor.pvsyst_create_grid_storage_variant, api_weather.pvsyst_create_grid_storage_variant)
+        self.assertIs(api_res.pvsyst_read_results, api_weather.pvsyst_read_results)
+        self.assertIs(api_eng.pvsyst_evaluate_economics, api_sim.pvsyst_evaluate_economics)
+        with patch("pvsyst_auto.engineering.handoff.build_project_handoff", return_value={"patched": True}):
+            self.assertEqual(comparison.build_project_handoff(), {"patched": True})
+        with patch("pvsyst_auto.api.engineering.cli", return_value="patched-cli"):
+            self.assertEqual(api_sim.cli(), "patched-cli")
 
         from pvsyst_auto.native import cli as cli_mod
         with tempfile.TemporaryDirectory() as cli_tmp:
@@ -1567,7 +1608,7 @@ class CapabilitiesLookupTests(unittest.TestCase):
     """Issue #277: optional single-command pvsyst_capabilities avoids enumerating all subcommands."""
 
     def test_single_command_lookup_caches_and_rejects_invalid_command(self) -> None:
-        from pvsyst_auto.api.setup import pvsyst_capabilities
+        from pvsyst_auto.api.projects import pvsyst_capabilities
 
         with tempfile.TemporaryDirectory() as tmp:
             ws = Path(tmp) / "workspace"
@@ -1591,7 +1632,7 @@ class CapabilitiesLookupTests(unittest.TestCase):
                 raise AssertionError(f"Unexpected CLI invocation: {args!r}")
 
             with patch.object(client, "_checked_run", side_effect=fake_run), \
-                 patch("pvsyst_auto.api.setup.cli", return_value=client):
+                 patch("pvsyst_auto.api.projects.cli", return_value=client):
                 cold = pvsyst_capabilities(command="run-simulation")
                 self.assertEqual(calls, [["help", "run-simulation"], ["version"]])
                 self.assertEqual(cold["version"], "PVsystCLI 8.1.7")

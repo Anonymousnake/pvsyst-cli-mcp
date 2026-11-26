@@ -1,9 +1,11 @@
 """Simulation MCP operations; native and domain behavior stays in the existing modules."""
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from pydantic import Field, StrictBool, StrictInt, StrictStr
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi
+from pvsyst_auto.engineering.review import EngineeringBriefRequest, review_engineering_brief
+from pvsyst_auto.engineering.sizing import suggest_sizing
 from pvsyst_auto.workflows.batch import poll_batch_sweep_job, run_batch_sweep
 from pvsyst_auto.workflows.bess_optimize import optimize_bess_sizing
 from pvsyst_auto.workflows.design import simulate_design
@@ -12,8 +14,9 @@ from pvsyst_auto.workflows.sourced_design import prepare_sourced_design
 from pvsyst_auto.api.schemas import (
     BatchSweepRequest, BessSizingParams, BessVerifyConfig,
     ConstantNativeLoad, DailyNativeLoad,
-    EconomicsFinancialConfig, EconomicsTariffConfig,
-    HouseTaskRequest, SingleDesignRequest, StrictNum,
+    EconomicsFinancialConfig, EconomicsScenarioInput, EconomicsSensitivityConfig, EconomicsTariffConfig,
+    EngineeringBlock, EngineeringRevisionRequest, EngineeringScenario, FeasibilityStudyRequest,
+    HouseTaskRequest, ReportScenarioInput, SingleDesignRequest, StrictNum,
     SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest,
 )
 from pvsyst_auto.api.context import categorized_tool, cli, components, optional_path, simulation_csv_path, variant_store, workspace_path
@@ -255,7 +258,7 @@ def pvsyst_run_sourced_house_task(spec: SourcedHouseTaskRequest, dry_run: Strict
         accept_source_review: StrictBool = False) -> dict:
     """Bind cited datasheet inputs, prepare a source project (or reuse an existing source via
     prepare_mode='preserve_source_hardware'), and run the 3D house simulation pipeline."""
-    from pvsyst_auto.workflows.sourced_house import is_preserve_request, run_sourced_house_task
+    from pvsyst_auto.workflows.house import is_preserve_request, run_sourced_house_task
     current = cli()
     store = variant_store()
     with store.lock:
@@ -276,3 +279,170 @@ def pvsyst_run_sourced_house_task(spec: SourcedHouseTaskRequest, dry_run: Strict
         return run_sourced_house_task(store, store.components, current, request=request, binding=binding,
             dry_run=dry_run, confirm=confirm, resume=resume, retry_simulation=retry_simulation,
             accept_source_review=accept_source_review)
+
+
+@categorized_tool()
+def pvsyst_suggest_sizing(
+        pan_name: StrictStr, ond_name: StrictStr, target_dc_kw: StrictNum,
+        voltage_standard: Literal["IEC", "UL"] = "IEC",
+        min_ambient_c: StrictNum = -10.0,
+        min_operating_c: StrictNum = 0.0,
+        max_operating_c: StrictNum = 65.0,
+        min_dc_ac_ratio: StrictNum = 0.85,
+        max_dc_ac_ratio: StrictNum = 1.25,
+        capacity_tolerance_pct: StrictNum = 8.0,
+        beta_voc_pct_per_c: StrictNum | None = None,
+        beta_vmp_pct_per_c: StrictNum | None = None,
+        alpha_isc_pct_per_c: StrictNum | None = None) -> dict:
+    """Read-only sizing assistant: derive recommended series/parallel/inverter counts and a drop-in
+    capacity envelope from readable PAN/OND files with explicit assumptions (requires engineering review)."""
+    return suggest_sizing(
+        variant_store(),
+        pan_name=pan_name, ond_name=ond_name, target_dc_kw=target_dc_kw,
+        voltage_standard=voltage_standard,
+        min_ambient_c=min_ambient_c, min_operating_c=min_operating_c, max_operating_c=max_operating_c,
+        min_dc_ac_ratio=min_dc_ac_ratio, max_dc_ac_ratio=max_dc_ac_ratio,
+        capacity_tolerance_pct=capacity_tolerance_pct,
+        beta_voc_pct_per_c=beta_voc_pct_per_c,
+        beta_vmp_pct_per_c=beta_vmp_pct_per_c,
+        alpha_isc_pct_per_c=alpha_isc_pct_per_c,
+    )
+
+
+@categorized_tool()
+def pvsyst_prepare_block_project(source_project: StrictStr, source_variant: StrictStr,
+                                 new_project: StrictStr,
+                                 blocks: Annotated[list[EngineeringBlock], Field(min_length=1, max_length=100)],
+                                 dry_run: StrictBool = True) -> dict:
+    """Assemble a new project by repeating fixed subarray blocks from a template project
+    by integer counts (1..100 total blocks covering every source subarray)."""
+    from pvsyst_auto.workflows.simulation import prepare_block_project
+    return prepare_block_project(variant_store(), source_project=source_project, source_variant=source_variant,
+        new_project=new_project, blocks=[block.model_dump() for block in blocks], dry_run=dry_run)
+
+@categorized_tool()
+def pvsyst_review_engineering_brief(brief: EngineeringBriefRequest) -> dict:
+    """Check structured feasibility claims (module/inverter counts, strings, block schedules,
+    and required PAN/OND/weather filenames) for internal consistency and missing inputs."""
+    return review_engineering_brief(brief)
+
+@categorized_tool()
+def pvsyst_project_handoff(project: StrictStr, variant: StrictStr,
+                           declarations: dict[StrictStr, Any] | None = None) -> dict:
+    """Read saved equipment, counts, orientation/circuit relationships, weather, load,
+    and storage settings alongside caller declarations and missing inputs."""
+    from pvsyst_auto.engineering.comparison import build_project_handoff
+    return build_project_handoff(variant_store(), project=project, variant=variant, declarations=declarations)
+
+@categorized_tool()
+def pvsyst_run_engineering_task(spec: EngineeringRevisionRequest, dry_run: StrictBool = True) -> dict:
+    """Apply an isolated revision (fixed angles/losses, UnlimTracking controls, or AC-coupled
+    storage with hourly load) in a new project and run a full-year simulation."""
+    from pvsyst_auto.workflows.revision import run_engineering_task
+    return run_engineering_task(cli(), variant_store(), **spec.model_dump(exclude_none=True), dry_run=dry_run)
+
+@categorized_tool()
+def pvsyst_compare_engineering_scenarios(objective: StrictStr, scenarios: list[EngineeringScenario],
+                                        output_name: StrictStr, dry_run: StrictBool = True) -> dict:
+    """Compare two or three completed simulation runs against a baseline scenario and write
+    JSON, CSV, and Markdown comparison reports under workspace/Results."""
+    from pvsyst_auto.engineering.comparison import compare_engineering_scenarios
+    return compare_engineering_scenarios(variant_store(), objective=objective,
+        scenarios=[scenario.model_dump(exclude_none=True) for scenario in scenarios],
+        output_name=output_name, dry_run=dry_run)
+
+@categorized_tool()
+def pvsyst_evaluate_economics(
+        scenarios: list[EconomicsScenarioInput] | None = None,
+        batch_summary_csv: StrictStr | None = None,
+        financial: EconomicsFinancialConfig | None = None,
+        tariff: EconomicsTariffConfig | None = None,
+        sensitivity: EconomicsSensitivityConfig | None = None,
+        rank_by: Literal[
+            "npv", "irr", "equity_irr", "lcoe", "simple_payback_years",
+            "discounted_payback_years", "year1_net_benefit",
+        ] = "npv",
+        include_cashflow_schedule: StrictBool = True) -> dict:
+    """Pure-Python PV and PV+BESS financial evaluator: streams single or weighted multi-CSV
+    hourly/sub-hourly SFI CSVs (or UserBatch summary CSVs) under fixed, TOU, or two-part
+    demand-charge tariffs to compute LCOE, NPV, pre/post-tax project IRR, levered Equity IRR
+    and DSCR (via optional composable VAT, CIT, loan financing, and staged OPEX tiers),
+    payback, sensitivity sweeps, and scenario rankings."""
+    from pvsyst_auto.engineering.economics import evaluate_economics
+    return evaluate_economics(
+        workspace=cli().workspace,
+        scenarios=[s.model_dump(exclude_none=True) for s in scenarios] if scenarios is not None else None,
+        batch_summary_csv=batch_summary_csv,
+        financial=financial.model_dump(exclude_none=True) if financial is not None else None,
+        tariff=tariff.model_dump(exclude_none=True) if tariff is not None else None,
+        sensitivity=sensitivity.model_dump(exclude_none=True) if sensitivity is not None else None,
+        rank_by=rank_by,
+        include_cashflow_schedule=include_cashflow_schedule,
+    )
+
+@categorized_tool()
+def pvsyst_generate_report(
+        title: StrictStr,
+        output_name: StrictStr,
+        scenarios: Annotated[list[ReportScenarioInput], Field(min_length=1, max_length=20)],
+        financial: EconomicsFinancialConfig | None = None,
+        tariff: EconomicsTariffConfig | None = None,
+        sensitivity: EconomicsSensitivityConfig | None = None,
+        bess_optimization: dict[StrictStr, Any] | None = None,
+        batch_summary_csv: StrictStr | None = None,
+        language: Literal["zh", "en"] = "zh",
+        plotlyjs: Literal["cdn", "embed"] = "cdn",
+        thresholds: dict[StrictStr, StrictNum] | None = None,
+        overwrite: StrictBool = False,
+        dry_run: StrictBool = False) -> dict:
+    """Generate a single-scenario or multi-scenario interactive Plotly HTML engineering report
+    under workspace/Results (monthly yield/PR combo, loss waterfall, typical 24h PV/load/BESS/TOU
+    profile, monthly peak demand shaving, 25-year cumulative cashflow, sensitivity tornado chart,
+    optional BESS sizing heatmap/Pareto frontier, optional UserBatch parametric sweep curve chart
+    via batch_summary_csv, diagnostics table, and print-ready CSS)."""
+    from pvsyst_auto.workflows.report import generate_report
+    return generate_report(
+        workspace=cli().workspace,
+        store=variant_store(),
+        title=title,
+        output_name=output_name,
+        scenarios=[s.model_dump(exclude_none=True) for s in scenarios],
+        financial=financial.model_dump(exclude_none=True) if financial is not None else None,
+        tariff=tariff.model_dump(exclude_none=True) if tariff is not None else None,
+        sensitivity=sensitivity.model_dump(exclude_none=True) if sensitivity is not None else None,
+        bess_optimization=bess_optimization,
+        batch_summary_csv=batch_summary_csv,
+        language=language,
+        plotlyjs=plotlyjs,
+        thresholds=thresholds,
+        overwrite=overwrite,
+        dry_run=dry_run,
+    )
+
+@categorized_tool()
+def pvsyst_export_engineering_delivery(manifest_name: StrictStr, output_name: StrictStr,
+                                      dry_run: StrictBool = True, comparison_name: StrictStr = "") -> dict:
+    """Bundle a completed engineering run (and optional scenario comparison) with its PRJ/VC,
+    result CSV/PDF, and Markdown handoff summary into a ZIP archive under workspace/Results."""
+    from pvsyst_auto.workflows.revision import export_engineering_delivery
+    return export_engineering_delivery(variant_store(), manifest_name=manifest_name,
+        output_name=output_name, dry_run=dry_run, comparison_name=comparison_name)
+
+@categorized_tool()
+def pvsyst_run_feasibility_study(
+        spec: FeasibilityStudyRequest,
+        dry_run: StrictBool = True,
+        confirm: StrictBool = False) -> dict:
+    """One-shot end-to-end PV & PV+BESS feasibility study orchestrator: chains optional
+    zero-template PAN/OND/BTR synthesis, PV simulation (or reuse of existing_csv), physics
+    diagnostics, TOU PowerShift 48-slot planning, two-stage hybrid BESS sizing optimization,
+    two-part demand/TOU economics with sensitivity tornado analysis, and bilingual Plotly HTML
+    report generation. Defaults to dry_run=true; requires dry_run=false and confirm=true to write."""
+    from pvsyst_auto.workflows.optimize import run_feasibility_study
+    return run_feasibility_study(
+        cli(),
+        variant_store(),
+        spec=spec.model_dump(exclude_none=True),
+        dry_run=dry_run,
+        confirm=confirm,
+    )

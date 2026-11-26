@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pvsyst_auto.api import app as _registered_app, context as server
-import pvsyst_auto.api.results as api_results
+import pvsyst_auto.api.weather as api_results
 from pvsyst_auto.engineering import comparison as eng_comparison
 import pvsyst_auto.results as results
 from pvsyst_auto.native.cli import PVsystCLI, summarize_results
@@ -228,7 +228,7 @@ class ResultComparisonTests(unittest.TestCase):
             {"label": "baseline", "project": "Alpha.PRJ", "variant": "VC0", "csv_name": "base0.csv", "declared_changes": []},
             {"label": "candidate", "project": "Beta.PRJ", "variant": "VC0", "csv_name": "cand0.csv", "declared_changes": ["system"]},
         ]
-        with patch("pvsyst_auto.engineering.handoff.build_project_handoff", return_value=handoff):
+        with patch("pvsyst_auto.engineering.comparison.build_project_handoff", return_value=handoff):
             blocked = eng_comparison.compare_engineering_scenarios(
                 store, objective="Header-only CSV guard", scenarios=scenarios, output_name="zero.json", dry_run=True)
         self.assertEqual(blocked["status"], "blocked")

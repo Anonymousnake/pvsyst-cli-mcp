@@ -12,17 +12,17 @@ from unittest.mock import Mock, patch
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.engineering.comparison import RUN_FIELDS, compare_engineering_scenarios
-from pvsyst_auto.engineering.handoff import _load_records, build_project_handoff
-from pvsyst_auto.engineering.inputs import discover_design_inputs
+from pvsyst_auto.engineering.comparison import _load_records, build_project_handoff
+from pvsyst_auto.engineering.review import discover_design_inputs
 from pvsyst_auto.engineering.review import review_project_inputs
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.results import fingerprint
 from pvsyst_auto.scene.author import house_profile, source_profile
 from pvsyst_auto.scene.mapping import verify_grouped_hardware
 from pvsyst_auto.workflows import house as house_flow
-from pvsyst_auto.workflows.blocks import prepare_block_project
+from pvsyst_auto.workflows.simulation import prepare_block_project
 from pvsyst_auto.workflows.design import _prune_empty
-from pvsyst_auto.workflows.sourced_house import run_sourced_house_task
+from pvsyst_auto.workflows.house import run_sourced_house_task
 
 from tests._fixtures import FakeCliBase
 from tests.unit.workflows.test_design_flow import FakeComponents, FakeVariants, template_spec
@@ -206,7 +206,7 @@ class EngineeringTests(unittest.TestCase):
                 encoding="utf-8", newline="\r\n")
             scenarios.append({"label": label, "project": project, "variant": variant,
                               "csv_name": name, "declared_changes": changes})
-        with patch("pvsyst_auto.engineering.handoff.build_project_handoff",
+        with patch("pvsyst_auto.engineering.comparison.build_project_handoff",
                    side_effect=lambda *a, **k: json.loads(json.dumps(HANDOFF))):
             preview = compare_engineering_scenarios(store, objective="Compare two roofs", scenarios=scenarios,
                                                   output_name="cmp.json", dry_run=True)
@@ -328,9 +328,9 @@ class EngineeringTests(unittest.TestCase):
         components = FakeComponents(root, {"module.PAN": ("Lab", "440W"), "inverter.OND": ("Lab", "50kW")})
         spec = template_spec()
         store = FakeVariants(root, components, {"Template": {"variants": ["VC0"], "VC0": spec}})
-        with patch("pvsyst_auto.engineering.inputs.electrical_inventory",
+        with patch("pvsyst_auto.engineering.review.electrical_inventory",
                    side_effect=lambda kind, text: {"fields": {"source": text}}), \
-                patch("pvsyst_auto.engineering.inputs.pan_validation_fields", return_value={}):
+                patch("pvsyst_auto.engineering.review.pan_validation_fields", return_value={}):
             for tilt in (95, "steep", float("nan")):
                 with self.subTest(tilt=tilt):
                     result = discover_design_inputs(store, module_manufacturer="Lab", module_model="440W",
@@ -340,7 +340,7 @@ class EngineeringTests(unittest.TestCase):
                     self.assertFalse(any(item["field"] == "tilt" for item in result["issues"]))
             spec["parameters"]["subarrays"][0]["values"]["NInverter"] = "2.0"
             plan = {"status": "ready", "inverter_count": 2, "steps": [], "capacity_error_pct": 0.0, "issues": []}
-            with patch("pvsyst_auto.engineering.inputs.plan_capacity", return_value=plan):
+            with patch("pvsyst_auto.engineering.review.plan_capacity", return_value=plan):
                 rejected = discover_design_inputs(store, module_manufacturer="Lab", module_model="440W",
                                                   inverter_manufacturer="Lab", inverter_model="50kW",
                                                   template_project="Template.PRJ", variant="VC0",
@@ -418,7 +418,7 @@ class EngineeringTests(unittest.TestCase):
         (root / "Results" / "Source_prepare_2024.json").write_text(json.dumps(checkpoint), encoding="utf-8")
         for error in (AttributeError("'NoneType' object has no attribute 'casefold'"), KeyError("created_files")):
             with self.subTest(error=type(error).__name__):
-                with patch("pvsyst_auto.workflows.sourced_house.load_weather_manifest", side_effect=error):
+                with patch("pvsyst_auto.workflows.house.load_weather_manifest", side_effect=error):
                     resumed = run_task(resume=True)
                 self.assertEqual(resumed["status"], "blocked", resumed)
                 self.assertEqual(resumed["issues"], ["Incomplete weather preparation manifest: Weather_weather.json"])
