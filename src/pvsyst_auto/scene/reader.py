@@ -496,6 +496,7 @@ def plan_ground_polygon_layout(
     module_width_m: float, module_length_m: float, module_rows: int = 2, module_orientation: str = "portrait",
     spacing_x_m: float = 0.02, spacing_y_m: float = 0.02, setback_m: float = 0.0,
     ground_clearance_m: float = 0.5, max_table_columns: int | None = None, base_slope_deg: float = 0.0,
+    proj_depth_override_m: float | None = None,
 ) -> dict[str, Any]:
     """Place maximal non-overlapping finite PV tables inside a 2D site polygon."""
     poly_world = validate_site_polygon(site_polygon)
@@ -520,7 +521,11 @@ def plan_ground_polygon_layout(
     cell_w = module_width_m if module_orientation == "portrait" else module_length_m
     cell_h = module_length_m if module_orientation == "portrait" else module_width_m
     larg_shed = module_rows * cell_h + max(0, module_rows - 1) * spacing_y_m
-    proj_depth = larg_shed * math.cos(math.radians(tilt))
+    proj_depth = (
+        _finite(proj_depth_override_m, "proj_depth_override_m", positive=True)
+        if proj_depth_override_m is not None
+        else larg_shed * math.cos(math.radians(tilt))
+    )
     if pitch <= proj_depth:
         raise ValueError(f"pitch_m ({pitch:.3f} m) must exceed horizontal table depth ({proj_depth:.3f} m)")
     col_step, rot_rad = cell_w + spacing_x_m, math.radians(azim)

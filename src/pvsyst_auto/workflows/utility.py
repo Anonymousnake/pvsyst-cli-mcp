@@ -30,7 +30,7 @@ from pvsyst_auto.workflows.simulation import (
     verify_and_read_simulation_results,
 )
 
-UTILITY_SCOPES = ("ground_sheds", "ground_tracker")
+UTILITY_SCOPES = ("ground_sheds", "ground_tracker", "ground_dome")
 GROUND_LAYOUT_KEYS = frozenset((
     "model_mode", "pitch_m", "collector_width_m", "shed_count",
     "module_rows", "module_columns", "module_orientation",
@@ -42,6 +42,7 @@ GROUND_LAYOUT_KEYS = frozenset((
     "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg",
     "site_polygon", "setback_m", "ground_clearance_m", "max_table_columns",
     "obstacles", "base_slope_deg", "terrain", "sub_orientations",
+    "top_spacing_m", "dome_wiring",
 ))
 SUB_ORIENTATION_KEYS = frozenset((
     "label", "tilt", "azimuth", "target_dc_kw", "weight",
@@ -54,6 +55,7 @@ TRACKER_ONLY_KEYS = frozenset((
     "backtracking", "irrad_optimiz", "central_gap_m", "pitch_slope_deg",
     "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg",
 ))
+DOME_ONLY_KEYS = frozenset(("top_spacing_m", "dome_wiring"))
 BIFACIAL_EXTRA_VARS = (
     "viGlobGnd", "viDiffGnd", "viGlobBak",
     "viBeamBak", "viDifSBak", "viBmSFBak", "viMismBak", "viPRBifi",
@@ -75,6 +77,8 @@ def resolve_utility_field_type(scope: str, ground_layout: dict | None) -> tuple[
     if scope == "ground_tracker":
         has_3d = (mode == "3d") or (layout.get("terrain") is not None)
         return ("TrackHorizNSAxis", True) if has_3d else ("UnlimTracking", False)
+    if scope == "ground_dome":
+        return ("Dome", True)
     raise ValueError(f"Not a utility scope: {scope!r}")
 
 
@@ -97,11 +101,13 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
     for key in sorted(set(layout) - GROUND_LAYOUT_KEYS):
         bad(f"ground_layout.{key}", "Unknown ground_layout parameter")
 
-    mode = layout.get("model_mode", "unlimited")
+    mode = layout.get("model_mode", "3d" if scope == "ground_dome" else "unlimited")
     if mode not in ("unlimited", "3d"):
         bad("ground_layout.model_mode", "Choose 'unlimited' or '3d'")
 
-    if mode == "unlimited" and scope == "ground_tracker":
+    if scope == "ground_dome" and layout.get("model_mode") == "unlimited":
+        bad("ground_layout.model_mode", "scope='ground_dome' requires 3D paired dome shading (model_mode='3d')")
+    elif mode == "unlimited" and scope == "ground_tracker":
         for key in ("central_gap_m", "pitch_slope_deg", "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg"):
             if key in layout:
                 bad(f"ground_layout.{key}", f"{key} requires model_mode='3d'")
@@ -109,10 +115,21 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
         for key in ("electrical_effect", "shading_factor", "cell_width_m"):
             if key in layout:
                 bad(f"ground_layout.{key}", f"{key} requires model_mode='unlimited'")
-        if scope == "ground_sheds":
+        if scope in ("ground_sheds", "ground_dome"):
             for key in ("inactive_band_width_1_m", "inactive_band_width_2_m"):
                 if key in layout:
-                    bad(f"ground_layout.{key}", f"{key} requires model_mode='unlimited' for ground_sheds")
+                    bad(f"ground_layout.{key}", f"{key} requires model_mode='unlimited' for {scope}")
+
+    if scope != "ground_dome":
+        for key in sorted(set(layout) & DOME_ONLY_KEYS):
+            bad(f"ground_layout.{key}", f"{key} is only supported for scope='ground_dome'")
+    else:
+        ts = layout.get("top_spacing_m")
+        if ts is not None and (not _is_number(ts) or ts < 0):
+            bad("ground_layout.top_spacing_m", "top_spacing_m must be a non-negative finite number")
+        dw = layout.get("dome_wiring")
+        if dw is not None and dw not in ("auto", "dual_mppt", "mixed"):
+            bad("ground_layout.dome_wiring", "Choose 'auto', 'dual_mppt', or 'mixed'")
 
     sub_orientations = layout.get("sub_orientations")
     has_sub_orients = isinstance(sub_orientations, list) and len(sub_orientations) > 0
@@ -180,15 +197,16 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
                 bad("ground_layout.sub_orientations",
                     "Use either target_dc_kw on all sub_orientations or weight on all sub_orientations, not a mix")
 
-    if scope == "ground_sheds":
+    if scope in ("ground_sheds", "ground_dome"):
         for name, low, high in (("tilt", 0, 90), ("azimuth", -180, 180)):
             value = spec.get(name)
-            note = ("Use a finite tilt in 0..90 degrees" if name == "tilt"
+            note = ("Use a finite tilt in (0, 90] degrees" if scope == "ground_dome" and name == "tilt"
+                    else "Use a finite tilt in 0..90 degrees" if name == "tilt"
                     else "Use finite PVsyst azimuth in -180..180 degrees, zero south and west positive")
             if value is None:
                 if not has_sub_orients:
                     bad(name, note)
-            elif not _is_number(value) or not low <= value <= high:
+            elif not _is_number(value) or not low <= value <= high or (scope == "ground_dome" and name == "tilt" and value <= 0):
                 bad(name, note)
         for key in sorted(set(layout) & TRACKER_ONLY_KEYS):
             bad(f"ground_layout.{key}", f"{key} is only supported for scope='ground_tracker'")
@@ -263,8 +281,8 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
             bad("ground_layout.wind_stow_position_deg", "wind_stow_position_deg must lie in -90..90 degrees")
 
     if layout.get("site_polygon") is not None:
-        if scope != "ground_sheds":
-            bad("ground_layout.site_polygon", "site_polygon finite 3D layout is currently supported for scope='ground_sheds'")
+        if scope not in ("ground_sheds", "ground_dome"):
+            bad("ground_layout.site_polygon", "site_polygon finite 3D layout is supported for scope='ground_sheds' and 'ground_dome'")
         else:
             from pvsyst_auto.scene.reader import validate_site_polygon
             try:
@@ -272,8 +290,8 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
             except ValueError as exc:
                 bad("ground_layout.site_polygon", exc)
     if layout.get("obstacles") is not None:
-        if scope != "ground_sheds":
-            bad("ground_layout.obstacles", "3D obstacles are currently supported for scope='ground_sheds'")
+        if scope not in ("ground_sheds", "ground_dome"):
+            bad("ground_layout.obstacles", "3D obstacles are supported for scope='ground_sheds' and 'ground_dome'")
         else:
             from pvsyst_auto.scene.author import obstacle_profiles
             try:
@@ -290,16 +308,18 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
             bad("ground_layout.max_table_columns", "max_table_columns must be an integer in 1..500")
     if layout.get("base_slope_deg") is not None:
         val = layout["base_slope_deg"]
-        if scope != "ground_sheds":
-            bad("ground_layout.base_slope_deg", "base_slope_deg is supported for scope='ground_sheds'; use pitch_slope_deg for trackers")
+        if scope not in ("ground_sheds", "ground_dome"):
+            bad("ground_layout.base_slope_deg", "base_slope_deg is supported for scope='ground_sheds' and 'ground_dome'; use pitch_slope_deg for trackers")
         elif not _is_number(val) or not -45 <= val <= 45:
             bad("ground_layout.base_slope_deg", "base_slope_deg must lie in -45..45 degrees")
         elif val and not resolve_utility_field_type(scope, layout)[1]:
-            bad("ground_layout.base_slope_deg", "Nonzero base_slope_deg requires a 3D ground-sheds layout")
+            bad("ground_layout.base_slope_deg", "Nonzero base_slope_deg requires a 3D ground layout")
 
     bifacial = spec.get("bifacial")
     if bifacial is not None:
-        if mode in ("unlimited", "3d"):
+        if scope == "ground_dome":
+            bad("bifacial", "bifacial is not currently supported for scope='ground_dome'")
+        elif mode in ("unlimited", "3d"):
             field_type, _ = resolve_utility_field_type(scope, layout)
             try:
                 normalize_bifacial_spec(bifacial, field_type=field_type)
@@ -430,17 +450,18 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
     field_type, include_3d = resolve_utility_field_type(scope, layout)
     losses = dict(spec.get("losses") or {})
 
-    default_pitch = 10.0 if scope == "ground_sheds" else 12.0
+    default_pitch = 6.0 if scope == "ground_dome" else (10.0 if scope == "ground_sheds" else 12.0)
     pitch_m = float(layout.get("pitch_m", default_pitch))
     shed_count = int(layout.get("shed_count", 10))
-    module_rows = int(layout.get("module_rows", 2))
+    module_rows = int(layout.get("module_rows", 1 if scope == "ground_dome" else 2))
     module_columns = int(layout.get("module_columns", 25))
     if include_3d and layout.get("site_polygon") is None:
-        scene_modules = shed_count * module_rows * module_columns
+        face_mult = 2 if scope == "ground_dome" else 1
+        scene_modules = face_mult * shed_count * module_rows * module_columns
         electrical_modules = int(plan["module_count"])
         if scene_modules != electrical_modules:
             raise ValueError(
-                f"3D scene module count ({scene_modules} = {shed_count}x{module_rows}x{module_columns}) "
+                f"3D scene module count ({scene_modules} = {face_mult}x{shed_count}x{module_rows}x{module_columns}) "
                 f"disagrees with electrical module count ({electrical_modules}); "
                 "adjust ground_layout shed_count/module_rows/module_columns to match the electrical design"
             )
@@ -494,9 +515,11 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "n_inv_mppt": n_mppt_total,
         "independent_mppt": True,
         "pnom_ac_in_mppt": pnom_per_mppt,
-        "tilt_deg": default_tilt if scope == "ground_sheds" else 0.0,
-        "azimuth_deg": default_azim if scope == "ground_sheds" else 0.0,
+        "tilt_deg": default_tilt if scope in ("ground_sheds", "ground_dome") else 0.0,
+        "azimuth_deg": default_azim if scope in ("ground_sheds", "ground_dome") else 0.0,
         "sub_orientations": resolved_sub_orients,
+        "top_spacing_m": float(layout.get("top_spacing_m", 0.2)),
+        "dome_wiring": str(layout.get("dome_wiring", "auto")),
         "axis_azimuth_deg": axis_azim,
         "min_phi_deg": float(layout.get("min_phi_deg", -60.0)),
         "max_phi_deg": float(layout.get("max_phi_deg", 60.0)),

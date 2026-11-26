@@ -489,10 +489,11 @@ def synthesize_utility_project(
     max_table_columns: int | None = None, obstacles: list[dict] | None = None, base_slope_deg: float = 0.0,
     terrain: dict | None = None, u_factor: float = 29.0, lid_loss: float = 0.0, pmism_mpp: float | None = None,
     module_quality_loss: float | None = None, dc_wiring_loss_pct: float = 1.5, dc_wiring_resistance_mohm: float = 0.0,
-    sub_orientations: list[dict] | None = None, allow_missing_met: bool = False, version: str = SYNTH_VERSION, with_bom: bool = True,
+    sub_orientations: list[dict] | None = None, top_spacing_m: float = 0.2, dome_wiring: str = "auto",
+    allow_missing_met: bool = False, version: str = SYNTH_VERSION, with_bom: bool = True,
 ) -> dict:
-    """Zero-template synthesizer for utility ground sheds or single-axis trackers (mono or bifacial)."""
-    if field_type not in ("Sheds", "UnlimSheds", "RegularSheds", "UnlimTracking", "TrackHorizNSAxis"):
+    """Zero-template synthesizer for utility ground sheds, east-west domes, or single-axis trackers."""
+    if field_type not in ("Sheds", "UnlimSheds", "RegularSheds", "UnlimTracking", "TrackHorizNSAxis", "Dome"):
         raise ValueError(f"Unsupported utility field_type: {field_type!r}")
     if module_orient not in ("moPortrait", "moLandscape"):
         raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
@@ -512,7 +513,9 @@ def synthesize_utility_project(
 
     n_rows, n_cols = _pos_int(module_rows, "module_rows"), _pos_int(module_columns, "module_columns")
     sx, sy = _finite(spacing_x_m, "spacing_x_m", minimum=0.0), _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
-    need_3d = include_3d_scene if include_3d_scene is not None else (field_type in ("RegularSheds", "TrackHorizNSAxis") or site_polygon is not None or bool(obstacles))
+    need_3d = include_3d_scene if include_3d_scene is not None else (field_type in ("RegularSheds", "TrackHorizNSAxis", "Dome") or site_polygon is not None or bool(obstacles))
+    if field_type == "Dome" and not need_3d:
+        raise ValueError("East-west dome layout requires include_3d_scene=True")
     chord_mod = ml if module_orient == "moPortrait" else mw
     scene_collector_width = round(n_rows * chord_mod + max(0, n_rows - 1) * sy, 3)
     if need_3d:
@@ -524,6 +527,12 @@ def synthesize_utility_project(
     resolved_pitch = _finite(pitch_m, "pitch_m", minimum=0.1)
     if resolved_pitch <= resolved_collector_width:
         raise ValueError(f"pitch_m ({resolved_pitch:.3f}) must exceed collector_width_m ({resolved_collector_width:.3f}) so adjacent ground rows do not overlap (GCR < 1.0)")
+    resolved_top_spacing = _finite(top_spacing_m, "top_spacing_m", minimum=0.0)
+    if field_type == "Dome":
+        from pvsyst_auto.scene.dome import dome_footprint_depth_m
+        dome_footprint = dome_footprint_depth_m(resolved_collector_width, tilt_deg, resolved_top_spacing)
+        if resolved_pitch <= dome_footprint:
+            raise ValueError(f"pitch_m ({resolved_pitch:.3f} m) must exceed dome footprint depth ({dome_footprint:.3f} m)")
 
     eff_base_slope = _finite(base_slope_deg, "base_slope_deg", minimum=-45.0, maximum=45.0)
     opt_orient_fields = {"inactive_band_width_1_m": inactive_band_width_1_m, "inactive_band_width_2_m": inactive_band_width_2_m,
@@ -546,7 +555,24 @@ def synthesize_utility_project(
     if need_3d:
         mod_kw = {"module_rows": n_rows, "module_columns": n_cols, "module_width_m": mw, "module_length_m": ml,
                   "module_name": resolved_mod_name, "module_orient": module_orient, "spacing_x_m": sx, "spacing_y_m": sy, "version": version}
-        if field_type in ("TrackHorizNSAxis", "UnlimTracking"):
+        if field_type == "Dome":
+            from pvsyst_auto.scene.dome import build_dome_3d_shading, synthesize_ground_dome_shading
+            if site_polygon is not None or terrain_mesh is not None:
+                shading_lines, ground_3d_layout = build_dome_3d_shading(
+                    site_polygon=site_polygon, terrain_mesh=terrain_mesh, terrain_opts=terrain,
+                    shed_count=shed_count, pitch_m=resolved_pitch, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg,
+                    base_slope_deg=eff_base_slope, top_spacing_m=resolved_top_spacing,
+                    setback_m=setback_m, ground_clearance_m=ground_clearance_m,
+                    max_table_columns=max_table_columns, obstacles=obstacles, **mod_kw,
+                )
+            else:
+                clearance = _finite(ground_clearance_m, "ground_clearance_m", minimum=0.0)
+                shading_lines = synthesize_ground_dome_shading(
+                    shed_count=shed_count, pitch_m=resolved_pitch, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg,
+                    base_slope_deg=eff_base_slope, top_spacing_m=resolved_top_spacing,
+                    origin=(0.0, 0.0, clearance), obstacles=obstacles, **mod_kw,
+                )
+        elif field_type in ("TrackHorizNSAxis", "UnlimTracking"):
             if terrain_mesh is not None:
                 from pvsyst_auto.scene.terrain import build_terrain_tracker_shading
                 shading_lines, terrain_summary = build_terrain_tracker_shading(
@@ -615,7 +641,30 @@ def synthesize_utility_project(
         }
 
     sub_orient_summaries: list[dict] | None = None
-    if sub_orientations:
+    dome_meta: dict | None = None
+    if field_type == "Dome":
+        if bifacial is not None and bifacial.get("enabled", True):
+            raise ValueError("Bifacial 2D model is not supported for field_type='Dome'")
+        from pvsyst_auto.scene.dome import dome_footprint_depth_m, opposite_azimuth_deg, resolve_dome_subarrays
+        back_azim = opposite_azimuth_deg(azimuth_deg)
+        orientations_list = [
+            {"id": 1, "field_type": "Dome", "pair_orientation_id": 2, "tilt_deg": tilt_deg, "azimuth_deg": azimuth_deg, "base_slope_deg": eff_base_slope},
+            {"id": 2, "field_type": "DomeBackfaces", "pair_orientation_id": 1, "tilt_deg": tilt_deg, "azimuth_deg": back_azim, "base_slope_deg": eff_base_slope},
+        ]
+        subarrays, effective_dome_wiring = resolve_dome_subarrays(
+            dome_wiring=dome_wiring, pan_name=pan_name, ond_name=ond_name,
+            n_mod_serie=n_mod_serie, n_string_ch=n_string_ch, n_inverter=n_inverter,
+            n_inv_mppt=n_inv_mppt, pnom_ac_in_mppt=pnom_ac_in_mppt,
+            lid_loss=lid_loss, pmism_mpp=pmism_mpp, module_quality_loss=module_quality_loss,
+            dc_wiring_loss_pct=dc_wiring_loss_pct, dc_wiring_resistance_mohm=dc_wiring_resistance_mohm,
+        )
+        dome_meta = {
+            "dome_wiring": effective_dome_wiring,
+            "top_spacing_m": round(resolved_top_spacing, 3),
+            "back_azimuth_deg": back_azim,
+            "dome_footprint_depth_m": round(dome_footprint_depth_m(resolved_collector_width, tilt_deg, resolved_top_spacing), 4),
+        }
+    elif sub_orientations:
         if need_3d or field_type not in ("Sheds", "UnlimSheds"):
             raise ValueError("sub_orientations is only supported for unlimited ground_sheds (FieldType='Sheds')")
         orientations_list, subarrays, sub_orient_summaries = [], [], []
@@ -656,11 +705,13 @@ def synthesize_utility_project(
         orientations=orientations_list, subarrays=subarrays, pan_name=pan_name, ond_name=ond_name, u_factor=u_factor,
         shading_lines=shading_lines, version=version, with_bom=with_bom, allow_missing_met=allow_missing_met,
     )
+    effective_gcr_width = (2.0 * resolved_collector_width) if field_type == "Dome" else resolved_collector_width
     result["utility_summary"] = {
         "field_type": field_type, "include_3d_scene": need_3d, "pitch_m": resolved_pitch, "collector_width_m": resolved_collector_width,
-        "gcr": round(resolved_collector_width / resolved_pitch, 4), "shed_count": shed_count, "module_rows": n_rows, "module_columns": n_cols,
+        "gcr": round(effective_gcr_width / resolved_pitch, 4), "shed_count": shed_count, "module_rows": n_rows, "module_columns": n_cols,
         "module_orient": module_orient, "module_width_m": mw, "module_length_m": ml, "module_dimension_source": dim_source,
         "bifacial_enabled": bool(bifacial and bifacial.get("enabled", True)), "base_slope_deg": eff_base_slope, "obstacle_count": len(obstacles or ()),
+        **({"dome": dome_meta} if dome_meta is not None else {}),
         **({"sub_orientations": sub_orient_summaries} if sub_orient_summaries is not None else {}),
         **({"ground_3d_layout": ground_3d_layout} if ground_3d_layout is not None else {}),
         **({"terrain": terrain_summary} if terrain_summary is not None else {}),

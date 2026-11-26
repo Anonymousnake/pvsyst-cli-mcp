@@ -663,9 +663,12 @@ def inspect_parameters(store, project: str, variant: str, include_saved_results:
 
         orientations = []
         for index, line in enumerate(lines):
-            if line.strip() != "PVObject_=pvOrient":
+            stripped = line.strip()
+            if stripped not in ("PVObject_=pvOrient", "PVObject_=pvDomeOrient"):
                 continue
-            end = next((i for i in range(index + 1, len(lines)) if lines[i].strip() == "End of TOrientGroup"), None)
+            is_dome = stripped == "PVObject_=pvDomeOrient"
+            closing = "End of TDomeOrientGroup" if is_dome else "End of TOrientGroup"
+            end = next((i for i in range(index + 1, len(lines)) if lines[i].strip() == closing), None)
             if end is None:
                 raise ValueError("Unclosed orientation")
             indices = store._field_indices(lines, (index, end), "NoOrient")
@@ -675,7 +678,10 @@ def inspect_parameters(store, project: str, variant: str, include_saved_results:
             if not number.isdigit():
                 raise ValueError("Orientation ID must be numeric")
             store._orientation(lines, int(number))
-            vals = fields((index, end), ("FieldType", "FieldTilt", "FieldAzim", "SummerTilt", "WinterTilt", "WinterMonths", "UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"))
+            ori_fields = ("FieldType", "FieldTilt", "FieldAzim", "SummerTilt", "WinterTilt", "WinterMonths", "UsesTiltAver", "UsesAzimAver", "UsesSlopeAver")
+            if is_dome:
+                ori_fields = (*ori_fields, "BaseSlope", "NoPairOrient", "IsMainOrient")
+            vals = fields((index, end), ori_fields)
             vals.update(fields((index, end), TRACKING_FIELDS.get(vals.get("FieldType"), ())))
             if vals.get("FieldType") in SHED_TYPES:
                 vals.update(fields((index, end), SHED_FIELDS.values()))
@@ -706,7 +712,7 @@ def inspect_parameters(store, project: str, variant: str, include_saved_results:
             "subarrays": [
                 {
                     "id": identifier,
-                    "values": fields(bounds, ("NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT", "NoOrientation", "VBkUpEncl_syst", "VBkUpDecl_syst", "LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI", "PQualityModP", "Flags")),
+                    "values": fields(bounds, ("NModSerie", "NStringCh", "NStrOrient1", "NInverter", "NInvMPPT", "NoOrientation", "NoOrientation2", "VBkUpEncl_syst", "VBkUpDecl_syst", "LIDLoss", "PMismMPP", "PQualityModU", "PQualityModI", "PQualityModP", "Flags")),
                     "inverter_state": inverter_state(bounds), "string_mismatch": string_mismatch_state(lines, bounds),
                     "iam": iam_model_state(lines, bounds),
                 }

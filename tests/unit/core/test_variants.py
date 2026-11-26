@@ -853,16 +853,30 @@ class OrientationSpectralAndNativeEcoTests(unittest.TestCase):
                 self.assertNotIn("PVObject_Ombrage=pvShading", txt)
     def test_public_convert_orientation_dome_and_paired_subarray_guards(self) -> None:
         from typing import get_args, get_type_hints
-        from pvsyst_auto.api.projects import pvsyst_convert_orientation
-        with self.subTest(case="schema_omits_dome"):
+        from pvsyst_auto.api.projects import OrientationConvertParams, pvsyst_convert_orientation
+        with self.subTest(case="schema_includes_dome"):
             hints = get_type_hints(pvsyst_convert_orientation)
-            self.assertNotIn("dome", get_args(hints["target_type"]))
+            self.assertIn("dome", get_args(hints["target_type"]))
         source = self.ws / "Projects" / "Phase5Test.VC0"
         blocked_vc = self.ws / "Projects" / "Phase5Test.VC9"
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
+            to_dome = pvsyst_convert_orientation(self.project, "VC0", "VC6", target_type="dome", params=OrientationConvertParams(tilt_deg=12.0, azimuth_deg=90.0), dry_run=False)
+            self.assertEqual(to_dome["orientation_conversion"]["target_type"], "dome")
+            self.assertTrue(self.store.validate_structure(self.project, "VC6")["valid"])
+            back_fixed = pvsyst_convert_orientation(self.project, "VC6", "VC7", target_type="fixed", params=OrientationConvertParams(tilt_deg=25.0, azimuth_deg=0.0), dry_run=False)
+            self.assertEqual(back_fixed["orientation_conversion"]["target_type"], "fixed")
+            self.assertTrue(self.store.validate_structure(self.project, "VC7")["valid"])
+        dome_vc = (self.ws / "Projects" / "Phase5Test.VC6").read_text(encoding="latin-1")
+        self.assertIn("PVObject_=pvDomeOrient", dome_vc)
+        self.assertIn("NoOrientation2=2", dome_vc)
+        self.assertIn("NStrOrient1=5", dome_vc)
+        fixed_vc = (self.ws / "Projects" / "Phase5Test.VC7").read_text(encoding="latin-1")
+        self.assertIn("FieldType=FixedPlane", fixed_vc)
+        self.assertNotIn("NoOrientation2=", fixed_vc)
+        self.assertIn("NStrOrient1=10", fixed_vc)
         for case, mutated, target_type in (
-            ("dome_unallocated_faces", self._base_vc0.replace("NoOrient=1", "NoOrient=10").replace("NoOrientation=1", "NoOrientation=10"), "dome"),
-            ("paired_subarray", self._base_vc0.replace("NoOrientation=1", "NoOrientation=2\n      NoOrientation2=3"), "fixed"),
-            ("pvDomeOrient", self._base_vc0.replace("FieldType=FixedPlane", "FieldType=Dome\n  PVObject_Dome=pvDomeOrient"), "fixed")):
+            ("odd_string_count_to_dome", self._base_vc0.replace("NStringCh=10", "NStringCh=9").replace("NStrOrient1=10", "NStrOrient1=9").replace("NElements=10", "NElements=9"), "dome"),
+            ("malformed_pvDomeOrient", self._base_vc0.replace("FieldType=FixedPlane", "FieldType=Dome\n  PVObject_Dome=pvDomeOrient"), "fixed")):
             with self.subTest(case=case):
                 blocked_vc.unlink(missing_ok=True)
                 source.write_text(mutated, encoding="utf-8")
