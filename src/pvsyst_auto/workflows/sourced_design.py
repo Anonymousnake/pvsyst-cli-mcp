@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from pvsyst_auto.engineering.envelope import prepare_design_envelope
 from pvsyst_auto.validation import (
     append_issue as _issue,
+    append_warning as _warn,
     is_finite_number as _is_number,
     is_printable_text,
 )
@@ -106,10 +107,6 @@ def _suggest_fields(bad_field: str, allowed_fields: list[str]) -> list[str]:
         if canonical not in suggestions:
             suggestions.append(canonical)
     return suggestions[:4]
-
-
-def _warn(result, field, message):
-    result["warnings"].append({"field": field, "message": message})
 
 
 def _report_unknown_keys(container, allowed, prefix, result, label="Unknown key"):

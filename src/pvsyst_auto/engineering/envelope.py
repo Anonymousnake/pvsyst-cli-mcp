@@ -6,6 +6,7 @@ from functools import partial
 from pvsyst_auto.engineering.sizing import NUMBERS as CAPACITY_NUMBERS
 from pvsyst_auto.validation import (
     append_issue as _issue,
+    append_warning as _warn,
     is_finite_number as _is_number,
     is_printable_text,
 )
@@ -44,10 +45,6 @@ FORMULAS = {
     "module_max_operating_current_a": ("Imp_ref * (max_irradiance_w_m2 / GRef) * rear_gain_factor "
                                        "* max(1 + alpha_imp * (T - TRef)) over the operating endpoints and TRef"),
 }
-
-
-def _warn(result, field, message):
-    result["warnings"].append({"field": field, "message": message})
 
 
 _is_text = partial(is_printable_text, limit=MAX_TEXT)
