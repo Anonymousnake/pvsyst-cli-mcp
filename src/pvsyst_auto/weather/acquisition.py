@@ -246,7 +246,9 @@ def search_locations(query, country_code=""):
               **({"countryCode": country_code} if country_code else {})}
     try:
         payload, _raw, result["request_url"] = _provider_get(GEOCODING_SEARCH_URL, params)
-        entries = payload.get("results") or []
+        entries = payload.get("results")
+        if entries is None:
+            entries = []
         if not isinstance(entries, list):
             result["issues"].append("provider returned a non-list geocoding result set")
             return result

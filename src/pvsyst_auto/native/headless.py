@@ -238,15 +238,15 @@ def _explicit_cells(binding, tables, subs, ranges):
     for entry in binding["tables"]:
         _fail(not isinstance(entry, dict) or set(entry) != {"name", "subarray_id", "cells"}, "Each binding table requires exactly name, subarray_id and cells")
         name, sub_id = entry["name"], entry["subarray_id"]
-        _fail(not isinstance(name, str) or name not in by_name or name in seen, "Binding table name must match one declared PV table exactly once: %r" % (name,))
+        _fail(not isinstance(name, str) or name not in by_name or name in seen, "Binding table name must match one declared PV table exactly once: %r", name)
         seen.add(name)
-        _fail(type(sub_id) is not int or sub_id not in subs, "Binding subarray_id must be a declared source subarray: %r" % (sub_id,))
+        _fail(type(sub_id) is not int or sub_id not in subs, "Binding subarray_id must be a declared source subarray: %r", sub_id)
         first, last, _ = ranges[sub_id]
         profile = by_name[name]
         orient = profile.get("orientation_id", subs[sub_id]["orientation"])
-        _fail(orient != subs[sub_id]["orientation"], "Binding table %r occupies orientation %d but source subarray %d owns orientation %d" % (name, orient, sub_id, subs[sub_id]["orientation"]))
+        _fail(orient != subs[sub_id]["orientation"], "Binding table %r occupies orientation %d but source subarray %d owns orientation %d", name, orient, sub_id, subs[sub_id]["orientation"])
         _fail("source_subarray_id" in profile and profile["source_subarray_id"] != sub_id,
-              "Binding table %r belongs to source owner %s, not subarray %d" % (name, profile.get("source_subarray_id"), sub_id))
+              "Binding table %r belongs to source owner %s, not subarray %d", name, profile.get("source_subarray_id"), sub_id)
         rows, columns = profile["module_rows"], profile["module_columns"]
         _fail(not isinstance(entry["cells"], list), "Binding cells must be a list")
         cell_map = {}
@@ -254,18 +254,18 @@ def _explicit_cells(binding, tables, subs, ranges):
             _fail(not isinstance(cell, dict) or set(cell) != {"row", "col", "global_string"}, "Each module cell requires exactly row, col and global_string")
             row, col, gstr = cell["row"], cell["col"], cell["global_string"]
             _fail(any(type(v) is not int for v in (row, col, gstr)), "row, col and global_string must be strict integers")
-            _fail(not (1 <= row <= rows and 1 <= col <= columns), "Binding cell (%d, %d) lies outside table %r (%dx%d)" % (row, col, name, rows, columns))
-            _fail((row, col) in cell_map, "Binding repeats cell (%d, %d) in table %r" % (row, col, name))
-            _fail(gstr == 0, "Draft binding: table %r has unassigned cells; complete the layout before native import" % name)
-            _fail(not first <= gstr <= last, "global_string %d is outside source subarray %d strings %d..%d" % (gstr, sub_id, first, last))
+            _fail(not (1 <= row <= rows and 1 <= col <= columns), "Binding cell (%d, %d) lies outside table %r (%dx%d)", row, col, name, rows, columns)
+            _fail((row, col) in cell_map, "Binding repeats cell (%d, %d) in table %r", row, col, name)
+            _fail(gstr == 0, "Draft binding: table %r has unassigned cells; complete the layout before native import", name)
+            _fail(not first <= gstr <= last, "global_string %d is outside source subarray %d strings %d..%d", gstr, sub_id, first, last)
             cell_map[(row, col)] = gstr
             used[gstr] += 1
-        _fail(len(cell_map) != rows * columns, "Binding must assign every cell of table %r (expected %d, got %d)" % (name, rows * columns, len(cell_map)))
+        _fail(len(cell_map) != rows * columns, "Binding must assign every cell of table %r (expected %d, got %d)", name, rows * columns, len(cell_map))
         cell_maps[name], table_sub[name] = cell_map, sub_id
-    _fail(seen != set(by_name), "string_layout must bind every declared table; missing: %s" % sorted(set(by_name) - seen))
+    _fail(seen != set(by_name), "string_layout must bind every declared table; missing: %s", sorted(set(by_name) - seen))
     for first, last, mps in ranges.values():
         for gstr in range(first, last + 1):
-            _fail(used[gstr] != mps, "Global string %d carries %d cells but its source capacity is NModSerie=%d" % (gstr, used[gstr], mps))
+            _fail(used[gstr] != mps, "Global string %d carries %d cells but its source capacity is NModSerie=%d", gstr, used[gstr], mps)
     return [(by_name[t["name"]], table_sub[t["name"]], cell_maps[t["name"]]) for t in tables]
 
 def _valid_table_dims(profile):
@@ -681,21 +681,21 @@ def _circuit_counts_valid(source_text, subs):
     except (ValueError, KeyError):
         return False
 
-def _fail(cond, msg):
+def _fail(cond, msg, *args):
     if cond:
-        raise ValueError(msg)
+        raise ValueError(msg % args if args else msg)
 
 def _check_grouped_owners(tables, orientations, owners, orientation_ids, unknown_owner_msg):
     per_owner = defaultdict(int)
     for row in tables:
         oid = row.get("orientation_id")
-        _fail(oid not in orientation_ids, "Table %r names orientation %r, not a declared source orientation" % (row.get("name"), oid))
+        _fail(oid not in orientation_ids, "Table %r names orientation %r, not a declared source orientation", row.get("name"), oid)
         owner = _resolve_table_owner(row, orientations)
-        _fail(owner not in owners, unknown_owner_msg % (row.get("name"), owner))
-        _fail(owners[owner]["id"] != row["orientation_id"], "Table %r source owner %r does not belong to orientation %r" % (row.get("name"), owner, row["orientation_id"]))
+        _fail(owner not in owners, unknown_owner_msg, row.get("name"), owner)
+        _fail(owners[owner]["id"] != row["orientation_id"], "Table %r source owner %r does not belong to orientation %r", row.get("name"), owner, row["orientation_id"])
         per_owner[owner] += row["module_rows"] * row["module_columns"]
     for owner, item in owners.items():
-        _fail(per_owner.get(owner, 0) != item["module_total"], "Source owner %d tables hold %d modules, not the source total %d" % (owner, per_owner.get(owner, 0), item["module_total"]))
+        _fail(per_owner.get(owner, 0) != item["module_total"], "Source owner %d tables hold %d modules, not the source total %d", owner, per_owner.get(owner, 0), item["module_total"])
 
 def _check_tables_dims(tables, msg):
     if any(not _valid_table_dims(t) for t in tables):
@@ -708,10 +708,10 @@ def _explicit_gate(source, tables, source_text, mode, string_layout):
     planes, subs = _parse_electrical_blocks(source_blocks)
     ranges = source_string_ranges(source_blocks)
     _fail(not all("name" in row for row in tables), "The explicit module layout requires named PV tables")
-    _fail(not 1 <= len(tables) <= MAX_TABLES, "The explicit module layout bridges 1..%d PV tables" % MAX_TABLES)
+    _fail(not 1 <= len(tables) <= MAX_TABLES, "The explicit module layout bridges 1..%d PV tables", MAX_TABLES)
     for sub_id, sub in subs.items():
-        _fail(sub["nstring_ch"] < 1 or sub["nmod_serie"] < 1, "Source subarray %d requires positive NStringCh/NModSerie" % sub_id)
-        _fail(sub["orientation"] not in planes, "Source subarray %d references a missing source orientation %d" % (sub_id, sub["orientation"]))
+        _fail(sub["nstring_ch"] < 1 or sub["nmod_serie"] < 1, "Source subarray %d requires positive NStringCh/NModSerie", sub_id)
+        _fail(sub["orientation"] not in planes, "Source subarray %d references a missing source orientation %d", sub_id, sub["orientation"])
         plane = planes[sub["orientation"]]
         _fail(plane["field_type"] != "FixedPlane" or plane["base_slope_deg"] != 0.0, "Explicit module layout is bounded to ordinary fixed planes (no slope/averaging)")
         _fail(sub["nstr_orient1"] != sub["nstring_ch"], "Explicit module layout requires every source string on the single orientation")
@@ -735,8 +735,8 @@ def _support_gate(source, tables, source_text, mode="linear", string_layout=None
         for index, table in enumerate(tables, 1):
             for field in ("row_spacing_m", "column_spacing_m"):
                 value = table[field]
-                _fail(float(_n3(value)) != value,
-                      f"Native table {table.get('name', f'PVTable{index}')!r}: {field}={value} m cannot be represented at millimetre precision; use a multiple of 0.001 m.")
+                if float(_n3(value)) != value:
+                    raise ValueError(f"Native table {table.get('name', f'PVTable{index}')!r}: {field}={value} m cannot be represented at millimetre precision; use a multiple of 0.001 m.")
     if string_layout is not None:
         return _explicit_gate(source, tables, source_text, mode, string_layout)
     orientations = source.get("orientations") or []
@@ -744,18 +744,18 @@ def _support_gate(source, tables, source_text, mode="linear", string_layout=None
     for sub in subs.values():
         plane = planes.get(sub["orientation"])
         _fail(plane is not None and plane["base_slope_deg"] != 0.0,
-              "Native headless shading requires BaseSlope=0.0 on source orientation %d (headless 3D PV tables emit BaseSlope=0.0)" % sub["orientation"])
+              "Native headless shading requires BaseSlope=0.0 on source orientation %d (headless 3D PV tables emit BaseSlope=0.0)", sub["orientation"])
     if orientations:
         orientation_ids = {item["id"] for item in orientations}
         _fail(not orientation_ids.issubset(set(planes)), "Declared source orientations do not match the parsed source planes")
         owners = {item.get("subarray_id", item["id"]): item for item in orientations}
         _fail(set(owners) != set(subs), "Declared source owners do not match the parsed source subarrays")
         for sub_id, sub in subs.items():
-            _fail(owners[sub_id]["id"] != sub["orientation"], "Source subarray %d orientation differs from owner profile" % sub_id)
+            _fail(owners[sub_id]["id"] != sub["orientation"], "Source subarray %d orientation differs from owner profile", sub_id)
             _fail(sub["nstr_orient1"] != sub["nstring_ch"], "Grouped native method requires every source string on the subarray's orientation")
         _validate_power_sharing(subs, source_text)
         _fail(not _circuit_counts_valid(source_text, subs), "Grouped native method requires complete consistent source circuit counts")
-        _fail(not 1 <= len(tables) <= MAX_TABLES, "Grouped native method bridges 1..%d PV tables" % MAX_TABLES)
+        _fail(not 1 <= len(tables) <= MAX_TABLES, "Grouped native method bridges 1..%d PV tables", MAX_TABLES)
         _check_tables_dims(tables, "Native tables require portrait/landscape orientation and non-negative spacing")
         _check_grouped_owners(tables, orientations, owners, orientation_ids, "Table %r names unknown source owner %r")
         if mode == "linear":
@@ -780,7 +780,7 @@ def _support_gate(source, tables, source_text, mode="linear", string_layout=None
         _fail(not _circuit_counts_valid(source_text, subs), "The single-orientation module layout requires complete consistent source circuit counts")
         return
     _fail(mode != "linear", "The single-orientation native path supports linear or module_layout shading")
-    _fail(not 1 <= len(tables) <= MAX_TABLES_SINGLE, "The single-orientation native path bridges 1..%d PV tables" % MAX_TABLES_SINGLE)
+    _fail(not 1 <= len(tables) <= MAX_TABLES_SINGLE, "The single-orientation native path bridges 1..%d PV tables", MAX_TABLES_SINGLE)
 
 def _preflight(store, components, scene_name, shading_mode, string_layout=None):
     scene = read_house_pv_scene(components, scene_name)

@@ -148,6 +148,11 @@ _LEGACY_ATTR_RENAMES: dict[str, dict[str, tuple[str, str]]] = {
         "_validate": ("pvsyst_auto.native.load", "_p50_validate"),
         "_read": ("pvsyst_auto.native.load", "_p50_read"),
     },
+    "pvsyst_auto.scene.ground": {
+        "_faces": ("pvsyst_auto.native.headless", "_faces"),
+        "_shd_object": ("pvsyst_auto.native.headless", "_shd_object"),
+        "_shd_tree": ("pvsyst_auto.native.headless", "_shd_tree"),
+    },
     "pvsyst_auto.project.seasonal": {
         "SEASONAL": ("pvsyst_auto.project.bifacial", "SEASONAL_FIELDS"),
         "BOOLS": ("pvsyst_auto.project.bifacial", "SEASONAL_BOOLS"),

@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from pvsyst_auto.native._winlaunch import WorkspaceSettingsError, preserve_workspace_settings
+from pvsyst_auto.native import _winlaunch
 from pvsyst_auto.project.paths import project_name, project_root, safe_filename, variant_id, workspace_file, workspace_folder
 
 VERIFIED_VARIABLES = (
@@ -219,12 +219,11 @@ class PVsystCLI:
             raise ValueError("PVsystCLI arguments cannot contain double quotes or control characters")
         with self._lock:
             if os.name == "nt":
-                from pvsyst_auto.native import _winlaunch
                 allow = ((not _is_plain_csv_run(args)) if allow_window_creation is None else allow_window_creation)
                 try:
-                    with preserve_workspace_settings(self.cli, restore=True):
+                    with _winlaunch.preserve_workspace_settings(self.cli, restore=True):
                         return _winlaunch.run(argv, self.cli.parent, self.timeout, allow_window_creation=allow)
-                except WorkspaceSettingsError as exc:
+                except _winlaunch.WorkspaceSettingsError as exc:
                     raise PVsystError(str(exc)) from None
             return subprocess.run(argv, cwd=self.cli.parent, capture_output=True, text=True,
                                   errors="replace", timeout=self.timeout, check=False)

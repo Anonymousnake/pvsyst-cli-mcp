@@ -817,6 +817,13 @@ class AcquisitionTests(unittest.TestCase):
                          ("blocked", [], True))
         self.assertIn("no geocoding candidate", empty["issues"][0])
 
+        for bad_results in ({}, False, 0, ""):
+            with self.subTest(bad_results=bad_results), \
+                    patch.object(acquisition, "_provider_get", fake_provider(search={"results": bad_results})):
+                malformed = search_locations("Nowhere")
+            self.assertEqual(malformed["status"], "blocked")
+            self.assertEqual(malformed["issues"], ["provider returned a non-list geocoding result set"])
+
         failure = WeatherAcquisitionError("HTTP 429 from geocoding-api.open-meteo.com: slow down")
         with patch.object(acquisition, "_provider_get", fake_provider(error=failure)):
             failed = search_locations("Beijing")

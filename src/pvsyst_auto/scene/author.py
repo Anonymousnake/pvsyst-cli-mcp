@@ -48,9 +48,9 @@ def _name(value):
            "Names must be 1..120 characters without surrounding whitespace")
     return value
 
-def _vfail(cond, msg):
+def _vfail(cond, msg, *args):
     if cond:
-        raise ValueError(msg)
+        raise ValueError(msg % args if args else msg)
 
 def _tag(namespace, name):
     return f"{{{namespace}}}{name}"
@@ -451,10 +451,10 @@ def table_profiles(layout, house, modules, source):
                     owner = entry["source_subarray_id"]
                     _vfail(type(owner) is not int or owner < 1 or owner not in by_owner, "source_subarray_id must select a declared source subarray owner")
                     group = by_owner[owner]
-                    _vfail(group["id"] != ident, "source_subarray_id %d does not belong to orientation %d" % (owner, ident))
+                    _vfail(group["id"] != ident, "source_subarray_id %d does not belong to orientation %d", owner, ident)
                 else:
                     candidates = by_orient.get(ident, [])
-                    _vfail(len(candidates) != 1, "ambiguous_source_owner: orientation %d is owned by %d source subarrays; declare source_subarray_id" % (ident, len(candidates)))
+                    _vfail(len(candidates) != 1, "ambiguous_source_owner: orientation %d is owned by %d source subarrays; declare source_subarray_id", ident, len(candidates))
                     group = candidates[0]
                     owner = group.get("subarray_id", ident)
             table_modules = (caller_geometry(entry["module_geometry"]) if profiles and entry.get("module_geometry") is not None

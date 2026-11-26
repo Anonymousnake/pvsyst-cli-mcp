@@ -1418,9 +1418,30 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
         self.assertEqual(p50.ORDER, load._P50_ORDER)
         self.assertIs(p50._step, load._p50_step)
         self.assertIs(ground.pv_shading_header, reader.pv_shading_header)
+        self.assertIs(ground._faces, headless._faces)
+        self.assertIs(ground._shd_object, headless._shd_object)
+        self.assertIs(ground._shd_tree, headless._shd_tree)
         self.assertIs(state.shading_state, reader.shading_state)
         self.assertIs(weather_csv.inspect_weather_csv, preparation.inspect_weather_csv)
         self.assertIs(variant_readback.shading_state, reader.shading_state)
+
+        from pvsyst_auto.native import cli as cli_mod
+        with tempfile.TemporaryDirectory() as cli_tmp:
+            cli_root = Path(cli_tmp)
+            fake_cli = cli_root / "fake_pvsyst.exe"
+            fake_cli.write_bytes(b"stub")
+            client = cli_mod.PVsystCLI(fake_cli, cli_root)
+            entered = []
+            @contextlib.contextmanager
+            def _sentinel_guard(*_a, **_kw):
+                entered.append(True)
+                yield
+            with patch("os.name", "nt"), \
+                    patch("pvsyst_auto.native._workspace_ini.preserve_workspace_settings", side_effect=_sentinel_guard), \
+                    patch.object(_winlaunch, "run", return_value=subprocess.CompletedProcess(["x"], 0, "", "")):
+                self.assertIs(_winlaunch.preserve_workspace_settings.side_effect, _sentinel_guard)
+                client._launch(["lic-info"], allow_window_creation=False)
+            self.assertEqual(entered, [True])
         self.assertTrue(callable(builder.electrical_inventory))
         self.assertTrue(callable(builder.inspect_curves))
         self.assertTrue(callable(builder.bind_source_values))

@@ -543,7 +543,7 @@ def plan_ground_polygon_layout(
                 if max_table_columns is not None:
                     max_avail = min(max_avail, max_table_columns)
                 fitted = next((k for k in range(max_avail, 0, -1)
-                               if _rect_inside_polygon(u, u + k * cell_w + (k - 1) * spacing_x_m, v, v + proj_depth, poly_rot, setback)), 0)
+                               if _rect_inside_polygon(u, u + (k * cell_w + (k - 1) * spacing_x_m), v, v + proj_depth, poly_rot, setback)), 0)
                 if fitted > 0:
                     span = fitted * cell_w + (fitted - 1) * spacing_x_m
                     wx, wy = _rotate(u + 0.5 * span, v, -rot_rad)

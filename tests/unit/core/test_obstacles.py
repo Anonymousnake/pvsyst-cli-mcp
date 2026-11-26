@@ -754,6 +754,15 @@ class TerrainDemTests(unittest.TestCase):
         self.assertIn("ground_layout.site_polygon", fields)
         self.assertIn("ground_layout.base_slope_deg", fields)
 
+        # Boundary float-grouping regression: 30 modules fit cleanly across the exact polygon span
+        boundary = plan_ground_polygon_layout(
+            [[500000.0, 0.0], [500017.28999990004, 0.0], [500017.28999990004, 10.0], [500000.0, 10.0]],
+            tilt_deg=0.0, azimuth_deg=0.0, pitch_m=6.0,
+            module_width_m=1.134, module_length_m=2.0, module_rows=1,
+            spacing_x_m=0.02, setback_m=0.0,
+        )
+        self.assertEqual(boundary["total_modules"], 30)
+
 
 if __name__ == "__main__":
     unittest.main()
