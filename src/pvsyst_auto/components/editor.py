@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
 
 if TYPE_CHECKING:
     from pvsyst_auto.components.store import ComponentStore
@@ -514,8 +514,8 @@ def sourced_component(store: ComponentStore, kind: str, filename: str) -> tuple[
         if not declared:
             return f"{kind}.{key}", f"{name} is missing in its owning object", None
         identity[key] = next(iter(declared.values()))
-    electrical_inventory_fn = globals().get("electrical_inventory") or __getattr__("electrical_inventory")
-    return "", "", {"manufacturer": identity["manufacturer"], "model": identity["model"], "electrical": electrical_inventory_fn(kind, text)}
+    from pvsyst_auto.components.store import electrical_inventory
+    return "", "", {"manufacturer": identity["manufacturer"], "model": identity["model"], "electrical": electrical_inventory(kind, text)}
 
 
 def direct_fields(lines, bounds):
@@ -726,19 +726,3 @@ def read_flat_grid_system(
         if total != len(fields.get(key, [])):
             raise ValueError(f"Require {key} only in the owning system")
     return fields, index, int(raw[1:], 16)
-
-
-def __getattr__(name: str):
-    if name in ("ComponentStore", "electrical_inventory"):
-        from pvsyst_auto.components import store as _store
-
-        value = getattr(_store, name)
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-import sys as _sys
-
-if "pvsyst_auto.components.store" not in _sys.modules and "pvsyst_auto.components.builder" not in _sys.modules:
-    import pvsyst_auto.components.store

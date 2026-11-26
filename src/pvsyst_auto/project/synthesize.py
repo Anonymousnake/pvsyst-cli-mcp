@@ -10,7 +10,7 @@ from pvsyst_auto.project.bifacial import render_bifacial_block
 from pvsyst_auto.project.circuit import MAX_COUNT, inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.validation import finite_number as _finite
-from pvsyst_auto.versions import SYNTH_VERSION
+from pvsyst_auto.validation import SYNTH_VERSION
 from pvsyst_auto.weather.preparation import read_object_prefix
 
 DEFAULT_PAN_NAME, DEFAULT_OND_NAME = "Generic_Mono_300W.PAN", "Generic_7.5kW.OND"
@@ -672,24 +672,3 @@ def synthesize_house_source(store, components, request: dict) -> dict:
     )
     synth["synthesized"] = True
     return synth
-
-
-_MOVED_TO_TEMPLATE = {
-    "_validate_ground_array_modules", "_synthesize_ground_array_shading",
-    "synthesize_ground_shed_shading", "synthesize_ground_tracker_shading",
-    "_resolve_pan_module_dimensions", "synthesize_utility_project",
-}
-
-
-def __getattr__(name: str):
-    if name == "pv_shading_header":
-        from pvsyst_auto.scene.reader import pv_shading_header
-
-        return pv_shading_header
-    if name in _MOVED_TO_TEMPLATE:
-        from pvsyst_auto.project import template
-        return getattr(template, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-__all__ = list(dict.fromkeys([k for k in globals() if not k.startswith("_")] + ["pv_shading_header", *[k for k in _MOVED_TO_TEMPLATE if not k.startswith("_")]]))

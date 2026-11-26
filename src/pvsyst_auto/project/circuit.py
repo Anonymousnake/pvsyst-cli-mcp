@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects, replace_value, root_block
 from pvsyst_auto.components.store import FIELD
-from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 NODE = re.compile(r"([A-Za-z][A-Za-z0-9_]*Node) (Start|End);")
 KINDS = {"InjectionPointNode", "TransformerNode", "InverterNode", "MPPTNode", "StringNode"}
@@ -863,12 +863,3 @@ def validate_structure(store, project: str, variant: str) -> dict:
                 "valid": False if issues else None if unchecked else True, "checks_complete": not unchecked,
                 "unchecked_checks": unchecked, "system_type": system_type, "grid_circuit": circuit_res,
                 "issues": issues, "warnings": warnings, "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids)}
-
-grid_inventory = inventory
-
-def __getattr__(name: str):
-    if name == "strip_result_cache":
-        from pvsyst_auto.native.headless import strip_result_cache
-        globals()[name] = strip_result_cache
-        return strip_result_cache
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

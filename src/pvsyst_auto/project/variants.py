@@ -15,7 +15,7 @@ from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.components.store import ComponentStore, FIELD, MAX_PROJECT_BYTES
 from pvsyst_auto.project import circuit, paths, variant_updates
 from pvsyst_auto.project.paths import battery_reference_name, project_path, project_root
-from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 FIELDS = {"PAN": "PVModule", "OND": "GInverter", "BTR": "BatteryFile", "GEN": "GensetFile"}
 STARTS = {"pvSubArray": "PVObject_=pvSubArray", "pvSystem": "PVObject_System=pvSystem"}
@@ -812,13 +812,3 @@ class VariantStore:
                 self._project_text(candidate) if path.name == project else self._sections(self._text(candidate)[1])
                 candidates[path] = candidate
             return {"project": project, "site": site_name, "meteo": met_name, **self._commit_project_files(project, originals, candidates)}
-
-
-def __getattr__(name: str):
-    if name in ("fileio", "variant_readback", "variant_topology"):
-        import importlib
-
-        value = importlib.import_module(f"pvsyst_auto.project.{name}")
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

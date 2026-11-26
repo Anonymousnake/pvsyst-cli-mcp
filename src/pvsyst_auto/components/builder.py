@@ -30,7 +30,7 @@ from pvsyst_auto.components.single_diode import (
     synthesize_pan_from_datasheet,
 )
 from pvsyst_auto.project.paths import workspace_file
-from pvsyst_auto.versions import NATIVE_TEXT, TEXT_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT, TEXT_LABEL
 
 CAPACITY_TAG = "CapaCourant"
 CAPACITY_ALIAS = "Capa_DischRate"
@@ -466,8 +466,8 @@ def _validate_candidate_bytes(store, component_type: str, candidate: str, *, bom
     data = (b"\xef\xbb\xbf" if bom else b"") + candidate.encode("utf-8")
     validation = store._inspect(component_type, data)
     store._require_valid(validation, complete=True)
-    electrical_inventory_fn = globals().get("electrical_inventory") or __getattr__("electrical_inventory")
-    electrical = electrical_inventory_fn(component_type, candidate)
+    from pvsyst_auto.components.store import electrical_inventory
+    electrical = electrical_inventory(component_type, candidate)
     if electrical["status"] != "readable":
         raise ValueError("Candidate electrical fields are unreadable: " + "; ".join(electrical["issues"]))
     return data, validation, electrical
@@ -527,8 +527,8 @@ def build_sourced_component(store, *, component_type, new_name, manufacturer, mo
 
     fields = {k: (u, ("scalar", k)) for k, u in SCALAR_UNITS[component_type].items()}
     fields.update({k: (u, ("commercial", k)) for k, u in DIMENSION_UNITS.items()})
-    bind_fn = globals().get("bind_source_values") or __getattr__("bind_source_values")
-    binding = bind_fn(manufacturer_model=f"{manufacturer} {model}", sources=sources,
+    from pvsyst_auto.workflows.sourced_design import bind_source_values
+    binding = bind_source_values(manufacturer_model=f"{manufacturer} {model}", sources=sources,
                       declarations=declarations, field_specs=fields)
     result.update(issues=binding["issues"], warnings=binding["warnings"], provenance=binding["provenance"])
     if result["issues"]:
@@ -698,24 +698,3 @@ def build_sourced_component(store, *, component_type, new_name, manufacturer, mo
                     "Creation failed; no source record from this attempt is retained and no existing file "
                     "was overwritten. Inspect the reported paths before retrying."})
     return result
-
-
-def __getattr__(name: str):
-    if name in ("electrical_inventory", "inspect_curves"):
-        from pvsyst_auto.components import store as _store
-
-        value = getattr(_store, name)
-        globals()[name] = value
-        return value
-    if name == "bind_source_values":
-        from pvsyst_auto.workflows.sourced_design import bind_source_values
-
-        globals()[name] = bind_source_values
-        return bind_source_values
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-if "pvsyst_auto.components.store" not in sys.modules:
-    import pvsyst_auto.components.store
-
-__all__ = list(dict.fromkeys([k for k in globals() if not k.startswith("_")] + ["electrical_inventory", "inspect_curves", "bind_source_values"]))
