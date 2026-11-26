@@ -22,9 +22,8 @@ async def mcp_session(workspace: Path, cli: Path, *, tool_groups: str | None = N
     os.environ.pop("PVSYST_TOOL_GROUPS", None)
 
     from pvsyst_auto.api import context
-    from pvsyst_auto.api.app import create_mcp_server, mcp
 
-    server = mcp if tool_groups is None else create_mcp_server(tool_groups)
+    server = context.load_active_tools() if tool_groups is None else context.create_mcp_server(tool_groups)
     context._cli = None
     try:
         async with create_client_server_memory_streams() as (client_streams, server_streams):

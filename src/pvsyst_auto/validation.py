@@ -1,8 +1,21 @@
-"""Shared strict numeric validation helpers."""
+"""Shared strict numeric validation helpers and native PVsyst version allow-lists."""
 from __future__ import annotations
 
 import math
 from typing import Any
+
+NATIVE_TEXT: tuple[str, ...] = ("8.1.6", "8.1.7")
+NATIVE_TEXT_OR_SEED: tuple[str, ...] = ("8.1.0",) + NATIVE_TEXT
+HEADLESS_RECORD_VERSION = "8.1.6"
+SEED_RECORD_VERSION = NATIVE_TEXT_OR_SEED[0]
+SYNTH_VERSION = NATIVE_TEXT[-1]
+PV_TABLE_SOURCES = frozenset({("osPVCollada", "8.1.6"), ("osPVCollada", "8.1.7")})
+CLI_TRACKING_BUILDS: tuple[str, ...] = (
+    "PVsystCLI 8.1.6 (rev. 49278)",
+    "PVsystCLI 8.1.7 (rev. 49382)",
+)
+TEXT_LABEL = "/".join(NATIVE_TEXT)
+SEED_LABEL = "/".join(NATIVE_TEXT_OR_SEED)
 
 
 def finite_number(

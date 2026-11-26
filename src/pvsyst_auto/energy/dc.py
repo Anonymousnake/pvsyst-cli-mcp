@@ -11,7 +11,7 @@ from pvsyst_auto.energy.system import _layout
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import inventory as grid_inventory
 from pvsyst_auto.project.variant_updates import run_new_variant_transaction
-from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
 
 _VT_CELL = (1.380649e-23 * 298.15) / 1.602176634e-19
 _HEX_FLAG = re.compile(r"\$[0-9A-Fa-f]{1,8}")

@@ -8,7 +8,7 @@
 
 | 目录 / 模块 | 主要职责 | 核心文件 |
 |---|---|---|
-| `api` | MCP 协议层、引导层（`instructions`/Prompt/Resource）、入参校验、工具分组注册与进程内共享上下文 | `app.py`、`context.py`、`projects.py`、`schemas.py`、`simulation.py`、`weather.py` |
+| `api` | MCP 协议层、引导层（`instructions`/Prompt/Resource）、入参校验、工具分组注册与进程内共享上下文 | `context.py`、`projects.py`、`schemas.py`、`simulation.py` |
 | `workflows` | 串联文件准备、零模板合成、批处理扫描、自动优化、PV+BESS 两阶段寻优、一站式可研编排、Plotly 交互报告与交付打包的端到端工作流 | `batch.py`、`bess_optimize.py`、`design.py`、`house.py`、`optimize.py`、`report.py`、`revision.py`、`simulation.py`、`sourced_design.py`、`utility.py` |
 | `engineering` | 自动选型、物理诊断引擎、财务/TOU/两部制需量/项目融资与敏感性评估、可研简报核对、工程参数交接单与多方案结果对比 | `comparison.py`、`diagnostics.py`、`economics.py`、`review.py`、`sizing.py` |
 | `project` | `.PRJ` / `.VCx` 文本解析、并网/离网零模板工程合成器、`pvBiFacial` 双面建模、原地朝向转换、棚架/跟踪/季节朝向、原生 PDF `TEcoEvaluation` 与逆变器/组串拓扑 | `bifacial.py`、`circuit.py`、`paths.py`、`standalone.py`、`synthesize.py`、`template.py`、`tracking.py`、`variant_updates.py`、`variants.py` |
@@ -29,9 +29,7 @@ Windows 上所有原始 CLI 调用统一经 `native/cli.PVsystCLI._run` 启动�
 
 ## MCP 上下文与参数校验
 
-`api/context.py` 维护了进程内唯一的 `PVsystCLI` 实例和工作区重入锁（`RLock`），并挂载了一个前置中间件 `reject_unknown_tool_arguments`。所有 75 个工具都会根据 Python 函数签名严格校验顶层入参，一旦传了未知字段名会直接返回明确的错误提示，避免因为参数名拼写错误而在写文件时静默漏掉配置。复杂嵌套参数的结构校验集中在 `api/schemas.py`。
-
-`api/app.py` 根据环境变量 `PVSYST_TOOL_GROUPS` 动态导入选定的工具组模块并启动 stdio 服务（共 10 个分组；未设置该变量时默认加载 8 个核心分组共 48 个工具，设为 `all` 时加载全部 10 个分组共 75 个工具）。
+`api/context.py` 维护了进程内唯一的 `PVsystCLI` 实例和工作区重入锁（`RLock`），挂载了前置中间件 `reject_unknown_tool_arguments`，并根据环境变量 `PVSYST_TOOL_GROUPS` 动态导入选定的工具组模块并启动 stdio 服务（共 10 个分组；未设置该变量时默认加载 8 个核心分组共 48 个工具，设为 `all` 时加载全部 10 个分组共 75 个工具）。所有 75 个工具都会根据 Python 函数签名严格校验顶层入参，一旦传了未知字段名会直接返回明确的错误提示，避免因为参数名拼写错误而在写文件时静默漏掉配置。复杂嵌套参数的结构校验集中在 `api/schemas.py`、`api/projects.py` 与 `api/simulation.py`。
 
 需要注意的是，进程内的 `RLock` 只负责同步当前 MCP 服务进程内部的多线程调用；如果你同时在桌面上开着 PVsyst GUI 手动改同一个工程，还是要靠文件 SHA-256 校验（`expected_sha256`）来防止互相覆盖。
 
@@ -46,7 +44,7 @@ py -m pvsyst_auto
 pvsyst-mcp
 ```
 
-仓库根目录下的 `pvsyst_mcp_server.py` 仅作为向后兼容的启动脚本保留，内部直接调用 `pvsyst_auto.api.app.main`。
+仓库根目录下的 `pvsyst_mcp_server.py` 仅作为向后兼容的启动脚本保留，内部直接调用 `pvsyst_auto.api.context.main`。
 
 ## Python 模块导入路径对照
 

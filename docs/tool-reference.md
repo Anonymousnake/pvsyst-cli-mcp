@@ -49,7 +49,7 @@ Two CLI flags are intentionally omitted from the MCP surface: `-cof` (options fi
 | `pvsyst_export_engineering_delivery` | Bundle a completed engineering run (and optional scenario comparison) with its `.PRJ`/`.VCx`, result CSV/PDF, and Markdown handoff summary into a ZIP archive under `Results` |
 | `pvsyst_run_feasibility_study` | One-shot end-to-end PV/PV+BESS feasibility study orchestrator chaining optional zero-template component synthesis, simulation (or `existing_csv` reuse), diagnostics, TOU 48-slot planning, two-stage BESS sizing, economics/sensitivity, and interactive Plotly HTML report generation (`dry_run=true` default; requires `confirm=true`) |
 
-Detailed guides: [engineering delivery](engineering-delivery.md), [scenario comparison](engineering-scenarios.md), [AC storage engineering](engineering-storage.md), and [brief review](engineering-brief.md).
+Detailed guides: [engineering delivery, scenario comparison, AC storage, and brief review](workflows-guide.md#5-ac-耦合光储工程pvsyst_run_engineering_task--engineering-storage).
 
 ### Projects & Variants (`projects`, default: 12)
 
@@ -77,7 +77,7 @@ Detailed matrix: [feature entry map](native-entry-map.md).
 | `pvsyst_build_sourced_component` | Build a new `.PAN`, `.OND` (single- or 3-voltage), or Li-ion `.BTR` (`LFP`/`NMC`) from cited datasheet values: either derived from a template (`template_name` set) or synthesized zero-template (`template_name` omitted) |
 | `pvsyst_update_component` | Edit allowlisted commercial/electrical fields, remarks, or Mode 1 single-/3-voltage OND and BTR curve tables with SHA-256 checks, automatic backup, and optional `refit_single_diode=true` for `.PAN` STC updates |
 
-Detailed guide: [sourced components](sourced-components.md).
+Detailed guide: [sourced components](workflows-guide.md#2-基于规格书引用创建自定义-pan--ond--btr-组件).
 
 ### Sites & Weather (`weather`, default: 4)
 
@@ -88,7 +88,7 @@ Detailed guide: [sourced components](sourced-components.md).
 | `pvsyst_prepare_weather` | Convert a validated hourly or sub-hourly (`5/10/15/30/60 min`) CSV into new `.SIT`/`.MET` files and record a provenance manifest |
 | `pvsyst_review_weather` | Compare an acquired/prepared weather CSV against simulation output and `.MET`/`.SIT` headers |
 
-Detailed guide: [weather preparation](weather-preparation.md).
+Detailed guide: [weather preparation](workflows-guide.md#3-站点与标准逐时亚小时气象制备pvsyst_prepare_weather).
 
 ### Loads & Storage (`storage`, default: 5)
 
@@ -100,7 +100,7 @@ Detailed guide: [weather preparation](weather-preparation.md).
 | `pvsyst_create_grid_storage_system` | Add workspace or built-in battery hardware and centralized AC-coupled `SelfConsumption`, `WeakGrid` (with explicit or deterministic `mode="generated"` outage schedules), `PeakShaving`, or `PowerShift` storage (plus optional hourly load and grid-availability bindings) to a PV-only grid variant |
 | `pvsyst_plan_tou_storage_schedule` | Deterministically convert a TOU tariff schedule into PVsyst `PowerShift` 48-slot half-hourly charge/discharge schedules (1 or 2 cycles/day) and a drop-in `storage_updates` payload |
 
-Detailed guide: [AC storage engineering](engineering-storage.md) and [feature entry map](native-entry-map.md).
+Detailed guide: [AC storage engineering](workflows-guide.md#5-ac-耦合光储工程pvsyst_run_engineering_task--engineering-storage) and [feature entry map](native-entry-map.md).
 
 ### Simulation (`simulation`, default: 8)
 
@@ -115,7 +115,7 @@ Detailed guide: [AC storage engineering](engineering-storage.md) and [feature en
 | `pvsyst_optimize_variant` | Bounded Diagnose -> Clone -> Patch -> Re-simulate loop (`dry_run=true` default previews deterministic fixes and diffs; `confirm=true` iterates up to `max_iterations` 1..5 on cloned variants without mutating baseline) |
 | `pvsyst_optimize_bess_sizing` | Two-stage hybrid PV+BESS capacity optimizer: Stage 1 fast pure-Python grid sweep (`bess_kwh × pcs_kw × strategy`) with Pareto frontier & 2D heatmap; optional Stage 2 (`verify_top_k` 1..5, `dry_run=false`, `confirm=true`) runs `PVsystCLI` to reconcile exact KPIs |
 
-Detailed guides: [single-design inputs](single-design-inputs.md) and [native house task](native-house-task.md).
+Detailed guides: [single-design inputs](workflows-guide.md#1-单方案设计输入与全年流程) and [native house task](workflows-guide.md#4-住宅-3d-场景端到端任务pvsyst_run_house_task).
 
 ### Results (`results`, default: 4)
 
@@ -142,7 +142,7 @@ Enable with `PVSYST_TOOL_GROUPS=expert` or `PVSYST_TOOL_GROUPS=all`:
 - Orientation & horizon: seasonal tilt, far horizon profile
 - Energy management: inverter temperature, power factor & PNom, grid injection limit, combined PF + power controls, P50/P90 parameters
 
-Dedicated variant-creation tools handle structural or multi-object changes (AC/headless DC cabling, `pvsyst_configure_transformers`, tracking controls, sheds & sun-shields, `pvsyst_convert_orientation`, and [engineering delivery](engineering-delivery.md)).
+Dedicated variant-creation tools handle structural or multi-object changes (AC/headless DC cabling, `pvsyst_configure_transformers`, tracking controls, sheds & sun-shields, `pvsyst_convert_orientation`, and [engineering delivery](workflows-guide.md#6-多方案对比简报预审与工程交付打包)).
 
 ## Workspace directories and conventions
 

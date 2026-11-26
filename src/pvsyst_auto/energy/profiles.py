@@ -16,7 +16,7 @@ from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.project.variant_updates import run_new_variant_transaction
 from pvsyst_auto.results import POWER_TO_KW
-from pvsyst_auto.versions import HEADLESS_RECORD_VERSION, NATIVE_TEXT_OR_SEED, SEED_LABEL
+from pvsyst_auto.validation import HEADLESS_RECORD_VERSION, NATIVE_TEXT_OR_SEED, SEED_LABEL
 from pvsyst_auto.weather.preparation import number
 
 MAX_BYTES = 8 * 1024 * 1024

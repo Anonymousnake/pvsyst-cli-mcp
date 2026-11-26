@@ -33,7 +33,7 @@ dependencies = [
 geo = ["rasterio>=1.3"]
 
 [project.scripts]
-pvsyst-mcp = "pvsyst_auto.api.app:main"
+pvsyst-mcp = "pvsyst_auto.api.context:main"
 
 [project.urls]
 Homepage = "https://github.com/Anonymousnake/pvsyst-cli-mcp"

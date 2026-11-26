@@ -1,6 +1,5 @@
 """Revise an existing native design and bind its annual outputs to the run inputs."""
 from __future__ import annotations
-
 import calendar
 import csv
 from copy import deepcopy
@@ -13,7 +12,6 @@ from pathlib import Path
 import re
 import subprocess
 import zipfile
-
 from pvsyst_auto.native.cli import PVsystError, VAR_GROUPS, build_sfi, iter_result_csv, result_units, validate_report_pages
 from pvsyst_auto.components.editor import objects
 from pvsyst_auto.energy.profiles import hourly_load_block, load_snapshot
@@ -23,32 +21,22 @@ from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, w
 from pvsyst_auto.results import POWER_TO_KW, annual_summary, fingerprint, verify_native_csv_context, verify_pdf_header
 from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.weather.preparation import inspect_met_calendar
-from pvsyst_auto.versions import CLI_TRACKING_BUILDS
-
-
+from pvsyst_auto.validation import CLI_TRACKING_BUILDS
 ASSET_FOLDERS = {"Sites": (".SIT",), "Meteo": (".MET",), "ComposPV/PVmodules": (".PAN",),
                  "ComposPV/Inverters": (".OND",), "ComposPV/Batteries": (".BTR",),
                  "UserData": (".csv", ".pvc2"), "UserHourlyParams": (".csv",),
                  "Models": (".SFI",), "Results": (".json",)}
 COMPONENT_KINDS = {"ComposPV/PVmodules": "PAN", "ComposPV/Inverters": "OND", "ComposPV/Batteries": "BTR"}
-
-
 def _asset_extension(folder, name):
     extensions = ASSET_FOLDERS.get(folder)
-    if extensions is None:
-        raise ValueError("Unsupported run input location")
-    if not isinstance(name, str):
-        raise ValueError("Run input asset name must be a filename")
+    if extensions is None: raise ValueError("Unsupported run input location")
+    if not isinstance(name, str): raise ValueError("Run input asset name must be a filename")
     extension = Path(name).suffix
-    if extension.casefold() not in {item.casefold() for item in extensions}:
-        raise ValueError(f"Unsupported {folder} asset extension: {name}")
+    if extension.casefold() not in {item.casefold() for item in extensions}: raise ValueError(f"Unsupported {folder} asset extension: {name}")
     return next(item for item in extensions if item.casefold() == extension.casefold())
-
-
 def _asset_path(store, asset):
     folder, name, library = asset["folder"], asset["name"], asset["library"]
-    if folder not in ASSET_FOLDERS or library not in ("workspace", "builtin"):
-        raise ValueError("Unsupported run input location")
+    if folder not in ASSET_FOLDERS or library not in ("workspace", "builtin"): raise ValueError("Unsupported run input location")
     extension = _asset_extension(folder, name)
     safe_filename(name, extension)
     if folder in COMPONENT_KINDS:
@@ -56,45 +44,30 @@ def _asset_path(store, asset):
         if library == "builtin" and store.components._path(kind, name).exists():
             raise ValueError("A workspace component now shadows the run input: " + name)
         return store.components._path(kind, name, library)
-    if library != "workspace":
-        raise ValueError("Non-component run inputs must be workspace assets")
+    if library != "workspace": raise ValueError("Non-component run inputs must be workspace assets")
     return workspace_file(store.workspace, folder, name, extension)
-
-
 def _check_assets(store, record):
     assets = record.get("input_assets")
-    if not isinstance(assets, dict) or not {"site", "meteo"} <= set(assets):
-        raise ValueError("Run input asset record is incomplete")
+    if not isinstance(assets, dict) or not {"site", "meteo"} <= set(assets): raise ValueError("Run input asset record is incomplete")
     for asset in assets.values():
-        if fingerprint(_asset_path(store, asset)) != asset["sha256"]:
-            raise ValueError("A bound run input has changed: " + asset["name"])
+        if fingerprint(_asset_path(store, asset)) != asset["sha256"]: raise ValueError("A bound run input has changed: " + asset["name"])
     for reference in record.get("database_references", []):
         kind, name = reference["kind"], reference["name"]
-        if kind not in ("PAN", "OND", "BTR"):
-            raise ValueError("Unsupported database reference")
+        if kind not in ("PAN", "OND", "BTR"): raise ValueError("Unsupported database reference")
         safe_filename(name, "." + kind)
         libraries = ("workspace", "builtin") if store.components.builtin else ("workspace",)
         if any(store.components._path(kind, name, library).exists() for library in libraries):
             raise ValueError("A loose component now shadows an uninspected database reference: " + name)
-
-
 def _result_path(store, record, kind):
     extension = {"csv": ".csv", "pdf": ".pdf"}[kind]
     value = record["artifacts"][kind]
-    if not isinstance(value, str):
-        raise ValueError("Run artifact path must be a string")
+    if not isinstance(value, str): raise ValueError("Run artifact path must be a string")
     path = workspace_file(store.workspace, "Results", Path(value).name, extension)
-    if Path(value).resolve() != path:
-        raise ValueError("Run artifact is outside the workspace Results directory")
+    if Path(value).resolve() != path: raise ValueError("Run artifact is outside the workspace Results directory")
     return path
-
-
 def run_output_kinds(record):
-    if record["operation"] != "engineering_house":
-        return ("csv", "pdf")
+    if record["operation"] != "engineering_house": return ("csv", "pdf")
     return ("csv",) if record["request"].get("report_pdf") is False else ("csv", "pdf")
-
-
 def _check_house_run(store, record, path, project, variant):
     request, plan, runs = record["request"], record["plan"], record["runs"]
     year = record["year"]
@@ -120,11 +93,9 @@ def _check_house_run(store, record, path, project, variant):
                 "scene": workspace_file(store.workspace, "UserData", stem + "_house.pvc2", ".pvc2"),
                 "sfi": workspace_file(store.workspace, "Models", stem + "_house.SFI", ".SFI"),
                 "native_variant": store._path(project, variant)}
-    if expected["manifest"] != path:
-        raise ValueError("House manifest name does not identify its project task")
+    if expected["manifest"] != path: raise ValueError("House manifest name does not identify its project task")
     for kind, target in expected.items():
-        if Path(record["artifacts"][kind]).resolve() != target:
-            raise ValueError("House artifact does not match its controlled project path: " + kind)
+        if Path(record["artifacts"][kind]).resolve() != target: raise ValueError("House artifact does not match its controlled project path: " + kind)
     for kind in kinds:
         name = stem + f"_house_run{len(runs):02d}." + kind
         if attempt.get(kind) != name or _result_path(store, record, kind).name != name:
@@ -160,25 +131,20 @@ def _check_house_run(store, record, path, project, variant):
             or record["metrics"].get("year") != year or record["metrics"].get("complete_year") is not True
             or record["metrics"].get("sha256") != record["result_files"]["csv"]):
         raise ValueError("House annual result evidence is incomplete or differs from the recorded CSV")
-    expected_context = {"Project": project, "Simulation variant": selected,
-                        "Geographical Site": plan["site"], "Weather data": plan["met"]}
+    expected_context = {"Project": project, "Simulation variant": selected, "Geographical Site": plan["site"], "Weather data": plan["met"]}
     context = record.get("native_context")
     if (not isinstance(context, dict) or set(context) != set(expected_context)
-            or any(not isinstance(context[key], str) or context[key].casefold() != value.casefold()
-                   for key, value in expected_context.items())):
+            or any(not isinstance(context[key], str) or context[key].casefold() != value.casefold() for key, value in expected_context.items())):
         raise ValueError("House native context does not identify its bound project, variant and weather")
     if not isinstance(record.get("changes"), list) or any(not isinstance(item, dict) for item in record["changes"]):
         raise ValueError("House engineering changes must be a recorded change list")
-
-
 def load_engineering_run(store, manifest_name, *, project=None, variant=None, csv_name=None):
     """Read a completed run binding, refusing changed or misidentified inputs/outputs."""
     with store.lock:
         path = workspace_file(store.workspace, "Results", manifest_name, ".json")
         with path.open("rb") as stream:
             raw = stream.read(32 * 1024 * 1024 + 1)
-        if len(raw) > 32 * 1024 * 1024:
-            raise ValueError("Engineering run manifest exceeds 32 MiB")
+        if len(raw) > 32 * 1024 * 1024: raise ValueError("Engineering run manifest exceeds 32 MiB")
         record = json.loads(raw)
         try:
             if (not isinstance(record, dict) or record.get("operation") not in ("engineering_revision", "engineering_house")
@@ -199,35 +165,22 @@ def load_engineering_run(store, manifest_name, *, project=None, variant=None, cs
                 raise ValueError("Run input handoff identifies a different or unreadable design")
             if store.inspect_project(actual_project)["files"] != record["working_files"]:
                 raise ValueError("The saved project has changed since this native run")
-            if record.get("operation") == "engineering_house":
-                _check_house_run(store, record, path, actual_project, actual_variant)
+            if record.get("operation") == "engineering_house": _check_house_run(store, record, path, actual_project, actual_variant)
             _check_assets(store, record)
             for kind in run_output_kinds(record):
                 target = _result_path(store, record, kind)
                 if kind == "csv" and csv_name is not None and target.name.casefold() != csv_name.casefold():
                     raise ValueError("Run binding identifies a different result CSV")
-                if fingerprint(target) != record["result_files"][kind]:
-                    raise ValueError("A bound native output has changed: " + target.name)
+                if fingerprint(target) != record["result_files"][kind]: raise ValueError("A bound native output has changed: " + target.name)
             manifest_path = workspace_file(store.workspace, "Results", Path(record["artifacts"]["manifest"]).name, ".json")
             if manifest_path != path or Path(record["artifacts"]["manifest"]).resolve() != path:
                 raise ValueError("Run manifest identifies a different manifest file")
-            if path.read_bytes() != raw:
-                raise ValueError("Run binding changed while it was read")
-        except (KeyError, TypeError, AttributeError) as exc:
-            raise ValueError("Incomplete engineering run binding") from exc
+            if path.read_bytes() != raw: raise ValueError("Run binding changed while it was read")
+        except (KeyError, TypeError, AttributeError) as exc: raise ValueError("Incomplete engineering run binding") from exc
         return record
-
-
 def _context(path, project, variant, site, meteo):
-    expected = {"Project": project, "Simulation variant": Path(project).stem + "." + variant,
-                "Geographical Site": site, "Weather data": meteo}
-    return verify_native_csv_context(
-        path,
-        expected,
-        mismatch_message="Native output identifies a different project/variant/site/weather",
-    )
-
-
+    expected = {"Project": project, "Simulation variant": Path(project).stem + "." + variant, "Geographical Site": site, "Weather data": meteo}
+    return verify_native_csv_context(path, expected, mismatch_message="Native output identifies a different project/variant/site/weather")
 def run_engineering_task(cli, store, *, source_project, source_variant, new_project, new_variant,
                          objective, year, nominal_dc_power_kw, power_source, changes,
                          declarations=None, report_pages=None, dry_run=True,
@@ -238,34 +191,26 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
               "issues": [], "warnings": [], "changes": [], "metrics": None, "artifacts": {}}
     with store.lock:
         try:
-            if type(dry_run) is not bool:
-                raise ValueError("Use a strict boolean dry_run")
+            if type(dry_run) is not bool: raise ValueError("Use a strict boolean dry_run")
             source_project, new_project = project_name(source_project), project_name(new_project)
             source_variant, new_variant = variant_id(source_variant), variant_id(new_variant)
             if not isinstance(objective, str) or not objective.strip() or len(objective) > 4000:
                 raise ValueError("State the engineering objective in 1..4000 characters")
             if not isinstance(power_source, str) or not power_source.strip() or len(power_source) > 4000:
                 raise ValueError("Declare the source of the nominal DC power")
-            if type(year) is not int or not 1969 <= year <= 2068:
-                raise ValueError("Annual year must be an integer in 1969..2068")
-            if (type(nominal_dc_power_kw) not in (int, float)
-                    or not math.isfinite(nominal_dc_power_kw) or nominal_dc_power_kw <= 0):
+            if type(year) is not int or not 1969 <= year <= 2068: raise ValueError("Annual year must be an integer in 1969..2068")
+            if (type(nominal_dc_power_kw) not in (int, float) or not math.isfinite(nominal_dc_power_kw) or nominal_dc_power_kw <= 0):
                 raise ValueError("Declare a positive finite nominal DC power in kWp")
             if not isinstance(changes, dict) or set(changes) - {"tilt", "azimuth", "losses", "tracking", "storage"}:
                 raise ValueError("Use supported explicit orientation, loss or tracking changes")
-            if report_pages is not None:
-                validate_report_pages(report_pages)
+            if report_pages is not None: validate_report_pages(report_pages)
             original = store.inspect_project(source_project)
-            if source_variant not in original["variants"]:
-                raise ValueError("Source variant is missing")
-            if new_variant in original["variants"]:
-                raise ValueError("Choose a new variant absent from the source project")
+            if source_variant not in original["variants"]: raise ValueError("Source variant is missing")
+            if new_variant in original["variants"]: raise ValueError("Choose a new variant absent from the source project")
             if any(store._belongs_to_project(p, new_project) for p in store._root().iterdir()):
                 raise FileExistsError("Choose a new isolated project name")
-            source_handoff = build_project_handoff(store, project=source_project, variant=source_variant,
-                                                   declarations=declarations)
-            if source_handoff["status"] == "blocked":
-                raise ValueError("Source handoff is blocked: " + str(source_handoff["issues"]))
+            source_handoff = build_project_handoff(store, project=source_project, variant=source_variant, declarations=declarations)
+            if source_handoff["status"] == "blocked": raise ValueError("Source handoff is blocked: " + str(source_handoff["issues"]))
             parameters = store.inspect_parameters(source_project, source_variant)
             structure = store.validate_structure(source_project, source_variant)
             if (structure["valid"] is not True or structure["system_type"] != "Grid"
@@ -273,16 +218,14 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                 raise ValueError("Revision supports one completely checked Grid subarray and orientation")
             data = store._read(store._path(source_project, source_variant))
             _, lines = store._text(data)
-            if set(changes) & {"tilt", "azimuth", "tracking"}:
-                store._require_no_geometry(lines)
+            if set(changes) & {"tilt", "azimuth", "tracking"}: store._require_no_geometry(lines)
             blocks = objects("".join(lines))
             storage_mode = any(block.object_type == "pvGridStorage" for block in blocks)
             if not storage_mode and (any(block.object_type == "pvLoad" for block in blocks)
                                      or load_manifest_name or availability is not None or "storage" in changes):
                 raise ValueError("Load/profile declarations require an existing native AC storage system")
             root = next(block for block in blocks if not block.path)
-            if not storage_mode and root.one("PRCorrTemp")[1] != "False":
-                raise ValueError("Standard annual grid PR requires PRCorrTemp=False")
+            if not storage_mode and root.one("PRCorrTemp")[1] != "False": raise ValueError("Standard annual grid PR requires PRCorrTemp=False")
             array = parameters["subarrays"][0]
             orientation = parameters["orientations"][0]
             tracking_mode = orientation["values"].get("FieldType") == "UnlimTracking"
@@ -292,8 +235,7 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                     raise ValueError("Existing AC storage revisions accept explicit storage updates only on a fixed plane")
                 storage_preparation = prepare_storage_revision(store, source_project, source_variant,
                     new_variant, changes["storage"], load_manifest_name, year, availability=availability)
-                if storage_preparation["status"] != "ready":
-                    raise ValueError("Storage preparation: " + str(storage_preparation["issues"]))
+                if storage_preparation["status"] != "ready": raise ValueError("Storage preparation: " + str(storage_preparation["issues"]))
                 preview = storage_preparation["preview"]
                 before, after = storage_preparation["before"], storage_preparation["after"]
                 record["changes"] = [{"field": "storage." + key, "before": before.get(key), "after": value}
@@ -306,21 +248,18 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                     "source_csv_name": storage_preparation["load_record"]["source"]["name"]}
                 record["warnings"].extend(storage_preparation["warnings"])
             elif tracking_mode:
-                if set(changes) != {"tracking"}:
-                    raise ValueError("UnlimTracking revisions require explicit tracking controls only")
+                if set(changes) != {"tracking"}: raise ValueError("UnlimTracking revisions require explicit tracking controls only")
                 preview = create_tracking_variant(store, project=source_project, source_variant=source_variant,
                                                    new_variant=new_variant, tracking=changes["tracking"], dry_run=True)
                 if preview["status"] != "ready" or preview.get("field_type") != "UnlimTracking":
                     raise ValueError("Tracking revision is outside the verified template: " + str(preview["issues"]))
-                record["changes"] = [{"field": "orientations." + field,
-                    "before": orientation["values"].get(field), "after": value}
+                record["changes"] = [{"field": "orientations." + field, "before": orientation["values"].get(field), "after": value}
                     for field, value in preview["tracking"].items()
                     if orientation["values"].get(field) != value]
             else:
                 if orientation["values"].get("FieldType") != "FixedPlane" or "tracking" in changes:
                     raise ValueError("Require a fixed plane or the supported existing UnlimTracking template")
-                angles = {native: changes[key] for key, native in (("tilt", "FieldTilt"), ("azimuth", "FieldAzim"))
-                          if key in changes}
+                angles = {native: changes[key] for key, native in (("tilt", "FieldTilt"), ("azimuth", "FieldAzim")) if key in changes}
                 losses = changes.get("losses", {})
                 if not isinstance(losses, dict) or set(losses) - {"LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor"}:
                     raise ValueError("Unsupported loss changes")
@@ -336,8 +275,7 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                             "before": orientation["values"].get(field), "after": f"{value:.3f}"})
                 for field, value in losses.items():
                     owner = parameters["main_array"]["values"] if field == "UFactor" else array["values"]
-                    before = ({key: owner.get(key) for key in ("PQualityModU", "PQualityModI")}
-                              if field == "ModuleQualityLoss" else owner.get(field))
+                    before = ({key: owner.get(key) for key in ("PQualityModU", "PQualityModI")} if field == "ModuleQualityLoss" else owner.get(field))
                     record["changes"].append({"field": ("main_array." if field == "UFactor" else "subarrays.") + field,
                                               "before": before, "after": f"{value:.3f}"})
             references = original["sources"]
@@ -356,21 +294,17 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                 record["database_references"].extend(storage_preparation["database_references"])
             component_refs = store.inspect(source_project, source_variant)["subarrays"][0]["references"]
             for kind, folder in (("PAN", "ComposPV/PVmodules"), ("OND", "ComposPV/Inverters")):
-                if len(component_refs[kind]) != 1:
-                    raise ValueError("Require one explicit " + kind + " reference")
+                if len(component_refs[kind]) != 1: raise ValueError("Require one explicit " + kind + " reference")
                 name = component_refs[kind][0]
                 libraries = ("workspace", "builtin") if store.components.builtin else ("workspace",)
                 library = next((item for item in libraries if store.components._path(kind, name, item).is_file()), None)
-                if library is None:
-                    record["database_references"].append({"kind": kind, "name": name,
-                                                          "resolution": "native_database_uninspected"})
+                if library is None: record["database_references"].append({"kind": kind, "name": name, "resolution": "native_database_uninspected"})
                 else:
                     asset = {"folder": folder, "name": name, "library": library}
                     asset["sha256"] = fingerprint(_asset_path(store, asset))
                     assets[kind] = asset
             calendar = inspect_met_calendar(_asset_path(store, assets["meteo"]), year)
-            if calendar["issues"]:
-                raise ValueError("Weather calendar: " + "; ".join(calendar["issues"]))
+            if calendar["issues"]: raise ValueError("Weather calendar: " + "; ".join(calendar["issues"]))
             record["warnings"].extend(calendar["warnings"])
             if storage_preparation is not None:
                 site_blocks = objects(_asset_path(store, assets["site"]).read_text(encoding="utf-8-sig"))
@@ -381,17 +315,14 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             paths = {kind: workspace_file(store.workspace, folder, prefix + extension, extension)
                      for kind, folder, extension in (("manifest", "Results", ".json"), ("csv", "Results", ".csv"),
                                                      ("pdf", "Results", ".pdf"), ("sfi", "Models", ".SFI"))}
-            if any(path.exists() for path in paths.values()):
-                raise FileExistsError("An engineering output already exists; choose a new project name")
-            for option in ("input-sfi-file", "start-date", "end-date", "time-step", "site", "input-met-file"):
-                cli._require("run-simulation", option)
+            if any(path.exists() for path in paths.values()): raise FileExistsError("An engineering output already exists; choose a new project name")
+            for option in ("input-sfi-file", "start-date", "end-date", "time-step", "site", "input-met-file"): cli._require("run-simulation", option)
             license_state = cli.license_info()
             if license_state.get("status") == "TRIAL" and license_state.get("remaining_executions") == 0:
                 raise ValueError("PVsystCLI reports no remaining trial executions")
             version = cli.version()
             if tracking_mode and version not in CLI_TRACKING_BUILDS:
-                raise ValueError("Tracking revision requires a verified PVsystCLI build: "
-                                 + ", ".join(CLI_TRACKING_BUILDS))
+                raise ValueError("Tracking revision requires a verified PVsystCLI build: " + ", ".join(CLI_TRACKING_BUILDS))
             record.update(status="ready", source_project=source_project, source_variant=source_variant,
                           working_project=new_project, working_variant=new_variant, year=year,
                           objective=objective, nominal_dc_power_kw=nominal_dc_power_kw, power_source=power_source,
@@ -399,27 +330,20 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                           source_files=original["files"], configuration_preview=preview,
                           artifacts={kind: str(path) for kind, path in paths.items()},
                           cli_version=version, license=license_state, report_pages=report_pages)
-            if storage_mode:
-                record.update(load_manifest_name=load_manifest_name, availability=availability)
-            if record["database_references"]:
-                record["warnings"].append("Inherited native database model contents are uninspected.")
+            if storage_mode: record.update(load_manifest_name=load_manifest_name, availability=availability)
+            if record["database_references"]: record["warnings"].append("Inherited native database model contents are uninspected.")
         except (ValueError, OSError, KeyError, TypeError, PVsystError, subprocess.TimeoutExpired) as exc:
             record["issues"].append(str(exc))
             return record
-        if dry_run:
-            return record
-
+        if dry_run: return record
         def save(stage=None, first=False):
-            if stage:
-                record.update(status="running", stage=stage)
+            if stage: record.update(status="running", stage=stage)
             write_json(paths["manifest"], record, first=first)
-
         manifest_owned = False
         try:
             save("clone", first=True)
             manifest_owned = True
-            if store.inspect_project(source_project)["files"] != original["files"]:
-                raise ValueError("Source changed after preflight")
+            if store.inspect_project(source_project)["files"] != original["files"]: raise ValueError("Source changed after preflight")
             _check_assets(store, record)
             store.clone_project(source_project, new_project)
             save("revision")
@@ -427,15 +351,12 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                 if changes["storage"] or availability is not None:
                     edited = create_grid_storage_variant(store, project=new_project, source_variant=source_variant,
                         new_variant=new_variant, updates=changes["storage"], availability=availability, dry_run=False)
-                    if edited["status"] != "created":
-                        raise ValueError("Storage revision failed: " + str(edited["issues"]))
-                else:
-                    edited = store.clone(new_project, source_variant, new_variant)
+                    if edited["status"] != "created": raise ValueError("Storage revision failed: " + str(edited["issues"]))
+                else: edited = store.clone(new_project, source_variant, new_variant)
             elif tracking_mode:
                 edited = create_tracking_variant(store, project=new_project, source_variant=source_variant,
                     new_variant=new_variant, tracking=changes["tracking"], dry_run=False)
-                if edited["status"] != "created":
-                    raise ValueError("Tracking revision failed: " + str(edited["issues"]))
+                if edited["status"] != "created": raise ValueError("Tracking revision failed: " + str(edited["issues"]))
             else:
                 cloned = store.clone(new_project, source_variant, new_variant)
                 edited = (store.update_parameters(new_project, new_variant, cloned["sha256"], array["id"], orientation["id"],
@@ -445,15 +366,12 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             if store.validate_structure(new_project, new_variant)["valid"] is not True:
                 raise ValueError("Revised design failed native structure checks")
             record["working_files"] = store.inspect_project(new_project)["files"]
-            record["input_handoff"] = build_project_handoff(store, project=new_project, variant=new_variant,
-                                                           declarations=declarations)
-            if record["input_handoff"]["status"] == "blocked":
-                raise ValueError("Revised input handoff is blocked")
+            record["input_handoff"] = build_project_handoff(store, project=new_project, variant=new_variant, declarations=declarations)
+            if record["input_handoff"]["status"] == "blocked": raise ValueError("Revised input handoff is blocked")
             save("simulation")
             _check_assets(store, record)
             variables = list(VAR_GROUPS["grid_storage" if storage_mode else "all_common"])
-            if tracking_mode:
-                variables.append("viGlobShd")
+            if tracking_mode: variables.append("viGlobShd")
             build_sfi(paths["sfi"], variables)
             run = cli.run_simulation(new_project, new_variant, sfi=paths["sfi"], out_csv=paths["csv"],
                 report_pdf=paths["pdf"], site=_asset_path(store, assets["site"]), met=_asset_path(store, assets["meteo"]),
@@ -461,14 +379,12 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
                 report_language="en", report_pages=report_pages, log_level=3)
             record["run"] = run
             save("results")
-            record["native_context"] = _context(paths["csv"], new_project, new_variant,
-                                                assets["site"]["name"], assets["meteo"]["name"])
+            record["native_context"] = _context(paths["csv"], new_project, new_variant, assets["site"]["name"], assets["meteo"]["name"])
             if storage_mode:
                 record.update(read_storage_year(paths["csv"], paths["pdf"], year,
                     storage_preparation["load_record"], storage_preparation["load_values"], storage_preparation["after"]))
                 record["metrics"]["sha256"] = fingerprint(paths["csv"])
-            else:
-                record["metrics"] = annual_summary(paths["csv"], year, nominal_dc_power_kw)
+            else: record["metrics"] = annual_summary(paths["csv"], year, nominal_dc_power_kw)
             count = 0
             for headers, row in iter_result_csv(paths["csv"], strict=True):
                 if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in row[1:]):
@@ -481,8 +397,7 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             record["warnings"].extend(run.get("warnings", []))
             record["warnings"].extend(record["metrics"].get("diagnostic_flags", []))
             record["warnings"].extend(record.get("storage_output", {}).get("review_items", []))
-            record.update(stage="completed", native_consumption_verified=True,
-                          hourly_rows=count, numeric_columns=headers[1:])
+            record.update(stage="completed", native_consumption_verified=True, hourly_rows=count, numeric_columns=headers[1:])
             review = (record["database_references"] or run.get("warnings") or calendar["warnings"]
                       or record["metrics"].get("diagnostic_flags") or record.get("storage_output", {}).get("review_items")
                       or source_handoff.get("review_items")
@@ -492,8 +407,7 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             record.update(status="failed", native_consumption_verified=False, error=cli._redact(str(exc))[-12000:])
         except BaseException as exc:
             # An unanticipated error still leaves a terminal manifest, never "running"; it then propagates.
-            record.update(status="failed", native_consumption_verified=False,
-                          error=cli._redact(f"{type(exc).__name__}: {exc}")[-12000:])
+            record.update(status="failed", native_consumption_verified=False, error=cli._redact(f"{type(exc).__name__}: {exc}")[-12000:])
             if manifest_owned:
                 try:
                     save()
@@ -504,41 +418,30 @@ def run_engineering_task(cli, store, *, source_project, source_variant, new_proj
             record["source_preserved"] = store.inspect_project(source_project)["files"] == original["files"]
             if not record["source_preserved"]:
                 record.update(status="failed", native_consumption_verified=False, error="Source changed during the engineering task")
-        except (ValueError, OSError, KeyError, TypeError) as exc:
-            record.update(status="failed", native_consumption_verified=False, error=str(exc))
+        except (ValueError, OSError, KeyError, TypeError) as exc: record.update(status="failed", native_consumption_verified=False, error=str(exc))
         record["recovery"] = "Retain the isolated project and outputs for review; no automatic retry, overwrite, deletion or rollback. Use a new project name for a new execution."
-        if manifest_owned:
-            save()
+        if manifest_owned: save()
         return record
-
-
 def _load_signature(text):
     """Keep cache structure/tokens; display text and historical paths are metadata."""
     signature = []
     for line in text.splitlines():
-        if not (line := line.strip()):
-            continue
+        if not (line := line.strip()): continue
         name, separator, value = line.partition("=")
         name, value = name.strip(), value.strip()
-        if separator and name in ("Comment", "PathName"):
-            continue
-        if separator and name == "FileName":
-            value = value.casefold()
+        if separator and name in ("Comment", "PathName"): continue
+        if separator and name == "FileName": value = value.casefold()
         if separator and name in ("WRFactor", "OriginalScale", "RenormVal", "NColDate", "DateFormat"):
-            if not (number := Decimal(value)).is_finite():
-                raise ValueError("Nonfinite native load field: " + name)
+            if not (number := Decimal(value)).is_finite(): raise ValueError("Nonfinite native load field: " + name)
             value = number
         signature.append((name, value) if separator else line)
     return signature
-
-
 def prepare_storage_revision(store, project, variant, new_variant, updates, load_manifest_name, year, availability=None):
     """Preview an existing native storage edit and bind its actual embedded load."""
     result = {"status": "blocked", "issues": [], "warnings": [], "input_assets": {}, "database_references": []}
     with store.lock:
         try:
-            if type(year) is not int or not 1969 <= year <= 2068:
-                raise ValueError("Storage year must be an integer in 1969..2068")
+            if type(year) is not int or not 1969 <= year <= 2068: raise ValueError("Storage year must be an integer in 1969..2068")
             source = store._path(project, variant)
             original = store._read(source)
             _, lines = store._text(original)
@@ -556,30 +459,26 @@ def prepare_storage_revision(store, project, variant, new_variant, updates, load
             manifest_path = workspace_file(store.workspace, "Results", load_manifest_name, ".json")
             raw_source_path = workspace_file(store.workspace, "UserData", record["source"]["name"], ".csv")
             snapshots = {path: path.read_bytes() for path in (manifest_path, raw_source_path, profile)}
-            if record["year"] != year:
-                raise ValueError("Prepared load and native annual execution must use the same year")
+            if record["year"] != year: raise ValueError("Prepared load and native annual execution must use the same year")
             expected, encoding = hourly_load_block(profile, values, year, "\n")
             stored = "\n".join(lines[loads[0].line - 1:loads[0].end_line])
             if _load_signature(stored) != _load_signature(expected):
                 raise ValueError("Native hourly load cache/time settings differ from the prepared load; rebind using the existing load tool")
             if availability is not None:
-                if not isinstance(availability, dict):
-                    raise ValueError("Grid availability must be an explicit declaration")
+                if not isinstance(availability, dict): raise ValueError("Grid availability must be an explicit declaration")
                 if any(availability.get(key) != record[key] for key in ("year", "utc_offset_hours", "time_basis")):
                     raise ValueError("Grid availability and prepared load must use the same year and standard time basis")
                 path = workspace_file(store.workspace, "UserData", availability["csv_name"], ".csv")
                 snapshots[path] = path.read_bytes()
             if updates == {} and availability is None:
                 validate_storage(before)
-                if store._path(project, new_variant).exists():
-                    raise FileExistsError("Choose a new grid storage variant")
+                if store._path(project, new_variant).exists(): raise FileExistsError("Choose a new grid storage variant")
                 preview = {"status": "ready", "before": before, "after": before, "warnings": []}
             else:
                 preview = create_grid_storage_variant(store, project=project, source_variant=variant,
                     new_variant=new_variant, updates=updates, availability=availability, dry_run=True)
             result["preview"] = preview
-            if preview["status"] != "ready":
-                raise ValueError("Storage revision is blocked: " + "; ".join(preview["issues"]))
+            if preview["status"] != "ready": raise ValueError("Storage revision is blocked: " + "; ".join(preview["issues"]))
             assets = {}
             for label, folder, name in (("load_manifest", "Results", load_manifest_name),
                                         ("load_source", "UserData", record["source"]["name"]),
@@ -594,22 +493,16 @@ def prepare_storage_revision(store, project, variant, new_variant, updates, load
             library = next((item for item in libraries if store.components._path("BTR", battery, item).is_file()), None)
             if library is not None:
                 assets["BTR"] = {"folder": "ComposPV/Batteries", "name": battery, "library": library, "sha256": fingerprint(store.components._path("BTR", battery, library))}
-            else:
-                result["database_references"].append({"kind": "BTR", "name": battery, "resolution": "native_database_uninspected"})
+            else: result["database_references"].append({"kind": "BTR", "name": battery, "resolution": "native_database_uninspected"})
             if store._read(source) != original or any(path.read_bytes() != data for path, data in snapshots.items()):
                 raise ValueError("A source variant or prepared load/availability input changed during preflight")
             result.update(status="ready", before=before, after=preview["after"], load_record={**record, "native_encoding": encoding},
                           load_values=values, input_assets=assets, utc_offset_hours=record["utc_offset_hours"], time_basis=record["time_basis"], load_encoding=encoding)
             result["warnings"].extend(preview["warnings"])
-        except (ValueError, OSError, KeyError, TypeError, StopIteration, ArithmeticError, csv.Error) as exc:
-            result["issues"].append(str(exc))
+        except (ValueError, OSError, KeyError, TypeError, StopIteration, ArithmeticError, csv.Error) as exc: result["issues"].append(str(exc))
     return result
-
-
 def _power_error(value):
     return max(0.001, 0.5 * 10 ** (math.floor(math.log10(abs(value))) - 5)) if value else 0.001
-
-
 def read_storage_year(csv_path, pdf_path, year, load_record, load_values, state):
     """Interpret native hourly storage flows without the grid-only PR formula."""
     if type(year) is not int or not 1969 <= year <= 2068 or load_record["year"] != year:
@@ -618,8 +511,7 @@ def read_storage_year(csv_path, pdf_path, year, load_record, load_values, state)
     required = {"E_User", "EFrGrid", "E_Grid", "SOC_Beg", "SOC_End", "EBatCh", "EBatDis", "CL_Chrg", "CL_InvB"}
     if required - set(units):
         raise ValueError("Storage output is missing required load/SOC/AC power columns: " + ", ".join(sorted(required - set(units))))
-    if any(not unit for unit in units.values()):
-        raise ValueError("Every actual storage result column requires an explicit unit")
+    if any(not unit for unit in units.values()): raise ValueError("Every actual storage result column requires an explicit unit")
     power_names = {"E_User", "EFrGrid", "E_Grid", "E_Miss", "E_Avail", "EBatCh", "EBatDis", "CL_Chrg", "CL_InvB", "CL_Over", "EUnused", "EArray", "IL_Pmax"}
     power_scales = {name: POWER_TO_KW.get(units[name]) for name in power_names & set(units)}
     soc_scales = {name: {"ratio": 1, "%": 0.01}.get(units[name]) for name in ("SOC_Beg", "SOC_End")}
@@ -642,27 +534,22 @@ def read_storage_year(csv_path, pdf_path, year, load_record, load_values, state)
             indices = {name: headers.index(name) for name in units}
         if row[0] != expected or expected >= end or count >= len(load_values):
             raise ValueError("Storage annual hourly coverage differs from the declared year/load")
-        if any(not math.isfinite(value) for value in row[1:]):
-            raise ValueError("Storage output contains missing or nonfinite numeric data")
+        if any(not math.isfinite(value) for value in row[1:]): raise ValueError("Storage output contains missing or nonfinite numeric data")
         load_stamp, load_power = load_values[count]
-        if load_stamp != expected:
-            raise ValueError("Prepared load timestamps differ from the native output")
+        if load_stamp != expected: raise ValueError("Prepared load timestamps differ from the native output")
         power = {name: row[indices[name]] * scale for name, scale in power_scales.items()}
         soc = {name: row[indices[name]] * scale for name, scale in soc_scales.items()}
         if any(not math.isfinite(value) for value in (*power.values(), *soc.values())):
             raise ValueError("Storage unit conversion exceeds finite numeric range")
         difference = abs(power["E_User"] - load_power)
         load_error = max(load_error, difference)
-        if difference > encoding_error + _power_error(power["E_User"]):
-            raise ValueError("Native E_User differs from the bound prepared hourly load")
+        if difference > encoding_error + _power_error(power["E_User"]): raise ValueError("Native E_User differs from the bound prepared hourly load")
         for name, value in soc.items():
-            if not state["soc_min"] - 0.0001 <= value <= state["soc_max"] + 0.0001:
-                raise ValueError("Native SOC is outside the declared bounds")
+            if not state["soc_min"] - 0.0001 <= value <= state["soc_max"] + 0.0001: raise ValueError("Native SOC is outside the declared bounds")
             soc_min[name], soc_max[name] = min(soc_min[name], value), max(soc_max[name], value)
         if initial_soc is None:
             initial_soc = soc["SOC_Beg"]
-            if abs(initial_soc - state["initial_soc"]) > 0.0001:
-                raise ValueError("Native initial SOC differs from the declared initial SOC")
+            if abs(initial_soc - state["initial_soc"]) > 0.0001: raise ValueError("Native initial SOC differs from the declared initial SOC")
         charge, discharge = power["EBatCh"] + power["CL_Chrg"], power["EBatDis"] - power["CL_InvB"]
         if charge > state["max_charge_ac_kw"] + _power_error(power["EBatCh"]) + _power_error(power["CL_Chrg"]):
             raise ValueError("Native charging AC input exceeds the declared limit")
@@ -673,22 +560,16 @@ def read_storage_year(csv_path, pdf_path, year, load_record, load_values, state)
             try:
                 residual = math.fsum(power[name] for name in ("E_Avail", "EFrGrid", "EBatDis", "E_Miss")) - math.fsum(
                     power[name] for name in ("E_User", "E_Grid", "EBatCh", "CL_Chrg", "CL_InvB", "CL_Over", "EUnused"))
-            except OverflowError:
-                raise ValueError("Storage AC balance exceeds finite numeric range") from None
+            except OverflowError: raise ValueError("Storage AC balance exceeds finite numeric range") from None
             bound = math.fsum(_power_error(power[name]) for name in balance_names)
-            if not math.isfinite(residual) or not math.isfinite(bound):
-                raise ValueError("Storage AC balance exceeds finite numeric range")
+            if not math.isfinite(residual) or not math.isfinite(bound): raise ValueError("Storage AC balance exceeds finite numeric range")
             balance_max, balance_bound_max = max(balance_max, abs(residual)), max(balance_bound_max, bound)
-            if abs(residual) > bound:
-                raise ValueError("Native storage AC energy-flow residual exceeds its column export precision bound")
-        for name, value in power.items():
-            totals[name] += value
+            if abs(residual) > bound: raise ValueError("Native storage AC energy-flow residual exceeds its column export precision bound")
+        for name, value in power.items(): totals[name] += value
         expected += timedelta(hours=1)
         count += 1
-    if expected != end or count != len(load_values):
-        raise ValueError("Storage output does not cover the entire prepared hourly year")
-    if any(not math.isfinite(value) for value in totals.values()):
-        raise ValueError("Storage annual totals exceed finite numeric range")
+    if expected != end or count != len(load_values): raise ValueError("Storage output does not cover the entire prepared hourly year")
+    if any(not math.isfinite(value) for value in totals.values()): raise ValueError("Storage annual totals exceed finite numeric range")
     verify_pdf_header(Path(pdf_path), message="Native storage report is not a PDF")
     names = {"grid_import_kwh": "EFrGrid", "grid_export_kwh": "E_Grid", "load_energy_kwh": "E_User",
              "unmet_load_kwh": "E_Miss", "battery_charge_kwh": "EBatCh", "battery_discharge_kwh": "EBatDis",
@@ -714,24 +595,15 @@ def read_storage_year(csv_path, pdf_path, year, load_record, load_values, state)
             "max_ac_balance_export_bound_kw": balance_bound_max if not missing_balance else None,
         },
     }
-
-
 def _cell(value):
-    if value is None:
-        return "未记录"
+    if value is None: return "未记录"
     text = json.dumps(value, ensure_ascii=False, allow_nan=False) if isinstance(value, (dict, list)) else str(value)
     return html.escape(text, quote=False).replace("|", "\\|").replace("\r", "").replace("\n", " / ")
-
-
 def _table(headers, rows):
     return "\n".join(["| " + " | ".join(headers) + " |", "| " + " | ".join("---" for _ in headers) + " |"]
                      + ["| " + " | ".join(_cell(value) for value in row) + " |" for row in rows])
-
-
 def _json_block(value):
     return "```json\n" + json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + "\n```"
-
-
 def _house_evidence(task):
     imported = task.get("native_import") or {}
     verification, reload = imported.get("verification") or {}, imported.get("native_reload") or {}
@@ -745,8 +617,6 @@ def _house_evidence(task):
                         stored_module_layout_verified=imported.get("stored_module_layout_verified"),
                         native_consumption_verified=task.get("native_consumption_verified"))
     return evidence
-
-
 def _summary(task, handoff, manifest_name, comparison=None, delivery_review_required=False, house_runs=()):
     metrics = task.get("metrics") or {}
     storage = any(key in metrics for key in ("grid_import_kwh", "load_energy_kwh", "battery_charge_kwh", "initial_soc"))
@@ -775,8 +645,7 @@ def _summary(task, handoff, manifest_name, comparison=None, delivery_review_requ
              "", "## 年度结果", "", _table(("指标", "原生结果汇总", "单位"), metric_rows) if metric_rows else "运行清单未提供上述年度指标。"]
     if storage:
         lines.extend(["", "电池充放电按原生电池侧导出量展示，不能直接当作AC侧功率限值；SOC采用0..1分数。"])
-        if metrics.get("missing_metrics"):
-            lines.append("未导出的指标保留未记录：" + _cell(metrics["missing_metrics"]) + "。")
+        if metrics.get("missing_metrics"): lines.append("未导出的指标保留未记录：" + _cell(metrics["missing_metrics"]) + "。")
     for house in house_runs or ([task] if task.get("operation") == "engineering_house" else []):
         evidence = _house_evidence(house)
         lines.extend(["", "## 住宅保存与重载记录", "", "工程/方案：" + _cell(house["working_project"] + "/" + house["working_variant"]), "",
@@ -792,19 +661,14 @@ def _summary(task, handoff, manifest_name, comparison=None, delivery_review_requ
         deltas = [(row.get("baseline_label"), row.get("target_label"), label, energy.get("delta_energy_kwh"))
                   for row in comparison.get("metrics") or [] for column, label in order
                   if isinstance(energy := row.get("summary", {}).get(column), dict)]
-        if deltas:
-            lines.extend(["", _table(("基准", "候选", "指标", "候选减基准的完整电量差(kWh)"), deltas)])
+        if deltas: lines.extend(["", _table(("基准", "候选", "指标", "候选减基准的完整电量差(kWh)"), deltas)])
         lines.extend(["", "各方案的明确变更、关键时段和限制见 comparison.md；逐项数据见 comparison.csv，工程与原生结果已一并收录。"])
     lines.extend(["", "## 交接事项", "", *(("- " + _cell(item)) for item in warnings[:5])])
-    if not warnings:
-        lines.append("- 本次任务未记录额外警告。")
-    if handoff.get("missing_items"):
-        lines.append("- 输入交接仍有 " + str(len(handoff["missing_items"])) + " 项补件/依据事项，详见 inputs.md。")
+    if not warnings: lines.append("- 本次任务未记录额外警告。")
+    if handoff.get("missing_items"): lines.append("- 输入交接仍有 " + str(len(handoff["missing_items"])) + " 项补件/依据事项，详见 inputs.md。")
     lines.extend(["- 包内含各收录方案的原生 PRJ、选中 VC 和运行清单绑定的结果文件；设备模型、气象、负荷等外部依赖按 inputs.md 另行准备。",
                   "- 打包成功表示成果已整理；工程依据和任务复核状态沿用运行清单。完整变更、警告及输入说明见 inputs.md。", ""])
     return "\n".join(lines)
-
-
 def _inputs(handoff, task):
     saved, declarations = handoff["saved"], (handoff.get("declarations") or {})
     lines = ["# 工程输入交接", "", "工程：" + _cell(handoff["project"]) + "；方案：" + _cell(handoff["variant"]),
@@ -837,37 +701,24 @@ def _inputs(handoff, task):
             "不据此读取包外路径。商业组件、站点及气象原件不随包分发；缺少这些依赖时无法在本地重新执行仿真。"])
     lines.extend(["", "本交接包汇总已保存的工程文件和运行清单，不包含未保存的 GUI 状态或外部商业组件原件。", ""])
     return "\n".join(lines)
-
-
 def _delivery_result_path(store, value, extension):
-    if not isinstance(value, str):
-        raise ValueError("Run artifact must be a controlled workspace filename or absolute Results path")
+    if not isinstance(value, str): raise ValueError("Run artifact must be a controlled workspace filename or absolute Results path")
     given = Path(value)
-    if not given.is_absolute() and given.name != value:
-        raise ValueError("Relative run artifacts must be filenames without directories")
+    if not given.is_absolute() and given.name != value: raise ValueError("Relative run artifacts must be filenames without directories")
     name = safe_filename(given.name, extension)
     expected = workspace_file(store.workspace, "Results", name, extension)
-    if given.is_absolute() and given.resolve() != expected:
-        raise ValueError("Run artifact is outside the controlled Results folder")
-    if not expected.is_file():
-        raise FileNotFoundError(name)
+    if given.is_absolute() and given.resolve() != expected: raise ValueError("Run artifact is outside the controlled Results folder")
+    if not expected.is_file(): raise FileNotFoundError(name)
     return expected
-
-
 def _stamp(path):
     stat = path.stat()
     return stat.st_size, stat.st_mtime_ns, stat.st_ino
-
-
 def _saved_inputs(saved):
     saved = deepcopy(saved)
     if isinstance(saved, dict):
         for row in saved.get("load", {}).get("objects", []):
-            if isinstance(row, dict) and isinstance(row.get("hourly_source"), dict):
-                row["hourly_source"].pop("path_matches_workspace", None)
+            if isinstance(row, dict) and isinstance(row.get("hourly_source"), dict): row["hourly_source"].pop("path_matches_workspace", None)
     return saved
-
-
 def _saved_inputs_match(current, recorded):
     current, recorded = _saved_inputs(current), _saved_inputs(recorded)
     if isinstance(current, dict) and isinstance(recorded, dict):
@@ -877,15 +728,12 @@ def _saved_inputs_match(current, recorded):
                 if isinstance(old, dict) and isinstance(new, dict) and old.get("id") == new.get("id") and "inverter_state" not in old:
                     new.pop("inverter_state", None)
     return current == recorded
-
-
 def _comparison_report(store, comparison_name, load_run):
     safe_filename(comparison_name, ".json")
     path = _delivery_result_path(store, comparison_name, ".json")
     with path.open("rb") as stream:
         data = stream.read(32 * 1024 * 1024 + 1)
-    if len(data) > 32 * 1024 * 1024:
-        raise ValueError("Comparison report exceeds 32 MiB")
+    if len(data) > 32 * 1024 * 1024: raise ValueError("Comparison report exceeds 32 MiB")
     report = json.loads(data)
     if (not isinstance(report, dict) or report.get("operation") != "engineering_scenario_comparison"
             or report.get("dry_run") is not False or report.get("status") not in ("created", "needs_review")
@@ -905,11 +753,9 @@ def _comparison_report(store, comparison_name, load_run):
         raise ValueError("Comparison CSV or Markdown changed after it was recorded")
     bindings, manifests = [], set()
     for scenario in report["scenarios"]:
-        if not isinstance(scenario, dict):
-            raise ValueError("Comparison scenario must contain a native-run binding")
+        if not isinstance(scenario, dict): raise ValueError("Comparison scenario must contain a native-run binding")
         manifest = safe_filename(scenario["run_manifest_name"], ".json")
-        if manifest.casefold() in manifests:
-            raise ValueError("Comparison scenarios must refer to distinct native runs")
+        if manifest.casefold() in manifests: raise ValueError("Comparison scenarios must refer to distinct native runs")
         manifests.add(manifest.casefold())
         project, variant = project_name(scenario["project"]), variant_id(scenario["variant"])
         csv_name = safe_filename(scenario["csv_name"], ".csv")
@@ -919,8 +765,6 @@ def _comparison_report(store, comparison_name, load_run):
         bindings.append({"run_manifest_name": manifest, "project": project, "variant": variant,
                          "csv_name": csv_name, "label": scenario.get("label", project + "/" + variant), "task": task})
     return report, files, data, bindings
-
-
 def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=True, comparison_name=""):
     """Export a bound native run and an optional recorded comparison without changing their review states."""
     result = {"status": "blocked", "dry_run": dry_run, "issues": [], "included_files": [], "external_dependencies": [],
@@ -928,22 +772,17 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
     writing = False
     with store.lock:
         try:
-            if type(dry_run) is not bool:
-                raise ValueError("Use a strict dry_run boolean")
-            if not isinstance(comparison_name, str):
-                raise ValueError("comparison_name must be an optional Results JSON filename")
+            if type(dry_run) is not bool: raise ValueError("Use a strict dry_run boolean")
+            if not isinstance(comparison_name, str): raise ValueError("comparison_name must be an optional Results JSON filename")
             safe_filename(manifest_name, ".json")
             output = workspace_file(store.workspace, "Results", output_name, ".zip")
-            if output.name.casefold() != output_name.casefold():
-                raise ValueError("Delivery filename resolves to a different file")
-            if output.exists():
-                raise FileExistsError("Delivery already exists; use a new output_name")
+            if output.name.casefold() != output_name.casefold(): raise ValueError("Delivery filename resolves to a different file")
+            if output.exists(): raise FileExistsError("Delivery already exists; use a new output_name")
             comparison, comparison_files, comparison_bytes = None, {}, None
             if comparison_name:
                 comparison, comparison_files, comparison_bytes, bindings = _comparison_report(store, comparison_name, load_engineering_run)
                 primary = next((item for item in bindings if item["run_manifest_name"].casefold() == manifest_name.casefold()), None)
-                if primary is None:
-                    raise ValueError("The explicit comparison must include the requested primary native-run manifest")
+                if primary is None: raise ValueError("The explicit comparison must include the requested primary native-run manifest")
                 task = primary["task"]
             else:
                 task = load_engineering_run(store, manifest_name)
@@ -969,20 +808,16 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
                 for folder, path in files:
                     name = folder + "/" + path.name
                     if (existing := next((key for key in sources if key.casefold() == name.casefold()), None)) is not None:
-                        if sources[existing] != path:
-                            raise ValueError("Different scenario files have conflicting delivery names")
+                        if sources[existing] != path: raise ValueError("Different scenario files have conflicting delivery names")
                         continue
                     sources[name] = path
-                    if folder == "Projects":
-                        payloads[name] = store._read(path)
+                    if folder == "Projects": payloads[name] = store._read(path)
                     elif run.get("operation") == "engineering_house" and name.casefold() == ("Results/" + binding["run_manifest_name"]).casefold():
                         raw_manifest = path.read_bytes()
-                        if json.loads(raw_manifest) != run:
-                            raise ValueError("House task manifest changed before it was packaged")
+                        if json.loads(raw_manifest) != run: raise ValueError("House task manifest changed before it was packaged")
                         payloads[name] = raw_manifest
                 for dependency in handoff.get("external_dependencies", []):
-                    if dependency not in external_dependencies:
-                        external_dependencies.append(dependency)
+                    if dependency not in external_dependencies: external_dependencies.append(dependency)
             if comparison:
                 sources.update({"comparison.json": comparison_files["json"], "comparison.csv": comparison_files["csv"], "comparison.md": comparison_files["markdown"]})
                 payloads["comparison.json"] = comparison_bytes
@@ -1009,18 +844,15 @@ def export_engineering_delivery(store, *, manifest_name, output_name, dry_run=Tr
                 scope="Recorded engineering runs and an optional bound comparison; selected variants retain embedded geometry. "
                       "House runs also include their bound scene, SFI and original manifest; model, weather and load files are external dependencies",
             )
-            if dry_run:
-                return result
+            if dry_run: return result
             output.parent.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
                 writing = True
                 archive.writestr("summary.md", summary)
                 archive.writestr("inputs.md", inputs)
                 for name, path in sources.items():
-                    if name in payloads:
-                        archive.writestr(name, payloads[name])
-                    else:
-                        archive.write(path, name)
+                    if name in payloads: archive.writestr(name, payloads[name])
+                    else: archive.write(path, name)
             if (any(_stamp(path) != before[name] for name, path in sources.items())
                     or any(path.read_bytes() != payloads[name] for name, path in sources.items() if name in payloads)):
                 raise ValueError("Delivery inputs changed while packaging; retained ZIP is not accepted for delivery")

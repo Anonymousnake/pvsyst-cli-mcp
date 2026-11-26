@@ -1,4 +1,4 @@
-from .api.app import main
+from .api.context import main
 
 if __name__ == "__main__":
     main()

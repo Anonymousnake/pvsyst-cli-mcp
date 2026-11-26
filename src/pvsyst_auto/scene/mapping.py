@@ -8,7 +8,7 @@ from itertools import product
 
 from pvsyst_auto.project.circuit import circuit_nodes, inventory
 from pvsyst_auto.scene.author import MAX_VERTICES, _dot, _num, _rotate_z, _sub
-from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, PV_TABLE_SOURCES
+from pvsyst_auto.validation import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, PV_TABLE_SOURCES
 
 COORD_TOL = 2e-5
 NORMAL_TOL = 1e-7

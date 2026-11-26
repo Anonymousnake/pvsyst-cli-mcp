@@ -15,7 +15,7 @@ from typing import Any
 
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.validation import finite_number as _finite
-from pvsyst_auto.versions import SEED_RECORD_VERSION, SYNTH_VERSION
+from pvsyst_auto.validation import SEED_RECORD_VERSION, SYNTH_VERSION
 
 _EPS = 1e-9
 _EARTH_R_M = 6371000.0

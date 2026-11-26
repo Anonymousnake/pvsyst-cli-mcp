@@ -10,16 +10,188 @@ from pvsyst_auto.project.tracking import create_tracking_variant
 from pvsyst_auto.scene.author import create_house_pv_scene
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.api.schemas import (
-    ACCablingUpdates, AgeingUpdates, AuxiliaryUpdates, BifacialUpdates, DCCablingUpdates,
-    GeneratorUpdates, GridLimitUpdates, HorizonUpdates, HouseSpec, HvTransformerSpec, IamUpdates,
-    InverterTemperatureUpdates, MeshHouseSpec, ModuleGeometry, MvTransformerSpec,
-    NamedPVTablesLayout, NativeEconomicsUpdates, ObstacleSpec, OrientationConvertParams,
-    P50P90Updates, PVTableLayout, PlacedPVTableLayout, PowerControlsUpdates, PowerFactorUpdates,
-    SeasonalUpdates, ShedGeometryUpdates, SingleDesignRequest, SoilingUpdates,
-    SourceDeclarationRequest, SourceTextRequest, SpectralUpdates, StrictNum, StringLayoutBinding,
-    StringMismatchUpdates, SystemUnavailabilityUpdates, TrackingControls,
+    BifacialUpdates, HvTransformerSpec, MeshHouseSpec, ModuleGeometry, MvTransformerSpec,
+    NamedPVTablesLayout, ObstacleSpec, PlacedPVTableLayout, SingleDesignRequest,
+    SourceDeclarationRequest, SourceTextRequest, StrictNum, StringLayoutBinding,
+    TrackingControls, _StrictModel, RoofSpec,
 )
-from pvsyst_auto.api.context import categorized_tool, cli, component_call, components, variant_call, variant_store
+from pvsyst_auto.api.context import _maybe_autoload_active_tools, categorized_tool, cli, component_call, components, variant_call, variant_store
+class GeneratorUpdates(_StrictModel):
+    enabled: StrictBool | None = None
+    filename: str | None = None
+    operating_power_kw: StrictNum | None = None
+    thresholds: dict[str, dict[str, StrictNum]] | None = None
+class SoilingUpdates(_StrictModel):
+    """Explicit native soiling mode and GUI-precision percentage values."""
+    mode: Literal["none", "constant", "monthly"]
+    yearly_loss_pct: StrictNum | None = None
+    monthly_loss_pct: list[StrictNum] | None = None
+class UnavailabilityPeriod(_StrictModel):
+    """Explicit PVsyst planned outage start timestamp (DD/MM/YY HH:MM) and duration in hours."""
+    date_beg: StrictStr
+    duration_hours: StrictNum
+class SpectralUpdates(_StrictModel):
+    """Enable, configure, or disable native PVsyst spectral correction (First Solar / precipitable water)."""
+    enabled: StrictBool
+    coeff_set: Literal["SiMono", "SiPoly", "CdTe", "CIS", "aSi", "Custom"] = "SiMono"
+    use_default_coeffs: StrictBool | None = None
+    use_rel_hum: StrictBool = True
+    coefficients: Annotated[list[StrictNum], Field(min_length=6, max_length=6)] | None = None
+class NativeEconomicsUpdates(_StrictModel):
+    """Write or remove native EconomicEval=TEcoEvaluation so PVsyst PDF reports include financial pages."""
+    mode: Literal["set", "none"] = "set"
+    project_life_years: Annotated[StrictInt, Field(ge=1, le=60)] = 25
+    currency: StrictStr = "USD"
+    capex_total: StrictNum | None = None
+    annual_opex: StrictNum = 0.0
+    subsidies: StrictNum = 0.0
+    discount_rate_pct: StrictNum = 5.0
+    inflation_rate_pct: StrictNum = 2.0
+    sale_tariff: StrictNum = 0.08
+    consumption_tariff: StrictNum = 0.15
+    tariff_escalation_pct: StrictNum = 0.0
+    inverter_lifetime_years: StrictNum = 12.0
+    battery_lifetime_years: StrictNum = 10.0
+    fuel_price_per_liter: StrictNum = 1.50
+class OrientationConvertParams(_StrictModel):
+    """Target orientation geometry parameters for pvsyst_convert_orientation."""
+    tilt_deg: StrictNum | None = None
+    azimuth_deg: StrictNum | None = None
+    base_slope_deg: StrictNum | None = None
+    summer_tilt_deg: StrictNum | None = None
+    winter_tilt_deg: StrictNum | None = None
+    winter_months: list[StrictInt] | None = None
+    pitch_m: StrictNum | None = None
+    collector_width_m: StrictNum | None = None
+    shed_count: StrictInt | None = None
+    axis_azimuth_deg: StrictNum | None = None
+    min_phi_deg: StrictNum | None = None
+    max_phi_deg: StrictNum | None = None
+    min_tilt_deg: StrictNum | None = None
+    max_tilt_deg: StrictNum | None = None
+    backtracking: StrictBool | None = None
+class SystemUnavailabilityUpdates(_StrictModel):
+    """Configure explicit outage periods, random outage settings, or remove existing native PV-system outages."""
+    mode: Literal["none", "periods", "random"]
+    periods: Annotated[list[UnavailabilityPeriod], Field(min_length=1, max_length=1000)] | None = None
+    time_fraction_pct: Annotated[StrictNum, Field(gt=0.0, le=100.0)] | None = None
+    period_count: Annotated[StrictInt, Field(ge=1, le=1000)] | None = None
+    min_duration_hours: Annotated[StrictInt, Field(ge=1, le=8760)] | None = None
+    max_duration_hours: Annotated[StrictInt, Field(ge=1, le=8760)] | None = None
+    random_seed: Annotated[StrictInt, Field(ge=0, le=999999)] | None = None
+class GridLimitUpdates(_StrictModel):
+    """Native constant active-power limit at the grid injection point."""
+    mode: Literal["none", "constant"]
+    limit_kw: StrictNum | None = None
+class AuxiliaryUpdates(_StrictModel):
+    """Explicit native whole-system operating/night auxiliary powers in kW."""
+    mode: Literal["none", "constant", "profile"]
+    operating_kw: StrictNum | None = None
+    night_kw: StrictNum | None = None
+    operating_threshold_kw: StrictNum | None = None
+    proportional_w_per_kw: StrictNum | None = None
+    proportional_threshold_kw: StrictNum | None = None
+class SeasonalUpdates(_StrictModel):
+    """Explicit native summer/winter angles and winter-month selection."""
+    summer_tilt: StrictNum
+    winter_tilt: StrictNum
+    winter_months: list[StrictInt]
+    orientation_name: StrictStr | None = None
+class HorizonUpdates(_StrictModel):
+    """Native far-horizon points in PVsyst azimuth/elevation degrees."""
+    mode: Literal["none", "profile"]
+    points: list[list[StrictNum]] | None = None
+    profile_name: StrictStr | None = None
+class InverterTemperatureUpdates(_StrictModel):
+    """Explicit native temperature mode and both saved temperature values in degC."""
+    mode: Literal["ambient", "offset", "fixed"]
+    offset_c: StrictNum | None = None
+    fixed_c: StrictNum | None = None
+class AgeingUpdates(_StrictModel):
+    """Existing activated native template; inputs and recorded RMS/retention controls only."""
+    simulation_year: StrictInt
+    annual_module_degradation_percent: StrictNum
+    keep_mc_values: StrictBool | None = None
+    modules_rms_year_isc_percent: StrictNum | None = None
+    modules_rms_year_voc_percent: StrictNum | None = None
+class IamUpdates(_StrictModel):
+    """Component IAM bit or the ASHRAE model; PAN curve data is never written."""
+    mode: Literal["component", "ashrae"]
+    ashrae_b0: StrictNum | None = None
+class StringMismatchUpdates(_StrictModel):
+    """Native string-voltage-mismatch default bit or one explicit manual percentage."""
+    mode: Literal["default", "constant"]
+    loss_percent: StrictNum | None = None
+class PowerFactorUpdates(_StrictModel):
+    """Explicit native signed tangent values; no cosine or reactive-power calculation."""
+    mode: Literal["none", "constant", "monthly"]
+    pnom_limit: Literal["native", "active", "apparent"]
+    tan_phi: StrictNum | None = None
+    monthly_tan_phi: list[StrictNum] | None = None
+class PowerControlLimitUpdates(_StrictModel):
+    """Explicit native limit quantity, application point and loss classification."""
+    mode: Literal["none", "constant"]
+    quantity: Literal["active", "apparent"]
+    point: Literal["injection", "inverter"]
+    limit: StrictNum | None = None
+    separate_loss: StrictBool | None = None
+class PowerControlsUpdates(_StrictModel):
+    """Combined power factor and grid limit transaction."""
+    power_factor: PowerFactorUpdates
+    grid_limit: PowerControlLimitUpdates
+class P50P90Updates(_StrictModel):
+    """P50/P90 probabilistic simulation parameters on an existing result block."""
+    MeteoKind: Literal["SpecYear", "TMY"]
+    P90Custom: StrictInt
+    PxxCustom: StrictInt
+    PxxReport: StrictBool
+    PxxMainResults: StrictBool
+    PlotKind: StrictInt
+    YearDevFromAver: StrictNum
+    MeteoAnnualVariab: StrictNum
+    PVModelVariab: StrictNum
+    InverterVariab: StrictNum
+    SoilingVariab: StrictNum
+    DegradVariab: StrictNum
+    CustomVariab: StrictNum
+    CustomVarLabel: StrictStr
+class ACCablingUpdates(_StrictModel):
+    """Explicit native cable geometry; omitted conductor/section inherit active source."""
+    length_m: StrictNum
+    metal: Literal["Copper", "Aluminium"] | None = None
+    section: Literal["ISO60228_10", "ISO60228_16", "ISO60228_25", "ISO60228_35", "ISO60228_50", "ISO60228_70", "ISO60228_95", "ISO60228_120"] | None = None
+class DCCablingUpdates(_StrictModel):
+    """DC wiring target: resistance (mOhm) or STC loss percentage."""
+    mode: Literal["resistance", "percent"]
+    value: StrictNum
+class ShedGeometryUpdates(_StrictModel):
+    """Explicit native Sheds/SunShields inputs; omitted values stay inherited."""
+    field_tilt_deg: StrictNum | None = None
+    field_azimuth_deg: StrictNum | None = None
+    pitch_m: StrictNum | None = None
+    collector_width_m: StrictNum | None = None
+    inactive_band_width_1_m: StrictNum | None = None
+    inactive_band_width_2_m: StrictNum | None = None
+    shed_count: StrictInt | None = None
+    module_columns: StrictInt | None = None
+    cell_width_m: StrictNum | None = None
+    shading_factor: StrictNum | None = None
+    electrical_effect: StrictBool | None = None
+class HouseSpec(_StrictModel):
+    """Rectangular footprint with an explicit eave height; no other shapes are supported."""
+    length_m: StrictNum
+    width_m: StrictNum
+    eave_height_m: StrictNum
+    roof: RoofSpec
+class PVTableLayout(_StrictModel):
+    """One fixed table; tilt and azimuth always come from the source variant."""
+    module_rows: StrictInt
+    module_columns: StrictInt
+    orientation: Literal["portrait", "landscape"]
+    row_spacing_m: StrictNum
+    column_spacing_m: StrictNum
+    clearance_m: StrictNum
+    edge_margin_m: StrictNum
 
 
 @categorized_tool()
@@ -491,3 +663,7 @@ def pvsyst_export_logs() -> dict:
     if root not in folder.parents:
         raise ValueError("Results folder resolves outside the workspace")
     return {"zip": str(cli().export_logs(folder))}
+
+
+_TOOLS_READY = True
+_maybe_autoload_active_tools()

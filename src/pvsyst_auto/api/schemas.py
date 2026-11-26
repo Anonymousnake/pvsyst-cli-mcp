@@ -6,27 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, Stri
 
 StrictNum = StrictInt | StrictFloat
 _STRICT_CONFIG = ConfigDict(extra="forbid", allow_inf_nan=False)
-
 class _StrictModel(BaseModel):
     model_config = _STRICT_CONFIG
-
-class GeneratorUpdates(_StrictModel):
-    enabled: StrictBool | None = None
-    filename: str | None = None
-    operating_power_kw: StrictNum | None = None
-    thresholds: dict[str, dict[str, StrictNum]] | None = None
-
-class SoilingUpdates(_StrictModel):
-    """Explicit native soiling mode and GUI-precision percentage values."""
-    mode: Literal["none", "constant", "monthly"]
-    yearly_loss_pct: StrictNum | None = None
-    monthly_loss_pct: list[StrictNum] | None = None
-
-class UnavailabilityPeriod(_StrictModel):
-    """Explicit PVsyst planned outage start timestamp (DD/MM/YY HH:MM) and duration in hours."""
-    date_beg: StrictStr
-    duration_hours: StrictNum
-
 class BifacialUpdates(_StrictModel):
     """Mount, update, or remove PVObject_Bifacial=pvBiFacial on an orientation."""
     enabled: StrictBool = True
@@ -40,148 +21,6 @@ class BifacialUpdates(_StrictModel):
     pitch_user_m: StrictNum | None = None
     n_sheds_user: StrictInt | None = None
     shed_pitch_from_user: StrictBool | None = None
-
-class SpectralUpdates(_StrictModel):
-    """Enable, configure, or disable native PVsyst spectral correction (First Solar / precipitable water)."""
-    enabled: StrictBool
-    coeff_set: Literal["SiMono", "SiPoly", "CdTe", "CIS", "aSi", "Custom"] = "SiMono"
-    use_default_coeffs: StrictBool | None = None
-    use_rel_hum: StrictBool = True
-    coefficients: Annotated[list[StrictNum], Field(min_length=6, max_length=6)] | None = None
-
-class NativeEconomicsUpdates(_StrictModel):
-    """Write or remove native EconomicEval=TEcoEvaluation so PVsyst PDF reports include financial pages."""
-    mode: Literal["set", "none"] = "set"
-    project_life_years: Annotated[StrictInt, Field(ge=1, le=60)] = 25
-    currency: StrictStr = "USD"
-    capex_total: StrictNum | None = None
-    annual_opex: StrictNum = 0.0
-    subsidies: StrictNum = 0.0
-    discount_rate_pct: StrictNum = 5.0
-    inflation_rate_pct: StrictNum = 2.0
-    sale_tariff: StrictNum = 0.08
-    consumption_tariff: StrictNum = 0.15
-    tariff_escalation_pct: StrictNum = 0.0
-    inverter_lifetime_years: StrictNum = 12.0
-    battery_lifetime_years: StrictNum = 10.0
-    fuel_price_per_liter: StrictNum = 1.50
-
-class OrientationConvertParams(_StrictModel):
-    """Target orientation geometry parameters for pvsyst_convert_orientation."""
-    tilt_deg: StrictNum | None = None
-    azimuth_deg: StrictNum | None = None
-    base_slope_deg: StrictNum | None = None
-    summer_tilt_deg: StrictNum | None = None
-    winter_tilt_deg: StrictNum | None = None
-    winter_months: list[StrictInt] | None = None
-    pitch_m: StrictNum | None = None
-    collector_width_m: StrictNum | None = None
-    shed_count: StrictInt | None = None
-    axis_azimuth_deg: StrictNum | None = None
-    min_phi_deg: StrictNum | None = None
-    max_phi_deg: StrictNum | None = None
-    min_tilt_deg: StrictNum | None = None
-    max_tilt_deg: StrictNum | None = None
-    backtracking: StrictBool | None = None
-
-class SystemUnavailabilityUpdates(_StrictModel):
-    """Configure explicit outage periods, random outage settings, or remove existing native PV-system outages."""
-    mode: Literal["none", "periods", "random"]
-    periods: Annotated[list[UnavailabilityPeriod], Field(min_length=1, max_length=1000)] | None = None
-    time_fraction_pct: Annotated[StrictNum, Field(gt=0.0, le=100.0)] | None = None
-    period_count: Annotated[StrictInt, Field(ge=1, le=1000)] | None = None
-    min_duration_hours: Annotated[StrictInt, Field(ge=1, le=8760)] | None = None
-    max_duration_hours: Annotated[StrictInt, Field(ge=1, le=8760)] | None = None
-    random_seed: Annotated[StrictInt, Field(ge=0, le=999999)] | None = None
-
-class GridLimitUpdates(_StrictModel):
-    """Native constant active-power limit at the grid injection point."""
-    mode: Literal["none", "constant"]
-    limit_kw: StrictNum | None = None
-
-class AuxiliaryUpdates(_StrictModel):
-    """Explicit native whole-system operating/night auxiliary powers in kW."""
-    mode: Literal["none", "constant", "profile"]
-    operating_kw: StrictNum | None = None
-    night_kw: StrictNum | None = None
-    operating_threshold_kw: StrictNum | None = None
-    proportional_w_per_kw: StrictNum | None = None
-    proportional_threshold_kw: StrictNum | None = None
-
-class SeasonalUpdates(_StrictModel):
-    """Explicit native summer/winter angles and winter-month selection."""
-    summer_tilt: StrictNum
-    winter_tilt: StrictNum
-    winter_months: list[StrictInt]
-    orientation_name: StrictStr | None = None
-
-class HorizonUpdates(_StrictModel):
-    """Native far-horizon points in PVsyst azimuth/elevation degrees."""
-    mode: Literal["none", "profile"]
-    points: list[list[StrictNum]] | None = None
-    profile_name: StrictStr | None = None
-
-class InverterTemperatureUpdates(_StrictModel):
-    """Explicit native temperature mode and both saved temperature values in degC."""
-    mode: Literal["ambient", "offset", "fixed"]
-    offset_c: StrictNum | None = None
-    fixed_c: StrictNum | None = None
-
-class AgeingUpdates(_StrictModel):
-    """Existing activated native template; inputs and recorded RMS/retention controls only."""
-    simulation_year: StrictInt
-    annual_module_degradation_percent: StrictNum
-    keep_mc_values: StrictBool | None = None
-    modules_rms_year_isc_percent: StrictNum | None = None
-    modules_rms_year_voc_percent: StrictNum | None = None
-
-class IamUpdates(_StrictModel):
-    """Component IAM bit or the ASHRAE model; PAN curve data is never written."""
-    mode: Literal["component", "ashrae"]
-    ashrae_b0: StrictNum | None = None
-
-class StringMismatchUpdates(_StrictModel):
-    """Native string-voltage-mismatch default bit or one explicit manual percentage."""
-    mode: Literal["default", "constant"]
-    loss_percent: StrictNum | None = None
-
-class PowerFactorUpdates(_StrictModel):
-    """Explicit native signed tangent values; no cosine or reactive-power calculation."""
-    mode: Literal["none", "constant", "monthly"]
-    pnom_limit: Literal["native", "active", "apparent"]
-    tan_phi: StrictNum | None = None
-    monthly_tan_phi: list[StrictNum] | None = None
-
-class PowerControlLimitUpdates(_StrictModel):
-    """Explicit native limit quantity, application point and loss classification."""
-    mode: Literal["none", "constant"]
-    quantity: Literal["active", "apparent"]
-    point: Literal["injection", "inverter"]
-    limit: StrictNum | None = None
-    separate_loss: StrictBool | None = None
-
-class PowerControlsUpdates(_StrictModel):
-    """Combined power factor and grid limit transaction."""
-    power_factor: PowerFactorUpdates
-    grid_limit: PowerControlLimitUpdates
-
-class P50P90Updates(_StrictModel):
-    """P50/P90 probabilistic simulation parameters on an existing result block."""
-    MeteoKind: Literal["SpecYear", "TMY"]
-    P90Custom: StrictInt
-    PxxCustom: StrictInt
-    PxxReport: StrictBool
-    PxxMainResults: StrictBool
-    PlotKind: StrictInt
-    YearDevFromAver: StrictNum
-    MeteoAnnualVariab: StrictNum
-    PVModelVariab: StrictNum
-    InverterVariab: StrictNum
-    SoilingVariab: StrictNum
-    DegradVariab: StrictNum
-    CustomVariab: StrictNum
-    CustomVarLabel: StrictStr
-
 class TrackingControls(_StrictModel):
     """Explicit controls of the source native tracking type; absent fields remain inherited."""
     axis_azimuth_deg: StrictNum | None = None
@@ -205,71 +44,23 @@ class TrackingControls(_StrictModel):
     wind_stow_speed_mps: StrictNum | None = None
     wind_stow: StrictBool | None = None
     electrical_effect: StrictBool | None = None
-
-class ACCablingUpdates(_StrictModel):
-    """Explicit native cable geometry; omitted conductor/section inherit active source."""
-    length_m: StrictNum
-    metal: Literal["Copper", "Aluminium"] | None = None
-    section: Literal["ISO60228_10", "ISO60228_16", "ISO60228_25", "ISO60228_35", "ISO60228_50", "ISO60228_70", "ISO60228_95", "ISO60228_120"] | None = None
-
-class DCCablingUpdates(_StrictModel):
-    """DC wiring target: resistance (mOhm) or STC loss percentage."""
-    mode: Literal["resistance", "percent"]
-    value: StrictNum
-
-class ShedGeometryUpdates(_StrictModel):
-    """Explicit native Sheds/SunShields inputs; omitted values stay inherited."""
-    field_tilt_deg: StrictNum | None = None
-    field_azimuth_deg: StrictNum | None = None
-    pitch_m: StrictNum | None = None
-    collector_width_m: StrictNum | None = None
-    inactive_band_width_1_m: StrictNum | None = None
-    inactive_band_width_2_m: StrictNum | None = None
-    shed_count: StrictInt | None = None
-    module_columns: StrictInt | None = None
-    cell_width_m: StrictNum | None = None
-    shading_factor: StrictNum | None = None
-    electrical_effect: StrictBool | None = None
-
 class FlatRoof(_StrictModel):
     """Flat roof: the plate sits at the eave height."""
     kind: Literal["flat"]
-
 class GableRoof(_StrictModel):
     """Symmetric gable roof with the ridge parallel to the house local X axis."""
     kind: Literal["gable"]
     pitch_deg: StrictNum
-
 RoofSpec = Annotated[FlatRoof | GableRoof, Field(discriminator="kind")]
-
-class HouseSpec(_StrictModel):
-    """Rectangular footprint with an explicit eave height; no other shapes are supported."""
-    length_m: StrictNum
-    width_m: StrictNum
-    eave_height_m: StrictNum
-    roof: RoofSpec
-
-class PVTableLayout(_StrictModel):
-    """One fixed table; tilt and azimuth always come from the source variant."""
-    module_rows: StrictInt
-    module_columns: StrictInt
-    orientation: Literal["portrait", "landscape"]
-    row_spacing_m: StrictNum
-    column_spacing_m: StrictNum
-    clearance_m: StrictNum
-    edge_margin_m: StrictNum
-
 class HouseMesh(_StrictModel):
     """AI-authored named architectural geometry; indices are explicit, zero-based triangles."""
     name: StrictStr
     vertices: list[Annotated[list[StrictNum], Field(min_length=3, max_length=3)]]
     triangles: list[Annotated[list[StrictInt], Field(min_length=3, max_length=3)]]
-
 class MeshHouseSpec(_StrictModel):
     """One house composed by the caller, not selected from a roof-template catalogue."""
     kind: Literal["mesh"]
     meshes: list[HouseMesh]
-
 class BuildingObstacle(_StrictModel):
     """Surrounding flat- or gable-roofed building obstacle in the house local frame."""
     kind: Literal["building"]
@@ -280,7 +71,6 @@ class BuildingObstacle(_StrictModel):
     height_m: StrictNum
     rotation_deg: StrictNum = 0.0
     roof: FlatRoof | GableRoof | None = None
-
 class WallObstacle(_StrictModel):
     """Vertical barrier/parapet wall extruded along an XY line segment."""
     kind: Literal["wall"]
@@ -289,14 +79,12 @@ class WallObstacle(_StrictModel):
     end_m: Annotated[list[StrictNum], Field(min_length=3, max_length=3)]
     height_m: StrictNum
     thickness_m: StrictNum = 0.2
-
 class MeshObstacle(_StrictModel):
     """Arbitrary custom 3D obstacle mesh (vertices + triangles) in the house local frame."""
     kind: Literal["mesh"]
     name: StrictStr
     vertices: list[Annotated[list[StrictNum], Field(min_length=3, max_length=3)]]
     triangles: list[Annotated[list[StrictInt], Field(min_length=3, max_length=3)]]
-
 class TreeObstacle(_StrictModel):
     """Native PVsyst parametric tree obstacle (ObjetElemType=oeTree)."""
     kind: Literal["tree"]
@@ -309,9 +97,7 @@ class TreeObstacle(_StrictModel):
     crown_diameter_m: StrictNum
     trunk_diameter_m: StrictNum
     rotation_deg: StrictNum = 0.0
-
 ObstacleSpec = Annotated[BuildingObstacle | WallObstacle | MeshObstacle | TreeObstacle, Field(discriminator="kind")]
-
 class ModuleGeometry(_StrictModel):
     """Explicit geometric metadata, checked against a readable loose PAN when present."""
     model_name: StrictStr
@@ -319,7 +105,6 @@ class ModuleGeometry(_StrictModel):
     width_m: StrictNum
     length_m: StrictNum
     geometry_depth_m: StrictNum
-
 class PlacedPVTableLayout(_StrictModel):
     """Explicit local placement over one named, planar, upward-facing roof surface mesh."""
     module_rows: StrictInt
@@ -329,34 +114,28 @@ class PlacedPVTableLayout(_StrictModel):
     column_spacing_m: StrictNum
     origin_m: Annotated[list[StrictNum], Field(min_length=3, max_length=3)]
     roof_mesh: StrictStr
-
 class NamedPVTableLayout(PlacedPVTableLayout):
     """Named PV region; grouped authoring selects orientation_id, optional source_subarray_id, and optional module_geometry."""
     name: StrictStr
     orientation_id: StrictInt | None = None
     source_subarray_id: StrictInt | None = None  # explicit source SubArray owner when several share one NoOrientation
     module_geometry: ModuleGeometry | None = None
-
 class NamedPVTablesLayout(_StrictModel):
     """List of 1..64 named PV table regions."""
     tables: Annotated[list[NamedPVTableLayout], Field(min_length=1, max_length=64)]
-
 class ModuleCellBinding(_StrictModel):
     """One module cell (1-based row/col and global_string; 0 marks an unassigned draft cell)."""
     row: Annotated[StrictInt, Field(ge=1)]
     col: Annotated[StrictInt, Field(ge=1)]
     global_string: Annotated[StrictInt, Field(ge=0)]
-
 class TableStringBinding(_StrictModel):
     """Per-table cell wiring keyed by table name and source subarray_id."""
     name: StrictStr
     subarray_id: Annotated[StrictInt, Field(ge=1)]
     cells: list[ModuleCellBinding]
-
 class StringLayoutBinding(_StrictModel):
     """Explicit per-module string wiring across named PV tables."""
     tables: Annotated[list[TableStringBinding], Field(min_length=1, max_length=64)]
-
 class SynthesisOrientationSpec(_StrictModel):
     """Optional fixed-plane orientation for zero-template house synthesis."""
     id: Annotated[StrictInt, Field(ge=1)]
@@ -364,7 +143,6 @@ class SynthesisOrientationSpec(_StrictModel):
     azimuth_deg: StrictNum
     base_slope_deg: StrictNum = 0.0
     comment: StrictStr | None = None
-
 class SynthesisSubArraySpec(_StrictModel):
     """Optional subarray electrical declaration for zero-template house synthesis."""
     subarray_id: Annotated[StrictInt, Field(ge=1)]
@@ -384,7 +162,6 @@ class SynthesisSubArraySpec(_StrictModel):
     module_quality_loss: StrictNum | None = None
     dc_wiring_loss_pct: StrictNum = 1.5
     dc_wiring_resistance_mohm: StrictNum = 0.0
-
 class HouseTaskRequest(_StrictModel):
     """3D house task specification: authored house mesh, PV layout, optional source variant (or zero-template synthesis), and run options."""
     source_project: StrictStr | None = None
@@ -421,27 +198,22 @@ class HouseTaskRequest(_StrictModel):
         if not has_proj and (not (self.site_name or "").strip() or not (self.met_name or "").strip()):
             raise ValueError("Zero-template house task requires non-empty site_name (.SIT) and met_name (.MET) when source_project/source_variant are omitted")
         return self
-
 class ConstantNativeLoad(_StrictModel):
     """Native fixed constant consumption in kW; unknown fields stop at the boundary."""
     mode: Literal["constant"]
     constant_kw: StrictNum
-
 class MonthlyNativeLoad(_StrictModel):
     """Native monthly loads as twelve declared kWh values; never derived from monthly power."""
     mode: Literal["monthly"]
     monthly_energy_kwh: list[StrictNum] = Field(min_length=12, max_length=12)
-
 class DailyNativeLoad(_StrictModel):
     """Native daily profile as 24 hourly powers; the trailing slot is native format only."""
     mode: Literal["daily"]
     daily_power_kw: list[StrictNum] = Field(min_length=24, max_length=24)
-
 class HourlyNativeLoad(_StrictModel):
     """Prepared 8760/8784 hourly load manifest bound as an embedded MJ base62 snapshot."""
     mode: Literal["hourly"]
     load_manifest_name: StrictStr
-
 class HouseholdApplianceSpec(_StrictModel):
     """One household appliance entry for LoadType=HouseHold."""
     name: StrictStr
@@ -450,14 +222,12 @@ class HouseholdApplianceSpec(_StrictModel):
     hours: list[StrictInt] | None = None
     half_hours: list[StrictInt] | None = None
     slot_index: Annotated[StrictInt, Field(ge=1, le=10)] | None = None
-
 class HouseholdNativeLoad(_StrictModel):
     """Native household appliance schedule (LoadType=HouseHold, yearly or seasonal)."""
     mode: Literal["household"]
     modulation: Literal["yearly", "seasonal"] = "yearly"
     appliances: Annotated[list[HouseholdApplianceSpec], Field(min_length=1, max_length=10)] | None = None
     seasons: dict[Literal["Summer", "Autumn", "Winter", "Spring"], Annotated[list[HouseholdApplianceSpec], Field(min_length=1, max_length=10)]] | None = None
-
 class ProbabilityNativeLoad(_StrictModel):
     """Hourly probability distribution load (deterministically sampled into native embedded hourly snapshot)."""
     mode: Literal["probability"]
@@ -465,9 +235,7 @@ class ProbabilityNativeLoad(_StrictModel):
     probabilities_pct: Annotated[list[StrictNum], Field(min_length=2, max_length=24)]
     seed: Annotated[StrictInt, Field(ge=0)] = 42
     year: Annotated[StrictInt, Field(ge=1969, le=2068)] = 1990
-
 NativeLoadRequest = Annotated[ConstantNativeLoad | MonthlyNativeLoad | DailyNativeLoad | HourlyNativeLoad | HouseholdNativeLoad | ProbabilityNativeLoad, Field(discriminator="mode")]
-
 class _GridStorageScheduleBase(_StrictModel):
     coupling: Literal["ac_coupled"] = "ac_coupled"
     charging_strategy: Literal["pv_available", "pv_above_thresh", "pv_to_grid_min", "pv_prod_fraction", "spec_charg_power"] | None = None
@@ -480,7 +248,6 @@ class _GridStorageScheduleBase(_StrictModel):
     discharging_schedule_48: Annotated[list[StrictNum], Field(min_length=48, max_length=48)] | None = None
     discharge_start_hour: StrictInt | None = None
     discharge_end_hour: StrictInt | None = None
-
 class GridStorageUpdates(_GridStorageScheduleBase):
     """Native existing AC-coupled storage controls and schedules; unknown fields stop at the boundary."""
     strategy: Literal["self_consumption", "weak_grid", "peak_shaving", "power_shift"] | None = None
@@ -494,7 +261,6 @@ class GridStorageUpdates(_GridStorageScheduleBase):
     charger_euro_efficiency_pct: StrictNum | None = None
     battery_inverter_max_efficiency_pct: StrictNum | None = None
     battery_inverter_euro_efficiency_pct: StrictNum | None = None
-
 class GridAvailabilityProfile(_StrictModel):
     """Explicit 8760/8784-hour CSV or deterministically generated WeakGrid outage schedule."""
     mode: Literal["csv", "generated"] | None = None
@@ -507,7 +273,6 @@ class GridAvailabilityProfile(_StrictModel):
     max_duration_hours: Annotated[StrictInt, Field(ge=1, le=168)] | None = None
     peak_hours: list[StrictInt] | None = None
     seed: Annotated[StrictInt, Field(ge=0)] | None = None
-
 class BatteryPackDesign(_StrictModel):
     file_name: StrictStr
     library: Literal["workspace", "builtin"] = "workspace"
@@ -516,7 +281,6 @@ class BatteryPackDesign(_StrictModel):
     monthly_temperature_c: list[StrictNum]
     cycle_sow: StrictNum
     static_sow: StrictNum
-
 class GridStorageDesign(_GridStorageScheduleBase):
     strategy: Literal["self_consumption", "weak_grid", "peak_shaving", "power_shift"]
     soc_min: StrictNum
@@ -529,7 +293,6 @@ class GridStorageDesign(_GridStorageScheduleBase):
     charger_euro_efficiency_pct: StrictNum
     battery_inverter_max_efficiency_pct: StrictNum
     battery_inverter_euro_efficiency_pct: StrictNum
-
 class CapacityRequest(_StrictModel):
     target_dc_kw: StrictInt | StrictFloat | None = None
     min_dc_ac_ratio: StrictInt | StrictFloat | None = None
@@ -547,7 +310,6 @@ class CapacityRequest(_StrictModel):
     design_min_operating_temperature_c: StrictInt | StrictFloat | None = None
     design_max_operating_temperature_c: StrictInt | StrictFloat | None = None
     design_basis: StrictStr | None = None
-
 class LossRequest(_StrictModel):
     """Optional template loss overrides; only these four parameters are accepted.
 
@@ -558,7 +320,6 @@ class LossRequest(_StrictModel):
     PMismMPP: StrictNum | None = None
     ModuleQualityLoss: StrictNum | None = None
     UFactor: StrictNum | None = None
-
 class DeclaredValue(_StrictModel):
     """One design value, optionally with its declared unit and manufacturer source.
 
@@ -568,7 +329,6 @@ class DeclaredValue(_StrictModel):
     value: StrictNum | None = None
     unit: StrictStr | None = None
     source: StrictStr | None = None
-
 class CoefficientDeclaration(_StrictModel):
     """A temperature coefficient that always states its unit and its source.
 
@@ -578,7 +338,6 @@ class CoefficientDeclaration(_StrictModel):
     value: StrictNum
     unit: StrictStr
     source: StrictStr
-
 class EquipmentRequest(_StrictModel):
     """The exact loose component identity, or one explicit workspace filename.
 
@@ -589,7 +348,6 @@ class EquipmentRequest(_StrictModel):
     file_name: StrictStr | None = None
     manufacturer: StrictStr | None = None
     model: StrictStr | None = None
-
 class WeatherRequest(_StrictModel):
     """Where the simulated weather comes from; no mode is picked for the caller.
 
@@ -613,7 +371,6 @@ class WeatherRequest(_StrictModel):
     temperature_method: StrictStr = "endpoint_mean"
     weather_manifest_name: StrictStr | None = None
     strict_dhi: StrictBool = False
-
 class TemperatureRequest(_StrictModel):
     """Design temperatures in degC; min_ambient_basis names its source or method."""
     min_ambient_c: StrictNum | None = None
@@ -621,31 +378,26 @@ class TemperatureRequest(_StrictModel):
     min_module_operating_c: StrictNum | None = None
     max_module_operating_c: StrictNum | None = None
     annual_min_ambient_c: StrictNum | None = None
-
 class EnvelopeRequest(_StrictModel):
     """Direct manufacturer voltage values, each optionally carrying unit and source."""
     cold_voc_v: StrictNum | DeclaredValue | None = None
     cold_vmp_v: StrictNum | DeclaredValue | None = None
     hot_vmp_v: StrictNum | DeclaredValue | None = None
-
 class CoefficientsRequest(_StrictModel):
     """Declared temperature coefficients, each with an explicit unit and source."""
     beta_voc: CoefficientDeclaration | None = None
     beta_vmp: CoefficientDeclaration | None = None
     alpha_isc: CoefficientDeclaration | None = None
     alpha_imp: CoefficientDeclaration | None = None
-
 class CurrentLimitRequest(_StrictModel):
     """Declared manufacturer current limits, as a value or a declaring object."""
     max_operating_current_a: StrictNum | DeclaredValue | None = None
     max_short_circuit_current_a: StrictNum | DeclaredValue | None = None
-
 class EffectiveIrradianceRequest(_StrictModel):
     """The maximum effective irradiance and rear gain used by a coefficient envelope."""
     max_irradiance_w_m2: StrictNum | None = None
     rear_gain_factor: StrictNum | None = None
     source: StrictStr | None = None
-
 class DesignEnvelopeRequest(_StrictModel):
     """The bounded design-envelope inputs; unknown keys are rejected, not ignored.
 
@@ -665,7 +417,6 @@ class DesignEnvelopeRequest(_StrictModel):
     mppt_limits: CurrentLimitRequest | None = None
     effective_irradiance: EffectiveIrradianceRequest | None = None
     design_basis_extra: StrictStr | None = None
-
 class TerrainSpec(_StrictModel):
     """3D terrain DEM specification (inline XYZ points, workspace CSV, or optional GeoTIFF .tif)."""
     name: StrictStr = "Terrain_DEM"
@@ -678,7 +429,6 @@ class TerrainSpec(_StrictModel):
     follow_slope: StrictBool = True
     max_base_slope_deg: Annotated[StrictNum, Field(ge=0.0, le=45.0)] = 20.0
     max_axis_tilt_deg: Annotated[StrictNum, Field(ge=0.0, le=30.0)] = 15.0
-
 class GroundSubOrientationSpec(_StrictModel):
     """One slope/aspect orientation in a multi-orientation unlimited ground_sheds plant."""
     label: StrictStr | None = None
@@ -695,7 +445,6 @@ class GroundSubOrientationSpec(_StrictModel):
     shading_factor: StrictNum | None = None
     cell_width_m: StrictNum | None = None
     base_slope_deg: StrictNum | None = None
-
 class GroundLayoutRequest(_StrictModel):
     """Ground multi-row fixed sheds or horizontal N-S single-axis tracker geometry."""
     model_mode: Literal["unlimited", "3d"] = "unlimited"
@@ -730,7 +479,6 @@ class GroundLayoutRequest(_StrictModel):
     base_slope_deg: StrictNum | None = None
     terrain: TerrainSpec | None = None
     sub_orientations: Annotated[list[GroundSubOrientationSpec], Field(min_length=1, max_length=16)] | None = None
-
 class AutoSizingOptions(_StrictModel):
     """Optional bounds used when sizing_mode='auto_from_components' derives capacity from PAN/OND."""
     voltage_standard: Literal["IEC", "UL"] = "IEC"
@@ -749,7 +497,6 @@ class TransformerCableSpec(_StrictModel):
     length_m: Annotated[StrictNum, Field(ge=0.0, le=100000.0)] = 0.0
     metal: Literal["Copper", "Aluminium"] = "Copper"
     section_mm2: StrictInt = 150
-
 class MvTransformerSpec(_StrictModel):
     """Medium-voltage transformer stage specification (single or parallel units).
 
@@ -769,7 +516,6 @@ class MvTransformerSpec(_StrictModel):
     copper_loss_kw: StrictNum | None = None
     night_disconnect: StrictBool = False
     cable: TransformerCableSpec | None = None
-
 class HvTransformerSpec(_StrictModel):
     """High-voltage substation transformer stage nested above MV transformers.
 
@@ -787,12 +533,10 @@ class HvTransformerSpec(_StrictModel):
     copper_loss_kw: StrictNum | None = None
     night_disconnect: StrictBool = False
     cable: TransformerCableSpec | None = None
-
 class TransformersConfig(_StrictModel):
     """Optional MV or MV+HV cascaded transformer configuration for grid designs."""
     mv: MvTransformerSpec
     hv: HvTransformerSpec | None = None
-
 class StandaloneGensetSpec(_StrictModel):
     """Inline backup generator specification (synthesizes a .GEN file in ComposPV/Gensets)."""
     file_name: StrictStr | None = None
@@ -801,7 +545,6 @@ class StandaloneGensetSpec(_StrictModel):
     fuel_type: Literal["Diesel", "Gas", "Essence", "Biogas", "Other"] = "Diesel"
     nominal_power_kw: Annotated[StrictNum, Field(gt=0, le=100000)]
     fuel_consumption_l_per_h: Annotated[StrictNum, Field(gt=0, le=50000)]
-
 class StandaloneEconomicsSpec(_StrictModel):
     """Optional off-grid economics parameters including diesel fuel and genset maintenance OPEX."""
     capex_total: Annotated[StrictNum, Field(ge=0)]
@@ -811,7 +554,6 @@ class StandaloneEconomicsSpec(_StrictModel):
     genset_fuel_rate_l_per_kwh: Annotated[StrictNum, Field(ge=0)] | None = None
     avoided_tariff_per_kwh: Annotated[StrictNum, Field(ge=0)] = 0.0
     financial: dict[str, Any] | None = None
-
 class StandaloneDesignSpec(_StrictModel):
     """Off-grid Stand-Alone PV + BESS + Controller + optional Backup Genset specification (SystemType=Battery)."""
     project_comment: StrictStr | None = None
@@ -841,7 +583,6 @@ class StandaloneDesignSpec(_StrictModel):
     load: dict[str, Any] | None = None
     daily_load_kwh: Annotated[StrictNum, Field(gt=0)] | None = None
     economics: StandaloneEconomicsSpec | None = None
-
 class SingleDesignRequest(_StrictModel):
     """One bounded design request; every nested object rejects unknown keys.
 
@@ -874,7 +615,6 @@ class SingleDesignRequest(_StrictModel):
     bifacial: BifacialUpdates | None = None
     transformers: TransformersConfig | None = None
     standalone: StandaloneDesignSpec | None = None
-
 class SourceTextRequest(_StrictModel):
     """One caller-declared source; its text is checked here and never returned."""
     kind: Literal["manufacturer", "site", "assumption"]
@@ -882,7 +622,6 @@ class SourceTextRequest(_StrictModel):
     locator: Annotated[StrictStr, Field(min_length=1)]
     text: Annotated[StrictStr, Field(min_length=1)]
     model: StrictStr | None = None
-
 class SourceDeclarationRequest(_StrictModel):
     """One claimed value with the exact citation text and tokens it must agree with."""
     field: StrictStr
@@ -893,7 +632,6 @@ class SourceDeclarationRequest(_StrictModel):
     source_value_text: StrictStr
     source_unit_text: StrictStr
     page: StrictInt | None = None
-
 class SourcedDesignGoals(_StrictModel):
     """Explicit engineering goals only; no envelope, coefficient or limit is injected here."""
     target_dc_kw: StrictNum | None = None
@@ -901,7 +639,6 @@ class SourcedDesignGoals(_StrictModel):
     capacity_tolerance_pct: StrictNum | None = None
     voltage_standard: Literal["IEC", "UL"] | None = None
     design_basis_extra: StrictStr | None = None
-
 class SourcedHouseTaskRequest(_StrictModel):
     """Cited source inputs plus house geometry, layout, and optional prepare_mode."""
     design: SingleDesignRequest
@@ -940,64 +677,10 @@ class SourcedHouseTaskRequest(_StrictModel):
         if self.sources or self.declarations or self.goals is not None:
             raise ValueError("preserve_source_hardware reuses the existing source; sources/declarations/goals are a source rewrite and are rejected before any native query or write")
         return self
-
-class EngineeringChanges(_StrictModel):
-    tilt: StrictNum | None = None
-    azimuth: StrictNum | None = None
-    losses: LossRequest | None = None
-    tracking: TrackingControls | None = None
-    storage: GridStorageUpdates | None = None
-
-class EngineeringRevisionRequest(_StrictModel):
-    source_project: StrictStr
-    source_variant: StrictStr
-    new_project: StrictStr
-    new_variant: StrictStr
-    objective: StrictStr
-    year: StrictInt
-    nominal_dc_power_kw: StrictNum
-    power_source: StrictStr
-    changes: EngineeringChanges
-    declarations: dict[StrictStr, Any] | None = None
-    report_pages: list[StrictStr] | None = None
-    load_manifest_name: StrictStr = ""
-    availability: GridAvailabilityProfile | None = None
-
-class EngineeringScenario(_StrictModel):
-    label: StrictStr
-    project: StrictStr
-    variant: StrictStr
-    csv_name: StrictStr
-    declared_changes: list[StrictStr]
-    run_manifest_name: StrictStr = ""
-    year: StrictInt | None = None
-    nominal_dc_power_kw: StrictNum | None = None
-    assumptions: list[StrictStr] | None = None
-
-class EngineeringBlock(_StrictModel):
-    id: Annotated[StrictStr, Field(min_length=1, max_length=100)]
-    source_subarray_id: Annotated[StrictInt, Field(ge=1, le=2147483647)]
-    count: Annotated[StrictInt, Field(ge=1, le=100)]
-
-class BatchSweepRequest(_StrictModel):
-    """Parametric PVsyst UserBatch sweep specification (Cartesian grid or explicit scenarios)."""
-    project: StrictStr
-    variant: StrictStr
-    sweep_name: StrictStr
-    grid: dict[StrictStr, list[Any]] | None = None
-    scenarios: list[dict[StrictStr, Any]] | None = None
-    result_variables: list[StrictStr] | None = None
-    sort_by: StrictStr = "E_Grid"
-    sort_descending: StrictBool = True
-    export_hourly: StrictBool = False
-    log_level: StrictInt | None = 3
-    allow_window_creation: StrictBool | None = None
-
 class EconomicsReplacementEvent(_StrictModel):
     year: Annotated[StrictInt, Field(ge=1, le=50)]
     cost: StrictNum
     label: StrictStr | None = None
-
 class EconomicsTouPeriod(_StrictModel):
     name: StrictStr
     hours: Annotated[list[StrictInt], Field(min_length=1, max_length=24)]
@@ -1005,7 +688,6 @@ class EconomicsTouPeriod(_StrictModel):
     export_rate: StrictNum | None = None
     months: list[StrictInt] | None = None
     day_type: Literal["all", "weekday", "weekend"] = "all"
-
 class EconomicsDemandChargeConfig(_StrictModel):
     billing_mode: Literal["demand", "capacity", "compare"] = "demand"
     demand_rate_per_kw_month: StrictNum = 0.0
@@ -1013,12 +695,10 @@ class EconomicsDemandChargeConfig(_StrictModel):
     contract_capacity_kva: StrictNum | None = None
     power_factor: StrictNum = 0.95
     months: list[StrictInt] | None = None
-
 class EconomicsSensitivityConfig(_StrictModel):
     enabled: StrictBool = True
     factors: list[Literal["tariff", "capex", "yield", "degradation"]] | None = None
     variation_pct: StrictNum = 15.0
-
 class EconomicsTariffConfig(_StrictModel):
     mode: Literal["feed_in", "self_consumption_flat", "tou"] = "feed_in"
     feed_in_tariff: StrictNum = 0.0
@@ -1026,7 +706,6 @@ class EconomicsTariffConfig(_StrictModel):
     self_consumption_ratio: StrictNum | None = None
     tou_schedule: list[EconomicsTouPeriod] | None = None
     demand_charge: EconomicsDemandChargeConfig | None = None
-
 class EconomicsVatConfig(_StrictModel):
     """Optional region-neutral value-added tax (VAT) and fixed-asset input VAT credit rules."""
     rate_pct: Annotated[StrictNum, Field(ge=0.0, le=50.0)] = 0.0
@@ -1035,7 +714,6 @@ class EconomicsVatConfig(_StrictModel):
     deductible_capex_share: Annotated[StrictNum, Field(ge=0.0, le=1.0)] | None = None
     surtax_pct: Annotated[StrictNum, Field(ge=0.0, le=50.0)] = 0.0
     opex_input_vat_pct: Annotated[StrictNum, Field(ge=0.0, le=50.0)] = 0.0
-
 class EconomicsCitConfig(_StrictModel):
     """Optional region-neutral corporate income tax (CIT), depreciation, and tax-holiday rules."""
     rate_pct: Annotated[StrictNum, Field(ge=0.0, le=60.0)] = 0.0
@@ -1044,7 +722,6 @@ class EconomicsCitConfig(_StrictModel):
     depreciation_years: Annotated[StrictInt, Field(ge=1, le=50)] | None = None
     residual_value_pct: Annotated[StrictNum, Field(ge=0.0, le=50.0)] = 0.0
     loss_carryforward_years: Annotated[StrictInt, Field(ge=0, le=50)] = 5
-
 class EconomicsFinancingConfig(_StrictModel):
     """Optional project-finance debt & equity structure for Equity IRR and DSCR."""
     equity_ratio_pct: Annotated[StrictNum, Field(ge=1.0, le=100.0)] = 100.0
@@ -1053,7 +730,6 @@ class EconomicsFinancingConfig(_StrictModel):
     loan_interest_rate_pct: Annotated[StrictNum, Field(ge=0.0, le=30.0)] = 0.0
     repayment_method: Literal["equal_principal", "equal_payment"] = "equal_principal"
     equity_discount_rate_pct: Annotated[StrictNum, Field(ge=0.0, le=50.0)] | None = None
-
 class EconomicsOpexTier(_StrictModel):
     """Optional year-band OPEX override or additive schedule (e.g. staged O&M or land lease)."""
     start_year: Annotated[StrictInt, Field(ge=1, le=50)]
@@ -1064,7 +740,6 @@ class EconomicsOpexTier(_StrictModel):
     extra_annual_opex: StrictNum | None = None
     escalate: StrictBool = False
     label: StrictStr | None = None
-
 class EconomicsFinancialConfig(_StrictModel):
     currency: StrictStr = "CNY"
     project_life_years: Annotated[StrictInt, Field(ge=1, le=50)] = 25
@@ -1088,7 +763,6 @@ class EconomicsFinancialConfig(_StrictModel):
     battery_replacement_cost_ratio: StrictNum | None = None
     battery_replacement_cost: StrictNum | None = None
     replacement_events: list[EconomicsReplacementEvent] | None = None
-
 class EconomicsScenarioInput(_StrictModel):
     label: StrictStr
     csv_name: StrictStr | None = None
@@ -1100,7 +774,6 @@ class EconomicsScenarioInput(_StrictModel):
     capex_total: StrictNum | None = None
     annual_opex: StrictNum | None = None
     replacement_events: list[EconomicsReplacementEvent] | None = None
-
 class ReportScenarioInput(_StrictModel):
     label: StrictStr
     csv_name: StrictStr | None = None
@@ -1113,7 +786,6 @@ class ReportScenarioInput(_StrictModel):
     capex_total: StrictNum | None = None
     annual_opex: StrictNum | None = None
     replacement_events: list[EconomicsReplacementEvent] | None = None
-
 class BessSizingParams(_StrictModel):
     soc_min: StrictNum = 0.10
     soc_max: StrictNum = 0.95
@@ -1123,7 +795,6 @@ class BessSizingParams(_StrictModel):
     cycles_per_day: Annotated[StrictInt, Field(ge=1, le=2)] = 2
     min_spread: StrictNum = 0.05
     peak_shaving_limit_kw: StrictNum | None = None
-
 class BessVerifyConfig(_StrictModel):
     project: StrictStr
     source_variant: StrictStr
@@ -1136,14 +807,12 @@ class BessVerifyConfig(_StrictModel):
     static_sow: StrictNum = 0.8
     load_manifest_name: StrictStr | None = None
     variant_prefix: StrictStr | None = None
-
 class FeasibilityInlineComponent(_StrictModel):
     component_type: Literal["PAN", "OND", "BTR"]
     new_name: StrictStr
     manufacturer: StrictStr
     model: StrictStr
     params: dict[StrictStr, Any]
-
 class FeasibilityBessSizingConfig(_StrictModel):
     bess_kwh_values: Annotated[list[StrictNum], Field(min_length=1, max_length=20)]
     pcs_kw_values: Annotated[list[StrictNum], Field(min_length=1, max_length=15)]
@@ -1154,27 +823,34 @@ class FeasibilityBessSizingConfig(_StrictModel):
     rank_by: Literal["npv", "irr", "lcoe", "simple_payback_years", "discounted_payback_years"] = "npv"
     verify_top_k: Annotated[StrictInt, Field(ge=0, le=5)] = 0
     verify_config: BessVerifyConfig | None = None
-
-class FeasibilityReportConfig(_StrictModel):
-    title: StrictStr | None = None
-    output_name: StrictStr | None = None
-    language: Literal["zh", "en"] = "zh"
-    plotlyjs: Literal["cdn", "embed"] = "cdn"
-    overwrite: StrictBool = False
-
-class FeasibilityStudyRequest(_StrictModel):
-    """One-shot end-to-end PV & PV+BESS feasibility study request."""
-    study_name: Annotated[StrictStr, Field(min_length=1, max_length=100)]
-    design: SingleDesignRequest | None = None
-    existing_csv: StrictStr | None = None
-    existing_project: StrictStr | None = None
-    existing_variant: StrictStr | None = None
-    installed_dc_kw: StrictNum | None = None
-    synthesize_components: list[FeasibilityInlineComponent] | None = None
-    auto_tou_schedule: StrictBool = False
-    bess_sizing: FeasibilityBessSizingConfig | None = None
-    financial: EconomicsFinancialConfig | None = None
-    tariff: EconomicsTariffConfig | None = None
-    sensitivity: EconomicsSensitivityConfig | None = None
-    report: FeasibilityReportConfig | None = None
-    thresholds: dict[StrictStr, StrictNum] | None = None
+_PROJECTS_MODELS = (
+    "ACCablingUpdates", "AgeingUpdates", "AuxiliaryUpdates", "DCCablingUpdates",
+    "GeneratorUpdates", "GridLimitUpdates", "HorizonUpdates", "HouseSpec",
+    "IamUpdates", "InverterTemperatureUpdates", "NativeEconomicsUpdates",
+    "OrientationConvertParams", "P50P90Updates", "PVTableLayout",
+    "PowerControlLimitUpdates", "PowerControlsUpdates", "PowerFactorUpdates",
+    "SeasonalUpdates", "ShedGeometryUpdates", "SoilingUpdates",
+    "SpectralUpdates", "StringMismatchUpdates", "SystemUnavailabilityUpdates",
+    "UnavailabilityPeriod",
+)
+_SIMULATION_MODELS = (
+    "BatchSweepRequest", "EngineeringBlock", "EngineeringChanges",
+    "EngineeringRevisionRequest", "EngineeringScenario",
+    "FeasibilityReportConfig", "FeasibilityStudyRequest",
+)
+__all__ = sorted(
+    {"StrictNum"}
+    | {k for k, v in list(globals().items()) if not k.startswith("_") and isinstance(v, type) and issubclass(v, _StrictModel)}
+    | set(_PROJECTS_MODELS)
+    | set(_SIMULATION_MODELS)
+)
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_PROJECTS_MODELS) | set(_SIMULATION_MODELS))
+def __getattr__(name: str):
+    if name in _PROJECTS_MODELS:
+        from . import projects
+        return getattr(projects, name)
+    if name in _SIMULATION_MODELS:
+        from . import simulation
+        return getattr(simulation, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -13,7 +13,7 @@ from pvsyst_auto.validation import (
     append_issue as _issue, append_warning as _warn, finite_number as _finite,
     is_finite_number as _is_number, is_printable_text,
 )
-from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED
+from pvsyst_auto.validation import NATIVE_TEXT_OR_SEED
 
 # --------------------------------------------------------------------- capacity planner
 NUMBERS = (

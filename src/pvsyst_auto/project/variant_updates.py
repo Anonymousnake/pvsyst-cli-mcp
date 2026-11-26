@@ -22,7 +22,7 @@ from pvsyst_auto.project.circuit import (
     transformer_state,
 )
 from pvsyst_auto.validation import finite_number
-from pvsyst_auto.versions import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
 
 BOM = b"\xef\xbb\xbf"
 
@@ -722,33 +722,3 @@ def inspect_parameters(store, project: str, variant: str, include_saved_results:
         if include_topology:
             result["topology"] = topology_state(lines)
         return result
-
-
-_MOVED_REPLACE_HELPERS = {
-    "replace_ageing_enabled": "pvsyst_auto.energy.dc",
-    "replace_ageing_model": "pvsyst_auto.energy.dc",
-    "replace_auxiliaries": "pvsyst_auto.energy.system",
-    "replace_bifacial": "pvsyst_auto.project.bifacial",
-    "replace_iam_model": "pvsyst_auto.energy.dc",
-    "replace_inverter_temperature": "pvsyst_auto.energy.system",
-    "replace_power_controls": "pvsyst_auto.energy.system",
-    "replace_power_factor": "pvsyst_auto.energy.system",
-    "replace_seasonal": "pvsyst_auto.project.bifacial",
-    "replace_soiling": "pvsyst_auto.energy.dc",
-    "replace_string_mismatch": "pvsyst_auto.energy.dc",
-    "replace_system_unavailability": "pvsyst_auto.energy.profiles",
-}
-
-
-def __getattr__(name: str):
-    module_name = _MOVED_REPLACE_HELPERS.get(name)
-    if module_name is not None:
-        import importlib
-
-        value = getattr(importlib.import_module(module_name), name)
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-__all__ = list(dict.fromkeys([k for k in globals() if not k.startswith("_")] + list(_MOVED_REPLACE_HELPERS)))

@@ -16,7 +16,7 @@ from pvsyst_auto.components.editor import ASSIGNMENT, direct_fields, one, pan_va
 from pvsyst_auto.weather.preparation import load_weather_manifest, compare_native_weather, inspect_met_calendar
 from pvsyst_auto.results import annual_summary, fingerprint, verify_native_csv_context, verify_pdf_header
 from pvsyst_auto.project.tracking import create_tracking_variant
-from pvsyst_auto.versions import CLI_TRACKING_BUILDS, NATIVE_TEXT_OR_SEED, SEED_LABEL
+from pvsyst_auto.validation import CLI_TRACKING_BUILDS, NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 
 def collect_simulation_weather_assets(

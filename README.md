@@ -14,19 +14,19 @@ You need your own PVsyst installation and license on the host machine.
 
 | What you want to do | Main entry point | Guide |
 |---|---|---|
-| Run a zero-template fixed-plane, utility ground sheds/tracker (mono/bifacial, multi-orientation `sub_orientations`, finite 3D `site_polygon` / `obstacles` / `base_slope_deg` / 3D DEM `terrain`, MV/HV `transformers`, localized PDF `report_language`, compact preview), or **Stand-Alone off-grid PV+BESS+Genset** (`scope="stand_alone"`) design | `pvsyst_simulate_design`, `pvsyst_suggest_sizing` | [Single-design inputs](docs/single-design-inputs.md) |
+| Run a zero-template fixed-plane, utility ground sheds/tracker (mono/bifacial, multi-orientation `sub_orientations`, finite 3D `site_polygon` / `obstacles` / `base_slope_deg` / 3D DEM `terrain`, MV/HV `transformers`, localized PDF `report_language`, compact preview), or **Stand-Alone off-grid PV+BESS+Genset** (`scope="stand_alone"`) design | `pvsyst_simulate_design`, `pvsyst_suggest_sizing` | [Single-design inputs](docs/workflows-guide.md#1-单方案设计输入与全年流程) |
 | Configure multi-stage MV/HV transformers & ISO 60228 AC collection cables (enforcing PVsyst 8.1.7 `PNomInvAC` basis, 80%–200% rating bounds, ≤1% iron / ≤5% copper, and HV ≥ MV voltages), convert orientations in-place (`fixed`/`seasonal`/`sheds`/`tracker_ns`/`tracker_2axis`), or write spectral correction / random outages / native PDF `TEcoEvaluation` | `pvsyst_configure_transformers`, `pvsyst_convert_orientation`, `pvsyst_update_variant_parameters` | [Tool reference](docs/tool-reference.md) |
-| Filter workspace/builtin components by electrical specs or synthesize custom `.PAN`/`.OND` (single- or 3-voltage) / Li-ion `.BTR` directly from datasheets (with sourced hints and optional `.PAN` single-diode refit on STC edits) | `pvsyst_list_components`, `pvsyst_build_sourced_component`, `pvsyst_update_component` | [Sourced components](docs/sourced-components.md) |
-| Fetch hourly or TMY weather (`Open-Meteo ERA5`, `PVGIS v5.3 TMY`, `NASA POWER`) and optionally chain into `.SIT`/`.MET` preparation in one call (`prepare=true`) | `pvsyst_resolve_location`, `pvsyst_acquire_weather`, `pvsyst_prepare_weather` | [Weather preparation](docs/weather-preparation.md) |
+| Filter workspace/builtin components by electrical specs or synthesize custom `.PAN`/`.OND` (single- or 3-voltage) / Li-ion `.BTR` directly from datasheets (with sourced hints and optional `.PAN` single-diode refit on STC edits) | `pvsyst_list_components`, `pvsyst_build_sourced_component`, `pvsyst_update_component` | [Sourced components](docs/workflows-guide.md#2-基于规格书引用创建自定义-pan--ond--btr-组件) |
+| Fetch hourly or TMY weather (`Open-Meteo ERA5`, `PVGIS v5.3 TMY`, `NASA POWER`) and optionally chain into `.SIT`/`.MET` preparation in one call (`prepare=true`) | `pvsyst_resolve_location`, `pvsyst_acquire_weather`, `pvsyst_prepare_weather` | [Weather preparation](docs/workflows-guide.md#3-站点与标准逐时亚小时气象制备pvsyst_prepare_weather) |
 | Run a parametric sweep (tilt, pitch, albedo, soiling, grid limit, MPPT) in one CLI call with curve extraction and ranked results | `pvsyst_run_batch_sweep` | [Tool reference](docs/tool-reference.md) |
 | Audit completed simulation CSVs (+ optional `.VC0` attribution) and run a bounded Diagnose → Patch → Re-simulate loop on cloned variants | `pvsyst_diagnose_results`, `pvsyst_optimize_variant` | [Tool reference](docs/tool-reference.md) |
 | Plan TOU 2-charge/2-discharge `PowerShift` 48-slot schedules & run two-stage hybrid PV+BESS sizing optimization (fast grid sweep + optional Stage 2 PVsystCLI verification) | `pvsyst_plan_tou_storage_schedule`, `pvsyst_optimize_bess_sizing` | [Tool reference](docs/tool-reference.md) |
 | Evaluate fixed, TOU, and two-part demand-charge tariffs, battery replacement, composable project finance (`debt`, `tax`, `depreciation`, `inflation`, `salvage`, `working_capital`, DSCR/LLCR, equity IRR), sensitivity tornadoes, 25-year cashflows, LCOE, NPV, IRR, and payback | `pvsyst_evaluate_economics` | [Tool reference](docs/tool-reference.md) |
-| Run a one-shot end-to-end PV/PV+BESS feasibility study (synthesis → simulation/reuse → diagnostics → BESS sizing → economics → interactive Plotly HTML report) | `pvsyst_run_feasibility_study`, `pvsyst_generate_report`, `pvsyst_export_engineering_delivery` | [Engineering delivery](docs/engineering-delivery.md) |
-| Build a 3D house + obstacles scene, bind roof orientations, and run annual shading (`linear` or `module_layout`) | `pvsyst_run_house_task` | [House task](docs/native-house-task.md) |
-| Prepare hourly or sub-hourly (`5/10/15/30 min`) weather, configure `household`/`probability` loads or deterministic `WeakGrid` outages, and evaluate AC-coupled storage | `pvsyst_prepare_weather`, `pvsyst_create_native_load_variant`, `pvsyst_create_grid_storage_system` | [Storage engineering](docs/engineering-storage.md) |
-| Inspect an existing project, apply an isolated revision, or diff multiple scenarios | `pvsyst_project_handoff`, `pvsyst_run_engineering_task`, `pvsyst_compare_engineering_scenarios` | [Scenario comparison](docs/engineering-scenarios.md) |
-| Check feasibility briefs or block assembly (requires `expert`) | `pvsyst_review_engineering_brief`, `pvsyst_prepare_block_project` | [Brief review](docs/engineering-brief.md) |
+| Run a one-shot end-to-end PV/PV+BESS feasibility study (synthesis → simulation/reuse → diagnostics → BESS sizing → economics → interactive Plotly HTML report) | `pvsyst_run_feasibility_study`, `pvsyst_generate_report`, `pvsyst_export_engineering_delivery` | [Engineering delivery](docs/workflows-guide.md#6-多方案对比简报预审与工程交付打包) |
+| Build a 3D house + obstacles scene, bind roof orientations, and run annual shading (`linear` or `module_layout`) | `pvsyst_run_house_task` | [House task](docs/workflows-guide.md#4-住宅-3d-场景端到端任务pvsyst_run_house_task) |
+| Prepare hourly or sub-hourly (`5/10/15/30 min`) weather, configure `household`/`probability` loads or deterministic `WeakGrid` outages, and evaluate AC-coupled storage | `pvsyst_prepare_weather`, `pvsyst_create_native_load_variant`, `pvsyst_create_grid_storage_system` | [Storage engineering](docs/workflows-guide.md#5-ac-耦合光储工程pvsyst_run_engineering_task--engineering-storage) |
+| Inspect an existing project, apply an isolated revision, or diff multiple scenarios | `pvsyst_project_handoff`, `pvsyst_run_engineering_task`, `pvsyst_compare_engineering_scenarios` | [Scenario comparison](docs/workflows-guide.md#6-多方案对比简报预审与工程交付打包) |
+| Check feasibility briefs or block assembly (requires `expert`) | `pvsyst_review_engineering_brief`, `pvsyst_prepare_block_project` | [Brief review](docs/workflows-guide.md#6-多方案对比简报预审与工程交付打包) |
 
 By default the server registers **48 core tools across 8 default groups**. `PVSYST_TOOL_GROUPS` is an explicit group list: setting `admin` or `expert` alone replaces the defaults and exposes only that group. Set `PVSYST_TOOL_GROUPS=all` to expose all **75 tools**; to keep the defaults and add `expert`, use `setup,projects,components,weather,storage,simulation,results,engineering,expert`. For migrating from `v0.1.0`, see [Upgrading from v0.1.0](docs/tool-reference.md#upgrading-from-v010).
 
@@ -132,7 +132,7 @@ High-level workflow tools return structured status fields so callers can tell th
 
 ```text
 src/pvsyst_auto/
-├── api/          # MCP server setup, protocol guidance (prompts/resources), strict validation, 8 tool modules
+├── api/          # MCP server setup, protocol guidance (prompts/resources), strict validation, tool handlers across 8 groups
 ├── workflows/    # End-to-end pipelines (design, utility 3D, batch sweep, optimize loop, house tasks, Plotly HTML report, ZIP delivery)
 ├── engineering/  # Sizing assistant, physics diagnostics, financial/TOU economics, handoff, brief checks, scenario comparison
 ├── project/      # .PRJ/.VCx parsing, zero-template synthesizer, pvBiFacial, circuits, templates, and orientations
@@ -154,7 +154,7 @@ from pvsyst_auto import PVsystCLI, PVsystError
 
 ## Development & tests
 
-Integration and unit test suites live under `tests/integration/` and `tests/unit/`. See the [testing and release guide](docs/testing-and-release.md) for split test slices, CI verification, and release builds. Opt-in real-PVsyst tests live under `tests/e2e/`.
+Integration and unit test suites live under `tests/integration/` and `tests/unit/`. See the [testing and release guide](docs/workflows-guide.md#7-测试ci-验证与发版) for split test slices, CI verification, and release builds. Opt-in real-PVsyst tests live under `tests/e2e/`.
 
 ## License
 
