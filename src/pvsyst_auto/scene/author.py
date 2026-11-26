@@ -1,4 +1,4 @@
-"""Serialize AI-authored house meshes and a fixed PV table into PVCollada 2.0."""
+"""Serialize authored house meshes, obstacles, and fixed PV tables into PVCollada 2.0."""
 from __future__ import annotations
 
 import json
@@ -7,128 +7,88 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
-from pvsyst_auto.components.editor import objects, root_block
-from pvsyst_auto.components.editor import pan_validation_fields
-from pvsyst_auto.project.circuit import inventory as grid_inventory
+from pvsyst_auto.components.editor import objects, pan_validation_fields, root_block
+from pvsyst_auto.project.circuit import _walk, circuit_nodes, inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.validation import finite_number as _finite
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED
 
 NS = "http://www.collada.org/2008/03/COLLADASchema"
 PV = "https://pvcollada.org/2026/XMLSchema"
-# Adapter tolerance for paired declarations and roof parallelism, not a native limit.
-TOL = 1e-6
-SMALLEST = 5e-7
+TOL, SMALLEST = 1e-6, 5e-7
 HOUSE_KEYS = ("length_m", "width_m", "eave_height_m", "roof")
 LAYOUT_KEYS = ("module_rows", "module_columns", "orientation", "row_spacing_m",
                "column_spacing_m", "clearance_m", "edge_margin_m")
 GEOMETRY_KEYS = ("model_name", "nom_power_wp", "width_m", "length_m", "geometry_depth_m")
-
 PLACED_LAYOUT_KEYS = ("module_rows", "module_columns", "orientation", "row_spacing_m",
                       "column_spacing_m", "origin_m", "roof_mesh")
-# Adapter payload ceilings, not PVsyst limits or architectural constraints.
 MAX_PARTS, MAX_VERTICES, MAX_TRIANGLES = 128, 50000, 100000
-MAX_OBSTACLES = 64
-MAX_TABLES = 64
+MAX_OBSTACLES, MAX_TABLES = 64, 64
 DEFAULT_MODULE_DEPTH_M = 0.035
 AUTHORING_TOOL = "pvsyst-cli-mcp/house-scene/1"
 
-
 class SceneValidationError(ValueError):
-    """Bounded, actionable input diagnostics; no automatic mutation of authored geometry."""
+    """Bounded, actionable input diagnostics without mutating authored geometry."""
     def __init__(self, diagnostics):
         self.diagnostics = diagnostics[:100]
         self.truncated = len(diagnostics) > 100
         super().__init__("; ".join(row["message"] for row in self.diagnostics[:3]))
 
-
 def _diagnostic(code, path, message, *, part=None, triangle=None, repair_hint=None):
-    result = {"code": code, "path": path, "message": message,
-              "repair_hint": repair_hint or "Correct the indicated input and submit a new preview."}
+    res = {"code": code, "path": path, "message": message,
+           "repair_hint": repair_hint or "Correct the indicated input and submit a new preview."}
     if part is not None:
-        result["part"] = part
+        res["part"] = part
     if triangle is not None:
-        result["triangle"] = triangle
-    return result
-
+        res["triangle"] = triangle
+    return res
 
 def _name(value):
-    if not isinstance(value, str) or not value.strip() or value != value.strip() or len(value) > 120:
-        raise ValueError("Names must be 1..120 characters without surrounding whitespace")
+    _vfail(not isinstance(value, str) or not value.strip() or value != value.strip() or len(value) > 120,
+           "Names must be 1..120 characters without surrounding whitespace")
     return value
 
+def _vfail(cond, msg):
+    if cond:
+        raise ValueError(msg)
 
 def _tag(namespace, name):
     return f"{{{namespace}}}{name}"
 
+def _el(parent, namespace, name, attrib=None, text=None):
+    el = ET.SubElement(parent, _tag(namespace, name), attrib or {})
+    if text is not None:
+        el.text = text
+    return el
 
 def _num(value):
-    """Six-decimal text that never silently collapses a tiny nonzero coordinate to zero."""
-    if not math.isfinite(value):
-        raise ValueError("Coordinate is not finite")
-    if value != 0.0 and abs(value) < SMALLEST:
-        raise ValueError("Coordinate is too small to serialize at six decimals")
+    """Six-decimal text that never collapses a tiny nonzero coordinate to zero."""
+    _vfail(not math.isfinite(value), "Coordinate is not finite")
+    _vfail(value != 0.0 and abs(value) < SMALLEST, "Coordinate is too small to serialize at six decimals")
     text = f"{value:.6f}".rstrip("0").rstrip(".")
     return "0" if text in ("", "-0") else text
 
-
 def _paired(fields, root, alias, label):
-    """Both owning declarations must agree; a repeated or conflicting key stops instead of picking one."""
+    """Both owning declarations must agree; conflicting or duplicate keys raise."""
     found = []
     for name in (root, alias):
-        entry = fields.get(name)
-        if entry is None:
+        if (entry := fields.get(name)) is None:
             continue
-        if len(entry) != 1:
-            raise ValueError(f"PAN {name} must occur exactly once")
+        _vfail(len(entry) != 1, f"PAN {name} must occur exactly once")
         found.append((name, _finite(float(entry[0]), f"PAN {name}", positive=True)))
-    if not found:
-        raise ValueError(f"PAN does not declare {label}")
-    if len(found) == 2 and abs(found[0][1] - found[1][1]) > TOL * max(1.0, abs(found[0][1])):
-        raise ValueError(f"PAN {label} disagrees between {root} and {alias}")
+    _vfail(not found, f"PAN does not declare {label}")
+    _vfail(len(found) == 2 and abs(found[0][1] - found[1][1]) > TOL * max(1.0, abs(found[0][1])),
+           f"PAN {label} disagrees between {root} and {alias}")
     return found[0][1]
-
 
 def _pick(fields, names, label):
     for name in names:
-        entry = fields.get(name)
-        if entry is None:
+        if (entry := fields.get(name)) is None:
             continue
-        if len(entry) != 1:
-            raise ValueError(f"PAN {name} must occur exactly once")
-        text = entry[0].strip()
-        if not text:
-            raise ValueError(f"PAN {name} must not be empty")
+        _vfail(len(entry) != 1, f"PAN {name} must occur exactly once")
+        _vfail(not (text := entry[0].strip()), f"PAN {name} must not be empty")
         return text
     raise ValueError(f"PAN does not declare {label}")
-
-
-def module_profile(fields, explicit=None):
-    """PAN width/height stay in metres here; only the XML text multiplies by 1000."""
-    width = _paired(fields, "Width", "LargApp", "module width")
-    height = _paired(fields, "Height", "LongApp", "module height")
-    long_side, short_side = height, width
-    power = _pick(fields, ("PNom", "PNomModule"), "nom_power")
-    try:
-        nom_power = float(power)
-    except ValueError:
-        raise ValueError("PAN nom_power must be a number") from None
-    if not math.isfinite(nom_power) or nom_power <= 0:
-        raise ValueError("PAN nom_power must be a finite positive number")
-    name = _pick(fields, ("Model",), "Model")
-    depth, depth_source = _resolve_depth(fields, explicit)
-    if explicit is not None:
-        if explicit["name"] != name:
-            raise ValueError("module_geometry.model_name disagrees with the loose PAN")
-        for label, actual, wanted in (("width_m", short_side, explicit["width_m"]),
-                                      ("length_m", long_side, explicit["length_m"]),
-                                      ("nom_power_wp", nom_power, explicit["nom_power"])):
-            if abs(actual - wanted) > TOL * max(1.0, abs(actual)):
-                raise ValueError(f"module_geometry.{label} disagrees with the loose PAN")
-    return {"length_m": long_side, "width_m": short_side, "nom_power": nom_power,
-            "name": name, "depth_m": depth, "depth_source": depth_source,
-            "metadata_source": "source-pan"}
-
 
 def _resolve_depth(fields, explicit):
     if explicit is not None:
@@ -143,99 +103,74 @@ def _resolve_depth(fields, explicit):
             pass
     return DEFAULT_MODULE_DEPTH_M, "default-frame-depth"
 
+def module_profile(fields, explicit=None):
+    """Read PAN width/height in metres (XML scales by 1000 downstream)."""
+    short_side, long_side = _paired(fields, "Width", "LargApp", "module width"), _paired(fields, "Height", "LongApp", "module height")
+    try:
+        nom_power = float(_pick(fields, ("PNom", "PNomModule"), "nom_power"))
+    except ValueError:
+        raise ValueError("PAN nom_power must be a number") from None
+    _vfail(not math.isfinite(nom_power) or nom_power <= 0, "PAN nom_power must be a finite positive number")
+    name, (depth, depth_source) = _pick(fields, ("Model",), "Model"), _resolve_depth(fields, explicit)
+    if explicit is not None:
+        _vfail(explicit["name"] != name, "module_geometry.model_name disagrees with the loose PAN")
+        for label, actual, wanted in (("width_m", short_side, explicit["width_m"]),
+                                      ("length_m", long_side, explicit["length_m"]), ("nom_power_wp", nom_power, explicit["nom_power"])):
+            _vfail(abs(actual - wanted) > TOL * max(1.0, abs(actual)), f"module_geometry.{label} disagrees with the loose PAN")
+    return {"length_m": long_side, "width_m": short_side, "nom_power": nom_power,
+            "name": name, "depth_m": depth, "depth_source": depth_source, "metadata_source": "source-pan"}
 
 def caller_geometry(geometry):
-    """Explicit module metadata for a native database reference; nothing is inferred from a filename."""
+    """Validate explicit module metadata for a native database PAN reference."""
     if geometry is None:
         return None
-    if not isinstance(geometry, dict) or set(geometry) != set(GEOMETRY_KEYS):
-        raise ValueError("module_geometry must declare exactly " + ", ".join(GEOMETRY_KEYS))
-    if not isinstance(geometry["model_name"], str) or not geometry["model_name"].strip():
-        raise ValueError("module_geometry.model_name must be non-empty text")
-    return {"name": geometry["model_name"].strip(),
-            "nom_power": _finite(geometry["nom_power_wp"], "nom_power_wp", positive=True),
-            "length_m": _finite(geometry["length_m"], "length_m", positive=True),
-            "width_m": _finite(geometry["width_m"], "width_m", positive=True),
+    _vfail(not isinstance(geometry, dict) or set(geometry) != set(GEOMETRY_KEYS), "module_geometry must declare exactly " + ", ".join(GEOMETRY_KEYS))
+    _vfail(not isinstance(geometry["model_name"], str) or not geometry["model_name"].strip(), "module_geometry.model_name must be non-empty text")
+    return {"name": geometry["model_name"].strip(), "nom_power": _finite(geometry["nom_power_wp"], "nom_power_wp", positive=True),
+            "length_m": _finite(geometry["length_m"], "length_m", positive=True), "width_m": _finite(geometry["width_m"], "width_m", positive=True),
             "depth_m": _finite(geometry["geometry_depth_m"], "geometry_depth_m", positive=True)}
 
-
 def resolve_modules(components, pan_name, geometry):
-    """Workspace loose PAN first, then the installed library; a database reference needs explicit geometry."""
-    explicit = caller_geometry(geometry)
-    pan_path = None
+    """Resolve loose workspace/builtin PAN metadata, falling back to explicit geometry."""
+    explicit, pan_path = caller_geometry(geometry), None
     for library in ("workspace", "builtin"):
-        if library == "builtin" and components.builtin is None:
-            continue
-        candidate = components._path("PAN", pan_name, library)
-        if candidate.is_file():
-            pan_path = candidate
+        if not (library == "builtin" and components.builtin is None) and (c := components._path("PAN", pan_name, library)).is_file():
+            pan_path = c
             break
     if pan_path is None:
-        if explicit is None:
-            raise ValueError("The referenced PAN is neither a loose workspace nor an installed-library file; "
-                             "module_geometry is required and no vendor value is guessed")
-        return explicit | {"metadata_source": "caller-provided-for-native-database-reference",
-                           "depth_source": "caller-provided"}, None
+        _vfail(explicit is None, "The referenced PAN is neither a loose workspace nor an installed-library file; "
+                                 "module_geometry is required and no vendor value is guessed")
+        return explicit | {"metadata_source": "caller-provided-for-native-database-reference", "depth_source": "caller-provided"}, None
     pan_bytes = components._read(pan_path)
     inspected = components._inspect("PAN", pan_bytes)
     if inspected["format"] != "text":
-        if explicit is None:
-            raise ValueError("The referenced PAN is legacy binary and cannot be parsed; module_geometry is required")
-        return explicit | {"metadata_source": "caller-provided-for-native-database-reference",
-                           "depth_source": "caller-provided"}, (pan_path, pan_bytes)
-    if inspected["structural_errors"]:
-        raise ValueError("PAN has structural errors: " + "; ".join(inspected["structural_errors"]))
-    if inspected["known_value_errors"]:
-        raise ValueError("PAN has value errors: " + "; ".join(inspected["known_value_errors"]))
-    _, pan_text = components._text("PAN", pan_bytes)
-    return module_profile(pan_validation_fields(pan_text), explicit), (pan_path, pan_bytes)
-
+        _vfail(explicit is None, "The referenced PAN is legacy binary and cannot be parsed; module_geometry is required")
+        return explicit | {"metadata_source": "caller-provided-for-native-database-reference", "depth_source": "caller-provided"}, (pan_path, pan_bytes)
+    _vfail(bool(inspected["structural_errors"]), "PAN has structural errors: " + "; ".join(inspected["structural_errors"]))
+    _vfail(bool(inspected["known_value_errors"]), "PAN has value errors: " + "; ".join(inspected["known_value_errors"]))
+    return module_profile(pan_validation_fields(components._text("PAN", pan_bytes)[1]), explicit), (pan_path, pan_bytes)
 
 def _per_table_geometry(layout):
-    """Explicit per-table module geometry bound by source orientation id (fallback carrier).
-
-    Only named layouts carry it; a request-level ``module_geometry`` stays the single-plane /
-    homogeneous path. Two tables may repeat the same geometry for one orientation but may not
-    disagree, so an opaque reference is never silently given two different sizes."""
     result = {}
     tables = layout.get("tables") if isinstance(layout, dict) else None
     if not isinstance(tables, list):
         return result
     for entry in tables:
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or (geometry := entry.get("module_geometry")) is None:
             continue
-        geometry = entry.get("module_geometry")
-        if geometry is None:
-            continue
-        # Key by the owning source subarray when the caller names one (several subarrays may share
-        # an orientation), else by the orientation id (legacy unique-owner keying).
         identifier = entry.get("source_subarray_id")
         if identifier is None:
             identifier = entry.get("orientation_id")
-        elif type(entry.get("orientation_id")) is not int or entry["orientation_id"] < 1:
-            raise ValueError("source_subarray_id requires the table's orientation_id")
-        if type(identifier) is not int or identifier < 1:
-            raise ValueError("module_geometry is only supported on named tables that declare orientation_id")
-        caller_geometry(geometry)  # shape/positivity check; the raw dict is re-validated per group
-        if identifier in result and result[identifier] != geometry:
-            raise ValueError("Tables on source owner %d declare conflicting module_geometry" % identifier)
+        else:
+            _vfail(type(entry.get("orientation_id")) is not int or entry["orientation_id"] < 1, "source_subarray_id requires the table's orientation_id")
+        _vfail(type(identifier) is not int or identifier < 1, "module_geometry is only supported on named tables that declare orientation_id")
+        caller_geometry(geometry)
+        _vfail(identifier in result and result[identifier] != geometry, f"Tables on source owner {identifier} declare conflicting module_geometry")
         result[identifier] = geometry
     return result
 
-
 def resolve_source_geometry(components, source, module_geometry, layout=None):
-    """Resolve each source group's module metadata once; never spread the first PAN over all.
-
-    A single-plane source keeps the historical one-``modules`` dict. A grouped source resolves
-    geometry per source orientation: a readable loose/builtin PAN for that group's PVModule first
-    (validating any explicit geometry against it), else the explicit ``module_geometry`` bound to
-    that table/group, else — only when every group shares one PAN — the request-level geometry.
-    A distinct PAN with no resolvable geometry raises instead of reusing another source's size.
-
-    Returns ``(default_modules, pan_snapshots)``; the default is the first group's geometry (the
-    legacy single-model COLLADA element), and ``pan_snapshots`` are the ``(path, bytes)`` pairs
-    actually read so the caller can re-check them for change before writing.
-    """
+    """Resolve each source group's module metadata once; returns (default_modules, pan_snapshots)."""
     groups = source.get("orientations") or []
     if not groups:
         modules, snapshot = resolve_modules(components, source["pan_name"], module_geometry)
@@ -245,63 +180,49 @@ def resolve_source_geometry(components, source, module_geometry, layout=None):
     snapshots = []
     for group in groups:
         identity = group.get("subarray_id", group["id"])
-        requested = explicit.get(identity)
-        if requested is None and shared:
-            requested = module_geometry
+        requested = explicit.get(identity) or (module_geometry if shared else None)
         try:
             resolved, snapshot = resolve_modules(components, group["pan_name"], requested)
         except ValueError as exc:
-            raise ValueError(
-                "Source orientation %d needs its own module geometry (%s): %s"
-                % (identity, group["pan_name"], exc)) from None
+            raise ValueError("Source orientation %d needs its own module geometry (%s): %s"
+                             % (identity, group["pan_name"], exc)) from None
         if snapshot is not None and snapshot not in snapshots:
-            # Dedupe by (actual file, bytes): a readable SAME-PAN multi-group source reads the
-            # one file once, so the change-check loop is per distinct file, not per group.
             snapshots.append(snapshot)
         group["module_geometry"] = resolved
     return groups[0]["module_geometry"], snapshots
 
-
 def _vector(values, label):
-    if not isinstance(values, list) or len(values) != 3:
-        raise ValueError(f"{label} must contain three numbers")
+    _vfail(not isinstance(values, list) or len(values) != 3, f"{label} must contain three numbers")
     return [_finite(value, label) for value in values]
 
+def _vec_num(values, label):
+    return [float(_num(v)) for v in _vector(values, label)]
 
 def _sub(a, b):
     return [a[i] - b[i] for i in range(3)]
 
-
 def _dot(a, b):
     value = sum(a[i] * b[i] for i in range(3))
-    if not math.isfinite(value):
-        raise ValueError("Derived geometry is not finite")
+    _vfail(not math.isfinite(value), "Derived geometry is not finite")
     return value
-
 
 def _normal(a, b, c):
     u, v = _sub(b, a), _sub(c, a)
-    normal = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-              u[0] * v[1] - u[1] * v[0]]
+    normal = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
     length = math.hypot(*normal)
-    if not math.isfinite(length) or length == 0:
-        raise ValueError("Mesh triangles must be finite and non-degenerate")
+    _vfail(not math.isfinite(length) or length == 0, "Mesh triangles must be finite and non-degenerate")
     return [value / length for value in normal]
-
 
 def mesh_house_profile(house):
     if set(house) != {"kind", "meshes"} or not isinstance(house["meshes"], list):
-        raise SceneValidationError([_diagnostic("mesh_fields", "house.meshes",
-                                    "A mesh house must declare exactly kind and meshes")])
+        raise SceneValidationError([_diagnostic("mesh_fields", "house.meshes", "A mesh house must declare exactly kind and meshes")])
     if not 1 <= len(house["meshes"]) <= MAX_PARTS:
-        raise SceneValidationError([_diagnostic("mesh_count", "house.meshes",
-                                    f"Declare 1..{MAX_PARTS} named house meshes")])
+        raise SceneValidationError([_diagnostic("mesh_count", "house.meshes", f"Declare 1..{MAX_PARTS} named house meshes")])
     parts, names, vertex_count, triangle_count, errors = [], set(), 0, 0, []
     for index, part in enumerate(house["meshes"]):
         path = f"house.meshes[{index}]"
         if not isinstance(part, dict) or set(part) != {"name", "vertices", "triangles"}:
-            errors.append(_diagnostic("mesh_fields", path,
-                                      "Each mesh must declare exactly name, vertices and triangles"))
+            errors.append(_diagnostic("mesh_fields", path, "Each mesh must declare exactly name, vertices and triangles"))
             continue
         try:
             name = _name(part["name"])
@@ -309,30 +230,23 @@ def mesh_house_profile(house):
             errors.append(_diagnostic("mesh_name", path + ".name", str(exc)))
             continue
         if name.casefold() in names:
-            errors.append(_diagnostic("duplicate_mesh_name", path + ".name",
-                                      "House mesh names must be unique, ignoring case", part=name))
+            errors.append(_diagnostic("duplicate_mesh_name", path + ".name", "House mesh names must be unique, ignoring case", part=name))
         names.add(name.casefold())
         vertices, triangles = part["vertices"], part["triangles"]
         if not isinstance(vertices, list) or len(vertices) < 3:
-            errors.append(_diagnostic("mesh_vertices", path + ".vertices",
-                                      "Each mesh needs at least three vertices", part=name))
+            errors.append(_diagnostic("mesh_vertices", path + ".vertices", "Each mesh needs at least three vertices", part=name))
             continue
         if not isinstance(triangles, list) or not triangles:
-            errors.append(_diagnostic("mesh_triangles", path + ".triangles",
-                                      "Each mesh needs explicit triangle indices", part=name))
+            errors.append(_diagnostic("mesh_triangles", path + ".triangles", "Each mesh needs explicit triangle indices", part=name))
             continue
-        vertex_count += len(vertices)
-        triangle_count += len(triangles)
+        vertex_count, triangle_count = vertex_count + len(vertices), triangle_count + len(triangles)
         if vertex_count > MAX_VERTICES or triangle_count > MAX_TRIANGLES:
-            errors.append(_diagnostic("mesh_ceiling", path,
-                                      "House mesh payload exceeds the adapter vertex/triangle ceiling",
-                                      part=name))
+            errors.append(_diagnostic("mesh_ceiling", path, "House mesh payload exceeds the adapter vertex/triangle ceiling", part=name))
             break
-        # Validate the coordinates that will actually be written, including collapsed edges.
         serialized = []
         for vi, vertex in enumerate(vertices):
             try:
-                serialized.append([float(_num(value)) for value in _vector(vertex, "Mesh vertex")])
+                serialized.append(_vec_num(vertex, "Mesh vertex"))
             except ValueError as exc:
                 serialized.append(None)
                 errors.append(_diagnostic("mesh_coordinate", f"{path}.vertices[{vi}]", str(exc), part=name))
@@ -340,25 +254,19 @@ def mesh_house_profile(house):
         for ti, triangle in enumerate(triangles):
             face_path = f"{path}.triangles[{ti}]"
             if (not isinstance(triangle, list) or len(triangle) != 3
-                    or any(type(index) is not int or not 0 <= index < len(vertices) for index in triangle)
-                    or len(set(triangle)) != 3):
-                errors.append(_diagnostic("triangle_indices", face_path,
-                                          "Triangles require three distinct, in-range, zero-based integer indices",
-                                          part=name, triangle=ti))
+                    or any(type(idx) is not int or not 0 <= idx < len(vertices) for idx in triangle) or len(set(triangle)) != 3):
+                errors.append(_diagnostic("triangle_indices", face_path, "Triangles require three distinct, in-range, zero-based integer indices", part=name, triangle=ti))
                 continue
-            if any(serialized[vertex] is None for vertex in triangle):
+            if any(serialized[v] is None for v in triangle):
                 continue
-            points = [serialized[vertex] for vertex in triangle]
+            points = [serialized[v] for v in triangle]
             try:
                 _normal(*points)
-                key = tuple(sorted(tuple(point) for point in points))
-                if key in seen_faces:
-                    raise ValueError("A coincident triangle is repeated within this mesh")
+                key = tuple(sorted(tuple(p) for p in points))
+                _vfail(key in seen_faces, "A coincident triangle is repeated within this mesh")
                 seen_faces.add(key)
             except ValueError as exc:
-                errors.append(_diagnostic("triangle_geometry", face_path, str(exc), part=name, triangle=ti,
-                                          repair_hint="Replace the indicated triangle; check vertex coordinates, "
-                                                      "six-decimal collapse and duplicated faces."))
+                errors.append(_diagnostic("triangle_geometry", face_path, str(exc), part=name, triangle=ti, repair_hint="Replace the indicated triangle; check vertex coordinates, six-decimal collapse and duplicated faces."))
         parts.append({"name": name, "vertices": serialized, "triangles": triangles})
         if len(errors) > 100:
             break
@@ -366,102 +274,71 @@ def mesh_house_profile(house):
         raise SceneValidationError(errors)
     return {"kind": "mesh", "meshes": parts}
 
-
 def _inside_triangle(point, a, b, c):
-    # Corner containment only; this is not a solid/mesh-intersection engine.
     normal = _normal(a, b, c)
     for start, end in ((a, b), (b, c), (c, a)):
         u, v = _sub(end, start), _sub(point, start)
-        cross = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                 u[0] * v[1] - u[1] * v[0]]
-        if _dot(cross, normal) < -TOL * max(1.0, math.hypot(*u)):
+        if _dot([u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]], normal) < -TOL * max(1.0, math.hypot(*u)):
             return False
     return True
 
-
 def house_profile(house):
-    """Prefer AI-authored meshes; keep the original rectangular roof inputs compatible."""
+    """Validate mesh or rectangular-roof house inputs."""
     if isinstance(house, dict) and house.get("kind") == "mesh":
         return mesh_house_profile(house)
-    if not isinstance(house, dict) or set(house) != set(HOUSE_KEYS):
-        raise ValueError("house must declare exactly length_m, width_m, eave_height_m and roof")
-    length = _finite(house["length_m"], "length_m", positive=True)
-    width = _finite(house["width_m"], "width_m", positive=True)
-    eave = _finite(house["eave_height_m"], "eave_height_m", positive=True)
+    _vfail(not isinstance(house, dict) or set(house) != set(HOUSE_KEYS), "house must declare exactly length_m, width_m, eave_height_m and roof")
+    length, width, eave = (_finite(house[k], k, positive=True) for k in ("length_m", "width_m", "eave_height_m"))
     roof = house["roof"]
-    if not isinstance(roof, dict) or roof.get("kind") not in ("flat", "gable"):
-        raise ValueError("roof.kind must be flat or gable")
+    _vfail(not isinstance(roof, dict) or roof.get("kind") not in ("flat", "gable"), "roof.kind must be flat or gable")
     if roof["kind"] == "flat":
-        if set(roof) != {"kind"}:
-            raise ValueError("flat roof accepts only kind")
-        return {"kind": "flat", "length_m": length, "width_m": width,
-                "eave_height_m": eave, "roof_rise_m": 0.0, "pitch_deg": None}
-    if set(roof) != {"kind", "pitch_deg"}:
-        raise ValueError("gable roof accepts only kind and pitch_deg")
+        _vfail(set(roof) != {"kind"}, "flat roof accepts only kind")
+        return {"kind": "flat", "length_m": length, "width_m": width, "eave_height_m": eave, "roof_rise_m": 0.0, "pitch_deg": None}
+    _vfail(set(roof) != {"kind", "pitch_deg"}, "gable roof accepts only kind and pitch_deg")
     pitch = _finite(roof["pitch_deg"], "roof.pitch_deg", positive=True, maximum=90.0)
-    if not 0.0 < pitch < 90.0:
-        raise ValueError("roof.pitch_deg must be strictly between 0 and 90 degrees")
+    _vfail(not 0.0 < pitch < 90.0, "roof.pitch_deg must be strictly between 0 and 90 degrees")
     ridge = (width / 2.0) * math.tan(math.radians(pitch))
-    if not math.isfinite(ridge):
-        raise ValueError("Derived ridge height is not finite")
-    return {"kind": "gable", "length_m": length, "width_m": width, "eave_height_m": eave,
-            "roof_rise_m": ridge, "pitch_deg": pitch}
-
+    _vfail(not math.isfinite(ridge), "Derived ridge height is not finite")
+    return {"kind": "gable", "length_m": length, "width_m": width, "eave_height_m": eave, "roof_rise_m": ridge, "pitch_deg": pitch}
 
 def _box_faces():
     return [[0, 2, 1], [0, 3, 2], [0, 1, 5], [0, 5, 4], [3, 6, 2], [3, 7, 6],
             [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5], [4, 5, 6], [4, 6, 7]]
 
-
 def _wall_mesh(start, end, height_m, thickness_m):
     dx, dy = end[0] - start[0], end[1] - start[1]
     length = math.hypot(dx, dy)
-    if length <= 1e-4:
-        raise ValueError("Wall start_m and end_m must be separated by > 0.1 mm in XY")
-    nx = -dy / length * (thickness_m / 2.0)
-    ny = dx / length * (thickness_m / 2.0)
-    z0, z1 = start[2], end[2]
-    pts = [
-        (start[0] - nx, start[1] - ny, z0),
-        (end[0] - nx, end[1] - ny, z1),
-        (end[0] + nx, end[1] + ny, z1),
-        (start[0] + nx, start[1] + ny, z0),
-        (start[0] - nx, start[1] - ny, z0 + height_m),
-        (end[0] - nx, end[1] - ny, z1 + height_m),
-        (end[0] + nx, end[1] + ny, z1 + height_m),
-        (start[0] + nx, start[1] + ny, z0 + height_m),
-    ]
+    _vfail(length <= 1e-4, "Wall start_m and end_m must be separated by > 0.1 mm in XY")
+    nx, ny, z0, z1 = -dy / length * (thickness_m / 2.0), dx / length * (thickness_m / 2.0), start[2], end[2]
+    pts = [(cx, cy, cz + dh) for dh in (0.0, height_m)
+           for cx, cy, cz in ((start[0] - nx, start[1] - ny, z0), (end[0] - nx, end[1] - ny, z1),
+                              (end[0] + nx, end[1] + ny, z1), (start[0] + nx, start[1] + ny, z0))]
     return [[float(_num(c)) for c in p] for p in pts], _box_faces()
 
-
 def _tree_proxy_mesh(origin, top_h, trunk_h, crown_d, trunk_d, rotation_deg):
-    """Low-poly closed prism proxy (trunk + crown) for COLLADA viewing; PVsyst receives native oeTree."""
+    """Low-poly closed prism proxy for COLLADA preview; native export emits oeTree."""
     ox, oy, oz = origin
-    tr = trunk_d / 2.0
-    cr = crown_d / 2.0
-    crown_h = max(top_h - trunk_h, 0.05)
 
-    def box_at(half_w, z_lo, z_hi):
-        local = [(-half_w, -half_w, z_lo), (half_w, -half_w, z_lo), (half_w, half_w, z_lo), (-half_w, half_w, z_lo),
-                 (-half_w, -half_w, z_hi), (half_w, -half_w, z_hi), (half_w, half_w, z_hi), (-half_w, half_w, z_hi)]
-        return [[float(_num(c)) for c in (lambda r: (ox + r[0], oy + r[1], oz + r[2]))(_rotate_z(p, rotation_deg))]
-                for p in local]
+    def box_at(hw, z0, z1):
+        return [[float(_num(ox + rx)), float(_num(oy + ry)), float(_num(oz + rz))] for rx, ry, rz in (
+            _rotate_z((sx * hw, sy * hw, z), rotation_deg) for z in (z0, z1) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)))]
 
-    trunk_pts = box_at(tr, 0.0, trunk_h)
-    crown_pts = box_at(cr, trunk_h, trunk_h + crown_h)
-    faces = _box_faces() + [[idx + 8 for idx in face] for face in _box_faces()]
-    return trunk_pts + crown_pts, faces
+    return box_at(trunk_d / 2.0, 0.0, trunk_h) + box_at(crown_d / 2.0, trunk_h, trunk_h + max(top_h - trunk_h, 0.05)), _box_faces() + [[i + 8 for i in f] for f in _box_faces()]
 
+def _obs_rot(raw, prefix):
+    rot = _finite(raw.get("rotation_deg", 0.0), f"{prefix}.rotation_deg", minimum=-360.0, maximum=360.0)
+    _vfail(not -360.0 < rot < 360.0, f"{prefix}.rotation_deg must be strictly between -360 and 360")
+    return rot
+
+def _obs_keys(raw, req, opt, label):
+    _vfail(not req <= set(raw) <= (req | opt), f"{label} declares unexpected or missing keys")
 
 def obstacle_profiles(obstacles, existing_names=()):
     """Validate and normalize optional scene obstacles (building, tree, wall, mesh)."""
     if obstacles is None:
         return []
     if not isinstance(obstacles, list) or not 1 <= len(obstacles) <= MAX_OBSTACLES:
-        raise SceneValidationError([_diagnostic("obstacle_list", "obstacles",
-                                    f"obstacles must be a non-empty list of at most {MAX_OBSTACLES} entries")])
-    names = {name.casefold() for name in existing_names}
-    records, vertex_count, triangle_count, errors = [], 0, 0, []
+        raise SceneValidationError([_diagnostic("obstacle_list", "obstacles", f"obstacles must be a non-empty list of at most {MAX_OBSTACLES} entries")])
+    names, records, vertex_count, triangle_count, errors = {n.casefold() for n in existing_names}, [], 0, 0, []
     for index, raw in enumerate(obstacles):
         path = f"obstacles[{index}]"
         if not isinstance(raw, dict) or "kind" not in raw:
@@ -469,86 +346,48 @@ def obstacle_profiles(obstacles, existing_names=()):
             continue
         kind = raw.get("kind")
         if kind not in ("building", "tree", "wall", "mesh"):
-            errors.append(_diagnostic("obstacle_kind", path + ".kind",
-                                      "Obstacle kind must be building, tree, wall, or mesh"))
+            errors.append(_diagnostic("obstacle_kind", path + ".kind", "Obstacle kind must be building, tree, wall, or mesh"))
             continue
         try:
             name = _name(raw.get("name"))
-            if name.casefold() in names:
-                raise ValueError("Obstacle names must be unique and distinct from house mesh names")
+            _vfail(name.casefold() in names, "Obstacle names must be unique and distinct from house mesh names")
             names.add(name.casefold())
             if kind == "building":
-                allowed = {"kind", "name", "origin_m", "length_m", "width_m", "height_m", "rotation_deg", "roof"}
-                required = {"kind", "name", "origin_m", "length_m", "width_m", "height_m"}
-                if not required <= set(raw) <= allowed:
-                    raise ValueError("building obstacle declares unexpected or missing keys")
-                origin = [float(_num(v)) for v in _vector(raw["origin_m"], "building.origin_m")]
-                length = _finite(raw["length_m"], "building.length_m", positive=True)
-                width = _finite(raw["width_m"], "building.width_m", positive=True)
-                height = _finite(raw["height_m"], "building.height_m", positive=True)
-                rot = _finite(raw.get("rotation_deg", 0.0), "building.rotation_deg", minimum=-360.0, maximum=360.0)
-                if not -360.0 < rot < 360.0:
-                    raise ValueError("building.rotation_deg must be strictly between -360 and 360")
-                roof = raw.get("roof")
-                box_profile = house_profile({"length_m": length, "width_m": width, "eave_height_m": height,
-                                             "roof": roof if roof is not None else {"kind": "flat"}})
-                pts, tris = house_mesh(box_profile)
-                verts = []
-                for p in pts:
-                    rp = _rotate_z(p, rot)
-                    verts.append([float(_num(origin[i] + rp[i])) for i in range(3)])
-                faces = [list(f) for f in tris]
-                spec = {"kind": "building", "name": name, "origin_m": origin, "length_m": length,
-                        "width_m": width, "height_m": height, "rotation_deg": rot}
-                if roof is not None:
-                    spec["roof"] = roof
-                rec = {"kind": "building", "name": name, "vertices": verts, "triangles": faces, "spec": spec}
+                _obs_keys(raw, {"kind", "name", "origin_m", "length_m", "width_m", "height_m"}, {"rotation_deg", "roof"}, "building obstacle")
+                origin = _vec_num(raw["origin_m"], "building.origin_m")
+                length, width, height = (_finite(raw[k], f"building.{k}", positive=True) for k in ("length_m", "width_m", "height_m"))
+                rot, roof = _obs_rot(raw, "building"), raw.get("roof")
+                pts, tris = house_mesh(house_profile({"length_m": length, "width_m": width, "eave_height_m": height, "roof": roof if roof is not None else {"kind": "flat"}}))
+                verts = [[float(_num(origin[i] + _rotate_z(p, rot)[i])) for i in range(3)] for p in pts]
+                spec = {"kind": "building", "name": name, "origin_m": origin, "length_m": length, "width_m": width,
+                        "height_m": height, "rotation_deg": rot, **({"roof": roof} if roof is not None else {})}
+                rec = {"kind": "building", "name": name, "vertices": verts, "triangles": [list(f) for f in tris], "spec": spec}
             elif kind == "wall":
-                allowed = {"kind", "name", "start_m", "end_m", "height_m", "thickness_m"}
-                required = {"kind", "name", "start_m", "end_m", "height_m"}
-                if not required <= set(raw) <= allowed:
-                    raise ValueError("wall obstacle declares unexpected or missing keys")
-                start = [float(_num(v)) for v in _vector(raw["start_m"], "wall.start_m")]
-                end = [float(_num(v)) for v in _vector(raw["end_m"], "wall.end_m")]
-                height = _finite(raw["height_m"], "wall.height_m", positive=True)
-                thick = _finite(raw.get("thickness_m", 0.2), "wall.thickness_m", positive=True)
+                _obs_keys(raw, {"kind", "name", "start_m", "end_m", "height_m"}, {"thickness_m"}, "wall obstacle")
+                start, end = (_vec_num(raw[k], f"wall.{k}") for k in ("start_m", "end_m"))
+                height, thick = _finite(raw["height_m"], "wall.height_m", positive=True), _finite(raw.get("thickness_m", 0.2), "wall.thickness_m", positive=True)
                 verts, faces = _wall_mesh(start, end, height, thick)
-                spec = {"kind": "wall", "name": name, "start_m": start, "end_m": end,
-                        "height_m": height, "thickness_m": thick}
+                spec = {"kind": "wall", "name": name, "start_m": start, "end_m": end, "height_m": height, "thickness_m": thick}
                 rec = {"kind": "wall", "name": name, "vertices": verts, "triangles": faces, "spec": spec}
             elif kind == "mesh":
-                if set(raw) != {"kind", "name", "vertices", "triangles"}:
-                    raise ValueError("mesh obstacle requires exactly kind, name, vertices, and triangles")
-                sub = mesh_house_profile({"kind": "mesh", "meshes": [{"name": name,
-                                          "vertices": raw["vertices"], "triangles": raw["triangles"]}]})["meshes"][0]
+                _vfail(set(raw) != {"kind", "name", "vertices", "triangles"}, "mesh obstacle requires exactly kind, name, vertices, and triangles")
+                sub = mesh_house_profile({"kind": "mesh", "meshes": [{"name": name, "vertices": raw["vertices"], "triangles": raw["triangles"]}]})["meshes"][0]
                 spec = {"kind": "mesh", "name": name, "vertices": sub["vertices"], "triangles": sub["triangles"]}
-                rec = {"kind": "mesh", "name": name, "vertices": sub["vertices"], "triangles": sub["triangles"],
-                       "spec": spec}
-            else:  # tree (native oeTree)
-                allowed = {"kind", "name", "origin_m", "top_height_m", "middle_height_m", "bottom_height_m",
-                           "trunk_height_m", "crown_diameter_m", "trunk_diameter_m", "rotation_deg"}
-                required = allowed - {"rotation_deg"}
-                if not required <= set(raw) <= allowed:
-                    raise ValueError("tree obstacle declares unexpected or missing keys")
-                origin = [float(_num(v)) for v in _vector(raw["origin_m"], "tree.origin_m")]
-                top_h = _finite(raw["top_height_m"], "tree.top_height_m", positive=True)
-                mid_h = _finite(raw["middle_height_m"], "tree.middle_height_m", positive=True)
-                bot_h = _finite(raw["bottom_height_m"], "tree.bottom_height_m", positive=True)
-                trunk_h = _finite(raw["trunk_height_m"], "tree.trunk_height_m", positive=True)
-                crown_d = _finite(raw["crown_diameter_m"], "tree.crown_diameter_m", positive=True)
-                trunk_d = _finite(raw["trunk_diameter_m"], "tree.trunk_diameter_m", positive=True)
-                rot = _finite(raw.get("rotation_deg", 0.0), "tree.rotation_deg", minimum=-360.0, maximum=360.0)
-                if not -360.0 < rot < 360.0:
-                    raise ValueError("tree.rotation_deg must be strictly between -360 and 360")
+                rec = {**spec, "spec": spec}
+            else:
+                req = {"kind", "name", "origin_m", "top_height_m", "middle_height_m", "bottom_height_m", "trunk_height_m", "crown_diameter_m", "trunk_diameter_m"}
+                _obs_keys(raw, req, {"rotation_deg"}, "tree obstacle")
+                origin = _vec_num(raw["origin_m"], "tree.origin_m")
+                top_h, mid_h, bot_h, trunk_h, crown_d, trunk_d = (
+                    _finite(raw[k], f"tree.{k}", positive=True)
+                    for k in ("top_height_m", "middle_height_m", "bottom_height_m", "trunk_height_m", "crown_diameter_m", "trunk_diameter_m"))
+                rot = _obs_rot(raw, "tree")
                 verts, faces = _tree_proxy_mesh(origin, top_h, trunk_h, crown_d, trunk_d, rot)
-                spec = {"kind": "tree", "name": name, "origin_m": origin, "top_height_m": top_h,
-                        "middle_height_m": mid_h, "bottom_height_m": bot_h, "trunk_height_m": trunk_h,
-                        "crown_diameter_m": crown_d, "trunk_diameter_m": trunk_d, "rotation_deg": rot}
+                spec = {"kind": "tree", "name": name, "origin_m": origin, "top_height_m": top_h, "middle_height_m": mid_h,
+                        "bottom_height_m": bot_h, "trunk_height_m": trunk_h, "crown_diameter_m": crown_d, "trunk_diameter_m": trunk_d, "rotation_deg": rot}
                 rec = {**spec, "vertices": verts, "triangles": faces, "spec": spec}
-            vertex_count += len(rec["vertices"])
-            triangle_count += len(rec["triangles"])
-            if vertex_count > MAX_VERTICES or triangle_count > MAX_TRIANGLES:
-                raise ValueError("Obstacles exceed the adapter vertex/triangle ceiling")
+            vertex_count, triangle_count = vertex_count + len(rec["vertices"]), triangle_count + len(rec["triangles"])
+            _vfail(vertex_count > MAX_VERTICES or triangle_count > MAX_TRIANGLES, "Obstacles exceed the adapter vertex/triangle ceiling")
             records.append(rec)
         except (ValueError, SceneValidationError) as exc:
             errors.append(_diagnostic("obstacle_invalid", path, str(exc)))
@@ -556,219 +395,140 @@ def obstacle_profiles(obstacles, existing_names=()):
         raise SceneValidationError(errors)
     return records
 
-
 def layout_profile(layout, modules, total, source_tilt, *, placed=False):
     """One fixed table; tilt and azimuth are inherited, never requested."""
     keys = PLACED_LAYOUT_KEYS if placed else LAYOUT_KEYS
-    if not isinstance(layout, dict) or set(layout) != set(keys):
-        raise ValueError("layout must declare exactly " + ", ".join(keys))
+    _vfail(not isinstance(layout, dict) or set(layout) != set(keys), "layout must declare exactly " + ", ".join(keys))
     rows, columns = layout["module_rows"], layout["module_columns"]
     for name, value in (("module_rows", rows), ("module_columns", columns)):
-        if type(value) is not int or value < 1:
-            raise ValueError(f"{name} must be a strict positive integer")
-    if total is not None and rows * columns != total:
-        raise ValueError(f"module_rows x module_columns must equal the source module count {total}")
-    if layout["orientation"] not in ("portrait", "landscape"):
-        raise ValueError("orientation must be portrait or landscape")
-    spacing_keys = ("row_spacing_m", "column_spacing_m") if placed else (
-        "row_spacing_m", "column_spacing_m", "clearance_m", "edge_margin_m")
+        _vfail(type(value) is not int or value < 1, f"{name} must be a strict positive integer")
+    _vfail(total is not None and rows * columns != total, f"module_rows x module_columns must equal the source module count {total}")
+    _vfail(layout["orientation"] not in ("portrait", "landscape"), "orientation must be portrait or landscape")
+    spacing_keys = ("row_spacing_m", "column_spacing_m") if placed else ("row_spacing_m", "column_spacing_m", "clearance_m", "edge_margin_m")
     spacing = {name: _finite(layout[name], name, minimum=0.0) for name in spacing_keys}
     if placed:
         spacing["origin_m"] = _vector(layout["origin_m"], "origin_m")
-        if not isinstance(layout["roof_mesh"], str) or not layout["roof_mesh"].strip():
-            raise ValueError("roof_mesh must name the planar supporting house mesh")
+        _vfail(not isinstance(layout["roof_mesh"], str) or not layout["roof_mesh"].strip(), "roof_mesh must name the planar supporting house mesh")
         spacing["roof_mesh"] = layout["roof_mesh"]
-    depth = modules["depth_m"]
     along = modules["width_m"] if layout["orientation"] == "landscape" else modules["length_m"]
     across = modules["length_m"] if layout["orientation"] == "landscape" else modules["width_m"]
-    column_span = columns * across + (columns - 1) * spacing["column_spacing_m"]
-    slope_span = rows * along + (rows - 1) * spacing["row_spacing_m"]
+    column_span, slope_span = columns * across + (columns - 1) * spacing["column_spacing_m"], rows * along + (rows - 1) * spacing["row_spacing_m"]
     for name, value in (("column_span_m", column_span), ("slope_span_m", slope_span)):
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError(f"Derived {name} must be finite and positive")
-    return {"module_rows": rows, "module_columns": columns, "orientation": layout["orientation"],
-            **spacing,
-            "geometry_depth_m": depth, "depth_source": modules.get("depth_source", "caller-provided"),
+        _vfail(not math.isfinite(value) or value <= 0, f"Derived {name} must be finite and positive")
+    return {"module_rows": rows, "module_columns": columns, "orientation": layout["orientation"], **spacing,
+            "geometry_depth_m": modules["depth_m"], "depth_source": modules.get("depth_source", "caller-provided"),
             "tilt_deg": source_tilt, "column_span_m": column_span, "slope_span_m": slope_span}
 
-
 def table_profiles(layout, house, modules, source):
-    """Keep legacy tables unchanged; grouped sources accept one or more tables per source owner.
-
-    A grouped (version 2) layout may split a source owner across several named tables: each table
-    names its ``orientation_id`` and, when several source subarrays share that orientation, the
-    explicit ``source_subarray_id`` of its owner. Every owner's per-table module total must equal
-    that source owner's ``NModSerie x NStringCh``. The single-table-per-orientation recipe stays
-    valid and unchanged (its one table already equals the group total). A table that names only an
-    orientation which several owners share is refused as ``ambiguous_source_owner``, never resolved
-    by first/numeric/name guess.
-    """
+    """Validate single or grouped PV table declarations against source owners."""
     profiles = source.get("orientations", [])
     by_owner, by_orient = {}, {}
     for item in profiles:
         by_owner[item.get("subarray_id", item["id"])] = item
         by_orient.setdefault(item["id"], []).append(item)
     if not isinstance(layout, dict) or "tables" not in layout:
-        if profiles:
-            raise ValueError("Grouped source orientations require named tables with orientation_id")
-        return [layout_profile(layout, modules, source["module_total"], source["tilt_deg"],
-                               placed=house["kind"] == "mesh")]
-    if (house["kind"] != "mesh" or set(layout) != {"tables"}
-            or not isinstance(layout["tables"], list) or not 1 <= len(layout["tables"]) <= MAX_TABLES):
-        raise ValueError(f"Named tables require a mesh house and 1..{MAX_TABLES} table entries")
-    per_group = {owner: 0 for owner in by_owner}
-    result, names, errors = [], set(), []
+        _vfail(bool(profiles), "Grouped source orientations require named tables with orientation_id")
+        return [layout_profile(layout, modules, source["module_total"], source["tilt_deg"], placed=house["kind"] == "mesh")]
+    _vfail(house["kind"] != "mesh" or set(layout) != {"tables"} or not isinstance(layout["tables"], list) or not 1 <= len(layout["tables"]) <= MAX_TABLES,
+           f"Named tables require a mesh house and 1..{MAX_TABLES} table entries")
+    per_group, result, names, errors = {owner: 0 for owner in by_owner}, [], set(), []
     for index, entry in enumerate(layout["tables"]):
         path = f"layout.tables[{index}]"
         try:
-            if not isinstance(entry, dict):
-                raise ValueError("Each named table requires exactly its name, placement and source orientation fields")
+            _vfail(not isinstance(entry, dict), "Each named table requires exactly its name, placement and source orientation fields")
             keys = set(PLACED_LAYOUT_KEYS) | {"name"}
             if profiles:
-                keys = keys | {"orientation_id"} | ({"source_subarray_id"} if "source_subarray_id" in entry else set())
-            if profiles and "module_geometry" in entry:
-                keys = keys | {"module_geometry"}
-            if set(entry) != keys:
-                raise ValueError("Each named table requires exactly its name, placement and source orientation fields")
+                keys |= {"orientation_id"} | ({"source_subarray_id"} if "source_subarray_id" in entry else set()) | ({"module_geometry"} if "module_geometry" in entry else set())
+            _vfail(set(entry) != keys, "Each named table requires exactly its name, placement and source orientation fields")
             name = _name(entry["name"])
-            if name.casefold() in names:
-                raise ValueError("PV table names must be unique, ignoring case")
+            _vfail(name.casefold() in names, "PV table names must be unique, ignoring case")
             names.add(name.casefold())
             group, owner = source, None
             if profiles:
-                identifier = entry["orientation_id"]
-                if type(identifier) is not int or identifier < 1:
-                    raise ValueError("orientation_id must select a declared source orientation")
+                ident = entry["orientation_id"]
+                _vfail(type(ident) is not int or ident < 1, "orientation_id must select a declared source orientation")
                 if "source_subarray_id" in entry:
                     owner = entry["source_subarray_id"]
-                    if type(owner) is not int or owner < 1 or owner not in by_owner:
-                        raise ValueError("source_subarray_id must select a declared source subarray owner")
+                    _vfail(type(owner) is not int or owner < 1 or owner not in by_owner, "source_subarray_id must select a declared source subarray owner")
                     group = by_owner[owner]
-                    if group["id"] != identifier:
-                        raise ValueError("source_subarray_id %d does not belong to orientation %d"
-                                         % (owner, identifier))
+                    _vfail(group["id"] != ident, "source_subarray_id %d does not belong to orientation %d" % (owner, ident))
                 else:
-                    candidates = by_orient.get(identifier, [])
-                    if len(candidates) != 1:
-                        raise ValueError("ambiguous_source_owner: orientation %d is owned by %d source "
-                                         "subarrays; declare source_subarray_id" % (identifier, len(candidates)))
+                    candidates = by_orient.get(ident, [])
+                    _vfail(len(candidates) != 1, "ambiguous_source_owner: orientation %d is owned by %d source subarrays; declare source_subarray_id" % (ident, len(candidates)))
                     group = candidates[0]
-                    owner = group.get("subarray_id", identifier)
-            # Per-table geometry wins when present (opaque built-in PAN caller entry, or a readback
-            # whose group carrier omits it); otherwise the group's resolved geometry; else the
-            # legacy single modules dict. Spans and depth are computed from this table's own module.
-            table_modules = modules
-            if profiles and entry.get("module_geometry") is not None:
-                table_modules = caller_geometry(entry["module_geometry"])
-            elif profiles and group.get("module_geometry") is not None:
-                table_modules = group["module_geometry"]
-            profile = layout_profile({key: entry[key] for key in PLACED_LAYOUT_KEYS}, table_modules,
-                                     None, group["tilt_deg"], placed=True)
+                    owner = group.get("subarray_id", ident)
+            table_modules = (caller_geometry(entry["module_geometry"]) if profiles and entry.get("module_geometry") is not None
+                             else (group["module_geometry"] if profiles and group.get("module_geometry") is not None else modules))
+            profile = layout_profile({k: entry[k] for k in PLACED_LAYOUT_KEYS}, table_modules, None, group["tilt_deg"], placed=True)
             if profiles:
                 per_group[owner] += profile["module_rows"] * profile["module_columns"]
-                profile.update(orientation_id=group["id"], azimuth_deg=group["azimuth_deg"],
-                               rotation_deg=source["azimuth_deg"] - group["azimuth_deg"])
+                profile.update(orientation_id=group["id"], azimuth_deg=group["azimuth_deg"], rotation_deg=source["azimuth_deg"] - group["azimuth_deg"])
                 if "source_subarray_id" in entry:
                     profile["source_subarray_id"] = owner
                 if table_modules != modules:
                     profile["module_geometry"] = table_modules
             result.append(profile | {"name": name})
         except (ValueError, KeyError) as exc:
-            errors.append(_diagnostic("pv_table_input", path, str(exc),
-                                      repair_hint="Correct this named table without changing other valid regions."))
+            errors.append(_diagnostic("pv_table_input", path, str(exc), repair_hint="Correct this named table without changing other valid regions."))
     if errors:
         raise SceneValidationError(errors)
     if profiles:
         for owner, group in by_owner.items():
             if per_group[owner] != group["module_total"]:
-                raise SceneValidationError([_diagnostic("pv_group_total", "layout.tables",
-                    "Source owner %d tables hold %d modules, not the source group total %d"
-                    % (owner, per_group[owner], group["module_total"]),
-                    repair_hint="Allocate exactly the source group's modules across its tables.")])
-    total = sum(table["module_rows"] * table["module_columns"] for table in result)
+                raise SceneValidationError([_diagnostic("pv_group_total", "layout.tables", "Source owner %d tables hold %d modules, not the source group total %d" % (owner, per_group[owner], group["module_total"]), repair_hint="Allocate exactly the source group's modules across its tables.")])
+    total = sum(t["module_rows"] * t["module_columns"] for t in result)
     if total != source["module_total"]:
-        raise SceneValidationError([_diagnostic("pv_module_total", "layout.tables",
-            f"All PV tables together must contain {source['module_total']} modules, not {total}",
-            repair_hint="Allocate the existing source modules across tables; do not duplicate the full array.")])
+        raise SceneValidationError([_diagnostic("pv_module_total", "layout.tables", f"All PV tables together must contain {source['module_total']} modules, not {total}", repair_hint="Allocate the existing source modules across tables; do not duplicate the full array.")])
     return result
 
-
 def _string_layout_profile(string_layout, tables):
-    """Validate the explicit per-cell string binding against resolved table profiles.
-
-    Returns ``(normalized, state)`` where state is ``"complete"`` or ``"draft_incomplete"``.
-    ``string_layout`` of ``None`` (legacy recipe that omits the optional key) returns
-    ``(None, None)`` so the legacy authoring path stays byte-identical.
-    A well-formed but partial binding (missing cells or global_string 0) is a storable draft.
-    Duplicate/unknown table, out-of-range or repeated cell faults raise instead of being kept
-    as a draft; no native auto-allocation or source-capacity rule is derived here.
-    """
+    """Validate explicit per-cell string binding; returns (normalized, 'complete'|'draft_incomplete')."""
     if string_layout is None:
         return None, None
-    if not isinstance(string_layout, dict) or set(string_layout) != {"tables"}:
-        raise ValueError("string_layout must declare exactly tables")
+    _vfail(not isinstance(string_layout, dict) or set(string_layout) != {"tables"}, "string_layout must declare exactly tables")
     entries = string_layout["tables"]
-    if not isinstance(entries, list) or not 1 <= len(entries) <= MAX_TABLES:
-        raise ValueError(f"string_layout.tables must hold 1..{MAX_TABLES} table bindings")
-    by_name = {profile["name"]: profile for profile in tables if "name" in profile}
-    normalized, seen_tables, errors, complete = [], set(), [], True
+    _vfail(not isinstance(entries, list) or not 1 <= len(entries) <= MAX_TABLES, f"string_layout.tables must hold 1..{MAX_TABLES} table bindings")
+    by_name, normalized, seen_tables, errors, complete = {p["name"]: p for p in tables if "name" in p}, [], set(), [], True
     for index, entry in enumerate(entries):
         path = f"string_layout.tables[{index}]"
         try:
-            if not isinstance(entry, dict) or set(entry) != {"name", "subarray_id", "cells"}:
-                raise ValueError("Each table binding requires exactly name, subarray_id and cells")
+            _vfail(not isinstance(entry, dict) or set(entry) != {"name", "subarray_id", "cells"}, "Each table binding requires exactly name, subarray_id and cells")
             name = _name(entry["name"])
-            if name in seen_tables:
-                raise ValueError("Each table name may be bound only once")
+            _vfail(name in seen_tables, "Each table name may be bound only once")
             seen_tables.add(name)
             profile = by_name.get(name)
-            if profile is None:
-                raise ValueError("Binding names a table that is not declared in layout.tables")
+            _vfail(profile is None, "Binding names a table that is not declared in layout.tables")
             subarray_id = entry["subarray_id"]
-            if type(subarray_id) is not int or subarray_id < 1:
-                raise ValueError("subarray_id must be a positive strict integer")
-            if not isinstance(entry["cells"], list):
-                raise ValueError("cells must be a list")
-            rows, columns = profile["module_rows"], profile["module_columns"]
-            seen_cells, cells = set(), []
+            _vfail(type(subarray_id) is not int or subarray_id < 1, "subarray_id must be a positive strict integer")
+            _vfail(not isinstance(entry["cells"], list), "cells must be a list")
+            rows, columns, seen_cells, cells = profile["module_rows"], profile["module_columns"], set(), []
             for cell in entry["cells"]:
-                if not isinstance(cell, dict) or set(cell) != {"row", "col", "global_string"}:
-                    raise ValueError("Each cell requires exactly row, col and global_string")
+                _vfail(not isinstance(cell, dict) or set(cell) != {"row", "col", "global_string"}, "Each cell requires exactly row, col and global_string")
                 row, col, glob = cell["row"], cell["col"], cell["global_string"]
                 for label, value in (("row", row), ("col", col)):
-                    if type(value) is not int or value < 1:
-                        raise ValueError(f"{label} must be a positive strict integer")
-                if type(glob) is not int or glob < 0:
-                    raise ValueError("global_string must be a non-negative strict integer (0 = unassigned draft)")
-                if row > rows or col > columns:
-                    raise ValueError(f"cell ({row},{col}) is outside the {rows}x{columns} grid of table {name}")
-                if (row, col) in seen_cells:
-                    raise ValueError(f"cell ({row},{col}) is repeated in table {name}")
+                    _vfail(type(value) is not int or value < 1, f"{label} must be a positive strict integer")
+                _vfail(type(glob) is not int or glob < 0, "global_string must be a non-negative strict integer (0 = unassigned draft)")
+                _vfail(row > rows or col > columns, f"cell ({row},{col}) is outside the {rows}x{columns} grid of table {name}")
+                _vfail((row, col) in seen_cells, f"cell ({row},{col}) is repeated in table {name}")
                 seen_cells.add((row, col))
                 cells.append({"row": row, "col": col, "global_string": glob})
-            if len(seen_cells) != rows * columns or any(cell["global_string"] == 0 for cell in cells):
+            if len(seen_cells) != rows * columns or any(c["global_string"] == 0 for c in cells):
                 complete = False
             normalized.append({"name": name, "subarray_id": subarray_id, "cells": cells})
         except (ValueError, KeyError, TypeError) as exc:
-            errors.append(_diagnostic("string_layout", path, str(exc),
-                repair_hint="Fix the indicated table/cell binding; explicit string wiring is never auto-allocated."))
+            errors.append(_diagnostic("string_layout", path, str(exc), repair_hint="Fix the indicated table/cell binding; explicit string wiring is never auto-allocated."))
     if errors:
         raise SceneValidationError(errors)
-    if len(seen_tables) != len(by_name):
-        complete = False
-    return {"tables": normalized}, ("complete" if complete else "draft_incomplete")
-
+    return {"tables": normalized}, ("complete" if (complete and len(seen_tables) == len(by_name)) else "draft_incomplete")
 
 def _rotate_z(point, degrees):
     angle = math.radians(degrees)
     x, y, z = point
     return (x * math.cos(angle) - y * math.sin(angle), x * math.sin(angle) + y * math.cos(angle), z)
 
-
 def _placed_points(table):
     points, _ = rack_mesh(table)
     return [_rotate_z(point, table["rotation_deg"]) for point in points] if "rotation_deg" in table else points
-
 
 def check_tables(house, tables):
     errors = []
@@ -777,521 +537,310 @@ def check_tables(house, tables):
         try:
             check_fit(house, table, _rack_origin(house, table), _placed_points(table))
         except ValueError as exc:
-            errors.append(_diagnostic("pv_roof_fit", path, str(exc),
-                repair_hint="Check this table's roof_mesh, origin_m and footprint against the source PV plane."))
+            errors.append(_diagnostic("pv_roof_fit", path, str(exc), repair_hint="Check this table's roof_mesh, origin_m and footprint against the source PV plane."))
     for index, table in enumerate(tables):
-        a = _rack_origin(house, table)
-        down = table["slope_span_m"] * math.cos(math.radians(table["tilt_deg"]))
-        for other_index, other in enumerate(tables[:index]):
+        a, down = _rack_origin(house, table), table["slope_span_m"] * math.cos(math.radians(table["tilt_deg"]))
+        for other in tables[:index]:
             b = _rack_origin(house, other)
             if "orientation_id" in table:
-                corners_a = [[a[k] + p[k] for k in range(3)] for p in _placed_points(table)]
-                corners_b = [[b[k] + p[k] for k in range(3)] for p in _placed_points(other)]
-                if all(min(max(p[k] for p in corners_a), max(p[k] for p in corners_b))
-                       - max(min(p[k] for p in corners_a), min(p[k] for p in corners_b)) > TOL for k in (0, 1)):
-                    errors.append(_diagnostic("pv_group_footprints", f"layout.tables[{index}]",
-                        "Grouped authoring requires disjoint XY bounding footprints, not a physical intersection test",
-                        repair_hint="Use separate projected regions; native 3D interference remains a separate check."))
+                ca, cb = ([[pt[k] + p[k] for k in range(3)] for p in _placed_points(tbl)] for pt, tbl in ((a, table), (b, other)))
+                if all(min(max(p[k] for p in ca), max(p[k] for p in cb)) - max(min(p[k] for p in ca), min(p[k] for p in cb)) > TOL for k in (0, 1)):
+                    errors.append(_diagnostic("pv_group_footprints", f"layout.tables[{index}]", "Grouped authoring requires disjoint XY bounding footprints, not a physical intersection test", repair_hint="Use separate projected regions; native 3D interference remains a separate check."))
                 continue
             other_down = other["slope_span_m"] * math.cos(math.radians(other["tilt_deg"]))
             offset = (a[2] - b[2]) - math.tan(math.radians(table["tilt_deg"])) * (a[1] - b[1])
             overlap_x = min(a[0] + table["column_span_m"], b[0] + other["column_span_m"]) - max(a[0], b[0])
             overlap_y = min(a[1] + down, b[1] + other_down) - max(a[1], b[1])
             if abs(offset) <= TOL and overlap_x > TOL and overlap_y > TOL:
-                errors.append(_diagnostic("pv_tables_overlap", f"layout.tables[{index}]",
-                    f"PV table overlaps coplanar table {other_index}",
-                    repair_hint="Separate these PV rectangles or explicitly reallocate their modules."))
+                errors.append(_diagnostic("pv_tables_overlap", f"layout.tables[{index}]", f"PV table overlaps coplanar table {tables.index(other)}", repair_hint="Separate these PV rectangles or explicitly reallocate their modules."))
     if errors:
         raise SceneValidationError(errors)
 
-
 def source_profile(store, lines, arrays, system, *, allow_groups=False):
-    """The native bridge stays single-plane; only the authoring path opts into grouped sources.
-
-    ``allow_groups`` accepts any number of ordinary fixed-plane source orientations (one subarray
-    per group, no sharing/tracking).  Each group keeps its own ``PVModule`` reference (``pan_name``)
-    and its own OND identity; the module geometry is resolved per group by
-    :func:`resolve_source_geometry`, so a genuine heterogeneous PAN pair is no longer rejected and
-    never collapsed to one PAN here.  The single-plane bridge keeps exactly one array.  Orientation
-    profiles are returned in ascending source-orientation id order, and each keeps its own source
-    ``id``/``module_total``/angles.
-    """
-    if system is None or (not allow_groups and len(arrays) != 1):
-        raise ValueError("Requires one pvSystem and one subarray, or explicitly grouped authoring subarrays")
-    if root_block(lines, system).one("SystemType")[1] != "Grid":
-        raise ValueError("SystemType must be Grid")
+    """Validate source system/arrays/orientations and return orientation-keyed or owner-keyed profile."""
+    _vfail(system is None or (not allow_groups and len(arrays) != 1), "Requires one pvSystem and one subarray, or explicitly grouped authoring subarrays")
+    _vfail(root_block(lines, system).one("SystemType")[1] != "Grid", "SystemType must be Grid")
     blocks = objects("".join(lines))
-    root = next(block for block in blocks if not block.path)
-    flags = root.one("Flags")[1]
-    if not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags):
-        raise ValueError("Root Flags must be hexadecimal")
-    has_load = any(block.object_type == "pvLoad" for block in blocks)
-    if int(flags[1:], 16) & 0x00080000 and not has_load:
-        raise ValueError("Root load bit is set without a pvLoad record")
-    if has_load or any(block.object_type == "pvGridStorage" for block in blocks):
-        raise ValueError("Loads and storage are outside this batch")
-    if any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", line) for line in lines):
-        raise ValueError("P50/P90 and saved horizon objects are outside this batch")
+    flags = next(b for b in blocks if not b.path).one("Flags")[1]
+    _vfail(not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", flags), "Root Flags must be hexadecimal")
+    has_load = any(b.object_type == "pvLoad" for b in blocks)
+    _vfail(bool(int(flags[1:], 16) & 0x00080000) and not has_load, "Root load bit is set without a pvLoad record")
+    _vfail(has_load or any(b.object_type == "pvGridStorage" for b in blocks), "Loads and storage are outside this batch")
+    _vfail(any(re.match(r"\s*(?:P50_P90|PVObject_Horizon)\s*=", ln) for ln in lines), "P50/P90 and saved horizon objects are outside this batch")
     store._orientation_list(lines)
-    # Referential coverage (every referenced orientation is a declared, fixed plane) replaces the
-    # old one-plane-per-subarray count assumption: several subarrays may share one NoOrientation.
-    # `_orientation_list` already refuses an orientation with no assigned subarray, so no orphan is
-    # silently accepted.
     store._require_no_geometry(lines)
     inv_check = grid_inventory(lines, arrays)
-    if inv_check["counts_valid"] is not True:
-        raise ValueError("Requires complete consistent native grid counts")
-    has_shared = any(
-        "PowerSharingInverterId" in root_block(lines, b).fields
-        and root_block(lines, b).one("PowerSharingInverterId")[1] != "-1"
-        for b in arrays.values()
-    )
+    _vfail(inv_check["counts_valid"] is not True, "Requires complete consistent native grid counts")
+    has_shared = any("PowerSharingInverterId" in root_block(lines, b).fields
+                     and root_block(lines, b).one("PowerSharingInverterId")[1] != "-1" for b in arrays.values())
     profiles = []
     for identifier, bounds in sorted(arrays.items()):
         sub_root = root_block(lines, bounds)
-        series = _finite(float(sub_root.one("NModSerie")[1]), "NModSerie", positive=True)
-        strings = _finite(float(sub_root.one("NStringCh")[1]), "NStringCh", positive=True)
-        if not series.is_integer() or not strings.is_integer():
-            raise ValueError("Source module counts must be integers")
+        series, strings = _finite(float(sub_root.one("NModSerie")[1]), "NModSerie", positive=True), _finite(float(sub_root.one("NStringCh")[1]), "NStringCh", positive=True)
+        _vfail(not series.is_integer() or not strings.is_integer(), "Source module counts must be integers")
         orientation_id = sub_root.one("NoOrientation")[1]
-        if not orientation_id.isdigit():
-            raise ValueError("NoOrientation must be a positive integer")
+        _vfail(not orientation_id.isdigit(), "NoOrientation must be a positive integer")
         plane = store._orientation(lines, int(orientation_id))
         store._ordinary_fixed_plane(lines, plane)
         plane_root = root_block(lines, plane)
         tilt = _finite(float(plane_root.one("FieldTilt")[1]), "FieldTilt", minimum=0.0, maximum=90.0)
-        if tilt >= 90.0:
-            raise ValueError("FieldTilt must stay below 90 degrees")
-        azimuth = _finite(float(plane_root.one("FieldAzim")[1]), "FieldAzim", minimum=-180.0, maximum=180.0)
-        pan_name = sub_root.one("PVModule")[1]
+        _vfail(tilt >= 90.0, "FieldTilt must stay below 90 degrees")
+        azimuth, pan_name = _finite(float(plane_root.one("FieldAzim")[1]), "FieldAzim", minimum=-180.0, maximum=180.0), sub_root.one("PVModule")[1]
         if len(arrays) > 1:
             ps_id = sub_root.one("PowerSharingInverterId")[1] if "PowerSharingInverterId" in sub_root.fields else "-1"
+            inv_row = next(row for row in inv_check["subarrays"] if row["id"] == identifier)
             if ps_id == "-1" and not has_shared:
                 branches, owned = store._subarray_branches(lines, arrays, identifier)
                 store._require_plane_branch_mode(owned, branches)
             elif ps_id == "-1":
-                from pvsyst_auto.project.circuit import circuit_nodes
-                inv_row = next(row for row in inv_check["subarrays"] if row["id"] == identifier)
-                if inv_row["shared_inverter_lines"]:
-                    raise ValueError("Subarray without PowerSharingInverterId cannot occupy a shared InverterNode")
-                def _walk(node):
-                    yield node
-                    for child in node.children:
-                        yield from _walk(child)
-                branches = []
-                for node in (item for tree in circuit_nodes(lines) for item in _walk(tree)):
-                    if node.kind == "InverterNode" and str(identifier) in [m.one("SubArrayId") for m in _walk(node)]:
-                        branches.append((node.line - 1, node.end_line - 1, list(_walk(node))))
-                if not branches:
-                    raise ValueError("Subarray has no owning InverterNode branch")
+                _vfail(bool(inv_row["shared_inverter_lines"]), "Subarray without PowerSharingInverterId cannot occupy a shared InverterNode")
+                branches = [(node.line - 1, node.end_line - 1, list(_walk(node)))
+                            for tree in circuit_nodes(lines) for node in _walk(tree)
+                            if node.kind == "InverterNode" and str(identifier) in [m.one("SubArrayId") for m in _walk(node)]]
+                _vfail(not branches, "Subarray has no owning InverterNode branch")
                 store._require_plane_branch_mode(sub_root, branches)
                 owned = sub_root
             else:
-                if not ps_id.isdigit():
-                    raise ValueError("PowerSharingInverterId must be -1 or a non-negative integer")
+                _vfail(not ps_id.isdigit(), "PowerSharingInverterId must be -1 or a non-negative integer")
                 sub_flags = sub_root.one("Flags")[1] if "Flags" in sub_root.fields else ""
-                if (sub_root.one("Version")[1] not in NATIVE_TEXT_OR_SEED
-                        or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", sub_flags)
-                        or (int(sub_flags[1:], 16) & 0x0500) != 0x0500):
-                    raise ValueError("Power-sharing subarray requires verified Version and $0500 flags")
-                inv_row = next(row for row in inv_check["subarrays"] if row["id"] == identifier)
-                if not inv_row["shared_inverter_lines"]:
-                    raise ValueError("Subarray declares PowerSharingInverterId without a shared circuit parent")
+                _vfail(sub_root.one("Version")[1] not in NATIVE_TEXT_OR_SEED or not re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", sub_flags)
+                       or (int(sub_flags[1:], 16) & 0x0500) != 0x0500, "Power-sharing subarray requires verified Version and $0500 flags")
+                _vfail(not inv_row["shared_inverter_lines"], "Subarray declares PowerSharingInverterId without a shared circuit parent")
                 owned = sub_root
-            if (owned.one("Version")[1] not in NATIVE_TEXT_OR_SEED
-                    or owned.one("NStrOrient1")[1] != owned.one("NStringCh")[1]
-                    or any(key.startswith("NStrOrient") and key != "NStrOrient1" and owned.one(key)[1] != "0"
-                           for key in owned.fields)):
-                raise ValueError("Grouped authoring requires verified single-orientation exclusive branches")
-        # Each group keeps its own PVModule reference; geometry is resolved per group downstream,
-        # so a genuine heterogeneous pair is not collapsed to one PAN here. `subarray_id` is carried
-        # so a same-orientation multi-owner source stays distinguishable by owner; it is dropped
-        # again for the legacy distinct-orientation shape below.
-        profiles.append({"id": int(orientation_id), "subarray_id": int(identifier),
-                         "module_total": int(series * strings), "tilt_deg": tilt,
-                         "field_azimuth_deg": azimuth, "azimuth_deg": (180.0 + azimuth) % 360.0,
-                         "pan_name": pan_name})
+            _vfail(owned.one("Version")[1] not in NATIVE_TEXT_OR_SEED or owned.one("NStrOrient1")[1] != owned.one("NStringCh")[1]
+                   or any(k.startswith("NStrOrient") and k != "NStrOrient1" and owned.one(k)[1] != "0" for k in owned.fields),
+                   "Grouped authoring requires verified single-orientation exclusive branches")
+        profiles.append({"id": int(orientation_id), "subarray_id": int(identifier), "module_total": int(series * strings),
+                         "tilt_deg": tilt, "field_azimuth_deg": azimuth, "azimuth_deg": (180.0 + azimuth) % 360.0, "pan_name": pan_name})
     if len(arrays) > 1:
-        orientation_ids = [profile["id"] for profile in profiles]
-        if any(identifier < 1 for identifier in orientation_ids):
-            raise ValueError("Grouped authoring requires positive source orientations")
-        if len(set(orientation_ids)) == len(orientation_ids):
-            # One source subarray per orientation: keep the legacy orientation-keyed profile shape.
-            for profile in profiles:
-                profile.pop("subarray_id", None)
-        # else: a shared NoOrientation with several owners is kept owner-keyed (subarray_id) so the
-        # authoring path can bind each table/PAN/geometry/string to its real source owner.
-    else:
-        for profile in profiles:
-            profile.pop("subarray_id", None)
+        _vfail(any(p["id"] < 1 for p in profiles), "Grouped authoring requires positive source orientations")
+    if len(arrays) == 1 or len({p["id"] for p in profiles}) == len(profiles):
+        for p in profiles:
+            p.pop("subarray_id", None)
     profiles.sort(key=lambda item: (item["id"], item.get("subarray_id", item["id"])))
-    sit = next((block for block in blocks if block.object_type == "pvSite"
-                and block.path == "PVObject_SiteSimul"), None)
-    if sit is None:
-        raise ValueError("Requires an embedded pvSite record for geographic coverage")
+    sit = next((b for b in blocks if b.object_type == "pvSite" and b.path == "PVObject_SiteSimul"), None)
+    _vfail(sit is None, "Requires an embedded pvSite record for geographic coverage")
     latitude = _finite(float(sit.one("Latitude")[1]), "Latitude", minimum=-90.0, maximum=90.0)
-    longitude = _finite(float(sit.one("Longitude")[1]), "Longitude", minimum=-180.0, maximum=180.0)
-    altitude = _finite(float(sit.one("Altitude")[1]), "Altitude")
-    if latitude <= 0:
-        raise ValueError("The azimuth conversion (180 + FieldAzim) % 360 is only verified for the northern "
-                         "hemisphere; a non-positive site latitude stops here")
-    first = profiles[0]
-    result = {key: first[key] for key in ("tilt_deg", "field_azimuth_deg", "azimuth_deg")}
-    result.update(module_total=sum(p["module_total"] for p in profiles), pan_name=profiles[0]["pan_name"],
-                  site={"latitude": latitude, "longitude": longitude, "altitude": altitude})
+    longitude, altitude = _finite(float(sit.one("Longitude")[1]), "Longitude", minimum=-180.0, maximum=180.0), _finite(float(sit.one("Altitude")[1]), "Altitude")
+    _vfail(latitude <= 0, "The azimuth conversion (180 + FieldAzim) % 360 is only verified for the northern hemisphere; a non-positive site latitude stops here")
+    result = {**{k: profiles[0][k] for k in ("tilt_deg", "field_azimuth_deg", "azimuth_deg")},
+              "module_total": sum(p["module_total"] for p in profiles), "pan_name": profiles[0]["pan_name"],
+              "site": {"latitude": latitude, "longitude": longitude, "altitude": altitude}}
     if len(profiles) > 1:
         result["orientations"] = profiles
     return result
 
-
 def house_mesh(profile):
-    """Closed box for a flat roof; symmetric gable prism with the ridge parallel to local X."""
+    """Closed box for a flat roof; symmetric gable prism with ridge parallel to local X."""
     length, width, eave = profile["length_m"], profile["width_m"], profile["eave_height_m"]
+    base = [(x, y, z) for z in (0, eave) for x, y in ((0, 0), (length, 0), (length, width), (0, width))]
     if profile["kind"] == "flat":
-        points = [(0, 0, 0), (length, 0, 0), (length, width, 0), (0, width, 0),
-                  (0, 0, eave), (length, 0, eave), (length, width, eave), (0, width, eave)]
-        faces = [(0, 2, 1), (0, 3, 2), (0, 1, 5), (0, 5, 4), (3, 6, 2), (3, 7, 6),
-                 (0, 4, 7), (0, 7, 3), (1, 2, 6), (1, 6, 5), (4, 5, 6), (4, 6, 7)]
-        return points, faces
-    ridge = eave + profile["roof_rise_m"]
-    half = width / 2.0
-    points = [(0, 0, 0), (length, 0, 0), (length, width, 0), (0, width, 0),
-              (0, 0, eave), (length, 0, eave), (length, width, eave), (0, width, eave),
-              (0, half, ridge), (length, half, ridge)]
-    faces = [(0, 2, 1), (0, 3, 2),
-             (0, 1, 5), (0, 5, 4), (3, 6, 2), (3, 7, 6),
-             (0, 4, 8), (0, 8, 7), (0, 7, 3),
-             (1, 2, 6), (1, 6, 9), (1, 9, 5),
-             (4, 9, 8), (4, 5, 9), (7, 8, 9), (7, 9, 6)]
-    return points, faces
-
+        return base, [tuple(f) for f in _box_faces()]
+    ridge, half = eave + profile["roof_rise_m"], width / 2.0
+    return base + [(0, half, ridge), (length, half, ridge)], [
+        (0, 2, 1), (0, 3, 2), (0, 1, 5), (0, 5, 4), (3, 6, 2), (3, 7, 6), (0, 4, 8), (0, 8, 7),
+        (0, 7, 3), (1, 2, 6), (1, 6, 9), (1, 9, 5), (4, 9, 8), (4, 5, 9), (7, 8, 9), (7, 9, 6)]
 
 def rack_mesh(profile):
-    """Positive rectangle: local origin is the low south-west corner, +Y runs up the slope."""
-    tilt = math.radians(profile["tilt_deg"])
-    span = profile["column_span_m"]
-    slope = profile["slope_span_m"]
-    down = slope * math.cos(tilt)
-    drop = slope * math.sin(tilt)
+    """Positive rectangle: local origin at low south-west corner, +Y runs up the slope."""
+    tilt, span, slope = math.radians(profile["tilt_deg"]), profile["column_span_m"], profile["slope_span_m"]
+    down, drop = slope * math.cos(tilt), slope * math.sin(tilt)
     for name, value in (("down_slope_m", down), ("drop_m", drop)):
-        if not math.isfinite(value) or value < 0 or (name == "down_slope_m" and value == 0):
-            raise ValueError(f"Derived {name} is outside the fixed-table geometry range")
-    points = [(0.0, 0.0, 0.0), (span, 0.0, 0.0), (span, down, drop), (0.0, down, drop)]
-    return points, [(0, 1, 2), (0, 2, 3)]
-
+        _vfail(not math.isfinite(value) or value < 0 or (name == "down_slope_m" and value == 0), f"Derived {name} is outside the fixed-table geometry range")
+    return [(0.0, 0.0, 0.0), (span, 0.0, 0.0), (span, down, drop), (0.0, down, drop)], [(0, 1, 2), (0, 2, 3)]
 
 def _append_mesh(parent, geometry_id, points, faces):
-    geometry = ET.SubElement(parent, _tag(NS, "geometry"), {"id": geometry_id})
-    mesh = ET.SubElement(geometry, _tag(NS, "mesh"))
-    array = ET.SubElement(mesh, _tag(NS, "source"), {"id": geometry_id + "-positions"})
-    floats = ET.SubElement(array, _tag(NS, "float_array"),
-                           {"id": geometry_id + "-positions-array", "count": str(len(points) * 3)})
-    floats.text = " ".join(_num(axis) for point in points for axis in point)
-    accessor = ET.SubElement(ET.SubElement(array, _tag(NS, "technique_common")),
-                             _tag(NS, "accessor"),
-                             {"source": "#" + geometry_id + "-positions-array",
-                              "count": str(len(points)), "stride": "3"})
+    geometry = _el(parent, NS, "geometry", {"id": geometry_id})
+    mesh = _el(geometry, NS, "mesh")
+    array = _el(mesh, NS, "source", {"id": geometry_id + "-positions"})
+    _el(array, NS, "float_array", {"id": geometry_id + "-positions-array", "count": str(len(points) * 3)}, " ".join(_num(axis) for point in points for axis in point))
+    accessor = _el(_el(array, NS, "technique_common"), NS, "accessor", {"source": "#" + geometry_id + "-positions-array", "count": str(len(points)), "stride": "3"})
     for axis in ("X", "Y", "Z"):
-        ET.SubElement(accessor, _tag(NS, "param"), {"name": axis, "type": "float"})
-    vertices = ET.SubElement(mesh, _tag(NS, "vertices"), {"id": geometry_id + "-vertices"})
-    ET.SubElement(vertices, _tag(NS, "input"),
-                  {"semantic": "POSITION", "source": "#" + geometry_id + "-positions"})
-    triangles = ET.SubElement(mesh, _tag(NS, "triangles"), {"count": str(len(faces))})
-    ET.SubElement(triangles, _tag(NS, "input"),
-                  {"semantic": "VERTEX", "source": "#" + geometry_id + "-vertices", "offset": "0"})
-    ET.SubElement(triangles, _tag(NS, "p")).text = " ".join(
-        str(vertex) for face in faces for vertex in face)
+        _el(accessor, NS, "param", {"name": axis, "type": "float"})
+    _el(_el(mesh, NS, "vertices", {"id": geometry_id + "-vertices"}), NS, "input", {"semantic": "POSITION", "source": "#" + geometry_id + "-positions"})
+    triangles = _el(mesh, NS, "triangles", {"count": str(len(faces))})
+    _el(triangles, NS, "input", {"semantic": "VERTEX", "source": "#" + geometry_id + "-vertices", "offset": "0"})
+    _el(triangles, NS, "p", text=" ".join(str(v) for face in faces for v in face))
     return geometry
 
-
 def _pv_extra(parent):
-    return ET.SubElement(ET.SubElement(parent, _tag(NS, "extra")), _tag(NS, "technique"),
-                         {"profile": "PVCollada-2.0"})
-
+    return _el(_el(parent, NS, "extra"), NS, "technique", {"profile": "PVCollada-2.0"})
 
 def _rack_origin(house, layout):
-    """Low south-west corner of the table: margin from the eave, then the declared clearance."""
+    """Return low south-west table corner coordinates."""
     if house["kind"] == "mesh":
         return layout["origin_m"]
     margin = layout["edge_margin_m"]
     if house["kind"] == "flat":
         return [margin, margin, house["eave_height_m"] + layout["clearance_m"]]
-    pitch = math.radians(house["pitch_deg"])
-    half = house["width_m"] / 2.0
-    along = margin * math.cos(pitch)
-    if along + layout["slope_span_m"] * math.cos(math.radians(layout["tilt_deg"])) > half:
-        raise ValueError("edge_margin_m leaves no room for the table before the ridge")
+    pitch, along = math.radians(house["pitch_deg"]), margin * math.cos(math.radians(house["pitch_deg"]))
+    _vfail(along + layout["slope_span_m"] * math.cos(math.radians(layout["tilt_deg"])) > house["width_m"] / 2.0,
+           "edge_margin_m leaves no room for the table before the ridge")
     return [margin, along, house["eave_height_m"] + margin * math.sin(pitch) + layout["clearance_m"]]
 
-
 def check_mesh_fit(house, layout, corners, points):
-    roof = next((part for part in house["meshes"] if part["name"] == layout["roof_mesh"]), None)
-    if roof is None:
-        raise ValueError("roof_mesh must reference an existing house mesh name")
+    roof = next((p for p in house["meshes"] if p["name"] == layout["roof_mesh"]), None)
+    _vfail(roof is None, "roof_mesh must reference an existing house mesh name")
     vertices, faces = roof["vertices"], roof["triangles"]
-    a, b, c = (vertices[index] for index in faces[0])
-    normal = _normal(a, b, c)
-    if normal[2] <= TOL:
-        raise ValueError("The supporting roof mesh must face upward")
-    pv_normal = _normal(*points[:3])
-    if _dot(normal, pv_normal) < 1.0 - TOL:
-        raise ValueError("Supporting roof normal must match the source fixed PV plane")
-    for vertex in vertices:
-        if abs(_dot(normal, _sub(vertex, a))) > TOL:
-            raise ValueError("The supporting roof mesh must be planar")
-    for face in faces:
-        if _dot(normal, _normal(*(vertices[index] for index in face))) < 1.0 - TOL:
-            raise ValueError("Supporting roof triangles must face consistently upward")
+    a = vertices[faces[0][0]]
+    normal = _normal(*(vertices[i] for i in faces[0]))
+    _vfail(normal[2] <= TOL, "The supporting roof mesh must face upward")
+    _vfail(_dot(normal, _normal(*points[:3])) < 1.0 - TOL, "Supporting roof normal must match the source fixed PV plane")
+    _vfail(any(abs(_dot(normal, _sub(v, a))) > TOL for v in vertices), "The supporting roof mesh must be planar")
+    _vfail(any(_dot(normal, _normal(*(vertices[i] for i in f))) < 1.0 - TOL for f in faces), "Supporting roof triangles must face consistently upward")
     for x, y, z in corners:
         roof_z = a[2] - (normal[0] * (x - a[0]) + normal[1] * (y - a[1])) / normal[2]
-        if z < roof_z - TOL:
-            raise ValueError("PV corner sinks below the selected roof plane")
-        point = (x, y, roof_z)
-        if not any(_inside_triangle(point, *(vertices[index] for index in face)) for face in faces):
-            raise ValueError("PV corner projects outside the supporting roof mesh")
-
+        _vfail(z < roof_z - TOL, "PV corner sinks below the selected roof plane")
+        _vfail(not any(_inside_triangle((x, y, roof_z), *(vertices[i] for i in f)) for f in faces), "PV corner projects outside the supporting roof mesh")
 
 def check_fit(house, layout, origin, points):
-    """Check four projected corners, not complete solid/array intersections."""
-    corners = [(origin[0] + point[0], origin[1] + point[1], origin[2] + point[2]) for point in points]
-    for corner in corners:
-        for value in corner:
-            if not math.isfinite(value):
-                raise ValueError("Table corner is not finite")
+    """Check four projected corners against the house roof or supporting mesh."""
+    corners = [(origin[0] + p[0], origin[1] + p[1], origin[2] + p[2]) for p in points]
+    _vfail(any(not math.isfinite(v) for c in corners for v in c), "Table corner is not finite")
     if house["kind"] == "mesh":
-        check_mesh_fit(house, layout, corners, points)
-        return
-    length, width = house["length_m"], house["width_m"]
-    if max(corner[0] for corner in corners) > length + TOL:
-        raise ValueError("Table projects past the house end")
+        return check_mesh_fit(house, layout, corners, points)
+    _vfail(max(c[0] for c in corners) > house["length_m"] + TOL, "Table projects past the house end")
     if house["kind"] == "flat":
-        if max(corner[1] for corner in corners) > width + TOL:
-            raise ValueError("Table projects past the house side")
-        if min(corner[2] for corner in corners) < house["eave_height_m"] - TOL:
-            raise ValueError("Table sinks below the flat roof surface")
+        _vfail(max(c[1] for c in corners) > house["width_m"] + TOL, "Table projects past the house side")
+        _vfail(min(c[2] for c in corners) < house["eave_height_m"] - TOL, "Table sinks below the flat roof surface")
         return
-    if abs(layout["tilt_deg"] - house["pitch_deg"]) > TOL:
-        raise ValueError("Gable roof requires the PV tilt to equal the roof pitch")
-    half = width / 2.0
-    slope = math.tan(math.radians(house["pitch_deg"]))
-    for x, y, z in corners:
-        if not 0.0 - TOL <= y <= half + TOL:
-            raise ValueError("Table corner is not on the front roof face")
-        if z < house["eave_height_m"] + y * slope - TOL:
-            raise ValueError("Table corner sinks below the front roof plane")
+    _vfail(abs(layout["tilt_deg"] - house["pitch_deg"]) > TOL, "Gable roof requires the PV tilt to equal the roof pitch")
+    half, slope = house["width_m"] / 2.0, math.tan(math.radians(house["pitch_deg"]))
+    for _, y, z in corners:
+        _vfail(not -TOL <= y <= half + TOL, "Table corner is not on the front roof face")
+        _vfail(z < house["eave_height_m"] + y * slope - TOL, "Table corner sinks below the front roof plane")
 
+def _els(parent, ns, items):
+    for tag_name, text in items:
+        _el(parent, ns, tag_name, text=text)
 
 def build_scene(house, tables, modules, source, created, recipe=None, obstacles=None):
-    """Minimal COLLADA document: shared rotation node, house child, optional obstacles, PV child."""
+    """Build minimal COLLADA document with shared rotation node, house meshes, obstacles, and PV racks."""
     ET.register_namespace("", NS)
     ET.register_namespace("pv", PV)
     root = ET.Element(_tag(NS, "COLLADA"), {"version": "1.5.0"})
-    asset = ET.SubElement(root, _tag(NS, "asset"))
-    contributor = ET.SubElement(asset, _tag(NS, "contributor"))
-    ET.SubElement(contributor, _tag(NS, "authoring_tool")).text = AUTHORING_TOOL
-    coverage = ET.SubElement(ET.SubElement(asset, _tag(NS, "coverage")),
-                             _tag(NS, "geographic_location"))
-    ET.SubElement(coverage, _tag(NS, "longitude")).text = _num(source["site"]["longitude"])
-    ET.SubElement(coverage, _tag(NS, "latitude")).text = _num(source["site"]["latitude"])
-    ET.SubElement(coverage, _tag(NS, "altitude"), {"mode": "absolute"}).text = _num(source["site"]["altitude"])
-    ET.SubElement(asset, _tag(NS, "created")).text = created
-    ET.SubElement(asset, _tag(NS, "modified")).text = created
+    asset = _el(root, NS, "asset")
+    _el(_el(asset, NS, "contributor"), NS, "authoring_tool", text=AUTHORING_TOOL)
+    coverage = _el(_el(asset, NS, "coverage"), NS, "geographic_location")
+    _els(coverage, NS, (("longitude", _num(source["site"]["longitude"])), ("latitude", _num(source["site"]["latitude"]))))
+    _el(coverage, NS, "altitude", {"mode": "absolute"}, _num(source["site"]["altitude"]))
+    _els(asset, NS, (("created", created), ("modified", created)))
     if recipe is not None:
-        ET.SubElement(asset, _tag(NS, "subject")).text = json.dumps(recipe, ensure_ascii=True,
-                                                                   separators=(",", ":"), allow_nan=False)
-    ET.SubElement(asset, _tag(NS, "unit"), {"meter": "1", "name": "m"})
-    ET.SubElement(asset, _tag(NS, "up_axis")).text = "Z_UP"
-    components = ET.SubElement(_pv_extra(asset), _tag(PV, "components"))
-    module = ET.SubElement(ET.SubElement(components, _tag(PV, "modules")), _tag(PV, "module"),
-                           {"id": "ModuleModel1"})
-    for name, text in (("name", modules["name"]), ("nom_power", _num(modules["nom_power"])),
-                       ("length", _num(modules["length_m"] * 1000.0)),
-                       ("width", _num(modules["width_m"] * 1000.0)),
-                       ("depth", _num(modules["depth_m"] * 1000.0))):
-        ET.SubElement(module, _tag(PV, name)).text = text
-    geometries = ET.SubElement(root, _tag(NS, "library_geometries"))
-    if house["kind"] == "mesh":
-        parts = house["meshes"]
-    else:
-        house_points, house_faces = house_mesh(house)
-        parts = [{"name": "House", "vertices": house_points, "triangles": house_faces}]
-    for index, part in enumerate(parts, 1):
-        geometry = _append_mesh(geometries, f"HousePart{index}", part["vertices"], part["triangles"])
-        geometry.set("name", part["name"])
-    obs_list = list(obstacles or ())
-    for index, obs in enumerate(obs_list, 1):
-        geometry = _append_mesh(geometries, f"ObstaclePart{index}", obs["vertices"], obs["triangles"])
-        geometry.set("name", obs["name"])
-    nodes = ET.SubElement(root, _tag(NS, "library_nodes"))
-    for index, layout in enumerate(tables, 1):
-        rack_points, rack_faces = rack_mesh(layout)
-        rack = _append_mesh(geometries, f"Rack{index}", rack_points, rack_faces)
-        rack_tag = ET.SubElement(_pv_extra(rack), _tag(PV, "rack"))
-        for name, text in (("rack_type", "fixed_tilt"), ("row_spacing", _num(layout["row_spacing_m"])),
-                           ("column_spacing", _num(layout["column_spacing_m"])),
-                           ("module_rows", str(layout["module_rows"])),
-                           ("module_columns", str(layout["module_columns"])),
-                           ("module_orientation", layout["orientation"]),
-                           ("tilt", _num(layout["tilt_deg"])),
-                           ("azimuth", _num(layout.get("azimuth_deg", source["azimuth_deg"]))), ("module_id", "ModuleModel1")):
-            ET.SubElement(rack_tag, _tag(PV, name)).text = text
-        table_node = ET.SubElement(nodes, _tag(NS, "node"), {"id": f"TableModel{index}"})
-        instance = ET.SubElement(table_node, _tag(NS, "instance_geometry"), {"url": f"#Rack{index}"})
-        ET.SubElement(_pv_extra(instance), _tag(PV, "instance_rack"), {"id": f"rackInst{index}"})
-        table_tag = ET.SubElement(_pv_extra(table_node), _tag(PV, "table"))
-        ET.SubElement(table_tag, _tag(PV, "type")).text = "fixed"
-    scenes = ET.SubElement(root, _tag(NS, "library_visual_scenes"))
-    scene = ET.SubElement(scenes, _tag(NS, "visual_scene"), {"id": "VisualSceneNode"})
+        _el(asset, NS, "subject", text=json.dumps(recipe, ensure_ascii=True, separators=(",", ":"), allow_nan=False))
+    _el(asset, NS, "unit", {"meter": "1", "name": "m"})
+    _el(asset, NS, "up_axis", text="Z_UP")
+    _els(_el(_el(_el(_pv_extra(asset), PV, "components"), PV, "modules"), PV, "module", {"id": "ModuleModel1"}), PV, (
+        ("name", modules["name"]), ("nom_power", _num(modules["nom_power"])), ("length", _num(modules["length_m"] * 1000.0)),
+        ("width", _num(modules["width_m"] * 1000.0)), ("depth", _num(modules["depth_m"] * 1000.0))))
+    geometries = _el(root, NS, "library_geometries")
+    parts = house["meshes"] if house["kind"] == "mesh" else [{"name": "House", "vertices": house_mesh(house)[0], "triangles": house_mesh(house)[1]}]
+    for prefix, items in (("House", parts), ("Obstacle", obs_list := list(obstacles or ()))):
+        for i, item in enumerate(items, 1):
+            _append_mesh(geometries, f"{prefix}Part{i}", item["vertices"], item["triangles"]).set("name", item["name"])
+    nodes = _el(root, NS, "library_nodes")
+    for i, layout in enumerate(tables, 1):
+        rack = _append_mesh(geometries, f"Rack{i}", *rack_mesh(layout))
+        _els(_el(_pv_extra(rack), PV, "rack"), PV, (
+            ("rack_type", "fixed_tilt"), ("row_spacing", _num(layout["row_spacing_m"])), ("column_spacing", _num(layout["column_spacing_m"])),
+            ("module_rows", str(layout["module_rows"])), ("module_columns", str(layout["module_columns"])),
+            ("module_orientation", layout["orientation"]), ("tilt", _num(layout["tilt_deg"])),
+            ("azimuth", _num(layout.get("azimuth_deg", source["azimuth_deg"]))), ("module_id", "ModuleModel1")))
+        table_node = _el(nodes, NS, "node", {"id": f"TableModel{i}"})
+        _el(_pv_extra(_el(table_node, NS, "instance_geometry", {"url": f"#Rack{i}"})), PV, "instance_rack", {"id": f"rackInst{i}"})
+        _el(_el(_pv_extra(table_node), PV, "table"), PV, "type", text="fixed")
+    shared = _el(_el(_el(root, NS, "library_visual_scenes"), NS, "visual_scene", {"id": "VisualSceneNode"}), NS, "node", {"id": "SceneRoot"})
     turn = 180.0 - source["azimuth_deg"]
-    shared = ET.SubElement(scene, _tag(NS, "node"), {"id": "SceneRoot"})
-    ET.SubElement(shared, _tag(NS, "rotate")).text = "0 0 1 " + _num(turn)
-    for index, part in enumerate(parts, 1):
-        node = ET.SubElement(shared, _tag(NS, "node"), {"id": f"HouseNode{index}", "name": part["name"]})
-        ET.SubElement(node, _tag(NS, "instance_geometry"), {"url": f"#HousePart{index}"})
-    for index, obs in enumerate(obs_list, 1):
-        node = ET.SubElement(shared, _tag(NS, "node"), {"id": f"ObstacleNode{index}", "name": obs["name"]})
-        ET.SubElement(node, _tag(NS, "instance_geometry"), {"url": f"#ObstaclePart{index}"})
+    _el(shared, NS, "rotate", text="0 0 1 " + _num(turn))
+    for prefix, items in (("House", parts), ("Obstacle", obs_list)):
+        for i, item in enumerate(items, 1):
+            _el(_el(shared, NS, "node", {"id": f"{prefix}Node{i}", "name": item["name"]}), NS, "instance_geometry", {"url": f"#{prefix}Part{i}"})
     summaries = []
-    for index, layout in enumerate(tables, 1):
+    for i, layout in enumerate(tables, 1):
         origin = _rack_origin(house, layout)
-        pv_node = ET.SubElement(shared, _tag(NS, "node"), {"id": f"PVTable{index}",
-                                "name": layout.get("name", "PV table")})
-        ET.SubElement(pv_node, _tag(NS, "translate")).text = " ".join(_num(value) for value in origin)
+        pv_node = _el(shared, NS, "node", {"id": f"PVTable{i}", "name": layout.get("name", "PV table")})
+        _el(pv_node, NS, "translate", text=" ".join(_num(v) for v in origin))
         if "rotation_deg" in layout:
-            ET.SubElement(pv_node, _tag(NS, "rotate")).text = "0 0 1 " + _num(layout["rotation_deg"])
-        pv_instance = ET.SubElement(pv_node, _tag(NS, "instance_node"), {"url": f"#TableModel{index}"})
-        table_instance = ET.SubElement(_pv_extra(pv_instance), _tag(PV, "instance_table"),
-                                      {"id": f"Table{index}"})
-        array = ET.SubElement(table_instance, _tag(PV, "instance_racks_array"))
-        ET.SubElement(array, _tag(PV, "instance_rack_ref"),
-                      {"id": f"rackRef{index}", "url": f"#rackInst{index}"})
-        points = _placed_points(layout)
-        summaries.append({"name": layout.get("name", "PV table"), "origin_m": origin,
-                          **({"orientation_id": layout["orientation_id"]} if "orientation_id" in layout else {}),
-                          "module_total": layout["module_rows"] * layout["module_columns"],
-                          "corners_m": [[origin[axis] + point[axis] for axis in range(3)]
-                                        for point in points]})
-    ET.SubElement(ET.SubElement(root, _tag(NS, "scene")), _tag(NS, "instance_visual_scene"),
-                  {"url": "#VisualSceneNode"})
-    counts = {"house_vertices": sum(len(part["vertices"]) for part in parts),
-              "house_faces": sum(len(part["triangles"]) for part in parts),
-              "house_parts": len(parts), "part_names": [part["name"] for part in parts],
-              "rack_vertices": 4 * len(tables), "rack_faces": 2 * len(tables),
-              "pv_table_count": len(tables), "tables": summaries,
-              "rotate_deg": turn,
-              **({"origin_m": summaries[0]["origin_m"], "corners_m": summaries[0]["corners_m"]}
-                 if len(tables) == 1 else {})}
+            _el(pv_node, NS, "rotate", text="0 0 1 " + _num(layout["rotation_deg"]))
+        arr = _el(_el(_pv_extra(_el(pv_node, NS, "instance_node", {"url": f"#TableModel{i}"})),
+                      PV, "instance_table", {"id": f"Table{i}"}), PV, "instance_racks_array")
+        _el(arr, PV, "instance_rack_ref", {"id": f"rackRef{i}", "url": f"#rackInst{i}"})
+        summaries.append({
+            "name": layout.get("name", "PV table"), "origin_m": origin,
+            **({"orientation_id": layout["orientation_id"]} if "orientation_id" in layout else {}),
+            "module_total": layout["module_rows"] * layout["module_columns"],
+            "corners_m": [[origin[k] + p[k] for k in range(3)] for p in _placed_points(layout)]})
+    _el(_el(root, NS, "scene"), NS, "instance_visual_scene", {"url": "#VisualSceneNode"})
+    counts = {"house_vertices": sum(len(p["vertices"]) for p in parts), "house_faces": sum(len(p["triangles"]) for p in parts),
+              "house_parts": len(parts), "part_names": [p["name"] for p in parts], "rack_vertices": 4 * len(tables),
+              "rack_faces": 2 * len(tables), "pv_table_count": len(tables), "tables": summaries, "rotate_deg": turn,
+              **({"origin_m": summaries[0]["origin_m"], "corners_m": summaries[0]["corners_m"]} if len(tables) == 1 else {})}
     if obs_list:
-        counts["obstacle_count"] = len(obs_list)
-        counts["obstacle_names"] = [obs["name"] for obs in obs_list]
-        counts["tree_count"] = sum(1 for obs in obs_list if obs["kind"] == "tree")
-        counts["obstacle_mesh_count"] = sum(1 for obs in obs_list if obs["kind"] != "tree")
+        counts.update(obstacle_count=len(obs_list), obstacle_names=[o["name"] for o in obs_list],
+                      tree_count=sum(1 for o in obs_list if o["kind"] == "tree"), obstacle_mesh_count=sum(1 for o in obs_list if o["kind"] != "tree"))
     return root, counts
 
-
 def create_house_pv_scene(store, components, *, project, variant, output_name, house, layout,
-                          dry_run=True, module_geometry=None, string_layout=None, obstacles=None,
-                          source_variant_bytes=None):
-    """Preview or write one new .pvc2; the project, variant and PAN are never written."""
-    result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [],
-              "diagnostics": [], "warnings": [], "artifacts": {},
-              "native_consumption_verified": False, "imported": False}
+                          dry_run=True, module_geometry=None, string_layout=None, obstacles=None, source_variant_bytes=None):
+    """Preview or write one new .pvc2; the project, variant and PAN are never modified."""
+    result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run, "issues": [], "diagnostics": [],
+              "warnings": [], "artifacts": {}, "native_consumption_verified": False, "imported": False}
     with store.lock:
         try:
-            if type(dry_run) is not bool:
-                raise ValueError("Use a strict boolean")
+            _vfail(type(dry_run) is not bool, "Use a strict boolean")
             name = safe_filename(output_name, ".pvc2")
             if source_variant_bytes is not None:
-                if not dry_run:
-                    raise ValueError("In-memory source_variant_bytes is only permitted during dry_run preview")
-                source_path = None
-                original = bytes(source_variant_bytes)
+                _vfail(not dry_run, "In-memory source_variant_bytes is only permitted during dry_run preview")
+                source_path, original = None, bytes(source_variant_bytes)
             else:
                 store._check_project(project)
                 source_path = store._path(project, variant)
                 original = store._read(source_path)
-            text, lines = store._text(original)
-            arrays, system = store._sections(lines)
+            arrays, system = store._sections(lines := store._text(original)[1])
             source = source_profile(store, lines, arrays, system, allow_groups=True)
             modules, pan_snapshots = resolve_source_geometry(components, source, module_geometry, layout)
             pocket = house_profile(house)
-            existing_names = ([m["name"] for m in pocket["meshes"]] if pocket["kind"] == "mesh" else ["House"])
-            obstacle_records = obstacle_profiles(obstacles, existing_names=existing_names)
+            obstacle_records = obstacle_profiles(obstacles, existing_names=[m["name"] for m in pocket["meshes"]] if pocket["kind"] == "mesh" else ["House"])
             tables = table_profiles(layout, pocket, modules, source)
             check_tables(pocket, tables)
             binding, binding_state = _string_layout_profile(string_layout, tables)
-            declared = {"project": project, "variant": variant, "pan": source["pan_name"],
-                        "module_total": source["module_total"]}
+            declared = {"project": project, "variant": variant, "pan": source["pan_name"], "module_total": source["module_total"]}
             version = 1
             if "orientations" in source:
-                orientation_ids = [item["id"] for item in source["orientations"]]
+                orientation_ids = [i["id"] for i in source["orientations"]]
                 if len(set(orientation_ids)) == len(orientation_ids):
-                    declared["orientations"] = [{"id": item["id"], "module_total": item["module_total"]}
-                                                 for item in source["orientations"]]
-                    version = 2
+                    declared["orientations"], version = [{"id": i["id"], "module_total": i["module_total"]} for i in source["orientations"]], 2
                 else:
-                    # Several source subarrays share one NoOrientation. A version-2 orientation list
-                    # requires distinct ids, so this explicit-owner shape is the forced new schema:
-                    # store one record per owner (subarray_id) so the readback can rebuild the
-                    # owner-keyed source without collapsing the shared orientation.
-                    declared["owners"] = [{"subarray_id": item.get("subarray_id", item["id"]),
-                                           "orientation_id": item["id"],
-                                           "module_total": item["module_total"]}
-                                          for item in source["orientations"]]
-                    version = 3
-            recipe = {"version": version, "source": declared,
-                      "house": {"kind": "mesh"} if pocket["kind"] == "mesh" else house,
-                      "layout": layout}
-            if obstacle_records:
-                recipe["obstacles"] = [obs["spec"] for obs in obstacle_records]
-            if binding is not None:
-                recipe["string_layout"] = binding
-            created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            root, counts = build_scene(pocket, tables, modules, source, created, recipe,
-                                       obstacles=obstacle_records or None)
+                    declared["owners"], version = [{"subarray_id": i.get("subarray_id", i["id"]), "orientation_id": i["id"], "module_total": i["module_total"]} for i in source["orientations"]], 3
+            recipe = {"version": version, "source": declared, "house": {"kind": "mesh"} if pocket["kind"] == "mesh" else house,
+                      "layout": layout, **({"obstacles": [o["spec"] for o in obstacle_records]} if obstacle_records else {}),
+                      **({"string_layout": binding} if binding is not None else {})}
+            root, counts = build_scene(pocket, tables, modules, source, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), recipe, obstacles=obstacle_records or None)
             payload = ET.tostring(root, encoding="utf-8", xml_declaration=True)
             try:
                 ET.fromstring(payload)
             except ET.ParseError as exc:
                 raise ValueError("Module metadata must be valid XML text") from exc
             target = workspace_file(store.workspace, "UserData", name, ".pvc2")
-            if target.parent.is_dir() and any(
-                    path.name.casefold() == target.name.casefold() for path in target.parent.iterdir()):
+            if target.parent.is_dir() and any(p.name.casefold() == target.name.casefold() for p in target.parent.iterdir()):
                 raise FileExistsError("Choose a new scene file: " + name)
-            result.update(status="ready", project=project, variant=variant, output=name,
-                          modeling_mode="ai-meshes" if pocket["kind"] == "mesh" else "legacy-parametric",
-                          artifacts={"scene_file": str(target)},
-                          source={"project": project, "variant": variant, "pan": source["pan_name"],
-                                  "module_total": source["module_total"],
-                                  "field_tilt_deg": source["tilt_deg"],
-                                  "field_azimuth_deg": source["field_azimuth_deg"],
-                                  "collada_azimuth_deg": source["azimuth_deg"],
-                                  "latitude": source["site"]["latitude"],
-                                   **({"orientations": source["orientations"]} if "orientations" in source else {})},
-                          modules=modules,
-                          house=({"kind": "mesh", "part_count": len(pocket["meshes"])}
-                                 if pocket["kind"] == "mesh" else pocket),
-                          layout={"tables": tables} if "tables" in layout else tables[0], geometry=counts,
-                          **({"obstacles": [obs["spec"] for obs in obstacle_records]} if obstacle_records else {}),
-                          bytes=len(payload))
-            if binding_state is not None:
-                result["string_layout_state"] = binding_state
-            result["warnings"].append(
-                "Module metadata provenance: " + modules["metadata_source"] + ". Geometry uses metres; "
-                "only pv:module dimensions use millimetres.")
-            result["warnings"].append(
-                "Azimuth uses the COLLADA convention (north = 0, clockwise) and is only verified for a "
-                "northern-hemisphere site. House and table origins use the orientation1 anchor frame; "
-                "grouped PV nodes additionally inherit their own source-relative Z rotation."
-                if "orientations" in source else
-                "Azimuth uses the COLLADA convention (north = 0, clockwise) and is only verified for a "
-                "northern-hemisphere site. House and table share one parent rotation, so the table translation "
-                "is expressed in the house local frame.")
-            if source_path is not None and store._read(source_path) != original:
-                raise ValueError("Source variant changed while preparing the scene file")
+            result.update(
+                status="ready", project=project, variant=variant, output=name, modeling_mode="ai-meshes" if pocket["kind"] == "mesh" else "legacy-parametric",
+                artifacts={"scene_file": str(target)},
+                source={"project": project, "variant": variant, "pan": source["pan_name"], "module_total": source["module_total"],
+                        "field_tilt_deg": source["tilt_deg"], "field_azimuth_deg": source["field_azimuth_deg"], "collada_azimuth_deg": source["azimuth_deg"],
+                        "latitude": source["site"]["latitude"], **({"orientations": source["orientations"]} if "orientations" in source else {})},
+                modules=modules, house=({"kind": "mesh", "part_count": len(pocket["meshes"])} if pocket["kind"] == "mesh" else pocket),
+                layout={"tables": tables} if "tables" in layout else tables[0], geometry=counts,
+                **({"obstacles": [o["spec"] for o in obstacle_records]} if obstacle_records else {}), bytes=len(payload),
+                **({"string_layout_state": binding_state} if binding_state is not None else {}))
+            result["warnings"].extend([
+                "Module metadata provenance: " + modules["metadata_source"] + ". Geometry uses metres; only pv:module dimensions use millimetres.",
+                "Azimuth uses the COLLADA convention (north = 0, clockwise) and is only verified for a northern-hemisphere site. "
+                + ("House and table origins use the orientation1 anchor frame; grouped PV nodes additionally inherit their own source-relative Z rotation."
+                   if "orientations" in source else "House and table share one parent rotation, so the table translation is expressed in the house local frame.")])
+            _vfail(source_path is not None and store._read(source_path) != original, "Source variant changed while preparing the scene file")
             for pan_path, pan_bytes in pan_snapshots:
-                if components._read(pan_path) != pan_bytes:
-                    raise ValueError("Source PAN changed while preparing the scene file")
+                _vfail(components._read(pan_path) != pan_bytes, "Source PAN changed while preparing the scene file")
             if dry_run:
                 return result
             result["stage"] = "write"
@@ -1301,13 +850,10 @@ def create_house_pv_scene(store, components, *, project, variant, output_name, h
             result.update(status="created", stage="created")
         except (ValueError, OSError, UnicodeError, KeyError, TypeError) as exc:
             result["issues"].append(str(exc))
+            result["diagnostics"] = exc.diagnostics if isinstance(exc, SceneValidationError) else [_diagnostic("scene_input", result["stage"], str(exc))]
             if isinstance(exc, SceneValidationError):
-                result["diagnostics"] = exc.diagnostics
                 result["diagnostics_truncated"] = exc.truncated
-            else:
-                result["diagnostics"] = [_diagnostic("scene_input", result["stage"], str(exc))]
             result["status"] = "failed" if result["stage"] == "write" else "blocked"
             if result["status"] == "failed":
-                result["warnings"].append("A partial scene file may exist at the disclosed path; the source "
-                                          "project, variant and PAN are unchanged.")
+                result["warnings"].append("A partial scene file may exist at the disclosed path; the source project, variant and PAN are unchanged.")
     return result

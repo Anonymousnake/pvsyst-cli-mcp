@@ -683,7 +683,7 @@ _MOVED_TO_TEMPLATE = {
 
 def __getattr__(name: str):
     if name == "pv_shading_header":
-        from pvsyst_auto.scene.ground import pv_shading_header
+        from pvsyst_auto.scene.reader import pv_shading_header
 
         return pv_shading_header
     if name in _MOVED_TO_TEMPLATE:

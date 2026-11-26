@@ -10,9 +10,7 @@ from typing import Any
 
 from pvsyst_auto.components.editor import generator_state, has_object, objects, replace_generator, replace_value
 from pvsyst_auto.components.store import FIELD
-from pvsyst_auto.native.grid_limit import grid_limit_state, replace_grid_limit
-from pvsyst_auto.native.horizon import horizon_state, replace_horizon
-from pvsyst_auto.native.p50 import p50_state, replace_p50
+from pvsyst_auto.native.load import grid_limit_state, horizon_state, p50_state, replace_grid_limit, replace_horizon, replace_p50
 from pvsyst_auto.project.circuit import (
     inventory as grid_inventory,
     require_plane_branch_mode,
@@ -639,7 +637,7 @@ def inspect_parameters(store, project: str, variant: str, include_saved_results:
     from pvsyst_auto.project.bifacial import SHED_TYPES, SHED_WRITABLE as SHED_FIELDS, bifacial_state
     from pvsyst_auto.project.tracking import WRITABLE as TRACKING_FIELDS
     from pvsyst_auto.project.variants import economic_block, saved_results
-    from pvsyst_auto.scene.state import shading_state
+    from pvsyst_auto.scene.reader import shading_state
 
     with store.lock:
         store._check_project(project)

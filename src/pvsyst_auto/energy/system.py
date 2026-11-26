@@ -13,8 +13,8 @@ from pvsyst_auto.energy.storage import (
     decimal_text, has_user_load, render_grid_storage_block, resolve_storage_controls, set_grid_export,
     set_system_grid_limit, storage_state, validate_storage, warn_schedule_quantization,
 )
-from pvsyst_auto.native.grid_limit import grid_limit_state, replace_grid_limit
 from pvsyst_auto.native.headless import strip_result_cache
+from pvsyst_auto.native.load import grid_limit_state, replace_grid_limit
 from pvsyst_auto.project.circuit import circuit_nodes, positive_integer
 from pvsyst_auto.project.paths import battery_reference_name
 from pvsyst_auto.project.tracking import _decimal, _require_scope

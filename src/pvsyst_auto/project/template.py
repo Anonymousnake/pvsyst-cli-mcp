@@ -13,7 +13,7 @@ from pvsyst_auto.project.paths import project_path
 from pvsyst_auto.project.synthesize import (
     SYNTH_VERSION, _clean_text, _fmt_angle, _pos_int, synthesize_project_and_variant,
 )
-from pvsyst_auto.scene.ground import pv_shading_header
+from pvsyst_auto.scene.reader import pv_shading_header
 from pvsyst_auto.validation import append_issue as _issue, finite_number as _finite
 from pvsyst_auto.versions import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
@@ -557,7 +557,7 @@ def synthesize_utility_project(
             else:
                 shading_lines = synthesize_ground_tracker_shading(tracker_count=shed_count, pitch_ew_m=resolved_pitch, axis_azimuth_deg=axis_azimuth_deg, **mod_kw)
         elif site_polygon is not None or terrain_mesh is not None:
-            from pvsyst_auto.scene.ground import build_ground_3d_shading, plan_ground_polygon_layout
+            from pvsyst_auto.scene.reader import build_ground_3d_shading, plan_ground_polygon_layout
             if site_polygon is not None:
                 ground_3d_layout = plan_ground_polygon_layout(
                     site_polygon, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg, pitch_m=resolved_pitch, module_width_m=mw,
@@ -595,7 +595,7 @@ def synthesize_utility_project(
                                                            azimuth_deg=azimuth_deg, base_slope_deg=eff_base_slope, **mod_kw)
             if obstacles:
                 from pvsyst_auto.scene.author import obstacle_profiles
-                from pvsyst_auto.scene.ground import emit_shading_obstacles
+                from pvsyst_auto.scene.reader import emit_shading_obstacles
                 if parsed_obs := obstacle_profiles(obstacles):
                     extra_lines = emit_shading_obstacles(parsed_obs, start_index=2)
                     shading_lines = [(f"    ListeObjets, list of={1 + len(parsed_obs)} TShdObject" if ln.strip() == "ListeObjets, list of=1 TShdObject" else ln) for ln in shading_lines]

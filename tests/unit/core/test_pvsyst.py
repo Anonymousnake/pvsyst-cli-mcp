@@ -1338,6 +1338,11 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
         "pvsyst_auto.energy.spectral",
         "pvsyst_auto.energy.tou_planner",
         "pvsyst_auto.energy.unavailability",
+        "pvsyst_auto.native._prep",
+        "pvsyst_auto.native._workspace_ini",
+        "pvsyst_auto.native.grid_limit",
+        "pvsyst_auto.native.horizon",
+        "pvsyst_auto.native.p50",
         "pvsyst_auto.project.fileio",
         "pvsyst_auto.project.native_economics",
         "pvsyst_auto.project.orientation_convert",
@@ -1346,6 +1351,9 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
         "pvsyst_auto.project.variant_readback",
         "pvsyst_auto.project.variant_topology",
         "pvsyst_auto.project.variant_writer",
+        "pvsyst_auto.scene.ground",
+        "pvsyst_auto.scene.state",
+        "pvsyst_auto.weather.csv",
     )
 
     def test_legacy_consolidated_module_imports_forward_cleanly(self) -> None:
@@ -1399,6 +1407,20 @@ class LegacyModuleCompatibilityTests(unittest.TestCase):
         self.assertEqual(power_factor.PF_BITS, {"constant": 0x00100000, "monthly": 0x00300000})
         self.assertEqual(inverter_temperature.FIELDS, ("TempShift", "TempFixed"))
         self.assertEqual(power_factor.FIELDS, ("TanPhi", "TanPhiM"))
+        from pvsyst_auto.native import _prep, _winlaunch, _workspace_ini, grid_limit, headless, horizon, load, p50
+        from pvsyst_auto.scene import ground, reader, state
+        from pvsyst_auto.weather import csv as weather_csv, preparation
+        self.assertIs(_prep._verify_new, headless._verify_new)
+        self.assertIs(_workspace_ini._profile_ini, _winlaunch._profile_ini)
+        self.assertIs(grid_limit._read, load._grid_limit_read)
+        self.assertEqual(horizon.SLOTS, 100)
+        self.assertIs(horizon._number, load._horizon_number)
+        self.assertEqual(p50.ORDER, load._P50_ORDER)
+        self.assertIs(p50._step, load._p50_step)
+        self.assertIs(ground.pv_shading_header, reader.pv_shading_header)
+        self.assertIs(state.shading_state, reader.shading_state)
+        self.assertIs(weather_csv.inspect_weather_csv, preparation.inspect_weather_csv)
+        self.assertIs(variant_readback.shading_state, reader.shading_state)
         self.assertTrue(callable(builder.electrical_inventory))
         self.assertTrue(callable(builder.inspect_curves))
         self.assertTrue(callable(builder.bind_source_values))

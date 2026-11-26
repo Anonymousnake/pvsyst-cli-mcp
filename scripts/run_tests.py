@@ -17,8 +17,6 @@ SUITES = {
     "unit": ["tests/unit"],
     "mcp": [
         "tests/integration/test_mcp_tools.py",
-        "tests/integration/test_variant_io.py",
-        "tests/integration/test_scene_components.py",
     ],
     "integration": ["tests/integration"],
     "e2e": ["tests/e2e"],
