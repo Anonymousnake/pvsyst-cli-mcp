@@ -261,58 +261,70 @@ class PVsystCLI:
             raise PVsystError(f"{label} failed with exit code {result.returncode}", diagnostics=text)
         return text
 
-    def command_help(self, command: str = "", *, allow_window_creation: bool | None = None) -> str:
-        if command not in self._help_cache:
-            result = self._checked_run("PVsystCLI help", "help", *([command] if command else []),
-                                       allow_window_creation=allow_window_creation)
-            text = self._output(result).strip()
-            if result.returncode != 0 or "Unknown command" in text:
-                raise PVsystError(f"CLI does not support {command or 'help'}")
-            self._help_cache[command] = text
-        return self._help_cache[command]
+    def _run_query_with_retry(self, label: str, *args: str, is_empty,
+                              allow_window_creation: bool | None = None) -> tuple[subprocess.CompletedProcess[str], str]:
+        attempt = 0
+        while True:
+            result = self._checked_run(label, *args, allow_window_creation=allow_window_creation)
+            text = self._output(result)
+            transient = (not _NON_TRANSIENT_SIM_RE.search(text)) and (
+                is_empty(text) if result.returncode == 0 else _is_transient_simulation_abort(text)
+            )
+            if not (attempt < self.max_transient_retries and transient):
+                return result, text
+            attempt += 1
+            time.sleep(0.2)
 
-    def _options(self, command: str, *, allow_window_creation: bool | None = None) -> set[str]:
-        return set(re.findall(r"(?m)^\s*--([a-z][a-z-]+)(?=\||:|\s)",
-                              self.command_help(command, allow_window_creation=allow_window_creation)))
-
-    def capabilities(self, command: str | None = None, *,
-                     allow_window_creation: bool | None = None) -> dict[str, list[str]]:
-        if command is not None:
-            cmd = command.strip()
-            if not cmd or not re.fullmatch(r"[a-z][a-z-]+", cmd):
-                raise ValueError("command must be a valid PVsystCLI subcommand name (e.g. 'run-simulation')")
-            return {cmd: sorted(self._options(cmd, allow_window_creation=allow_window_creation))}
-        main = self.command_help(allow_window_creation=allow_window_creation)
-        return {name: sorted(self._options(name, allow_window_creation=allow_window_creation))
-                for name in re.findall(r"(?m)^\s+([a-z][a-z-]+):", main)}
-
-    def _require(self, command: str, option: str, *, allow_window_creation: bool | None = None) -> None:
-        if option not in self._options(command, allow_window_creation=allow_window_creation):
-            raise PVsystError(f"Installed PVsystCLI lacks {command} --{option}")
-
-    def version(self, *, allow_window_creation: bool | None = None) -> str:
-        result = self._checked_run("PVsystCLI version query", "version", allow_window_creation=allow_window_creation)
-        if result.returncode != 0:
-            raise PVsystError("PVsystCLI version query failed")
-        lines = self._output(result).strip().splitlines()
-        if not lines:
-            raise PVsystError("PVsystCLI version query returned no output")
-        return lines[0]
-
-    def license_info(self, *, allow_window_creation: bool | None = None) -> dict:
-        result = self._checked_run("PVsystCLI license query", "lic-info", allow_window_creation=allow_window_creation)
-        text = self._output(result)
-        if result.returncode != 0:
-            raise PVsystError("PVsystCLI license query failed")
+    @staticmethod
+    def _parse_license_info(text: str) -> dict:
         info: dict = {"status": "UNSPECIFIED"}
         key_map = {"Status": "status", "Remaining days": "remaining_days",
                    "Remaining executions": "remaining_executions", "Expiration date": "expiration_date"}
         for key, value in re.findall(r"(?m)^\s*(Status|Remaining days|Remaining executions|Expiration date):\s*([^\r\n]*)", text):
             name = key_map[key]
             info[name] = int(value.strip()) if name in ("remaining_days", "remaining_executions") and value.strip().isdigit() else value.strip() or None
-        if not any(k in info for k in ("remaining_days", "expiration_date")) and info["status"] == "UNSPECIFIED":
-            raise PVsystError("PVsystCLI license query returned no recognized fields")
         return info
+
+    def command_help(self, command: str = "", *, allow_window_creation: bool | None = None) -> str:
+        if command not in self._help_cache:
+            result, raw_text = self._run_query_with_retry("PVsystCLI help", "help", *([command] if command else []), is_empty=lambda raw: not raw.strip(), allow_window_creation=allow_window_creation)
+            text = raw_text.strip()
+            if result.returncode != 0 or not text or "Unknown command" in text:
+                raise PVsystError(f"CLI does not support {command or 'help'}")
+            self._help_cache[command] = text
+        return self._help_cache[command]
+
+    def _options(self, command: str, *, allow_window_creation: bool | None = None) -> set[str]:
+        return set(re.findall(r"(?m)^\s*--([a-z][a-z-]+)(?=\||:|\s)", self.command_help(command, allow_window_creation=allow_window_creation)))
+
+    def capabilities(self, command: str | None = None, *, allow_window_creation: bool | None = None) -> dict[str, list[str]]:
+        if command is not None:
+            if not (cmd := command.strip()) or not re.fullmatch(r"[a-z][a-z-]+", cmd):
+                raise ValueError("command must be a valid PVsystCLI subcommand name (e.g. 'run-simulation')")
+            return {cmd: sorted(self._options(cmd, allow_window_creation=allow_window_creation))}
+        return {name: sorted(self._options(name, allow_window_creation=allow_window_creation))
+                for name in re.findall(r"(?m)^\s+([a-z][a-z-]+):", self.command_help(allow_window_creation=allow_window_creation))}
+
+    def _require(self, command: str, option: str, *, allow_window_creation: bool | None = None) -> None:
+        if option not in self._options(command, allow_window_creation=allow_window_creation):
+            raise PVsystError(f"Installed PVsystCLI lacks {command} --{option}")
+
+    def version(self, *, allow_window_creation: bool | None = None) -> str:
+        result, raw_text = self._run_query_with_retry("PVsystCLI version query", "version", is_empty=lambda raw: not raw.strip(), allow_window_creation=allow_window_creation)
+        if result.returncode != 0:
+            raise PVsystError("PVsystCLI version query failed")
+        if not (lines := raw_text.strip().splitlines()):
+            raise PVsystError("PVsystCLI version query returned no output")
+        return lines[0]
+
+    def license_info(self, *, allow_window_creation: bool | None = None) -> dict:
+        _missing = lambda raw: (not any(k in (p := self._parse_license_info(raw)) for k in ("remaining_days", "expiration_date")) and p["status"] == "UNSPECIFIED")
+        result, text = self._run_query_with_retry("PVsystCLI license query", "lic-info", is_empty=_missing, allow_window_creation=allow_window_creation)
+        if result.returncode != 0:
+            raise PVsystError("PVsystCLI license query failed")
+        if _missing(text):
+            raise PVsystError("PVsystCLI license query returned no recognized fields")
+        return self._parse_license_info(text)
 
     @_serialized
     def _license_change(self, command: str, *args: str, confirm: bool) -> dict:
