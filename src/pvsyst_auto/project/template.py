@@ -490,7 +490,7 @@ def synthesize_utility_project(
     site_polygon: list[list[float]] | None = None, setback_m: float = 0.0, ground_clearance_m: float = 0.5,
     max_table_columns: int | None = None, obstacles: list[dict] | None = None, base_slope_deg: float = 0.0,
     terrain: dict | None = None, u_factor: float = 29.0, lid_loss: float = 0.0, pmism_mpp: float | None = None,
-    module_quality_loss: float | None = None, dc_wiring_loss_pct: float = 1.5, dc_wiring_resistance_mohm: float = 0.0,
+    module_quality_loss: float | None = None, ageing: dict | None = None, dc_wiring_loss_pct: float = 1.5, dc_wiring_resistance_mohm: float = 0.0,
     sub_orientations: list[dict] | None = None, subarray_allocations: list[dict] | None = None, top_spacing_m: float = 0.2, dome_wiring: str = "auto",
     allow_missing_met: bool = False, version: str = SYNTH_VERSION, with_bom: bool = True,
 ) -> dict:
@@ -781,10 +781,15 @@ def synthesize_utility_project(
         sub_mppt = n_inv_mppt if n_inv_mppt is not None else (n_string_ch if independent_mppt else 1)
         subarrays = [_subarray_entry(1, "PV Array", n_mod_serie, n_string_ch, n_inverter, sub_mppt)]
 
+    ageing_norm = None
+    if ageing is not None:
+        from pvsyst_auto.energy.ageing import normalize_ageing_spec
+        ageing_norm = normalize_ageing_spec(ageing)
+
     result = synthesize_project_and_variant(
         store, project_comment=project_comment, variant_comment=variant_comment, site_name=site_name, met_name=met_name,
         orientations=orientations_list, subarrays=subarrays, pan_name=pan_name, ond_name=ond_name, u_factor=u_factor,
-        shading_lines=shading_lines, version=version, with_bom=with_bom, allow_missing_met=allow_missing_met,
+        shading_lines=shading_lines, ageing=ageing_norm, version=version, with_bom=with_bom, allow_missing_met=allow_missing_met,
     )
     effective_gcr_width = (2.0 * resolved_collector_width) if field_type == "Dome" else resolved_collector_width
     result["utility_summary"] = {
@@ -797,5 +802,6 @@ def synthesize_utility_project(
         **({"asymmetric_mppt": True, "subarray_allocations": resolved_allocs} if resolved_allocs is not None else {}),
         **({"ground_3d_layout": ground_3d_layout} if ground_3d_layout is not None else {}),
         **({"terrain": terrain_summary} if terrain_summary is not None else {}),
+        **({"ageing": ageing_norm} if ageing_norm is not None and ageing_norm["enabled"] else {}),
     }
     return result

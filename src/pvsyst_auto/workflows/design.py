@@ -61,7 +61,7 @@ REMOTE_WEATHER_MODES = ("open_meteo", "pvgis_tmy", "nasa_power")
 WEATHER_MODES = ("existing", "synthetic_from_site", "csv", *REMOTE_WEATHER_MODES)
 _PROVIDER_FOR_MODE = {"open_meteo": "open_meteo_era5", "pvgis_tmy": "pvgis_tmy", "nasa_power": "nasa_power"}
 _RAW_SUFFIX_FOR_MODE = {"open_meteo": "_openmeteo_raw.json", "pvgis_tmy": "_pvgis_tmy_raw.json", "nasa_power": "_nasapower_raw.json"}
-LOSS_KEYS = frozenset(("LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor"))
+LOSS_KEYS = frozenset(("LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor", "ageing"))
 CAPACITY_KEYS = frozenset((*CAPACITY_NUMBERS, "min_dc_ac_ratio", "capacity_tolerance_pct", "voltage_standard", "design_basis", "allow_asymmetric_mppt"))
 ENVELOPE_NESTED = ("temperatures", "envelope", "coefficients", "module_limits", "mppt_limits", "effective_irradiance")
 ACQUIRE_SUCCESS = ("prepared",)
@@ -286,7 +286,11 @@ def _validate_spec(spec) -> list[dict]:
         else:
             for key in sorted(set(losses) - LOSS_KEYS): _bad(issues, f"losses.{key}", "Unsupported loss parameter")
             for key, value in losses.items():
-                if key in LOSS_KEYS and not _is_number(value):
+                if key == "ageing":
+                    from pvsyst_auto.energy.ageing import normalize_ageing_spec
+                    try: normalize_ageing_spec(value)
+                    except ValueError as exc: _bad(issues, "losses.ageing", exc)
+                elif key in LOSS_KEYS and not _is_number(value):
                     _bad(issues, f"losses.{key}", "Require a supported finite numeric loss parameter")
     _check_weather(spec.get("weather"), issues)
     return issues

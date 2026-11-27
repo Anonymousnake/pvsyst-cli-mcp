@@ -564,6 +564,7 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "lid_loss": float(losses.get("LIDLoss", 0.0)),
         "pmism_mpp": float(losses["PMismMPP"]) if "PMismMPP" in losses else None,
         "module_quality_loss": float(losses["ModuleQualityLoss"]) if "ModuleQualityLoss" in losses else None,
+        "ageing": losses.get("ageing"),
         "with_bom": True,
     }
     return kwargs

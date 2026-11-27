@@ -440,6 +440,10 @@ class VariantStore:
         return bool(re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", raw)) and (int(raw[1:], 16) & ~cls._VERIFIED_MAIN_FLAG_MASK) in (0x00100400, 0x00000400)
 
     @staticmethod
+    def _is_verified_main_flags2(raw: str) -> bool:
+        return bool(re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", raw)) and (int(raw[1:], 16) & ~0x00100000) == 0x082A
+
+    @staticmethod
     def _ordinary_fixed_plane(lines, bounds, allow_missing_flags=False, allow_sheds=False):
         if lines[bounds[0]].strip() != "PVObject_=pvOrient":
             raise ValueError("Operation requires ordinary PVObject_=pvOrient")
@@ -479,7 +483,7 @@ class VariantStore:
             raise ValueError(f"UVFactor editing requires a verified {SEED_LABEL} grid main array")
         flags, flags2 = VariantStore._field_indices(lines, main_array, "Flags"), VariantStore._field_indices(lines, main_array, "Flags2")
         if (len(flags) != 1 or not VariantStore._is_verified_main_flags(FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2])
-                or len(flags2) != 1 or FIELD.fullmatch(lines[flags2[0]].rstrip("\r\n"))[2] != "$082A"):
+                or len(flags2) != 1 or not VariantStore._is_verified_main_flags2(FIELD.fullmatch(lines[flags2[0]].rstrip("\r\n"))[2])):
             raise ValueError("UVFactor editing requires verified main-array Flags/Flags2")
         if len(VariantStore._field_indices(lines, main_array, "UVFactor")) != 1:
             raise ValueError("UVFactor must occur exactly once directly on the main array")

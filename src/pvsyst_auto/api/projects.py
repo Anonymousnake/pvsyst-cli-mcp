@@ -108,9 +108,10 @@ class InverterTemperatureUpdates(_StrictModel):
     offset_c: StrictNum | None = None
     fixed_c: StrictNum | None = None
 class AgeingUpdates(_StrictModel):
-    """Existing activated native template; inputs and recorded RMS/retention controls only."""
+    """Mount or update zero-template pvAgeing degradation settings inside pvMainArray."""
     simulation_year: StrictInt
     annual_module_degradation_percent: StrictNum
+    imp_degrad_sharing_percent: StrictNum | None = None
     keep_mc_values: StrictBool | None = None
     modules_rms_year_isc_percent: StrictNum | None = None
     modules_rms_year_voc_percent: StrictNum | None = None

@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 from typing import Any
+from pvsyst_auto.energy.ageing import load_ageing_batch_curve, normalize_yearly_energy_anchors, yearly_degradation_factors
 from pvsyst_auto.native.cli import parse_batch_results
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.results import BATCH_ENERGY_TO_KWH, RegularResultCsv, iter_aligned_result_rows
@@ -459,7 +460,8 @@ def _resolve_year_opex(year: int, *, base_annual_opex: float, opex_esc: float,
     return (base_override if base_override is not None else base_annual_opex * esc_factor) + extra_sum
 def _compute_cashflow_metrics(*, year1_energy_kwh: float, year1_gross_benefit: float, capex_total: float,
     base_annual_opex: float, replacement_events: list[dict], financial: dict,
-    year1_demand_savings: float = 0.0, dc_kw: float | None = None) -> dict:
+    year1_demand_savings: float = 0.0, dc_kw: float | None = None,
+    yearly_deg_factors: dict[int, float] | None = None) -> dict:
     life, r = financial["project_life_years"], financial["discount_rate_pct"] / 100.0
     deg1, deg_ann = financial["first_year_degradation_pct"] / 100.0, financial["annual_degradation_pct"] / 100.0
     opex_esc, tariff_esc = financial["opex_escalation_pct"] / 100.0, financial["tariff_escalation_pct"] / 100.0
@@ -519,7 +521,7 @@ def _compute_cashflow_metrics(*, year1_energy_kwh: float, year1_gross_benefit: f
     lifetime_vat_payable = lifetime_vat_surtax = lifetime_cit_project = lifetime_cit_equity = lifetime_interest = 0.0
     dscr_values: list[float] = []
     for year in range(1, life + 1):
-        deg_factor = (1.0 - deg1) * ((1.0 - deg_ann) ** (year - 1))
+        deg_factor = yearly_deg_factors[year] if yearly_deg_factors is not None else ((1.0 - deg1) * ((1.0 - deg_ann) ** (year - 1)))
         energy_y = year1_energy_kwh * deg_factor
         gross_y = (year1_energy_benefit * deg_factor + year1_demand_savings) * ((1.0 + tariff_esc) ** (year - 1))
         opex_y = _resolve_year_opex(year, base_annual_opex=base_annual_opex, opex_esc=opex_esc, opex_tiers=opex_tiers, capex_total=capex_total, dc_kw=dc_kw)
@@ -611,7 +613,7 @@ def _compute_cashflow_metrics(*, year1_energy_kwh: float, year1_gross_benefit: f
     npv = sum(cf / ((1.0 + r) ** t) for t, cf in enumerate(primary_cfs))
     irr = _compute_irr(primary_cfs)
     lcoe = (pv_costs / pv_energy) if pv_energy > 0 else None
-    y1_e_deg = year1_energy_benefit * (1.0 - deg1)
+    y1_e_deg = year1_energy_benefit * (yearly_deg_factors[1] if yearly_deg_factors is not None else (1.0 - deg1))
     y1_gross_deg = y1_e_deg + year1_demand_savings
     y1_opex_act = schedule[0]["opex"] if schedule else round(base_annual_opex, 2)
     out: dict[str, Any] = {"currency": financial["currency"], "capex_total": round(capex_total, 2),
@@ -653,22 +655,26 @@ def _compute_cashflow_metrics(*, year1_energy_kwh: float, year1_gross_benefit: f
     return out
 def _compute_sensitivity(*, sens_cfg: dict, base_metrics: dict, year1_energy_kwh: float, year1_energy_benefit: float,
     year1_demand_savings: float, capex_total: float, base_annual_opex: float,
-    replacement_events: list[dict], financial: dict, dc_kw: float | None = None) -> dict:
+    replacement_events: list[dict], financial: dict, dc_kw: float | None = None,
+    yearly_deg_factors: dict[int, float] | None = None) -> dict:
     """Deterministic +/- variation_pct one-at-a-time sensitivity sweep sorted for tornado plotting."""
     var_pct = sens_cfg["variation_pct"]
     frac = var_pct / 100.0
     def _run_case(factor: str, sign: float) -> dict:
         scale = 1.0 + sign * frac
-        e_kwh, e_ben, d_sav, capex, fin = year1_energy_kwh, year1_energy_benefit, year1_demand_savings, capex_total, financial
+        e_kwh, e_ben, d_sav, capex, fin, scen_deg = year1_energy_kwh, year1_energy_benefit, year1_demand_savings, capex_total, financial, yearly_deg_factors
         if factor == "tariff": e_ben, d_sav = year1_energy_benefit * scale, year1_demand_savings * scale
         elif factor == "capex": capex = capex_total * scale
         elif factor == "yield": e_kwh, e_ben = year1_energy_kwh * scale, year1_energy_benefit * scale
         elif factor == "degradation":
-            fin = dict(financial)
-            fin["first_year_degradation_pct"] = max(0.0, min(25.0, financial["first_year_degradation_pct"] * scale))
-            fin["annual_degradation_pct"] = max(0.0, min(10.0, financial["annual_degradation_pct"] * scale))
+            if yearly_deg_factors is not None:
+                scen_deg = {y: max(0.0, 1.0 - (1.0 - f) * scale) for y, f in yearly_deg_factors.items()}
+            else:
+                fin = dict(financial)
+                fin["first_year_degradation_pct"] = max(0.0, min(25.0, financial["first_year_degradation_pct"] * scale))
+                fin["annual_degradation_pct"] = max(0.0, min(10.0, financial["annual_degradation_pct"] * scale))
         m = _compute_cashflow_metrics(year1_energy_kwh=e_kwh, year1_gross_benefit=e_ben + d_sav, year1_demand_savings=d_sav,
-            capex_total=capex, base_annual_opex=base_annual_opex, replacement_events=replacement_events, financial=fin, dc_kw=dc_kw)
+            capex_total=capex, base_annual_opex=base_annual_opex, replacement_events=replacement_events, financial=fin, dc_kw=dc_kw, yearly_deg_factors=scen_deg)
         return {k: m[k] for k in ("npv", "irr_pct", "lcoe", "simple_payback_years")}
     rows: list[dict] = []
     for factor in sens_cfg["factors"]:
@@ -680,12 +686,17 @@ def _compute_sensitivity(*, sens_cfg: dict, base_metrics: dict, year1_energy_kwh
     return {"variation_pct": var_pct,
         "base": {k: base_metrics[k] for k in ("npv", "irr_pct", "lcoe", "simple_payback_years")}, "factors": rows}
 def evaluate_economics(*, workspace: Path | None = None, scenarios: list[dict] | None = None,
-    batch_summary_csv: str | None = None, financial: dict | None = None, tariff: dict | None = None, sensitivity: dict | None = None,
+    batch_summary_csv: str | None = None, ageing_batch_csv: str | None = None, financial: dict | None = None,
+    tariff: dict | None = None, sensitivity: dict | None = None,
     rank_by: str = "npv", include_cashflow_schedule: bool = True) -> dict:
     """Evaluate single or multi-scenario PV/PV+BESS financial KPIs, TOU/demand settlement, sensitivity, and rankings."""
     if rank_by not in _VALID_RANK_KEYS: raise ValueError(f"rank_by must be one of: {', '.join(_VALID_RANK_KEYS)}")
     if type(include_cashflow_schedule) is not bool: raise ValueError("include_cashflow_schedule must be a strict boolean")
     fin_cfg, tar_cfg, sens_cfg = _validate_financial(financial), _validate_tariff(tariff), _validate_sensitivity(sensitivity)
+    top_anchors: dict[int, float] | None = None
+    if ageing_batch_csv:
+        if workspace is None: raise ValueError("workspace is required when loading ageing_batch_csv")
+        top_anchors = load_ageing_batch_curve(workspace_file(workspace, "UserBatch", safe_filename(ageing_batch_csv, ".csv"), ".csv"), BATCH_ENERGY_TO_KWH)
     resolved_scenarios: list[dict] = list(scenarios or [])
     if batch_summary_csv:
         if workspace is None: raise ValueError("workspace is required when loading batch_summary_csv")
@@ -707,7 +718,9 @@ def evaluate_economics(*, workspace: Path | None = None, scenarios: list[dict] |
                 if unit not in BATCH_ENERGY_TO_KWH: raise ValueError(f"Expected energy unit for batch E_Grid, got {unit!r}")
                 item["annual_yield_kwh"] = e_grid * BATCH_ENERGY_TO_KWH[unit]
             resolved_scenarios.append(item)
-    if not resolved_scenarios: raise ValueError("Provide at least one scenario in scenarios or a valid batch_summary_csv")
+    if not resolved_scenarios and top_anchors is not None:
+        resolved_scenarios.append({"label": Path(ageing_batch_csv).stem, "yearly_energy_kwh": top_anchors})
+    if not resolved_scenarios: raise ValueError("Provide at least one scenario in scenarios, batch_summary_csv, or ageing_batch_csv")
     if len(resolved_scenarios) > 100: raise ValueError("At most 100 scenarios can be evaluated in one call")
     any_has_battery = any(isinstance(item, dict) and isinstance(item.get("battery_kwh"), (int, float))
         and not isinstance(item.get("battery_kwh"), bool) and float(item["battery_kwh"]) > 0.0 for item in resolved_scenarios)
@@ -732,6 +745,17 @@ def evaluate_economics(*, workspace: Path | None = None, scenarios: list[dict] |
             require_cost_basis=True, context=f"scenarios[{index}] ({label})")
         if bat_rep_ev is not None: sc_replacements.append(bat_rep_ev)
         sc_replacements.extend(_parse_replacement_events(sc.get("replacement_events"), fin_cfg["project_life_years"], f"scenarios[{index}]", scenario_mode=True))
+        if sc.get("yearly_energy_kwh") is not None and sc.get("ageing_batch_csv") is not None:
+            raise ValueError(f"scenarios[{index}] ({label}): specify either yearly_energy_kwh or ageing_batch_csv, not both")
+        sc_anchors: dict[int, float] | None = None
+        if sc.get("yearly_energy_kwh") is not None:
+            sc_anchors = normalize_yearly_energy_anchors(sc["yearly_energy_kwh"], f"scenarios[{index}].yearly_energy_kwh")
+        elif sc.get("ageing_batch_csv") is not None:
+            if workspace is None: raise ValueError("workspace is required when loading scenarios[].ageing_batch_csv")
+            sc_anchors = load_ageing_batch_curve(workspace_file(workspace, "UserBatch", safe_filename(sc["ageing_batch_csv"], ".csv"), ".csv"), BATCH_ENERGY_TO_KWH)
+        elif top_anchors is not None:
+            sc_anchors = top_anchors
+        yearly_kwh_map, sc_deg_factors = yearly_degradation_factors(sc_anchors, fin_cfg["project_life_years"]) if sc_anchors is not None else (None, None)
         settlement: dict | None = None
         y1_demand_savings = 0.0
         has_single_csv = bool(sc.get("csv_name") or sc.get("csv_path"))
@@ -756,27 +780,32 @@ def evaluate_economics(*, workspace: Path | None = None, scenarios: list[dict] |
                 settlement = _settle_csv_year1(_resolve_result_csv(workspace, sc.get("csv_path") or sc["csv_name"]), tar_cfg)
             y1_energy, y1_demand_savings, y1_benefit = settlement["year1_energy_kwh"], settlement["year1_demand_savings"], settlement["year1_gross_benefit"]
             sc_warnings = list(settlement["warnings"])
-        elif sc.get("annual_yield_kwh") is not None:
-            y1_energy = _finite(sc["annual_yield_kwh"], f"scenarios[{index}].annual_yield_kwh", minimum=0.0)
+        elif sc.get("annual_yield_kwh") is not None or yearly_kwh_map is not None:
+            summary_src = "annual_yield_kwh" if sc.get("annual_yield_kwh") is not None else "ageing_batch_csv / yearly_energy_kwh"
+            y1_energy = _finite(sc["annual_yield_kwh"], f"scenarios[{index}].annual_yield_kwh", minimum=0.0) if sc.get("annual_yield_kwh") is not None else yearly_kwh_map[1]
             sc_ratio = tar_cfg["self_consumption_ratio"] if (tar_cfg["mode"] != "feed_in" and tar_cfg["self_consumption_ratio"] is not None) else 0.0
             y1_benefit = y1_energy * (sc_ratio * tar_cfg["import_tariff"] + (1.0 - sc_ratio) * tar_cfg["feed_in_tariff"])
             sc_warnings = []
             if tar_cfg["mode"] == "tou":
-                sc_warnings.append("annual_yield_kwh summary input has no hourly profile; valued using flat tariff fallback.")
+                sc_warnings.append(f"{summary_src} summary input has no hourly profile; valued using flat tariff fallback.")
             if tar_cfg.get("demand_charge") is not None:
-                sc_warnings.append("annual_yield_kwh summary input has no hourly profile; demand_charge was skipped.")
-        else: raise ValueError(f"scenarios[{index}] ({label}) must provide csv_name, csv_names, csv_path, or annual_yield_kwh")
+                sc_warnings.append(f"{summary_src} summary input has no hourly profile; demand_charge was skipped.")
+        else: raise ValueError(f"scenarios[{index}] ({label}) must provide csv_name, csv_names, csv_path, annual_yield_kwh, or ageing_batch_csv/yearly_energy_kwh")
         metrics = _compute_cashflow_metrics(
             year1_energy_kwh=y1_energy, year1_gross_benefit=y1_benefit, year1_demand_savings=y1_demand_savings,
-            capex_total=capex, base_annual_opex=opex, replacement_events=sc_replacements, financial=fin_cfg, dc_kw=dc_kw)
+            capex_total=capex, base_annual_opex=opex, replacement_events=sc_replacements, financial=fin_cfg, dc_kw=dc_kw,
+            yearly_deg_factors=sc_deg_factors)
         sens_result = _compute_sensitivity(sens_cfg=sens_cfg, base_metrics=metrics, year1_energy_kwh=y1_energy,
             year1_energy_benefit=y1_benefit - y1_demand_savings, year1_demand_savings=y1_demand_savings,
             capex_total=capex, base_annual_opex=opex, replacement_events=sc_replacements, financial=fin_cfg, dc_kw=dc_kw,
-        ) if sens_cfg is not None else None
+            yearly_deg_factors=sc_deg_factors) if sens_cfg is not None else None
         if not include_cashflow_schedule: metrics.pop("cashflow_schedule", None)
         entry: dict[str, Any] = {"label": label, "installed_dc_kw": dc_kw, "battery_kwh": bat_kwh if bat_kwh else None,
             "specific_yield_kwh_per_kwp": round(y1_energy / dc_kw, 2) if (dc_kw and dc_kw > 0) else None,
             "year1_energy_kwh": round(y1_energy, 2), "financials": metrics, "warnings": sc_warnings}
+        if sc_anchors is not None:
+            entry["degradation_source"] = "ageing_curve"
+            entry["ageing_anchors_kwh"] = {str(y): round(v, 2) for y, v in sorted(sc_anchors.items())}
         if sens_result is not None: entry["sensitivity"] = sens_result
         if sc.get("batch_parameters"): entry["batch_parameters"] = sc["batch_parameters"]
         if settlement is not None:

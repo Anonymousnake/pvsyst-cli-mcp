@@ -107,6 +107,7 @@ class FeasibilityStudyRequest(_StrictModel):
     tariff: EconomicsTariffConfig | None = None
     sensitivity: EconomicsSensitivityConfig | None = None
     report: FeasibilityReportConfig | None = None
+    ageing_years: Annotated[list[Annotated[StrictInt, Field(ge=1, le=50)]], Field(min_length=2, max_length=20)] | None = None
     thresholds: dict[StrictStr, StrictNum] | None = None
 
 
@@ -444,6 +445,7 @@ def pvsyst_compare_engineering_scenarios(objective: StrictStr, scenarios: list[E
 def pvsyst_evaluate_economics(
         scenarios: list[EconomicsScenarioInput] | None = None,
         batch_summary_csv: StrictStr | None = None,
+        ageing_batch_csv: StrictStr | None = None,
         financial: EconomicsFinancialConfig | None = None,
         tariff: EconomicsTariffConfig | None = None,
         sensitivity: EconomicsSensitivityConfig | None = None,
@@ -462,6 +464,7 @@ def pvsyst_evaluate_economics(
         workspace=cli().workspace,
         scenarios=[s.model_dump(exclude_none=True) for s in scenarios] if scenarios is not None else None,
         batch_summary_csv=batch_summary_csv,
+        ageing_batch_csv=ageing_batch_csv,
         financial=financial.model_dump(exclude_none=True) if financial is not None else None,
         tariff=tariff.model_dump(exclude_none=True) if tariff is not None else None,
         sensitivity=sensitivity.model_dump(exclude_none=True) if sensitivity is not None else None,

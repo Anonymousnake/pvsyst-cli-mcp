@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import re
 from typing import Any
 
 from pvsyst_auto.components.single_diode import (
@@ -28,6 +29,7 @@ from pvsyst_auto.engineering.sizing import suggest_sizing
 from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi, summarize_results
 from pvsyst_auto.native.headless import _next_variant_id
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
+from pvsyst_auto.workflows.batch import run_batch_sweep
 from pvsyst_auto.workflows.bess_optimize import optimize_bess_sizing
 from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.report import generate_report
@@ -505,6 +507,18 @@ def run_feasibility_study(
     if existing_csv and design_spec:
         raise ValueError("Provide spec.design or spec.existing_csv, not both")
 
+    ageing_years: list[int] | None = None
+    if (raw_age_yrs := spec.get("ageing_years")) is not None:
+        if (not isinstance(raw_age_yrs, list) or not 2 <= len(raw_age_yrs) <= 20
+                or any(type(y) is not int or not 1 <= y <= 50 for y in raw_age_yrs)
+                or len(set(raw_age_yrs)) != len(raw_age_yrs)):
+            raise ValueError("spec.ageing_years must list 2..20 unique integer years in 1..50")
+        if design_spec and design_spec.get("scope") == "stand_alone":
+            raise ValueError("spec.ageing_years is only supported for Grid PV systems")
+        if existing_csv and (not spec.get("existing_project") or not spec.get("existing_variant")):
+            raise ValueError("spec.existing_project and spec.existing_variant are required with spec.ageing_years")
+        ageing_years = sorted(raw_age_yrs)
+
     ws: Path = cli.workspace
     comp_store = store.components
     stages: list[dict[str, Any]] = []
@@ -634,11 +648,52 @@ def run_feasibility_study(
                 vc_sc["capex_total"] = vc["capex_total"]
             report_scenarios.append(vc_sc)
 
+    ageing_sweep_result: dict[str, Any] | None = None
+    ageing_batch_csv: str | None = None
+    if ageing_years is not None:
+        est_cli_calls += 1
+        if dry_run:
+            stages.append({"stage": "ageing_sweep", "status": "planned", "years": ageing_years})
+        elif proj_name and var_name:
+            age_proj = Path(proj_name).name
+            insp = store.inspect_parameters(age_proj, var_name)
+            age_state = insp.get("ageing") or {}
+            if age_state.get("mode") == "absent":
+                deg_pct = round(max(0.0, min(5.0, float((financial_cfg or {}).get("annual_degradation_pct", 0.4)))), 2)
+                store.update_parameters(
+                    age_proj, var_name, insp["sha256"], 1, 1,
+                    ageing_updates={"simulation_year": ageing_years[0], "annual_module_degradation_percent": deg_pct},
+                    dry_run=False,
+                )
+            elif age_state.get("enabled") is False:
+                store.update_parameters(age_proj, var_name, insp["sha256"], 1, 1, ageing_enabled=True, dry_run=False)
+            slug = re.sub(r"[^A-Za-z0-9_-]+", "_", study_name).strip("_-") or "study"
+            if not slug[0].isalnum():
+                slug = "S" + slug
+            age_sweep_base = f"{slug[:48]}_ageing"
+            age_sweep_name = age_sweep_base
+            suffix_idx = 2
+            while (ws / "UserBatch" / f"{age_sweep_name}_BatchParams.CSV").exists():
+                age_sweep_name = f"{slug[:42]}_ageing_{suffix_idx}"
+                suffix_idx += 1
+            ageing_sweep_result = run_batch_sweep(
+                cli, project=age_proj, variant=var_name, sweep_name=age_sweep_name,
+                grid={"simulation_year": ageing_years}, result_variables=["E_Grid", "PR"], sort_by="E_Grid", dry_run=False,
+            )
+            if ageing_sweep_result.get("status") not in ("completed", "needs_review"):
+                raise ValueError("Ageing batch sweep failed: " + "; ".join(str(x) for x in (ageing_sweep_result.get("issues") or [])))
+            ageing_batch_csv = Path(ageing_sweep_result["artifacts"]["batch_summary"]).name
+            stages.append({
+                "stage": "ageing_sweep", "status": ageing_sweep_result["status"], "years": ageing_years,
+                "batch_csv": ageing_batch_csv, "completed_count": ageing_sweep_result.get("completed_count"),
+            })
+
     if financial_cfg is not None or tariff_cfg is not None:
         if report_scenarios:
             econ_result = evaluate_economics(
                 workspace=ws,
                 scenarios=[{k: v for k, v in sc.items() if k in ("label", "csv_name", "installed_dc_kw", "battery_kwh", "capex_total") and v is not None} for sc in report_scenarios],
+                ageing_batch_csv=ageing_batch_csv,
                 financial=financial_cfg, tariff=tariff_cfg, sensitivity=sensitivity_cfg, include_cashflow_schedule=True,
             )
             stages.append({"stage": "economics", "status": "ok", "best_scenario": econ_result["best_scenario"], "has_sensitivity": sensitivity_cfg is not None and sensitivity_cfg.get("enabled", True)})
@@ -687,9 +742,12 @@ def run_feasibility_study(
         exec_summary["report_path"] = report_result.get("report_path")
 
     final_status = "blocked" if diag_blocked else ("ready" if dry_run else ("needs_review" if combined_needs_review else "completed"))
-    return {
+    out = {
         "status": final_status, "dry_run": dry_run, "study_name": study_name, "stages": stages,
         "executive_summary": exec_summary, "synthesized_components": synth_results,
         "simulation": sim_result, "diagnostics": diag_result, "tou_schedule": tou_result,
         "bess_optimization": bess_result, "economics": econ_result, "report": report_result,
     }
+    if ageing_sweep_result is not None:
+        out["ageing_sweep"] = ageing_sweep_result
+    return out
