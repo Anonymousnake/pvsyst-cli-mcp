@@ -15,8 +15,11 @@ def build_asymmetric_subarrays(
         p_low = round(ac_kw - k * p_high, 2)
     elif k == 1:
         p_high = round(ac_kw - (ports - k) * p_low, 2)
+    p_uni = round(ac_kw / ports, 2)
     if p_high <= 0 or p_low <= 0:
         raise ValueError("Shared MPPT nominal AC allocation must remain positive")
+    if count >= 2 and p_uni <= 0:
+        raise ValueError("Uniform MPPT nominal AC allocation must remain positive")
     allocs: list[dict] = []
     sid = 1
     if count >= 2:
@@ -24,7 +27,7 @@ def build_asymmetric_subarrays(
         allocs.append({
             "subarray_id": sid, "comment": "PV Array (Full Inv)", "n_mod_serie": series, "n_inverter": count - 1,
             "n_inv_mppt": (count - 1) * ports, "n_string_ch": (count - 1) * ports * s_full,
-            "power_sharing_inverter_id": -1, "pnom_ac_in_mppt": round(ac_kw / ports, 2),
+            "power_sharing_inverter_id": -1, "pnom_ac_in_mppt": p_uni,
         })
         sid += 1
     allocs.extend([

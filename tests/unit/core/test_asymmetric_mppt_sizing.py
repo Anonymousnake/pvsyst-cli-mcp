@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import re
 import tempfile
-import tomllib
 import unittest
 from pathlib import Path
 
@@ -41,8 +40,11 @@ class AsymmetricMpptSizingTests(unittest.TestCase):
         self.cli = _FakeUtilityCLI(self.ws, year=2024, nominal_dc_kw=52.36, use_sfi_writer=False)
 
     def test_version_0_9_0_and_tool_budget_preserved(self) -> None:
-        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        self.assertEqual(pyproject["project"]["version"], "0.9.0")
+        pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject_text, re.MULTILINE)
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertEqual(match.group(1), "0.9.0")
         all_tools = {name for group in TOOL_GROUPS.values() for name in group}
         default_tools = all_tools - set(TOOL_GROUPS["Admin & Diagnostics"]) - set(TOOL_GROUPS["Expert & Low-Level"])
         self.assertEqual(len(default_tools), 48)
