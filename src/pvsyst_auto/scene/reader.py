@@ -625,13 +625,17 @@ def build_ground_3d_shading(
     for tbl in tables:
         obj_idx += 1
         ox, oy, oz = tbl["origin_m"]
-        tbl_orient = str(tbl.get("module_orient") or module_orient)
+        tbl_mod_orient = str(tbl.get("module_orient") or module_orient)
+        raw_oid = tbl.get("orientation_id")
+        tbl_orient_id = orientation_id if raw_oid is None else raw_oid
+        if type(tbl_orient_id) is not int or tbl_orient_id < 1:
+            raise ValueError("Table orientation_id must be a positive integer")
         part_lines: list[str] = []
         if cfg["mode"] == "partition":
             dx_mod, dy_mod, _, _ = compute_table_partition_dims(
                 long_shed_m=float(tbl["long_shed_m"]), larg_shed_m=float(tbl["larg_shed_m"]),
                 module_rows=int(tbl["module_rows"]), module_columns=int(tbl["module_columns"]),
-                module_orient=tbl_orient, is_tracker=False, electrical_shading=cfg,
+                module_orient=tbl_mod_orient, is_tracker=False, electrical_shading=cfg,
                 series_modules=series_modules, is_half_cut=is_half_cut,
             )
             part_lines = [f"      DXModule={dx_mod:.3f}", f"      DYModule={dy_mod:.3f}"]
@@ -642,10 +646,10 @@ def build_ground_3d_shading(
             "        ColorBord=$00505050", f"        DOrigine={ox:.6f},{oy:.6f},{oz:.6f}",
             f"        DInclin={tbl['tilt_deg']:.6f}", f"        BaseSlope={tbl.get('base_slope_deg', 0.0):.6f}",
             f"        DAzimut={tbl['azimuth_deg']:.6f}", "        Source=osPVCollada", "      NElemChamps=1",
-            f"      NoOrient={orientation_id}", f"      PanneauPVName={module_name};{module_width_m:.3f};{module_length_m:.3f}",
+            f"      NoOrient={tbl_orient_id}", f"      PanneauPVName={module_name};{module_width_m:.3f};{module_length_m:.3f}",
             f"      ModSpacingX={spacing_x_m:.3f}", f"      ModSpacingY={spacing_y_m:.3f}",
             f"      NModInHeight={tbl['module_rows']}", f"      NModInWidth={tbl['module_columns']}",
-            f"      ModuleOrient={tbl_orient}", *part_lines, f"        LongShed={tbl['long_shed_m']:.6f}",
+            f"      ModuleOrient={tbl_mod_orient}", *part_lines, f"        LongShed={tbl['long_shed_m']:.6f}",
             f"        LargShed={tbl['larg_shed_m']:.6f}", "        Cadre=0.000,0.000,0.000,0.000,",
             "      TypeOrigine=2", "      End of PVObject pvShdArrayTable",
         ])

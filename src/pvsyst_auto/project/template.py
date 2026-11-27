@@ -520,7 +520,8 @@ def synthesize_utility_project(
     terrain: dict | None = None, u_factor: float = 29.0, lid_loss: float = 0.0, pmism_mpp: float | None = None,
     module_quality_loss: float | None = None, ageing: dict | None = None, dc_wiring_loss_pct: float = 1.5, dc_wiring_resistance_mohm: float = 0.0,
     sub_orientations: list[dict] | None = None, subarray_allocations: list[dict] | None = None, top_spacing_m: float = 0.2, dome_wiring: str = "auto",
-    pvc_name: str | None = None, dxf_name: str | None = None, dxf_layers: dict | None = None, dxf_unit_scale: float | None = None,
+    pvc_name: str | None = None, pvc_subset: str | None = None, pvc_orientation_tolerance_deg: float | None = None,
+    dxf_name: str | None = None, dxf_layers: dict | None = None, dxf_unit_scale: float | None = None,
     electrical_shading: str | dict | None = None, tilt_explicit: bool = True, azimuth_explicit: bool = True,
     p50_p90: dict | None = None, horizon: dict | None = None,
     allow_missing_met: bool = False, version: str = SYNTH_VERSION, with_bom: bool = True,
@@ -558,7 +559,8 @@ def synthesize_utility_project(
             dxf_unit_scale=dxf_unit_scale, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg, axis_azimuth_deg=axis_azimuth_deg,
             pitch_m=pitch_m, tilt_explicit=tilt_explicit, azimuth_explicit=azimuth_explicit,
             obstacles=obstacles, exclusion_zones=exclusion_zones, terrain=terrain,
-            module_name=resolved_mod_name, version=version, **es_kw,
+            module_name=resolved_mod_name, version=version, pvc_subset=pvc_subset,
+            pvc_orientation_tolerance_deg=pvc_orientation_tolerance_deg, **es_kw,
         )
         cad_summary = cad_resolved["cad_summary"]
         obstacles = cad_resolved.get("obstacles", obstacles)
@@ -767,7 +769,8 @@ def synthesize_utility_project(
             "dc_wiring_loss_pct": dc_wiring_loss_pct, "dc_wiring_resistance_mohm": dc_wiring_resistance_mohm,
         }
 
-    if subarray_allocations and (field_type == "Dome" or sub_orientations):
+    pvc_clusters = cad_resolved.get("pvc_orientations") if (cad_resolved and cad_resolved["mode"] == "pvc") else None
+    if subarray_allocations and (field_type == "Dome" or sub_orientations or (pvc_clusters and len(pvc_clusters) >= 2)):
         raise ValueError("subarray_allocations is only supported for single-orientation ground_sheds and ground_tracker")
     sub_orient_summaries: list[dict] | None = None
     resolved_allocs: list[dict] | None = None
@@ -825,6 +828,17 @@ def synthesize_utility_project(
                 "inverter_count": sni, "mppt_count": snp, "string_count": sns, "module_count": sub_mods,
                 "share_pct": round((sub_mods / total_sub_mods) * 100.0, 2) if total_sub_mods > 0 else 0.0,
             })
+    elif pvc_clusters and len(pvc_clusters) >= 2:
+        from pvsyst_auto.scene.pvc_clustering import build_pvc_multi_orient_synthesis_blocks
+        orientations_list, subarrays, sub_orient_summaries = build_pvc_multi_orient_synthesis_blocks(
+            pvc_clusters, field_type=field_type, pan_name=pan_name, ond_name=ond_name,
+            n_mod_serie=n_mod_serie, n_string_ch=n_string_ch, n_inverter=n_inverter,
+            n_inv_mppt=n_inv_mppt if n_inv_mppt is not None else (n_string_ch if independent_mppt else 1),
+            independent_mppt=independent_mppt, pnom_ac_in_mppt=pnom_ac_in_mppt,
+            lid_loss=lid_loss, pmism_mpp=pmism_mpp, module_quality_loss=module_quality_loss,
+            dc_wiring_loss_pct=dc_wiring_loss_pct, dc_wiring_resistance_mohm=dc_wiring_resistance_mohm,
+            bifacial=bifacial,
+        )
     elif subarray_allocations:
         if not independent_mppt:
             raise ValueError("subarray_allocations requires independent_mppt=True")

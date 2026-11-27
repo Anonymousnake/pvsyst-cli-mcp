@@ -20,6 +20,7 @@ from pvsyst_auto.native.cli import parse_batch_results
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.results import IRRAD_UNIT_KIND, RegularResultCsv, iter_aligned_result_rows
 from pvsyst_auto.validation import finite_number as _finite
+from pvsyst_auto.workflows.report_layout import build_layout_figures, resolve_report_layout
 
 _PR_SCALE = {"ratio": 1.0, "%": 0.01}
 
@@ -40,6 +41,7 @@ _I18N = {
         "kpi_p90_yield": "P90 年发电量", "kpi_uncertainty": "综合不确定度",
         "kpi_p90_dscr": "P90 最低 DSCR", "kpi_p90_llcr": "P90 LLCR",
         "p50_prob_axis": "超越概率 P (%)", "p50_yield_axis": "年发电量 (kWh)",
+        "sec_layout_2d": "场址总平面布置与阵列分布图 (2D)", "sec_layout_3d": "三维地形与光伏阵列预览图 (3D)",
         "batch_opt_label": "最优点", "sec_ranking": "多方案综合排名对比表", "sec_diag": "物理与时序诊断明细",
         "demand_base": "基准最大需量 (kW)", "demand_actual": "加装光储后最大需量 (kW)",
         "sens_factor_labels": {"tariff": "电价水平", "capex": "初始投资 CAPEX", "yield": "年发电量 / 辐照", "degradation": "衰减率"},
@@ -74,6 +76,7 @@ _I18N = {
         "kpi_p90_yield": "P90 Yield", "kpi_uncertainty": "Combined Uncertainty",
         "kpi_p90_dscr": "P90 Min DSCR", "kpi_p90_llcr": "P90 LLCR",
         "p50_prob_axis": "Exceedance Probability P (%)", "p50_yield_axis": "Annual Yield (kWh)",
+        "sec_layout_2d": "Site Plan-View & PV Array Layout (2D)", "sec_layout_3d": "3D Terrain & PV Array Preview (3D)",
         "batch_opt_label": "Optimum", "sec_ranking": "Multi-Scenario Ranking Summary", "sec_diag": "Physics & Time-Series Diagnostics",
         "demand_base": "Baseline Peak Demand (kW)", "demand_actual": "Post-PV/BESS Peak Demand (kW)",
         "sens_factor_labels": {"tariff": "Tariff Rate", "capex": "Initial CAPEX", "yield": "Annual Yield / Irradiance", "degradation": "Degradation Rate"},
@@ -358,6 +361,7 @@ def generate_report(
     tariff: dict[str, Any] | None = None, sensitivity: dict[str, Any] | None = None,
     p50_p90: dict[str, Any] | None = None, uncertainty: dict[str, Any] | None = None,
     bess_optimization: dict[str, Any] | None = None, batch_summary_csv: str | None = None,
+    layout_preview: dict[str, Any] | None = None, include_3d_layout: bool = False,
     language: str = "zh", plotlyjs: str = "cdn", thresholds: dict[str, float] | None = None,
     overwrite: bool = False, dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -370,8 +374,10 @@ def generate_report(
         raise ValueError("title must be 1..200 characters")
     if not isinstance(scenarios, list) or not 1 <= len(scenarios) <= 20:
         raise ValueError("scenarios must contain 1..20 scenario entries")
-    if type(overwrite) is not bool or type(dry_run) is not bool:
-        raise ValueError("overwrite and dry_run must be strict booleans")
+    if type(overwrite) is not bool or type(dry_run) is not bool or type(include_3d_layout) is not bool:
+        raise ValueError("overwrite, dry_run, and include_3d_layout must be strict booleans")
+    if layout_preview is not None and not isinstance(layout_preview, dict):
+        raise ValueError("layout_preview must be an object")
 
     safe_out = safe_filename(output_name, ".html")
     out_path = workspace_file(workspace, "Results", safe_out, ".html") if workspace is not None else Path(output_name)
@@ -432,9 +438,14 @@ def generate_report(
             csv_path = _resolve_csv(workspace, csv_name)
             diag = diagnose_simulation_csv(csv_path, store=store if (proj and var) else None, project=proj, variant=var, thresholds=thresholds)
             csv_stats, csv_label, econ_entry = _summarize_csv_for_report(csv_path), csv_path.name, {"label": label, "csv_path": csv_path}
+        if sc.get("layout_preview") is not None and not isinstance(sc["layout_preview"], dict):
+            raise ValueError(f"scenarios[{idx_s}] ({label}): layout_preview must be an object")
+        if sc.get("include_3d_layout") is not None and type(sc["include_3d_layout"]) is not bool:
+            raise ValueError(f"scenarios[{idx_s}] ({label}): include_3d_layout must be a strict boolean")
         parsed_scenarios.append({
             "label": label, "csv_name": csv_label, "project": proj, "variant": var,
             "installed_dc_kw": sc.get("installed_dc_kw"), "battery_kwh": sc.get("battery_kwh"),
+            "layout_preview": sc.get("layout_preview"), "include_3d_layout": bool(sc.get("include_3d_layout", False)),
             "stats": csv_stats, "diagnostics": diag,
         })
         for k in ("installed_dc_kw", "battery_kwh", "capex_total", "annual_opex", "replacement_events", "uncertainty"):
@@ -474,12 +485,24 @@ def generate_report(
     palette = ["#2563eb", "#059669", "#d97706", "#7c3aed", "#dc2626", "#0891b2"]
     fig_batch = _build_batch_sweep_figure(parse_batch_results(_resolve_batch_csv(workspace, batch_summary_csv), columns=None),
                                           palette=palette, opt_label=t["batch_opt_label"]) if batch_summary_csv else None
+    best_label = econ_result["best_scenario"] if econ_result is not None else max(parsed_scenarios, key=lambda sc: sc["stats"]["annual_e_grid_kwh"])["label"]
+    primary = next((sc for sc in parsed_scenarios if sc["label"] == best_label), parsed_scenarios[0])
+    primary_suffix = f" ({primary['label']})" if len(parsed_scenarios) > 1 else ""
+    resolved_layout, eff_include_3d, layout_suffix = resolve_report_layout(
+        primary_scenario=primary, all_scenarios=parsed_scenarios,
+        top_layout_preview=layout_preview, top_include_3d=include_3d_layout,
+        store=store, workspace=workspace,
+    )
+    fig_layout_2d, fig_layout_3d = build_layout_figures(
+        resolved_layout, language=language, include_3d=eff_include_3d, palette=palette,
+    )
     if dry_run:
         return {
             "status": "ready", "dry_run": True, "report_path": str(out_path),
             "scenario_count": len(parsed_scenarios), "language": language, "plotlyjs": plotlyjs,
             "has_economics": econ_result is not None, "has_batch_sweep": fig_batch is not None,
             "has_p50_p90": bool(p50_entries),
+            "has_layout_2d": fig_layout_2d is not None, "has_layout_3d": fig_layout_3d is not None,
         }
 
     js_first, js_used = (True if plotlyjs == "embed" else "cdn"), False
@@ -504,10 +527,6 @@ def generate_report(
     fig_monthly.update_yaxes(title_text="kWh", secondary_y=False)
     fig_monthly.update_yaxes(title_text="PR (%)", range=[0, 115], secondary_y=True)
     chart_sections.append((t["sec_monthly"], _plotly_div(fig_monthly, include_js=next_js())))
-
-    best_label = econ_result["best_scenario"] if econ_result is not None else max(parsed_scenarios, key=lambda sc: sc["stats"]["annual_e_grid_kwh"])["label"]
-    primary = next((sc for sc in parsed_scenarios if sc["label"] == best_label), parsed_scenarios[0])
-    primary_suffix = f" ({primary['label']})" if len(parsed_scenarios) > 1 else ""
 
     losses = primary["stats"]["losses_kwh"]
     if "EArray" in losses and ("E_Grid" in losses or "EToGrid" in losses):
@@ -612,6 +631,10 @@ def generate_report(
     fig_p50 = _build_p50_exceedance_figure(p50_entries, palette=palette, t=t) if p50_entries else None
     if fig_p50 is not None:
         chart_sections.append((t["sec_p50"], _plotly_div(fig_p50, include_js=next_js())))
+    if fig_layout_2d is not None:
+        chart_sections.append((f"{t['sec_layout_2d']}{layout_suffix}", _plotly_div(fig_layout_2d, include_js=next_js())))
+    if fig_layout_3d is not None:
+        chart_sections.append((f"{t['sec_layout_3d']}{layout_suffix}", _plotly_div(fig_layout_3d, include_js=next_js())))
 
     primary_diag, primary_yield, primary_dc = primary["diagnostics"], primary["stats"]["annual_e_grid_kwh"], primary.get("installed_dc_kw")
     primary_pr = (primary_diag["weighted_pr"] * 100.0) if primary_diag.get("weighted_pr") is not None else None
@@ -748,5 +771,7 @@ def generate_report(
         "report_name": out_path.name, "bytes": out_path.stat().st_size, "language": language,
         "plotlyjs": plotlyjs, "scenario_count": len(parsed_scenarios), "chart_count": len(chart_sections),
         "has_economics": econ_result is not None, "has_batch_sweep": fig_batch is not None,
-        "has_p50_p90": fig_p50 is not None, "best_scenario": best_label,
+        "has_p50_p90": fig_p50 is not None,
+        "has_layout_2d": fig_layout_2d is not None, "has_layout_3d": fig_layout_3d is not None,
+        "best_scenario": best_label,
     }

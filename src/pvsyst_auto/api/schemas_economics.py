@@ -181,6 +181,8 @@ class ReportScenarioInput(_StrictModel):
     replacement_events: list[EconomicsReplacementEvent] | None = None
     p50_p90: P50P90Spec | dict[StrictStr, Any] | None = None
     uncertainty: P50P90Spec | None = None
+    layout_preview: dict[StrictStr, Any] | None = None
+    include_3d_layout: StrictBool = False
 
     @model_validator(mode="after")
     def _validate_report_scenario_p50(self):

@@ -269,7 +269,10 @@ def _validate_spec(spec) -> list[dict]:
             if "allow_asymmetric_mppt" in auto_sizing and auto_sizing["allow_asymmetric_mppt"] is not None and type(auto_sizing["allow_asymmetric_mppt"]) is not bool:
                 _bad(issues, "auto_sizing.allow_asymmetric_mppt", "Use a strict boolean for allow_asymmetric_mppt")
     capacity, design = spec.get("capacity"), spec.get("electrical_design")
-    asym_supported = scope in ("ground_sheds", "ground_tracker") and not (isinstance(spec.get("ground_layout"), dict) and spec["ground_layout"].get("sub_orientations"))
+    gl = spec.get("ground_layout")
+    asym_supported = scope in ("ground_sheds", "ground_tracker") and not (
+        isinstance(gl, dict) and (gl.get("sub_orientations") or gl.get("pvc_orientation_tolerance_deg") is not None)
+    )
     if isinstance(auto_sizing, dict) and auto_sizing.get("allow_asymmetric_mppt") is True and not asym_supported:
         _bad(issues, "auto_sizing.allow_asymmetric_mppt", "allow_asymmetric_mppt is only supported for single-orientation ground_sheds and ground_tracker")
     if isinstance(capacity, dict) and capacity.get("allow_asymmetric_mppt") is True and not asym_supported:
@@ -578,8 +581,9 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     sizing_mode, auto_sizing_review = spec.get("sizing_mode", "strict"), False
     if sizing_mode == "auto_from_components":
         auto_opts = dict(spec.get("auto_sizing") or {})
+        gl_flow = spec.get("ground_layout")
         asym_supported = scope in ("ground_sheds", "ground_tracker") and not (
-            isinstance(spec.get("ground_layout"), dict) and spec["ground_layout"].get("sub_orientations")
+            isinstance(gl_flow, dict) and (gl_flow.get("sub_orientations") or gl_flow.get("pvc_orientation_tolerance_deg") is not None)
         )
         if auto_opts.get("allow_asymmetric_mppt") is None:
             auto_opts["allow_asymmetric_mppt"] = asym_supported

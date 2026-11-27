@@ -281,6 +281,8 @@ class GroundLayoutRequest(_StrictModel):
     top_spacing_m: StrictNum | None = None
     dome_wiring: Literal["auto", "dual_mppt", "mixed"] | None = None
     pvc_name: StrictStr | None = None
+    pvc_subset: Literal["fixed", "tracker"] | None = None
+    pvc_orientation_tolerance_deg: StrictNum | None = None
     dxf_name: StrictStr | None = None
     dxf_layers: dict[StrictStr, StrictStr | list[StrictStr]] | None = None
     dxf_unit_scale: StrictNum | None = None
