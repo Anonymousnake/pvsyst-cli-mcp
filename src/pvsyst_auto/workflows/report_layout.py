@@ -321,33 +321,40 @@ def _table_corners_3d(tbl: dict[str, Any]) -> list[tuple[float, float, float]]:
     if kind == "tracker":
         az = float(tbl.get("axis_azimuth_deg", tbl.get("azimuth_deg", 0.0)))
         axis_tilt = float(tbl.get("axis_tilt_deg", 0.0))
-        tan_t = math.tan(math.radians(max(-45.0, min(45.0, axis_tilt))))
+        ca, sa = math.cos(math.radians(axis_tilt)), math.sin(math.radians(axis_tilt))
         type_orig = int(tbl.get("type_origine", 7))
         v0, v1 = (-0.5 * larg_s, 0.5 * larg_s) if type_orig == 7 else (0.0, larg_s)
         local = [(-0.5 * long_s, v0), (0.5 * long_s, v0), (0.5 * long_s, v1), (-0.5 * long_s, v1)]
-        return [(*_rotate_local_to_world(ox, oy, du, dv, az), oz + dv * tan_t) for du, dv in local]
+        return [(*_rotate_local_to_world(ox, oy, du, dv * ca, az), oz + dv * sa) for du, dv in local]
 
     tilt = float(tbl.get("tilt_deg", 20.0))
     az = float(tbl.get("azimuth_deg", 0.0))
     slope = float(tbl.get("base_slope_deg", 0.0))
-    tan_slope = math.tan(math.radians(max(-45.0, min(45.0, slope))))
-    proj_v = max(0.05, larg_s * math.cos(math.radians(tilt)))
+    cs, ss = math.cos(math.radians(slope)), math.sin(math.radians(slope))
+    proj_v = larg_s * math.cos(math.radians(tilt))
     rise_z = larg_s * math.sin(math.radians(tilt))
+
+    def _place(du0: float, dv0: float, dz0: float) -> tuple[float, float, float]:
+        du1 = du0 * cs - dz0 * ss
+        dz1 = du0 * ss + dz0 * cs
+        wx, wy = _rotate_local_to_world(ox, oy, du1, dv0, az)
+        return wx, wy, oz + dz1
 
     if kind == "dome":
         top_sp = float(tbl.get("top_spacing_m", 0.2))
         is_back = tbl.get("dome_face") == "back"
         v_lo = -(proj_v + top_sp) if is_back else 0.0
         v_hi = -(2.0 * proj_v + top_sp) if is_back else -proj_v
-        z_lo, z_hi = (oz + rise_z, oz) if is_back else (oz, oz + rise_z)
-        local = [(-0.5 * long_s, v_lo, z_lo), (0.5 * long_s, v_lo, z_lo), (0.5 * long_s, v_hi, z_hi), (-0.5 * long_s, v_hi, z_hi)]
-        return [(*_rotate_local_to_world(ox, oy, du, dv, az), z + du * tan_slope) for du, dv, z in local]
+        dz_lo, dz_hi = (rise_z, 0.0) if is_back else (0.0, rise_z)
+        local = [(-0.5 * long_s, v_lo, dz_lo), (0.5 * long_s, v_lo, dz_lo), (0.5 * long_s, v_hi, dz_hi), (-0.5 * long_s, v_hi, dz_hi)]
+        return [_place(du, dv, dz) for du, dv, dz in local]
 
     type_orig = int(tbl.get("type_origine", 2))
     u0, u1 = (0.0, long_s) if type_orig == 1 else (-0.5 * long_s, 0.5 * long_s)
     v0, v1 = (0.5 * proj_v, -0.5 * proj_v) if type_orig == 7 else (0.0, -proj_v)
-    local = [(u0, v0, oz), (u1, v0, oz), (u1, v1, oz + rise_z), (u0, v1, oz + rise_z)]
-    return [(*_rotate_local_to_world(ox, oy, du, dv, az), z + du * tan_slope) for du, dv, z in local]
+    dz0, dz1 = (-0.5 * rise_z, 0.5 * rise_z) if type_orig == 7 else (0.0, rise_z)
+    local = [(u0, v0, dz0), (u1, v0, dz0), (u1, v1, dz1), (u0, v1, dz1)]
+    return [_place(du, dv, dz) for du, dv, dz in local]
 
 
 def _normalize_zones(raw_zones: Any) -> list[dict[str, Any]]:

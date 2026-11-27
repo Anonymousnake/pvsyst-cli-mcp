@@ -645,6 +645,91 @@ class PvcMultiOrientAndReportMapTests(unittest.TestCase):
         self.assertAlmostEqual(gnd_verts[2][0], 2.0, places=4)
         self.assertAlmostEqual(gnd_verts[2][1], 0.0, places=4)
 
+    def test_sloped_table_corners_preserve_3d_dimensions(self) -> None:
+        def _assert_rect(corners: list[tuple[float, float, float]], w_exp: float, l_exp: float) -> None:
+            self.assertAlmostEqual(math.dist(corners[0], corners[1]), w_exp, places=6)
+            self.assertAlmostEqual(math.dist(corners[2], corners[3]), w_exp, places=6)
+            self.assertAlmostEqual(math.dist(corners[1], corners[2]), l_exp, places=6)
+            self.assertAlmostEqual(math.dist(corners[3], corners[0]), l_exp, places=6)
+            for idx_corner in range(4):
+                p_prev = corners[(idx_corner - 1) % 4]
+                p_curr = corners[idx_corner]
+                p_next = corners[(idx_corner + 1) % 4]
+                e1 = tuple(p_next[a] - p_curr[a] for a in range(3))
+                e2 = tuple(p_prev[a] - p_curr[a] for a in range(3))
+                self.assertAlmostEqual(sum(e1[a] * e2[a] for a in range(3)), 0.0, places=6)
+
+        # 1. Sloped tracker (type_origine=7 centered, type_origine=2 anchored on start edge)
+        trk_centered = _table_corners_3d({
+            "kind": "tracker", "origin_m": [10.0, 20.0, 5.0],
+            "long_shed_m": 2.2, "larg_shed_m": 100.0,
+            "axis_tilt_deg": 30.0, "axis_azimuth_deg": 0.0, "type_origine": 7,
+        })
+        _assert_rect(trk_centered, 2.2, 100.0)
+        ys = [c[1] for c in trk_centered]
+        zs = [c[2] for c in trk_centered]
+        self.assertAlmostEqual(max(ys) - min(ys), 100.0 * math.cos(math.radians(30.0)), places=6)
+        self.assertAlmostEqual(max(zs) - min(zs), 50.0, places=6)
+        for ax, exp in enumerate((10.0, 20.0, 5.0)):
+            self.assertAlmostEqual(sum(c[ax] for c in trk_centered) / 4.0, exp, places=6)
+
+        trk_start = _table_corners_3d({
+            "kind": "tracker", "origin_m": [10.0, 20.0, 5.0],
+            "long_shed_m": 2.2, "larg_shed_m": 100.0,
+            "axis_tilt_deg": 30.0, "axis_azimuth_deg": 35.0, "type_origine": 2,
+        })
+        _assert_rect(trk_start, 2.2, 100.0)
+        for ax, exp in enumerate((10.0, 20.0, 5.0)):
+            self.assertAlmostEqual(0.5 * (trk_start[0][ax] + trk_start[1][ax]), exp, places=6)
+
+        # 2. Sloped fixed table (BaseSlope-only + combined tilt/slope/azimuth for TypeOrigine 1/2/7)
+        fix_flat_slope = _table_corners_3d({
+            "kind": "fixed", "origin_m": [0.0, 0.0, 1.0],
+            "long_shed_m": 100.0, "larg_shed_m": 4.0,
+            "tilt_deg": 0.0, "base_slope_deg": 30.0, "azimuth_deg": 0.0, "type_origine": 2,
+        })
+        _assert_rect(fix_flat_slope, 100.0, 4.0)
+        xs = [c[0] for c in fix_flat_slope]
+        zs_f = [c[2] for c in fix_flat_slope]
+        self.assertAlmostEqual(max(xs) - min(xs), 100.0 * math.cos(math.radians(30.0)), places=6)
+        self.assertAlmostEqual(max(zs_f) - min(zs_f), 50.0, places=6)
+
+        orig = (5.0, -3.0, 2.0)
+        for type_orig in (1, 2, 7):
+            corners = _table_corners_3d({
+                "kind": "fixed", "origin_m": list(orig),
+                "long_shed_m": 20.0, "larg_shed_m": 4.0,
+                "tilt_deg": 25.0, "base_slope_deg": 20.0, "azimuth_deg": 35.0, "type_origine": type_orig,
+            })
+            _assert_rect(corners, 20.0, 4.0)
+            if type_orig == 1:
+                for ax, exp in enumerate(orig):
+                    self.assertAlmostEqual(corners[0][ax], exp, places=6)
+            elif type_orig == 2:
+                for ax, exp in enumerate(orig):
+                    self.assertAlmostEqual(0.5 * (corners[0][ax] + corners[1][ax]), exp, places=6)
+            else:
+                for ax, exp in enumerate(orig):
+                    self.assertAlmostEqual(sum(c[ax] for c in corners) / 4.0, exp, places=6)
+
+        # 3. Sloped dome (front/back preserve dimensions + orthogonal corners + 0.2m equal-Z ridge gap)
+        dome_front = _table_corners_3d({
+            "kind": "dome", "dome_face": "front", "origin_m": [1.0, 2.0, 0.5],
+            "long_shed_m": 20.0, "larg_shed_m": 3.0,
+            "tilt_deg": 10.0, "base_slope_deg": 15.0, "azimuth_deg": 90.0, "top_spacing_m": 0.2,
+        })
+        dome_back = _table_corners_3d({
+            "kind": "dome", "dome_face": "back", "origin_m": [1.0, 2.0, 0.5],
+            "long_shed_m": 20.0, "larg_shed_m": 3.0,
+            "tilt_deg": 10.0, "base_slope_deg": 15.0, "azimuth_deg": 90.0, "top_spacing_m": 0.2,
+        })
+        _assert_rect(dome_front, 20.0, 3.0)
+        _assert_rect(dome_back, 20.0, 3.0)
+        self.assertAlmostEqual(math.dist(dome_front[3], dome_back[0]), 0.2, places=6)
+        self.assertAlmostEqual(math.dist(dome_front[2], dome_back[1]), 0.2, places=6)
+        self.assertAlmostEqual(dome_front[3][2], dome_back[0][2], places=6)
+        self.assertAlmostEqual(dome_front[2][2], dome_back[1][2], places=6)
+
 
 if __name__ == "__main__":
     unittest.main()
