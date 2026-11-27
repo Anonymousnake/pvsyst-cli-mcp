@@ -438,7 +438,7 @@ def synthesize_ground_tracker_shading(*, tracker_count: int = 10, pitch_ew_m: fl
         obj_type="pvShdArrayTracking", shading_comment="Ground tracker 3D shading scene", obj_comment="Array of trackers #1",
         n_elems=n_trk, origin=origin, tilt_deg=0.0, base_slope_deg=0.0, azimuth_deg=azim, orientation_id=orientation_id,
         name=name, mw=mw, ml=ml, n_rows=n_rows, n_cols=n_cols, module_orient=module_orient, sx=sx, sy=sy,
-        dx_module=length_mod + sx, dy_module=larg_shed, long_shed=long_shed, larg_shed=larg_shed, pitch_ns=0.0, pitch_ew=pitch,
+        dx_module=chord_mod + sy, dy_module=larg_shed, long_shed=long_shed, larg_shed=larg_shed, pitch_ns=0.0, pitch_ew=pitch,
         version=version, extra_lines=["        AxisOrig=2"],
     )
 
@@ -516,6 +516,8 @@ def synthesize_utility_project(
     need_3d = include_3d_scene if include_3d_scene is not None else (field_type in ("RegularSheds", "TrackHorizNSAxis", "Dome") or site_polygon is not None or bool(obstacles))
     if field_type == "Dome" and not need_3d:
         raise ValueError("East-west dome layout requires include_3d_scene=True")
+    if (site_polygon is not None or bool(obstacles)) and not need_3d:
+        raise ValueError("site_polygon and obstacles require include_3d_scene=True")
     chord_mod = ml if module_orient == "moPortrait" else mw
     scene_collector_width = round(n_rows * chord_mod + max(0, n_rows - 1) * sy, 3)
     if need_3d:
@@ -573,7 +575,45 @@ def synthesize_utility_project(
                     origin=(0.0, 0.0, clearance), obstacles=obstacles, **mod_kw,
                 )
         elif field_type in ("TrackHorizNSAxis", "UnlimTracking"):
-            if terrain_mesh is not None:
+            if site_polygon is not None:
+                from pvsyst_auto.scene.tracker_layout import (
+                    build_tracker_3d_shading,
+                    drape_tracker_tables_on_terrain,
+                    plan_tracker_polygon_layout,
+                )
+                ground_3d_layout = plan_tracker_polygon_layout(
+                    site_polygon, axis_azimuth_deg=axis_azimuth_deg, pitch_ew_m=resolved_pitch,
+                    module_width_m=mw, module_length_m=ml, module_rows=n_rows,
+                    module_orientation="landscape" if module_orient == "moLandscape" else "portrait",
+                    spacing_x_m=sx, spacing_y_m=sy, setback_m=setback_m,
+                    ground_clearance_m=ground_clearance_m, max_table_columns=max_table_columns, n_mod_serie=n_mod_serie,
+                )
+                if terrain_mesh is not None and bool((terrain or {}).get("drape_tables", True)):
+                    draped_tables = drape_tracker_tables_on_terrain(
+                        ground_3d_layout["tables"],
+                        terrain_mesh,
+                        ground_clearance_m=ground_clearance_m,
+                        follow_slope=bool((terrain or {}).get("follow_slope", True)),
+                        max_axis_tilt_deg=float((terrain or {}).get("max_axis_tilt_deg", 15.0)),
+                    )
+                    ground_3d_layout["tables"] = draped_tables
+                    shading_lines, trk_terrain = build_tracker_3d_shading(
+                        draped_tables, module_name=resolved_mod_name,
+                        module_width_m=mw, module_length_m=ml, module_orient=module_orient,
+                        spacing_x_m=sx, spacing_y_m=sy, ground_clearance_m=ground_clearance_m,
+                        obstacles=obstacles, terrain_mesh=terrain_mesh,
+                        terrain_opts={**(terrain or {}), "drape_tables": False}, version=version,
+                    )
+                else:
+                    shading_lines, trk_terrain = build_tracker_3d_shading(
+                        ground_3d_layout["tables"], module_name=resolved_mod_name,
+                        module_width_m=mw, module_length_m=ml, module_orient=module_orient,
+                        spacing_x_m=sx, spacing_y_m=sy, ground_clearance_m=ground_clearance_m,
+                        obstacles=obstacles, terrain_mesh=terrain_mesh, terrain_opts=terrain, version=version,
+                    )
+                if trk_terrain is not None:
+                    terrain_summary = trk_terrain
+            elif terrain_mesh is not None:
                 from pvsyst_auto.scene.terrain import build_terrain_tracker_shading
                 shading_lines, terrain_summary = build_terrain_tracker_shading(
                     terrain_mesh, tracker_count=shed_count, pitch_ew_m=resolved_pitch, axis_azimuth_deg=axis_azimuth_deg,
@@ -581,7 +621,19 @@ def synthesize_utility_project(
                     max_axis_tilt_deg=float(terrain.get("max_axis_tilt_deg", 15.0)), obstacles=obstacles, **mod_kw,
                 )
             else:
-                shading_lines = synthesize_ground_tracker_shading(tracker_count=shed_count, pitch_ew_m=resolved_pitch, axis_azimuth_deg=axis_azimuth_deg, **mod_kw)
+                clearance = _finite(ground_clearance_m, "ground_clearance_m", minimum=0.0)
+                shading_lines = synthesize_ground_tracker_shading(
+                    tracker_count=shed_count, pitch_ew_m=resolved_pitch, axis_azimuth_deg=axis_azimuth_deg,
+                    origin=(0.0, 0.0, clearance), **mod_kw,
+                )
+                if obstacles:
+                    from pvsyst_auto.scene.author import obstacle_profiles
+                    from pvsyst_auto.scene.reader import emit_shading_obstacles
+                    if parsed_obs := obstacle_profiles(obstacles):
+                        extra_lines = emit_shading_obstacles(parsed_obs, start_index=2)
+                        shading_lines = [(f"    ListeObjets, list of={1 + len(parsed_obs)} TShdObject" if ln.strip() == "ListeObjets, list of=1 TShdObject" else ln) for ln in shading_lines]
+                        end_pos = next(i for i, ln in enumerate(shading_lines) if ln.strip() == "End of ListeObjets")
+                        shading_lines[end_pos:end_pos] = extra_lines
         elif site_polygon is not None or terrain_mesh is not None:
             from pvsyst_auto.scene.reader import build_ground_3d_shading, plan_ground_polygon_layout
             if site_polygon is not None:
