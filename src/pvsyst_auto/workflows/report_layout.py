@@ -60,11 +60,29 @@ def _parse_float_val(raw: str | None, default: float = 0.0) -> float:
 
 def _parse_points_and_faces(block: Any, origin: list[float]) -> tuple[list[list[float]], list[list[int]]]:
     ox, oy, oz = origin[0], origin[1], origin[2]
+    one = lambda key, default=None: block.fields[key][0][1] if block.fields.get(key) else default
+    azim = _parse_float_val(one("DAzimut"), 0.0)
+    inclin = _parse_float_val(one("DInclin"), 0.0)
+    slope = _parse_float_val(one("BaseSlope"), 0.0)
+    rotated = abs(azim) > 1e-9 or abs(inclin) > 1e-9 or abs(slope) > 1e-9
+    cs, ss = (math.cos(math.radians(slope)), math.sin(math.radians(slope))) if rotated else (1.0, 0.0)
+    ct, st = (math.cos(math.radians(inclin)), math.sin(math.radians(inclin))) if rotated else (1.0, 0.0)
+
     point_items: list[tuple[int, list[float]]] = []
     for key, entries in block.fields.items():
         if key.startswith("Point_") and (idx_str := key[6:]).isdigit() and entries:
             if (vec := _parse_vec(entries[0][1])) is not None:
-                point_items.append((int(idx_str), [round(ox + vec[0], 5), round(oy + vec[1], 5), round(oz + vec[2], 5)]))
+                lx, ly, lz = vec[0], vec[1], vec[2]
+                if not rotated:
+                    pt = [round(ox + lx, 5), round(oy + ly, 5), round(oz + lz, 5)]
+                else:
+                    x1 = lx * cs - lz * ss
+                    z1 = lx * ss + lz * cs
+                    y2 = ly * ct + z1 * st
+                    z2 = -ly * st + z1 * ct
+                    wx, wy = _rotate_local_to_world(ox, oy, x1, y2, azim)
+                    pt = [round(wx, 5), round(wy, 5), round(oz + z2, 5)]
+                point_items.append((int(idx_str), pt))
     point_items.sort(key=lambda item: item[0])
     vertices = [pt for _, pt in point_items]
 
@@ -151,7 +169,7 @@ def extract_vc_layout_preview(vc_text: str) -> dict[str, Any] | None:
             n_cols = max(1, _parse_int_val(one("NModInWidth"), 1))
             name = one("Comment") or f"Table_{len(tables) + 1}"
             az_rad = math.radians(azim)
-            step_x, step_y = math.sin(az_rad), math.cos(az_rad)
+            step_x, step_y = -math.sin(az_rad), -math.cos(az_rad)
             for idx_e in range(n_elems):
                 ox = origin[0] + idx_e * pitch_ns * step_x
                 oy = origin[1] + idx_e * pitch_ns * step_y
@@ -210,7 +228,7 @@ def extract_vc_layout_preview(vc_text: str) -> dict[str, Any] | None:
             n_cols = max(1, _parse_int_val(one("NModInWidth"), 1))
             name = one("Comment") or f"Dome_{len(tables) + 1}"
             az_rad = math.radians(azim)
-            step_x, step_y = math.sin(az_rad), math.cos(az_rad)
+            step_x, step_y = -math.sin(az_rad), -math.cos(az_rad)
             for idx_e in range(n_elems):
                 ox = origin[0] + idx_e * pitch_ns * step_x
                 oy = origin[1] + idx_e * pitch_ns * step_y
@@ -319,15 +337,15 @@ def _table_corners_3d(tbl: dict[str, Any]) -> list[tuple[float, float, float]]:
     if kind == "dome":
         top_sp = float(tbl.get("top_spacing_m", 0.2))
         is_back = tbl.get("dome_face") == "back"
-        v_lo = (proj_v + top_sp) if is_back else 0.0
-        v_hi = (2.0 * proj_v + top_sp) if is_back else proj_v
+        v_lo = -(proj_v + top_sp) if is_back else 0.0
+        v_hi = -(2.0 * proj_v + top_sp) if is_back else -proj_v
         z_lo, z_hi = (oz + rise_z, oz) if is_back else (oz, oz + rise_z)
         local = [(-0.5 * long_s, v_lo, z_lo), (0.5 * long_s, v_lo, z_lo), (0.5 * long_s, v_hi, z_hi), (-0.5 * long_s, v_hi, z_hi)]
         return [(*_rotate_local_to_world(ox, oy, du, dv, az), z + du * tan_slope) for du, dv, z in local]
 
     type_orig = int(tbl.get("type_origine", 2))
     u0, u1 = (0.0, long_s) if type_orig == 1 else (-0.5 * long_s, 0.5 * long_s)
-    v0, v1 = (-0.5 * proj_v, 0.5 * proj_v) if type_orig == 7 else (0.0, proj_v)
+    v0, v1 = (0.5 * proj_v, -0.5 * proj_v) if type_orig == 7 else (0.0, -proj_v)
     local = [(u0, v0, oz), (u1, v0, oz), (u1, v1, oz + rise_z), (u0, v1, oz + rise_z)]
     return [(*_rotate_local_to_world(ox, oy, du, dv, az), z + du * tan_slope) for du, dv, z in local]
 

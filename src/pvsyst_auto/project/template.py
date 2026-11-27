@@ -837,7 +837,7 @@ def synthesize_utility_project(
             independent_mppt=independent_mppt, pnom_ac_in_mppt=pnom_ac_in_mppt,
             lid_loss=lid_loss, pmism_mpp=pmism_mpp, module_quality_loss=module_quality_loss,
             dc_wiring_loss_pct=dc_wiring_loss_pct, dc_wiring_resistance_mohm=dc_wiring_resistance_mohm,
-            bifacial=bifacial,
+            bifacial=bifacial, module_area_m2=mw * ml,
         )
     elif subarray_allocations:
         if not independent_mppt:

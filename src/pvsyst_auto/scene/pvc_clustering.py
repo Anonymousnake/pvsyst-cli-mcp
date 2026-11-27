@@ -1,6 +1,7 @@
 """Mixed .pvc subset filtering, fixed-table multi-orientation clustering, and electrical apportionment."""
 from __future__ import annotations
 
+import heapq
 import math
 import statistics
 from typing import Any
@@ -138,16 +139,18 @@ def filter_pvc_subset(parsed: dict[str, Any], pvc_subset: str | None) -> dict[st
     return filtered
 
 
-def _cluster_centroid(tables: list[dict[str, Any]], indices: list[int]) -> tuple[float, float, float, int, float]:
-    weights = [float(max(1, int(tables[i].get("module_count", 1)))) for i in indices]
-    total_w = sum(weights)
-    tilt = sum(float(tables[i]["tilt_deg"]) * w for i, w in zip(indices, weights)) / total_w
-    az = weighted_circular_mean_deg([float(tables[i]["azimuth_deg"]) for i in indices], weights)
-    slope = sum(float(tables[i].get("base_slope_deg", 0.0)) * w for i, w in zip(indices, weights)) / total_w
-    slope = max(-45.0, min(45.0, slope))
-    mods = sum(int(tables[i].get("module_count", 0)) for i in indices)
-    area = sum(float(tables[i]["long_shed_m"]) * float(tables[i]["larg_shed_m"]) for i in indices)
-    return tilt, az, slope, mods, area
+def _centroid_from_sums(
+    w_sum: float, tilt_wsum: float, sin_wsum: float, cos_wsum: float, slope_wsum: float, fallback_az: float
+) -> tuple[float, float, float]:
+    inv_w = 1.0 / (w_sum or 1.0)
+    tilt = tilt_wsum * inv_w
+    az = (
+        normalize_azimuth_deg(math.degrees(math.atan2(sin_wsum, cos_wsum)))
+        if math.hypot(sin_wsum, cos_wsum) > 1e-9
+        else normalize_azimuth_deg(fallback_az)
+    )
+    slope = max(-45.0, min(45.0, slope_wsum * inv_w))
+    return tilt, az, slope
 
 
 def cluster_fixed_pvc_orientations(
@@ -168,40 +171,93 @@ def cluster_fixed_pvc_orientations(
         maximum=MAX_PVC_ORIENTATION_TOLERANCE_DEG,
     )
 
+    tilts = [float(tbl["tilt_deg"]) for tbl in tables]
+    azims = [float(tbl["azimuth_deg"]) for tbl in tables]
+    weights = [float(max(1, int(tbl.get("module_count", 1)))) for tbl in tables]
+    slopes = [float(tbl.get("base_slope_deg", 0.0)) for tbl in tables]
+    mods_arr = [int(tbl.get("module_count", 0)) for tbl in tables]
+    areas_arr = [float(tbl["long_shed_m"]) * float(tbl["larg_shed_m"]) for tbl in tables]
+    sin_az = [w * math.sin(math.radians(a)) for w, a in zip(weights, azims)]
+    cos_az = [w * math.cos(math.radians(a)) for w, a in zip(weights, azims)]
+
     bins: dict[tuple[float, float], list[int]] = {}
-    for idx, tbl in enumerate(tables):
-        key = (round(float(tbl["tilt_deg"]), 3), round(normalize_azimuth_deg(float(tbl["azimuth_deg"])), 3))
+    for idx, (t, a) in enumerate(zip(tilts, azims)):
+        key = (round(t, 3), round(normalize_azimuth_deg(a), 3))
         bins.setdefault(key, []).append(idx)
 
-    clusters: list[dict[str, Any]] = []
+    active: dict[int, dict[str, Any]] = {}
+    next_id = 0
     for indices in bins.values():
-        tilt, az, slope, mods, area = _cluster_centroid(tables, indices)
-        clusters.append({"indices": list(indices), "tilt": tilt, "az": az, "slope": slope, "mods": mods, "area": area})
-
-    while len(clusters) > 1:
-        best_merge: tuple[float, int, int, tuple[float, float, float, int, float]] | None = None
-        for i in range(len(clusters)):
-            ci = clusters[i]
-            for j in range(i + 1, len(clusters)):
-                cj = clusters[j]
-                dist = orientation_distance_deg(ci["tilt"], ci["az"], cj["tilt"], cj["az"])
-                if dist > tol + 1e-9:
-                    continue
-                merged_idx = ci["indices"] + cj["indices"]
-                mt, ma, ms, mm, marea = _cluster_centroid(tables, merged_idx)
-                if any(orientation_distance_deg(tables[k]["tilt_deg"], tables[k]["azimuth_deg"], mt, ma) > tol + 1e-9 for k in merged_idx):
-                    continue
-                cand = (dist, i, j, (mt, ma, ms, mm, marea))
-                if best_merge is None or cand[:3] < best_merge[:3]:
-                    best_merge = cand
-        if best_merge is None:
-            break
-        _, i, j, (mt, ma, ms, mm, marea) = best_merge
-        clusters[i] = {
-            "indices": clusters[i]["indices"] + clusters[j]["indices"],
-            "tilt": mt, "az": ma, "slope": ms, "mods": mm, "area": marea,
+        w_sum = sum(weights[i] for i in indices)
+        tilt_wsum = sum(tilts[i] * weights[i] for i in indices)
+        sin_wsum = sum(sin_az[i] for i in indices)
+        cos_wsum = sum(cos_az[i] for i in indices)
+        slope_wsum = sum(slopes[i] * weights[i] for i in indices)
+        fallback_az = azims[indices[0]]
+        ct, ca, cs = _centroid_from_sums(w_sum, tilt_wsum, sin_wsum, cos_wsum, slope_wsum, fallback_az)
+        max_spread = max(orientation_distance_deg(tilts[k], azims[k], ct, ca) for k in indices)
+        active[next_id] = {
+            "indices": list(indices), "w_sum": w_sum, "tilt_wsum": tilt_wsum,
+            "sin_wsum": sin_wsum, "cos_wsum": cos_wsum, "slope_wsum": slope_wsum,
+            "mods": sum(mods_arr[i] for i in indices), "area": sum(areas_arr[i] for i in indices),
+            "fallback_az": fallback_az, "tilt": ct, "az": ca, "slope": cs, "max_spread": max_spread,
         }
-        clusters.pop(j)
+        next_id += 1
+
+    heap: list[tuple[float, int, int]] = []
+    init_ids = list(active)
+    for pos_a in range(len(init_ids)):
+        id_a = init_ids[pos_a]
+        ca = active[id_a]
+        for pos_b in range(pos_a + 1, len(init_ids)):
+            id_b = init_ids[pos_b]
+            cb = active[id_b]
+            if abs(ca["tilt"] - cb["tilt"]) > tol + 1e-9:
+                continue
+            dist = orientation_distance_deg(ca["tilt"], ca["az"], cb["tilt"], cb["az"])
+            if dist <= tol + 1e-9:
+                heapq.heappush(heap, (dist, id_a, id_b))
+
+    while len(active) > 1 and heap:
+        _, id_a, id_b = heapq.heappop(heap)
+        if (ca := active.get(id_a)) is None or (cb := active.get(id_b)) is None:
+            continue
+        w_sum = ca["w_sum"] + cb["w_sum"]
+        tilt_wsum = ca["tilt_wsum"] + cb["tilt_wsum"]
+        sin_wsum = ca["sin_wsum"] + cb["sin_wsum"]
+        cos_wsum = ca["cos_wsum"] + cb["cos_wsum"]
+        slope_wsum = ca["slope_wsum"] + cb["slope_wsum"]
+        fallback_az = ca["fallback_az"]
+        mt, ma, ms = _centroid_from_sums(w_sum, tilt_wsum, sin_wsum, cos_wsum, slope_wsum, fallback_az)
+        shift_a = orientation_distance_deg(ca["tilt"], ca["az"], mt, ma)
+        shift_b = orientation_distance_deg(cb["tilt"], cb["az"], mt, ma)
+        ub = max(ca["max_spread"] + shift_a, cb["max_spread"] + shift_b)
+        merged_idx = ca["indices"] + cb["indices"]
+        if ub <= tol + 1e-9:
+            new_spread = ub
+        else:
+            exact_spread = max(orientation_distance_deg(tilts[k], azims[k], mt, ma) for k in merged_idx)
+            if exact_spread > tol + 1e-9:
+                continue
+            new_spread = exact_spread
+
+        del active[id_a], active[id_b]
+        new_id = next_id
+        next_id += 1
+        merged = {
+            "indices": merged_idx, "w_sum": w_sum, "tilt_wsum": tilt_wsum,
+            "sin_wsum": sin_wsum, "cos_wsum": cos_wsum, "slope_wsum": slope_wsum,
+            "mods": ca["mods"] + cb["mods"], "area": ca["area"] + cb["area"],
+            "fallback_az": fallback_az, "tilt": mt, "az": ma, "slope": ms, "max_spread": new_spread,
+        }
+        for oid, other in active.items():
+            if abs(other["tilt"] - mt) <= tol + 1e-9:
+                d_new = orientation_distance_deg(other["tilt"], other["az"], mt, ma)
+                if d_new <= tol + 1e-9:
+                    heapq.heappush(heap, (d_new, min(oid, new_id), max(oid, new_id)))
+        active[new_id] = merged
+
+    clusters = list(active.values())
 
     if len(clusters) > max_orientations:
         raise ValueError(
@@ -242,22 +298,44 @@ def cluster_fixed_pvc_orientations(
     return tagged, summaries
 
 
-def _hamilton_allocate(weights: list[float], total: int) -> list[int]:
+def _hamilton_allocate(weights: list[float], total: int, max_caps: list[int] | None = None) -> list[int]:
     """Allocate `total` integer units (>= 1 each) proportionally to positive `weights`."""
     count = len(weights)
     if total < count:
         raise ValueError(f"Cannot allocate {total} units across {count} buckets with at least 1 per bucket")
+    caps = [total] * count if max_caps is None else list(max_caps)
+    if len(caps) != count or any(c < 1 for c in caps) or sum(caps) < total:
+        raise ValueError(f"Cannot allocate {total} units across {count} buckets within per-bucket limits")
     total_w = sum(weights) or float(count)
     ideals = [(w / total_w) * total for w in weights]
-    alloc = [max(1, int(math.floor(q))) for q in ideals]
+    alloc = [max(1, min(caps[i], int(math.floor(q)))) for i, q in enumerate(ideals)]
     while sum(alloc) < total:
-        best_i = max(range(count), key=lambda i: (ideals[i] - alloc[i], -i))
+        cands = [i for i in range(count) if alloc[i] < caps[i]]
+        if not cands:
+            raise ValueError(f"Cannot allocate {total} units across {count} buckets within per-bucket limits")
+        best_i = max(cands, key=lambda i: (ideals[i] - alloc[i], -i))
         alloc[best_i] += 1
     while sum(alloc) > total:
         cands = [i for i in range(count) if alloc[i] > 1]
         best_i = max(cands, key=lambda i: (alloc[i] - ideals[i], i))
         alloc[best_i] -= 1
     return alloc
+
+
+def _capacitated_hamilton_allocate(
+    weights: list[float], total: int, max_caps: list[int] | None = None
+) -> list[int] | None:
+    """Return a proportional integer allocation respecting per-bucket upper limits, or None if infeasible."""
+    try:
+        return _hamilton_allocate(weights, total, max_caps=max_caps)
+    except ValueError:
+        return None
+
+
+def _within_cluster_area_limit(cl: dict[str, Any], modules: int, module_area_m2: float | None) -> bool:
+    if module_area_m2 is None or float(cl.get("collector_area_m2") or 0.0) <= 0.0:
+        return True
+    return modules * module_area_m2 <= float(cl["collector_area_m2"]) * 1.001 + 1e-9
 
 
 def apportion_pvc_orientations(
@@ -268,12 +346,22 @@ def apportion_pvc_orientations(
     n_inverter: int,
     n_inv_mppt: int,
     independent_mppt: bool,
+    module_area_m2: float | None = None,
 ) -> list[dict[str, Any]]:
     """Apportion inverters, MPPT inputs, and strings proportionally across clustered .pvc orientations."""
     k = len(clusters)
     if k == 0:
         raise ValueError("clusters must be non-empty")
+    if module_area_m2 is not None and (isinstance(module_area_m2, bool) or not math.isfinite(module_area_m2) or module_area_m2 <= 0.0):
+        raise ValueError("module_area_m2 must be a positive finite number")
+    area_check = module_area_m2 is not None and all(float(c.get("collector_area_m2") or 0.0) > 0.0 for c in clusters)
     if k == 1:
+        if area_check and not _within_cluster_area_limit(clusters[0], n_mod_serie * n_string_ch, module_area_m2):
+            elec_a = n_mod_serie * n_string_ch * float(module_area_m2)
+            cl_a = float(clusters[0]["collector_area_m2"])
+            raise ValueError(
+                f"Electrical module area ({elec_a:.2f} m2) exceeds .pvc orientation #1 collector area ({cl_a:.2f} m2)"
+            )
         return [{
             "orientation_id": int(clusters[0]["orientation_id"]),
             "n_mod_serie": n_mod_serie,
@@ -286,27 +374,37 @@ def apportion_pvc_orientations(
     weights = [float(max(1, int(c["module_count"]))) for c in clusters]
     total_w = sum(weights)
     target_shares = [w / total_w for w in weights]
+    max_strings = (
+        [int(math.floor((float(c["collector_area_m2"]) * 1.001 + 1e-9) / (n_mod_serie * float(module_area_m2)))) for c in clusters]
+        if area_check else None
+    )
+    had_topology = False
 
     dedicated_plan: list[dict[str, Any]] | None = None
     dedicated_err = float("inf")
     if n_inverter >= k and n_string_ch % n_inverter == 0:
         mppt_ok = (not independent_mppt) or (n_inv_mppt % n_inverter == 0 and n_string_ch % n_inv_mppt == 0)
         if mppt_ok:
+            had_topology = True
             mppt_per_inv = (n_inv_mppt // n_inverter) if independent_mppt else 1
             str_per_inv = n_string_ch // n_inverter
-            inv_alloc = _hamilton_allocate(weights, n_inverter)
-            dedicated_err = sum(abs(a / n_inverter - s) for a, s in zip(inv_alloc, target_shares))
-            dedicated_plan = [
-                {
-                    "orientation_id": int(c["orientation_id"]),
-                    "n_mod_serie": n_mod_serie,
-                    "n_inverter": a,
-                    "n_inv_mppt": (a * mppt_per_inv) if independent_mppt else 1,
-                    "n_string_ch": a * str_per_inv,
-                    "power_sharing_inverter_id": -1,
-                }
-                for c, a in zip(clusters, inv_alloc)
-            ]
+            inv_caps = [ms // str_per_inv for ms in max_strings] if max_strings is not None else None
+            inv_alloc = _capacitated_hamilton_allocate(weights, n_inverter, inv_caps)
+            if inv_alloc is not None and (
+                not area_check or all(_within_cluster_area_limit(c, n_mod_serie * a * str_per_inv, module_area_m2) for c, a in zip(clusters, inv_alloc))
+            ):
+                dedicated_err = sum(abs(a / n_inverter - s) for a, s in zip(inv_alloc, target_shares))
+                dedicated_plan = [
+                    {
+                        "orientation_id": int(c["orientation_id"]),
+                        "n_mod_serie": n_mod_serie,
+                        "n_inverter": a,
+                        "n_inv_mppt": (a * mppt_per_inv) if independent_mppt else 1,
+                        "n_string_ch": a * str_per_inv,
+                        "power_sharing_inverter_id": -1,
+                    }
+                    for c, a in zip(clusters, inv_alloc)
+                ]
 
     shared_plan: list[dict[str, Any]] | None = None
     shared_err = float("inf")
@@ -314,21 +412,33 @@ def apportion_pvc_orientations(
         mppt_per_inv = n_inv_mppt // n_inverter
         str_per_mppt = n_string_ch // n_inv_mppt
         if mppt_per_inv >= k:
-            mppt_alloc = _hamilton_allocate(weights, mppt_per_inv)
-            shared_err = sum(abs(a / mppt_per_inv - s) for a, s in zip(mppt_alloc, target_shares))
-            shared_plan = [
-                {
-                    "orientation_id": int(c["orientation_id"]),
-                    "n_mod_serie": n_mod_serie,
-                    "n_inverter": n_inverter,
-                    "n_inv_mppt": n_inverter * a,
-                    "n_string_ch": n_inverter * a * str_per_mppt,
-                    "power_sharing_inverter_id": 0,
-                }
-                for c, a in zip(clusters, mppt_alloc)
-            ]
+            had_topology = True
+            str_per_unit = n_inverter * str_per_mppt
+            mppt_caps = [ms // str_per_unit for ms in max_strings] if max_strings is not None else None
+            mppt_alloc = _capacitated_hamilton_allocate(weights, mppt_per_inv, mppt_caps)
+            if mppt_alloc is not None and (
+                not area_check or all(_within_cluster_area_limit(c, n_mod_serie * a * str_per_unit, module_area_m2) for c, a in zip(clusters, mppt_alloc))
+            ):
+                shared_err = sum(abs(a / mppt_per_inv - s) for a, s in zip(mppt_alloc, target_shares))
+                shared_plan = [
+                    {
+                        "orientation_id": int(c["orientation_id"]),
+                        "n_mod_serie": n_mod_serie,
+                        "n_inverter": n_inverter,
+                        "n_inv_mppt": n_inverter * a,
+                        "n_string_ch": n_inverter * a * str_per_mppt,
+                        "power_sharing_inverter_id": 0,
+                    }
+                    for c, a in zip(clusters, mppt_alloc)
+                ]
 
     if dedicated_plan is None and shared_plan is None:
+        if had_topology and area_check:
+            raise ValueError(
+                f"Cannot apportion {k} .pvc orientations across {n_inverter} inverter(s) and {n_inv_mppt} MPPT input(s) "
+                f"within per-orientation 3D collector area limits; adjust target_dc_kw, inverter MPPT granularity, "
+                f"or pvc_orientation_tolerance_deg"
+            )
         raise ValueError(
             f"Cannot apportion {k} .pvc orientations across {n_inverter} inverter(s) and {n_inv_mppt} MPPT input(s); "
             f"require at least {k} inverters or {k} MPPT inputs per inverter with divisible strings"
@@ -357,6 +467,7 @@ def build_pvc_multi_orient_synthesis_blocks(
     dc_wiring_loss_pct: float,
     dc_wiring_resistance_mohm: float,
     bifacial: dict[str, Any] | None = None,
+    module_area_m2: float | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Build synchronized Orientations, SubArrays, and summary metadata for multi-orientation fixed .pvc scenes."""
     allocs = apportion_pvc_orientations(
@@ -366,6 +477,7 @@ def build_pvc_multi_orient_synthesis_blocks(
         n_inverter=n_inverter,
         n_inv_mppt=n_inv_mppt,
         independent_mppt=independent_mppt,
+        module_area_m2=module_area_m2,
     )
     orientations: list[dict[str, Any]] = []
     subarrays: list[dict[str, Any]] = []

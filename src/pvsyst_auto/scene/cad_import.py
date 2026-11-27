@@ -758,8 +758,8 @@ def check_pvc_electrical_area(
             cl["electrical_area_m2"] = sub_area
             cl["area_utilization"] = round(sub_area / cl_area, 4) if cl_area > 0 else 0.0
             if sub_area > cl_area * 1.001:
-                warnings.append(
-                    f".pvc orientation #{oid} ({cl['label']}) electrical module area ({sub_area:.1f} m2) "
-                    f"exceeds its clustered 3D collector area ({cl_area:.1f} m2) due to integer inverter/MPPT rounding."
+                raise ValueError(
+                    f".pvc orientation #{oid} ({cl['label']}) electrical module area ({sub_area:.2f} m2) "
+                    f"exceeds its clustered 3D collector area ({cl_area:.2f} m2)"
                 )
 

@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -25,7 +26,7 @@ from pvsyst_auto.scene.pvc_clustering import (
 from pvsyst_auto.scene.reader import read_house_pv_scene
 from pvsyst_auto.workflows.design import prepare_design_project
 from pvsyst_auto.workflows.report import generate_report
-from pvsyst_auto.workflows.report_layout import extract_vc_layout_preview
+from pvsyst_auto.workflows.report_layout import _table_corners_3d, extract_vc_layout_preview
 from tests._fixtures import init_full_workspace, write_sfi_csv
 from tests.unit.core.test_bifacial_utility import UTILITY_OND, UTILITY_PAN, _FakeUtilityCLI
 from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
@@ -207,16 +208,19 @@ class PvcMultiOrientAndReportMapTests(unittest.TestCase):
         self.store = VariantStore(self.ws, self.components)
         self.cli = _FakeUtilityCLI(self.ws, year=1990, nominal_dc_kw=52.80, use_sfi_writer=False)
 
-    def _write_mixed_pvc(self, filename: str = "MixedSite.pvc", *, multi_fixed: bool = False) -> None:
+    def _write_mixed_pvc(
+        self, filename: str = "MixedSite.pvc", *, multi_fixed: bool = False, fixed_specs: list[tuple] | None = None
+    ) -> None:
         geoms, insts = [], []
-        fixed_specs = (
-            [(0.0, 0.0, 22.0, 0.0, 2, 15), (0.0, 10.0, 23.0, 2.0, 2, 15),
-             (25.0, 0.0, 15.0, 90.0, 2, 10), (25.0, 10.0, 16.0, 88.0, 2, 10),
-             (45.0, 0.0, 14.0, -90.0, 2, 10)]
-            if multi_fixed else
-            [(0.0, 0.0, 25.0, 0.0, 2, 20), (0.0, 9.0, 25.0, 0.0, 2, 20),
-             (25.0, 0.0, 25.0, 0.0, 2, 20), (25.0, 9.0, 25.0, 0.0, 2, 20)]
-        )
+        if fixed_specs is None:
+            fixed_specs = (
+                [(0.0, 0.0, 22.0, 0.0, 2, 15), (0.0, 10.0, 23.0, 2.0, 2, 15),
+                 (25.0, 0.0, 15.0, 90.0, 2, 8), (25.0, 10.0, 16.0, 88.0, 2, 8),
+                 (45.0, 0.0, 14.0, -90.0, 2, 8), (45.0, 10.0, 15.0, -92.0, 2, 8)]
+                if multi_fixed else
+                [(0.0, 0.0, 25.0, 0.0, 2, 20), (0.0, 9.0, 25.0, 0.0, 2, 20),
+                 (25.0, 0.0, 25.0, 0.0, 2, 20), (25.0, 9.0, 25.0, 0.0, 2, 20)]
+            )
         for idx, (cx, cy, tilt, az, nr, nc) in enumerate(fixed_specs):
             g, ins = _fixed_geom_and_inst(f"Fix{idx}", cx=cx, cy=cy, tilt_deg=tilt, azimuth_deg=az, n_rows=nr, n_cols=nc)
             geoms.append(g); insts.append(ins)
@@ -325,8 +329,8 @@ class PvcMultiOrientAndReportMapTests(unittest.TestCase):
             (0.0, 20.0, 22.0, 0.0, 2, 20), (0.0, 30.0, 23.0, -2.0, 2, 20),
             (30.0, 0.0, 15.0, 90.0, 2, 15), (30.0, 10.0, 16.0, 88.0, 2, 15),
             (30.0, 20.0, 15.0, 90.0, 2, 15), (30.0, 30.0, 16.0, 92.0, 2, 15),
-            (60.0, 0.0, 15.0, -90.0, 2, 10), (60.0, 10.0, 15.0, -90.0, 2, 10),
-            (60.0, 20.0, 15.0, -90.0, 2, 10), (60.0, 30.0, 15.0, -90.0, 2, 10),
+            (60.0, 0.0, 15.0, -90.0, 2, 14), (60.0, 10.0, 15.0, -90.0, 2, 14),
+            (60.0, 20.0, 15.0, -90.0, 2, 14), (60.0, 30.0, 15.0, -90.0, 2, 14),
         ]):
             g, ins = _fixed_geom_and_inst(f"MF{idx}", cx=cx, cy=cy, tilt_deg=tilt, azimuth_deg=az, n_rows=nr, n_cols=nc)
             geoms_only.append(g); insts_only.append(ins)
@@ -379,6 +383,54 @@ class PvcMultiOrientAndReportMapTests(unittest.TestCase):
         # Largest South cluster gets 2 of 4 MPPT inputs (50%), West & East get 1 each (25% each)
         mppts = [s["mppt_count"] for s in multi_shared["utility_summary"]["sub_orientations"]]
         self.assertEqual(mppts, [2, 1, 1])
+
+        # Infeasible 60/40/20 fixed cluster split (max feasible strings = 4+2+1 = 7 < 8) is blocked cleanly with NO .VC0 written
+        self._write_mixed_pvc(
+            "InfeasibleMultiFixed.pvc",
+            fixed_specs=[
+                (0.0, 0.0, 22.0, 0.0, 2, 15), (0.0, 10.0, 23.0, 2.0, 2, 15),
+                (25.0, 0.0, 15.0, 90.0, 2, 10), (25.0, 10.0, 16.0, 88.0, 2, 10),
+                (45.0, 0.0, 14.0, -90.0, 2, 10),
+            ],
+        )
+        blocked_cap = prepare_design_project(
+            self.cli, self.store, dry_run=False,
+            spec=_design_spec("InfeasiblePvc.PRJ", scope="ground_sheds", target_kw=52.8,
+                              ond_name="Inv50_4MPPT.OND",
+                              ground_layout={"pvc_name": "InfeasibleMultiFixed.pvc", "pvc_subset": "fixed", "pvc_orientation_tolerance_deg": 5.0}),
+        )
+        self.assertEqual(blocked_cap["status"], "blocked", blocked_cap)
+        self.assertIn("collector area", str(blocked_cap["issues"]).lower())
+        self.assertFalse((self.ws / "Projects" / "InfeasiblePvc.VC0").exists())
+
+        # Capacitated apportionment shifts allocation away from a capped bucket while keeping area limits satisfied
+        cap_clusters = [
+            {"orientation_id": 1, "module_count": 100, "collector_area_m2": 70.0},
+            {"orientation_id": 2, "module_count": 60, "collector_area_m2": 125.0},
+            {"orientation_id": 3, "module_count": 30, "collector_area_m2": 65.0},
+        ]
+        unconstrained = apportion_pvc_orientations(
+            cap_clusters, n_mod_serie=15, n_string_ch=8, n_inverter=1, n_inv_mppt=4, independent_mppt=True,
+        )
+        self.assertEqual([a["n_inv_mppt"] for a in unconstrained], [2, 1, 1])
+        cap_alloc = apportion_pvc_orientations(
+            cap_clusters, n_mod_serie=15, n_string_ch=8, n_inverter=1, n_inv_mppt=4, independent_mppt=True, module_area_m2=2.0,
+        )
+        self.assertEqual([a["n_inv_mppt"] for a in cap_alloc], [1, 2, 1])
+
+        # Clustering performance: 200 jittered fixed tables complete into 1 orientation well under 1.0s
+        jitter_tables = [
+            {
+                "name": f"J{i}", "tilt_deg": 20.0, "azimuth_deg": i * 0.001, "base_slope_deg": 0.0,
+                "long_shed_m": 10.0, "larg_shed_m": 4.0, "origin_m": [0.0, i * 6.0, 0.8], "module_count": 20,
+            }
+            for i in range(200)
+        ]
+        t0 = time.perf_counter()
+        _, j_sum = cluster_fixed_pvc_orientations(jitter_tables, 5.0)
+        elapsed = time.perf_counter() - t0
+        self.assertEqual(len(j_sum), 1)
+        self.assertLess(elapsed, 1.0)
 
         # Apportion impossibility check (1 inverter with 1 MPPT and 3 orientations)
         with self.assertRaisesRegex(ValueError, "Cannot apportion 3 .pvc orientations"):
@@ -465,7 +517,7 @@ class PvcMultiOrientAndReportMapTests(unittest.TestCase):
         vc_text = (self.ws / "Projects" / "ReportAutoPvc.VC0").read_text(encoding="utf-8-sig")
         extracted = extract_vc_layout_preview(vc_text)
         self.assertIsNotNone(extracted)
-        self.assertEqual(len(extracted["tables"]), 5)
+        self.assertEqual(len(extracted["tables"]), 6)
         self.assertEqual(len(extracted["obstacles"]), 1)
         self.assertIn("terrain_mesh", extracted)
 
@@ -519,6 +571,79 @@ class PvcMultiOrientAndReportMapTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIsNone(extract_vc_layout_preview((self.ws / "Projects" / "EmptyShd.VC0").read_text(encoding="utf-8")))
+
+        # 6. Fixed-table geometry roundtrip preserves [-proj, 0] local Y extent (matches Collada source footprint)
+        g_fix, i_fix = _fixed_geom_and_inst("SouthOne", cx=0.0, cy=0.0, z_base=0.8, tilt_deg=20.0, azimuth_deg=0.0, n_rows=4, n_cols=25)
+        (self.ws / "UserData" / "SingleFixedGeom.pvc").write_text(_wrap_pvc_xml([g_fix], [i_fix], include_obs_terrain=False), encoding="utf-8")
+        prep_one = prepare_design_project(
+            self.cli, self.store, dry_run=False,
+            spec=_design_spec("SingleGeom.PRJ", scope="ground_sheds", target_kw=44.0,
+                              ground_layout={"pvc_name": "SingleFixedGeom.pvc"}),
+        )
+        self.assertIn(prep_one["status"], ("prepared", "needs_review"), prep_one)
+        ext_one = extract_vc_layout_preview((self.ws / "Projects" / "SingleGeom.VC0").read_text(encoding="utf-8-sig"))
+        self.assertEqual(len(ext_one["tables"]), 1)
+        corners = _table_corners_3d(ext_one["tables"][0])
+        ys = [c[1] for c in corners]
+        zs = [c[2] for c in corners]
+        proj_exp = (4 * 1.996 + 3 * 0.02) * math.cos(math.radians(20.0))
+        rise_exp = (4 * 1.996 + 3 * 0.02) * math.sin(math.radians(20.0))
+        self.assertAlmostEqual(min(ys), -proj_exp, places=2)
+        self.assertAlmostEqual(max(ys), 0.0, places=2)
+        self.assertAlmostEqual(min(zs), 0.8, places=2)
+        self.assertAlmostEqual(max(zs), 0.8 + rise_exp, places=2)
+
+        # 7. pvShdGenObject and pvShdGround vertices honor DAzimut and DInclin rotations
+        vc_rot = "\n".join([
+            "PVObject_=pvVCalcul",
+            "  Flags=$00100001",
+            "  PVObject_Ombrage=pvShading",
+            "    Flags=$000A0100",
+            "    ListeObjets, list of=2 TShdObject",
+            "      PVObject_1=pvShdGenObject",
+            "        Comment=RotatedObs",
+            "        DOrigine=10.000000,20.000000,1.000000",
+            "        DInclin=30.000000",
+            "        BaseSlope=0.000000",
+            "        DAzimut=90.000000",
+            "        Sommets, TPoly3D=3 Point3D",
+            "          Point_1=0.000000,0.000000,0.000000",
+            "          Point_2=4.000000,0.000000,0.000000",
+            "          Point_3=0.000000,2.000000,0.000000",
+            "        End of TPoly3D",
+            "        Faces=-1,0,1,2,",
+            "      End of PVObject pvShdGenObject",
+            "      PVObject_2=pvShdGround",
+            "        Comment=RotatedGround",
+            "        DOrigine=0.000000,0.000000,0.000000",
+            "        DInclin=0.000000",
+            "        BaseSlope=0.000000",
+            "        DAzimut=90.000000",
+            "        Sommets, TPoly3D=3 Point3D",
+            "          Point_1=0.000000,0.000000,0.000000",
+            "          Point_2=4.000000,0.000000,0.000000",
+            "          Point_3=0.000000,2.000000,0.000000",
+            "        End of TPoly3D",
+            "        Faces=-1,0,1,2,",
+            "      End of PVObject pvShdGround",
+            "    End of ListeObjets",
+            "  End of PVObject pvShading",
+            "End of PVObject pvVCalcul",
+        ])
+        rot_ext = extract_vc_layout_preview(vc_rot)
+        obs_verts = rot_ext["obstacles"][0]["vertices"]
+        # At DAzimut=90, DInclin=30: local (4,0,0) -> world (10, 16, 1); local (0,2,0) -> world (10 + 2*cos(30), 20, 1 - 2*sin(30))
+        self.assertAlmostEqual(obs_verts[1][0], 10.0, places=4)
+        self.assertAlmostEqual(obs_verts[1][1], 16.0, places=4)
+        self.assertAlmostEqual(obs_verts[1][2], 1.0, places=4)
+        self.assertAlmostEqual(obs_verts[2][0], 10.0 + math.sqrt(3.0), places=4)
+        self.assertAlmostEqual(obs_verts[2][1], 20.0, places=4)
+        self.assertAlmostEqual(obs_verts[2][2], 0.0, places=4)
+        gnd_verts = rot_ext["terrain_mesh"]["vertices"]
+        self.assertAlmostEqual(gnd_verts[1][0], 0.0, places=4)
+        self.assertAlmostEqual(gnd_verts[1][1], -4.0, places=4)
+        self.assertAlmostEqual(gnd_verts[2][0], 2.0, places=4)
+        self.assertAlmostEqual(gnd_verts[2][1], 0.0, places=4)
 
 
 if __name__ == "__main__":
