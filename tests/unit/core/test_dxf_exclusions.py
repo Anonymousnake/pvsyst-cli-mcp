@@ -267,6 +267,37 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
                     ox - half_w, ox + half_w, oy, oy + ent_plan["proj_depth_m"], [(p[0], p[1]) for p in ex], tol=1e-4,
                 ))
 
+        # Elevated 2D POLYLINE uses owning POLYLINE elevation (30=20) with tilted extrusion (210=0, 220=0.6, 230=0.8) even when vertices carry 30=0
+        elev_poly_dxf = "\n".join([
+            "0", "SECTION", "2", "ENTITIES",
+            "0", "LWPOLYLINE", "8", "SITE_BOUNDARY", "70", "1",
+            "10", "0", "20", "0", "10", "100", "20", "0", "10", "100", "20", "100", "10", "0", "20", "100",
+            "0", "POLYLINE", "8", "KEEPOUT", "66", "1", "70", "1", "30", "20.0",
+            "210", "0.0", "220", "0.6", "230", "0.8",
+            *[ln for vx, vy in ((-20.0, -20.0), (-24.0, -20.0), (-24.0, -24.0), (-20.0, -24.0))
+              for ln in ("0", "VERTEX", "8", "KEEPOUT", "70", "0", "10", str(vx), "20", str(vy), "30", "0.0")],
+            "0", "SEQEND",
+            "0", "ENDSEC", "0", "EOF",
+        ]) + "\n"
+        (self.ws / "UserData" / "ElevPoly2d.dxf").write_text(elev_poly_dxf, encoding="utf-8")
+        ep_parsed = parse_ascii_dxf(self.ws, "ElevPoly2d.dxf")
+        self.assertEqual(len(ep_parsed["exclusion_zones"]), 1)
+        ez = ep_parsed["exclusion_zones"][0]
+        self.assertAlmostEqual(min(p[0] for p in ez), 20.0, places=3)
+        self.assertAlmostEqual(max(p[0] for p in ez), 24.0, places=3)
+        self.assertAlmostEqual(min(p[1] for p in ez), 28.0, places=3)
+        self.assertAlmostEqual(max(p[1] for p in ez), 31.2, places=3)
+        ep_plan = plan_ground_polygon_layout(
+            ep_parsed["site_polygon"], tilt_deg=0.0, azimuth_deg=0.0, pitch_m=5.0,
+            module_width_m=1.0, module_length_m=2.0, module_rows=1, exclusion_zones=ep_parsed["exclusion_zones"],
+        )
+        for tbl in ep_plan["tables"]:
+            ox, oy, _ = tbl["origin_m"]
+            half_w = 0.5 * float(tbl["long_shed_m"])
+            self.assertFalse(rect_overlaps_polygon(
+                ox - half_w, ox + half_w, oy, oy + ep_plan["proj_depth_m"], [(p[0], p[1]) for p in ez], tol=1e-4,
+            ))
+
         # Expansion budget guard: huge MINSERT, empty-block 1e9 MINSERT, and nested array explosion fail fast cleanly
         cap_dxf = "\n".join([
             "0", "SECTION", "2", "BLOCKS",

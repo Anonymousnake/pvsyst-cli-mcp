@@ -701,9 +701,9 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
                     expanded.append({"type": "POLYFACE", "layer": layer, "vertices": vlist,
                                      "pts3": [_apply_mat(mat, (v["x"], v["y"], v["z"])) for v in vlist if (v["flag"] & 128) and (v["flag"] & 64)]})
                 else:
-                    closed = bool(ent["flag"] & 1)
-                    m_poly = mat if (ent["flag"] & 8) else m_ent
-                    local = _discretize_bulge_chain([(v["x"], v["y"], v["z"], v.get("bulge", 0.0)) for v in vlist], closed)
+                    closed, is_3d_poly = bool(ent["flag"] & 1), bool(ent["flag"] & 8)
+                    m_poly = mat if is_3d_poly else m_ent
+                    local = _discretize_bulge_chain([(v["x"], v["y"], v["z"] if is_3d_poly else ent["z0"], v.get("bulge", 0.0)) for v in vlist], closed)
                     expanded.append({"type": "CURVE", "layer": layer, "closed": closed, "thick": ent["thick"] * abs(m_poly[2][2]), "pts": [_apply_mat(m_poly, p) for p in local]})
             elif t == "CIRCLE":
                 local = _discretize_circle(ent["cx"], ent["cy"], ent["cz"], ent["r"])
