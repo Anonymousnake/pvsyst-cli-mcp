@@ -441,7 +441,7 @@ class TerrainDemTests(unittest.TestCase):
         validate_utility_spec({"scope": "ground_tracker",
             "ground_layout": {"site_polygon": [[0, 0], [40, 0], [40, 30], [0, 30]], "base_slope_deg": 3.0}}, "ground_tracker", trk_issues)
         fields = {i["field"] for i in trk_issues}
-        self.assertIn("ground_layout.site_polygon", fields)
+        self.assertNotIn("ground_layout.site_polygon", fields)
         self.assertIn("ground_layout.base_slope_deg", fields)
         # Boundary float-grouping regression: 30 modules fit cleanly across the exact polygon span
         boundary = plan_ground_polygon_layout([[500000.0, 0.0], [500017.28999990004, 0.0], [500017.28999990004, 10.0], [500000.0, 10.0]],

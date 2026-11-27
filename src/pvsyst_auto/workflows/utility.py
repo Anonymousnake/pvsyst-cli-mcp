@@ -75,7 +75,12 @@ def resolve_utility_field_type(scope: str, ground_layout: dict | None) -> tuple[
         )
         return ("RegularSheds", True) if has_3d else ("Sheds", False)
     if scope == "ground_tracker":
-        has_3d = (mode == "3d") or (layout.get("terrain") is not None)
+        has_3d = (
+            (mode == "3d")
+            or (layout.get("site_polygon") is not None)
+            or bool(layout.get("obstacles"))
+            or (layout.get("terrain") is not None)
+        )
         return ("TrackHorizNSAxis", True) if has_3d else ("UnlimTracking", False)
     if scope == "ground_dome":
         return ("Dome", True)
@@ -101,12 +106,15 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
     for key in sorted(set(layout) - GROUND_LAYOUT_KEYS):
         bad(f"ground_layout.{key}", "Unknown ground_layout parameter")
 
-    mode = layout.get("model_mode", "3d" if scope == "ground_dome" else "unlimited")
+    implied_3d = resolve_utility_field_type(scope, layout)[1] if scope in UTILITY_SCOPES else False
+    mode = layout.get("model_mode") or ("3d" if (scope == "ground_dome" or implied_3d) else "unlimited")
     if mode not in ("unlimited", "3d"):
         bad("ground_layout.model_mode", "Choose 'unlimited' or '3d'")
 
     if scope == "ground_dome" and layout.get("model_mode") == "unlimited":
         bad("ground_layout.model_mode", "scope='ground_dome' requires 3D paired dome shading (model_mode='3d')")
+    elif layout.get("model_mode") == "unlimited" and (layout.get("site_polygon") is not None or layout.get("obstacles") or layout.get("terrain") is not None):
+        bad("ground_layout.model_mode", "site_polygon, obstacles, and terrain require 3D layout (omit model_mode or set model_mode='3d')")
     elif mode == "unlimited" and scope == "ground_tracker":
         for key in ("central_gap_m", "pitch_slope_deg", "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg"):
             if key in layout:
@@ -281,23 +289,17 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
             bad("ground_layout.wind_stow_position_deg", "wind_stow_position_deg must lie in -90..90 degrees")
 
     if layout.get("site_polygon") is not None:
-        if scope not in ("ground_sheds", "ground_dome"):
-            bad("ground_layout.site_polygon", "site_polygon finite 3D layout is supported for scope='ground_sheds' and 'ground_dome'")
-        else:
-            from pvsyst_auto.scene.reader import validate_site_polygon
-            try:
-                validate_site_polygon(layout["site_polygon"])
-            except ValueError as exc:
-                bad("ground_layout.site_polygon", exc)
+        from pvsyst_auto.scene.reader import validate_site_polygon
+        try:
+            validate_site_polygon(layout["site_polygon"])
+        except ValueError as exc:
+            bad("ground_layout.site_polygon", exc)
     if layout.get("obstacles") is not None:
-        if scope not in ("ground_sheds", "ground_dome"):
-            bad("ground_layout.obstacles", "3D obstacles are supported for scope='ground_sheds' and 'ground_dome'")
-        else:
-            from pvsyst_auto.scene.author import obstacle_profiles
-            try:
-                obstacle_profiles(layout["obstacles"])
-            except ValueError as exc:
-                bad("ground_layout.obstacles", exc)
+        from pvsyst_auto.scene.author import obstacle_profiles
+        try:
+            obstacle_profiles(layout["obstacles"])
+        except ValueError as exc:
+            bad("ground_layout.obstacles", exc)
     for key in ("setback_m", "ground_clearance_m"):
         val = layout.get(key)
         if val is not None and (not _is_number(val) or val < 0):
@@ -552,7 +554,7 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "include_3d_scene": include_3d,
         "site_polygon": layout.get("site_polygon"),
         "setback_m": float(layout.get("setback_m", 0.0)),
-        "ground_clearance_m": float(layout.get("ground_clearance_m", 0.5)),
+        "ground_clearance_m": float(layout.get("ground_clearance_m", 1.5 if scope == "ground_tracker" else 0.5)),
         "max_table_columns": layout.get("max_table_columns"),
         "obstacles": layout.get("obstacles"),
         "base_slope_deg": float(layout.get("base_slope_deg", 0.0)),
