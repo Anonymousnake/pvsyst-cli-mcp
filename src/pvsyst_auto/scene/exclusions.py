@@ -151,6 +151,35 @@ def rect_overlaps_any_polygon(
     return any(rect_overlaps_polygon(u0, u1, v0, v1, poly, tol=tol) for poly in polys)
 
 
+def is_self_intersecting_polygon(pts: list[tuple[float, float]]) -> bool:
+    """Return True if a closed polygon has zero-length/fold-back edges or self-intersecting non-adjacent edges."""
+    n = len(pts)
+    if n < 3:
+        return False
+    for i in range(n):
+        p_prev = pts[(i - 1) % n]
+        p_cur = pts[i]
+        p_next = pts[(i + 1) % n]
+        ux, uy = p_prev[0] - p_cur[0], p_prev[1] - p_cur[1]
+        vx, vy = p_next[0] - p_cur[0], p_next[1] - p_cur[1]
+        lu, lv = math.hypot(ux, uy), math.hypot(vx, vy)
+        if lu <= _EPS or lv <= _EPS:
+            return True
+        if abs(ux * vy - uy * vx) <= _EPS * lu * lv and (ux * vx + uy * vy) > 0.0:
+            return True
+    for i in range(n):
+        ax, ay = pts[i]
+        bx, by = pts[(i + 1) % n]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue
+            cx, cy = pts[j]
+            dx, dy = pts[(j + 1) % n]
+            if segments_intersect(ax, ay, bx, by, cx, cy, dx, dy):
+                return True
+    return False
+
+
 def validate_exclusion_zones(exclusion_zones: Any) -> list[list[tuple[float, float]]]:
     """Validate optional list of 2D exclusion polygons [[x, y], ...]."""
     if exclusion_zones is None:
@@ -175,6 +204,8 @@ def validate_exclusion_zones(exclusion_zones: Any) -> list[list[tuple[float, flo
             pts.pop()
         if len(pts) < 3 or polygon_area(pts) <= 1e-3:
             raise ValueError(f"exclusion_zones[{z_idx}] must enclose a positive non-degenerate area")
+        if is_self_intersecting_polygon(pts):
+            raise ValueError(f"exclusion_zones[{z_idx}] must be a simple (non-self-intersecting) polygon")
         out.append(pts)
     return out
 

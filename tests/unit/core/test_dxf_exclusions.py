@@ -1,6 +1,7 @@
 """Unit tests for PR 3: 2D exclusion zones, DXF BLOCKS/INSERT & curves, and 3-scope layout carving."""
 from __future__ import annotations
 
+import asyncio
 import math
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from pvsyst_auto.api.context import create_mcp_server
 from pvsyst_auto.api.schemas import GroundLayoutRequest, SingleDesignRequest
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.project.variants import VariantStore
+from pvsyst_auto.scene.cad_import import resolve_cad_synthesis_inputs
 from pvsyst_auto.scene.dome import build_dome_3d_shading, dome_footprint_depth_m
 from pvsyst_auto.scene.dxf_import import MAX_DXF_ENTITIES, parse_ascii_dxf
 from pvsyst_auto.scene.exclusions import (
@@ -187,7 +189,7 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
         self.assertTrue(any(abs(sum(p[0] for p in z) / len(z) - 50.0) < 0.2 for z in parsed["exclusion_zones"]))
         self.assertFalse(any(abs(sum(p[0] for p in z) / len(z) - 55.0) < 0.2 for z in parsed["exclusion_zones"]))
 
-        # Entity cap guard: 300x300 MINSERT = 90,000 capped safely <= MAX_DXF_ENTITIES
+        # Expansion budget guard: huge MINSERT, empty-block 1e9 MINSERT, and nested array explosion fail fast cleanly
         cap_dxf = "\n".join([
             "0", "SECTION", "2", "BLOCKS",
             "0", "BLOCK", "2", "DOT", "10", "0", "20", "0", "30", "0",
@@ -201,8 +203,42 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
             "0", "ENDSEC", "0", "EOF",
         ]) + "\n"
         (self.ws / "UserData" / "Cap.dxf").write_text(cap_dxf, encoding="utf-8")
-        cap_parsed = parse_ascii_dxf(self.ws, "Cap.dxf")
-        self.assertLessEqual(cap_parsed["entity_counts"].get("POINT", 0), MAX_DXF_ENTITIES)
+        with self.assertRaisesRegex(ValueError, "exceeds maximum"):
+            parse_ascii_dxf(self.ws, "Cap.dxf")
+
+        empty_bomb = "\n".join([
+            "0", "SECTION", "2", "BLOCKS",
+            "0", "BLOCK", "2", "EMPTY", "10", "0", "20", "0", "30", "0",
+            "0", "ENDBLK",
+            "0", "BLOCK", "2", "INNER", "10", "0", "20", "0", "30", "0",
+            "0", "INSERT", "8", "0", "2", "EMPTY", "10", "0", "20", "0", "70", "250", "71", "1",
+            "0", "ENDBLK", "0", "ENDSEC",
+            "0", "SECTION", "2", "ENTITIES",
+            "0", "LWPOLYLINE", "8", "SITE_BOUNDARY", "70", "1",
+            "10", "0", "20", "0", "10", "50", "20", "0", "10", "50", "20", "50", "10", "0", "20", "50",
+            "0", "INSERT", "8", "0", "2", "EMPTY", "10", "0", "20", "0", "70", "1000000000", "71", "1",
+            "0", "ENDSEC", "0", "EOF",
+        ]) + "\n"
+        (self.ws / "UserData" / "Bomb1.dxf").write_text(empty_bomb, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "exceeds maximum"):
+            parse_ascii_dxf(self.ws, "Bomb1.dxf")
+
+        nested_dxf = "\n".join([
+            "0", "SECTION", "2", "BLOCKS",
+            "0", "BLOCK", "2", "EMPTY", "10", "0", "20", "0", "30", "0",
+            "0", "ENDBLK",
+            "0", "BLOCK", "2", "INNER", "10", "0", "20", "0", "30", "0",
+            "0", "INSERT", "8", "0", "2", "EMPTY", "10", "0", "20", "0", "70", "250", "71", "1",
+            "0", "ENDBLK", "0", "ENDSEC",
+            "0", "SECTION", "2", "ENTITIES",
+            "0", "LWPOLYLINE", "8", "SITE_BOUNDARY", "70", "1",
+            "10", "0", "20", "0", "10", "50", "20", "0", "10", "50", "20", "50", "10", "0", "20", "50",
+            "0", "INSERT", "8", "0", "2", "INNER", "10", "0", "20", "0", "70", "250", "71", "1",
+            "0", "ENDSEC", "0", "EOF",
+        ]) + "\n"
+        (self.ws / "UserData" / "Bomb2.dxf").write_text(nested_dxf, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "exceed"):
+            parse_ascii_dxf(self.ws, "Bomb2.dxf")
 
     def test_bulge_circle_arc_line_stitch_spline_and_layer_roles(self) -> None:
         # Closed 2-vertex bulged circle as exclusion, bulged chamfered boundary, stitched ARC+LINE road,
@@ -267,6 +303,94 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
         mapped = parse_ascii_dxf(self.ws, "RoleMap.dxf", dxf_layers={"exclusions": "CUSTOM_KEEP"})
         self.assertEqual(len(mapped["exclusion_zones"]), 1)
         self.assertAlmostEqual(sum(p[0] for p in mapped["exclusion_zones"][0]) / len(mapped["exclusion_zones"][0]), 35.0, places=1)
+
+    def test_ellipse_exclusions_count_cap_and_self_intersection_rejections(self) -> None:
+        # 1. Closed ELLIPSE + INSERT-transformed ELLIPSE + half-ellipse stitched with LINE on KEEPOUT
+        ell_dxf = "\n".join([
+            "0", "SECTION", "2", "HEADER", "9", "$INSUNITS", "70", "6", "0", "ENDSEC",
+            "0", "SECTION", "2", "BLOCKS",
+            "0", "BLOCK", "2", "ELL_BLK", "10", "0", "20", "0", "30", "0",
+            "0", "ELLIPSE", "8", "0", "10", "0", "20", "0", "30", "0",
+            "11", "4", "21", "0", "31", "0", "40", "0.5", "41", "0", "42", f"{2.0 * math.pi:.12f}",
+            "0", "ENDBLK", "0", "ENDSEC",
+            "0", "SECTION", "2", "ENTITIES",
+            "0", "LWPOLYLINE", "8", "SITE_BOUNDARY", "70", "1",
+            "10", "0", "20", "0", "10", "100", "20", "0", "10", "100", "20", "100", "10", "0", "20", "100",
+            "0", "ELLIPSE", "8", "KEEPOUT", "10", "50", "20", "50", "30", "0",
+            "11", "10", "21", "0", "31", "0", "40", "0.5", "41", "0", "42", f"{2.0 * math.pi:.12f}",
+            "0", "INSERT", "8", "KEEPOUT", "2", "ELL_BLK", "10", "20", "20", "20", "30", "0", "50", "90.0",
+            "0", "ELLIPSE", "8", "NO_PV", "10", "25", "20", "75", "30", "0",
+            "11", "6", "21", "0", "31", "0", "40", "0.5", "41", "0", "42", f"{math.pi:.12f}",
+            "0", "LINE", "8", "NO_PV", "10", "19", "20", "75", "30", "0", "11", "31", "21", "75", "31", "0",
+            "0", "ENDSEC", "0", "EOF",
+        ]) + "\n"
+        (self.ws / "UserData" / "Ellipses.dxf").write_text(ell_dxf, encoding="utf-8")
+        ell_parsed = parse_ascii_dxf(self.ws, "Ellipses.dxf")
+        self.assertEqual(ell_parsed["entity_counts"].get("ELLIPSE"), 3)
+        self.assertEqual(len(ell_parsed["exclusion_zones"]), 3)
+        self.assertGreater(ell_parsed["exclusion_zones"][0] and sum(
+            rect_overlaps_polygon(49, 51, 49, 51, [(p[0], p[1]) for p in z]) for z in ell_parsed["exclusion_zones"]
+        ), 0)
+        ell_plan = plan_ground_polygon_layout(
+            ell_parsed["site_polygon"], tilt_deg=20.0, azimuth_deg=0.0, pitch_m=8.0,
+            module_width_m=1.0, module_length_m=2.0, module_rows=2, module_orientation="portrait",
+            exclusion_zones=ell_parsed["exclusion_zones"],
+        )
+        for z in ell_parsed["exclusion_zones"]:
+            pts = [(p[0], p[1]) for p in z]
+            for tbl in ell_plan["tables"]:
+                cx, cy = tbl["origin_m"][0] + 0.5 * tbl["long_shed_m"], tbl["origin_m"][1] + 0.5 * ell_plan["proj_depth_m"]
+                self.assertFalse(point_in_polygon(cx, cy, pts))
+
+        # 2. > MAX_EXCLUSION_ZONES (129 in DXF or 128 in DXF + 1 user keepout) fails loudly
+        def _sq(idx: int) -> list[str]:
+            x0, y0 = 2.0 + (idx % 20) * 4.5, 2.0 + (idx // 20) * 4.5
+            return [
+                "0", "LWPOLYLINE", "8", "KEEPOUT", "70", "1",
+                "10", str(x0), "20", str(y0), "10", str(x0 + 2.0), "20", str(y0),
+                "10", str(x0 + 2.0), "20", str(y0 + 2.0), "10", str(x0), "20", str(y0 + 2.0),
+            ]
+        dxf_128 = [
+            "0", "SECTION", "2", "ENTITIES",
+            "0", "LWPOLYLINE", "8", "SITE_BOUNDARY", "70", "1",
+            "10", "0", "20", "0", "10", "100", "20", "0", "10", "100", "20", "100", "10", "0", "20", "100",
+        ]
+        for i in range(MAX_EXCLUSION_ZONES):
+            dxf_128.extend(_sq(i))
+        (self.ws / "UserData" / "Ex128.dxf").write_text("\n".join([*dxf_128, "0", "ENDSEC", "0", "EOF"]) + "\n", encoding="utf-8")
+        (self.ws / "UserData" / "Ex129.dxf").write_text("\n".join([*dxf_128, *_sq(128), "0", "ENDSEC", "0", "EOF"]) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, str(MAX_EXCLUSION_ZONES)):
+            parse_ascii_dxf(self.ws, "Ex129.dxf")
+        store = VariantStore(self.ws, self.components)
+        with self.assertRaisesRegex(ValueError, str(MAX_EXCLUSION_ZONES)):
+            resolve_cad_synthesis_inputs(
+                store, field_type="RegularSheds", pvc_name=None, dxf_name="Ex128.dxf",
+                dxf_layers=None, dxf_unit_scale=None, tilt_deg=20.0, azimuth_deg=0.0, axis_azimuth_deg=0.0,
+                pitch_m=8.0, tilt_explicit=True, azimuth_explicit=True, obstacles=None,
+                exclusion_zones=[[[90.0, 90.0], [95.0, 90.0], [95.0, 95.0], [90.0, 95.0]]],
+                terrain=None, module_name="Mod", version="8.1.7",
+            )
+
+        # 3. Self-intersecting (bowtie) and fold-back exclusions rejected inline, via validation, and from DXF
+        bowtie = [[0.0, 0.0], [4.0, 4.0], [0.0, 4.0], [3.0, 0.0]]
+        foldback = [[0.0, 0.0], [4.0, 0.0], [2.0, 0.0], [4.0, 4.0], [0.0, 4.0]]
+        for bad_poly in (bowtie, foldback):
+            with self.assertRaisesRegex(ValueError, "simple"):
+                validate_exclusion_zones([bad_poly])
+        bowtie_dxf = "\n".join([
+            "0", "SECTION", "2", "ENTITIES",
+            "0", "LWPOLYLINE", "8", "SITE_BOUNDARY", "70", "1",
+            "10", "0", "20", "0", "10", "30", "20", "0", "10", "30", "20", "30", "10", "0", "20", "30",
+            "0", "LWPOLYLINE", "8", "KEEPOUT", "70", "1",
+            "10", "0", "20", "0", "10", "4", "20", "4", "10", "0", "20", "4", "10", "3", "20", "0",
+            "0", "ENDSEC", "0", "EOF",
+        ]) + "\n"
+        (self.ws / "UserData" / "Bowtie.dxf").write_text(bowtie_dxf, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "simple"):
+            parse_ascii_dxf(self.ws, "Bowtie.dxf")
+        # Concave L-shape remains accepted
+        l_shape = [[2.0, 2.0], [8.0, 2.0], [8.0, 4.0], [4.0, 4.0], [4.0, 8.0], [2.0, 8.0]]
+        self.assertEqual(len(validate_exclusion_zones([l_shape])), 1)
 
 
 class ThreeScopeExclusionLayoutTests(unittest.TestCase):
@@ -492,10 +616,9 @@ class ValidationSchemaAndBudgetTests(unittest.TestCase):
         self.assertEqual(gl_model.exclusion_zones, ex)
 
         # Tool budget & max .py line count
-        self.assertEqual(len(create_mcp_server()._tool_manager.list_tools()), 48)
-        self.assertEqual(len(create_mcp_server("all")._tool_manager.list_tools()), 75)
-        self.assertEqual(len(create_mcp_server("admin")._tool_manager.list_tools()), 4)
-        self.assertEqual(len(create_mcp_server("expert")._tool_manager.list_tools()), 23)
+        async def _counts() -> dict[str | None, int]:
+            return {grp: len(await create_mcp_server(tool_groups=grp).list_tools()) for grp in (None, "all", "admin", "expert")}
+        self.assertEqual(asyncio.run(_counts()), {None: 48, "all": 75, "admin": 4, "expert": 23})
         root = Path(__file__).resolve().parents[3]
         for py in (root / "src" / "pvsyst_auto").rglob("*.py"):
             self.assertLessEqual(len(py.read_text(encoding="utf-8").splitlines()), 900, f"{py} exceeds 900 lines")

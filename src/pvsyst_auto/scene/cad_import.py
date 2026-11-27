@@ -532,7 +532,12 @@ def _merge_exclusion_zones(
     if not cad_ex and not user_ex:
         return None
     merged = [*cad_ex, *(user_ex or ())]
-    return merged[:MAX_EXCLUSION_ZONES]
+    if len(merged) > MAX_EXCLUSION_ZONES:
+        raise ValueError(
+            f"Combined DXF ({len(cad_ex)}) and inline ({len(user_ex or ())}) exclusion zones "
+            f"({len(merged)}) exceed the maximum of {MAX_EXCLUSION_ZONES}"
+        )
+    return merged
 
 
 def resolve_cad_synthesis_inputs(

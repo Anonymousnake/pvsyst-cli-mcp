@@ -8,7 +8,7 @@ from typing import Any
 
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.scene.author import MAX_OBSTACLES, obstacle_profiles
-from pvsyst_auto.scene.exclusions import MAX_EXCLUSION_ZONES, polygon_area
+from pvsyst_auto.scene.exclusions import MAX_EXCLUSION_ZONES, polygon_area, validate_exclusion_zones
 from pvsyst_auto.scene.reader import validate_site_polygon
 from pvsyst_auto.validation import finite_number as _finite
 
@@ -33,6 +33,7 @@ _FLOAT_FIELDS: dict[str, dict[int, str]] = {
     "POINT": {10: "x", 20: "y", 30: "z"},
     "CIRCLE": {10: "cx", 20: "cy", 30: "cz", 39: "thick", 40: "r"},
     "ARC": {10: "cx", 20: "cy", 30: "cz", 39: "thick", 40: "r", 50: "start", 51: "end"},
+    "ELLIPSE": {10: "cx", 20: "cy", 30: "cz", 11: "mx", 21: "my", 31: "mz", 40: "ratio", 41: "start", 42: "end", 210: "nx", 220: "ny", 230: "nz"},
     "LINE": {10: "x1", 20: "y1", 30: "z1", 11: "x2", 21: "y2", 31: "z2"},
     "INSERT": {10: "x", 20: "y", 30: "z", 41: "sx", 42: "sy", 43: "sz", 50: "rot", 44: "col_sp", 45: "row_sp"},
 }
@@ -255,6 +256,49 @@ def _discretize_arc(cx: float, cy: float, cz: float, r: float, start_deg: float,
     return pts, full
 
 
+def _discretize_ellipse(ent: dict[str, Any]) -> tuple[list[tuple[float, float, float]], bool]:
+    cx, cy, cz = ent["cx"], ent["cy"], ent["cz"]
+    mx, my, mz = ent["mx"], ent["my"], ent["mz"]
+    ratio, start_rad, end_rad = ent["ratio"], ent["start"], ent["end"]
+    nx, ny, nz = ent["nx"], ent["ny"], ent["nz"]
+    a = math.sqrt(mx * mx + my * my + mz * mz)
+    if a <= 1e-9 or ratio <= 1e-9:
+        return [], False
+    n_len = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if n_len <= 1e-9:
+        nx, ny, nz = 0.0, 0.0, 1.0
+    else:
+        nx, ny, nz = nx / n_len, ny / n_len, nz / n_len
+    ux, uy, uz = mx / a, my / a, mz / a
+    vx, vy, vz = ny * uz - nz * uy, nz * ux - nx * uz, nx * uy - ny * ux
+    v_len = math.sqrt(vx * vx + vy * vy + vz * vz)
+    if v_len <= 1e-9:
+        return [], False
+    b = a * ratio
+    bx, by, bz = b * vx / v_len, b * vy / v_len, b * vz / v_len
+    tau = 2.0 * math.pi
+    raw_diff = end_rad - start_rad
+    if abs(raw_diff) >= tau - 1e-4:
+        full, sweep = True, tau
+    else:
+        sweep = raw_diff % tau
+        if sweep <= 1e-6:
+            return [], False
+        full = sweep >= tau - 1e-4
+        if full:
+            sweep = tau
+    n_seg = max(8, min(64, int(math.ceil(sweep / math.radians(10.0)))))
+    pts = [
+        (
+            cx + math.cos(t) * mx + math.sin(t) * bx,
+            cy + math.cos(t) * my + math.sin(t) * by,
+            cz + math.cos(t) * mz + math.sin(t) * bz,
+        )
+        for t in (start_rad + sweep * j / n_seg for j in range(n_seg if full else n_seg + 1))
+    ]
+    return pts, full
+
+
 def _de_boor(u: float, knots: list[float], ctrl: list[tuple[float, float, float]], weights: list[float], p: int) -> tuple[float, float, float]:
     n = len(ctrl)
     u_min, u_max = knots[p], knots[n]
@@ -413,6 +457,10 @@ def _new_entity(et: str) -> dict[str, Any] | None:
         return {"type": "CIRCLE", "layer": "0", "cx": 0.0, "cy": 0.0, "cz": 0.0, "r": 0.0, "thick": 0.0}
     if et == "ARC":
         return {"type": "ARC", "layer": "0", "cx": 0.0, "cy": 0.0, "cz": 0.0, "r": 0.0, "start": 0.0, "end": 360.0, "thick": 0.0}
+    if et == "ELLIPSE":
+        return {"type": "ELLIPSE", "layer": "0", "cx": 0.0, "cy": 0.0, "cz": 0.0,
+                "mx": 0.0, "my": 0.0, "mz": 0.0, "ratio": 1.0, "start": 0.0, "end": 2.0 * math.pi,
+                "nx": 0.0, "ny": 0.0, "nz": 1.0}
     if et == "LINE":
         return {"type": "LINE", "layer": "0", "x1": 0.0, "y1": 0.0, "z1": 0.0, "x2": 0.0, "y2": 0.0, "z2": 0.0}
     if et == "SPLINE":
@@ -495,7 +543,10 @@ def _apply_entity_code(entity: dict[str, Any], active_poly: dict[str, Any] | Non
         if code == 2:
             entity["name"] = val
         elif code in (70, 71):
-            entity["cols" if code == 70 else "rows"] = max(1, int(val))
+            cnt = int(val)
+            if cnt < 0:
+                raise ValueError("DXF INSERT rows/cols cannot be negative")
+            entity["cols" if code == 70 else "rows"] = max(1, cnt)
 
 
 def _read_dxf_document(pairs: list[tuple[int, str]]) -> tuple[int, dict[str, dict[str, Any]], list[dict[str, Any]]]:
@@ -589,16 +640,23 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
     """Expand top-level entities and nested BLOCK/INSERT references into concrete entities."""
     expanded: list[dict[str, Any]] = []
     entity_counts: dict[str, int] = {}
+    work_steps = [0]
 
     def _walk(items: list[dict[str, Any]], mat: tuple[tuple[float, float, float, float], ...], parent_layer: str, depth: int, active: set[str]) -> None:
         for ent in items:
-            if len(expanded) >= MAX_DXF_ENTITIES:
-                return
+            work_steps[0] += 1
+            if work_steps[0] > MAX_DXF_ENTITIES:
+                raise ValueError(f"DXF entity/INSERT expansion exceeded maximum budget ({MAX_DXF_ENTITIES})")
             t = ent["type"]
             raw_layer = ent.get("layer", "0")
             layer = parent_layer if (raw_layer == "0" and parent_layer != "0") else raw_layer
             if t == "INSERT":
                 entity_counts["INSERT"] = entity_counts.get("INSERT", 0) + 1
+                rows, cols = int(ent.get("rows", 1)), int(ent.get("cols", 1))
+                if rows < 1 or cols < 1:
+                    raise ValueError("DXF INSERT rows and cols must be >= 1")
+                if rows * cols > MAX_DXF_ENTITIES or work_steps[0] + rows * cols > MAX_DXF_ENTITIES:
+                    raise ValueError(f"DXF INSERT array ({rows}x{cols}) exceeds maximum expansion budget ({MAX_DXF_ENTITIES})")
                 bkey = ent["name"].casefold()
                 blk = blocks.get(bkey)
                 if blk is None or depth >= MAX_DXF_INSERT_DEPTH or bkey in active:
@@ -607,10 +665,11 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
                 c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
                 active.add(bkey)
                 try:
-                    for ir in range(ent["rows"]):
-                        for ic in range(ent["cols"]):
-                            if len(expanded) >= MAX_DXF_ENTITIES:
-                                return
+                    for ir in range(rows):
+                        for ic in range(cols):
+                            work_steps[0] += 1
+                            if work_steps[0] > MAX_DXF_ENTITIES:
+                                raise ValueError(f"DXF entity/INSERT expansion exceeded maximum budget ({MAX_DXF_ENTITIES})")
                             dx, dy = ic * ent["col_sp"] * c - ir * ent["row_sp"] * s, ic * ent["col_sp"] * s + ir * ent["row_sp"] * c
                             m_ins = _insert_matrix(tuple(blk["base"]), (ent["x"] + dx, ent["y"] + dy, ent["z"]), (ent["sx"], ent["sy"], ent["sz"]), rot)
                             _walk(blk["entities"], _mat_mul(mat, m_ins), layer, depth + 1, active)
@@ -638,6 +697,9 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
             elif t == "ARC":
                 local, full = _discretize_arc(ent["cx"], ent["cy"], ent["cz"], ent["r"], ent["start"], ent["end"])
                 expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": ent["thick"] * z_scale, "pts": [_apply_mat(mat, p) for p in local]})
+            elif t == "ELLIPSE":
+                local, full = _discretize_ellipse(ent)
+                expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": 0.0, "pts": [_apply_mat(mat, p) for p in local]})
             elif t == "LINE":
                 expanded.append({"type": "CURVE", "layer": layer, "closed": False, "thick": 0.0,
                                  "pts": [_apply_mat(mat, (ent["x1"], ent["y1"], ent["z1"])), _apply_mat(mat, (ent["x2"], ent["y2"], ent["z2"]))]})
@@ -777,10 +839,18 @@ def parse_ascii_dxf(
     excl_candidates: list[tuple[float, list[list[float]]]] = []
     for raw_ex in exclusion_polys:
         simp_ex, _ = _simplify_closed_polygon(raw_ex, 64)
-        if len(simp_ex) >= 3 and (area := polygon_area(simp_ex)) > 1e-3:
-            excl_candidates.append((area, [[round(x, 4), round(y, 4)] for x, y in simp_ex]))
+        rounded_ex = [[round(x, 4), round(y, 4)] for x, y in simp_ex]
+        if len(rounded_ex) >= 3 and (area := polygon_area([(p[0], p[1]) for p in rounded_ex])) > 1e-3:
+            excl_candidates.append((area, rounded_ex))
+    if len(excl_candidates) > MAX_EXCLUSION_ZONES:
+        raise ValueError(
+            f"DXF {dxf_name!r} defines {len(excl_candidates)} exclusion zones, exceeding the maximum of {MAX_EXCLUSION_ZONES}; "
+            "merge/simplify keepouts or narrow dxf_layers.exclusions"
+        )
     excl_candidates.sort(key=lambda item: item[0], reverse=True)
-    exclusion_zones = [poly for _, poly in excl_candidates[:MAX_EXCLUSION_ZONES]]
+    exclusion_zones = [poly for _, poly in excl_candidates]
+    if exclusion_zones:
+        validate_exclusion_zones(exclusion_zones)
 
     candidates = boundary_polys or fallback_polys
     if not candidates:
