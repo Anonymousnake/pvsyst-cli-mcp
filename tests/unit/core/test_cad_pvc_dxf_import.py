@@ -223,9 +223,9 @@ class CadPvcDxfImportTests(unittest.TestCase):
         pyproj = (root / "pyproject.toml").read_text(encoding="utf-8")
         m = re.search(r'^version\s*=\s*"([^"]+)"', pyproj, re.MULTILINE)
         self.assertIsNotNone(m)
-        self.assertEqual(m.group(1), "0.10.0")
+        self.assertEqual(m.group(1), "0.11.0")
         guide = (root / "docs" / "workflows-guide.md").read_text(encoding="utf-8")
-        self.assertIn("pvsyst_cli_mcp-0.10.0-py3-none-any.whl", guide)
+        self.assertIn("pvsyst_cli_mcp-0.11.0-py3-none-any.whl", guide)
         all_tools = {name for grp in TOOL_GROUPS.values() for name in grp}
         default_tools = all_tools - set(TOOL_GROUPS["Admin & Diagnostics"]) - set(TOOL_GROUPS["Expert & Low-Level"])
         self.assertEqual(len(default_tools), 48)

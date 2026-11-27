@@ -9,8 +9,7 @@ from pvsyst_auto.components.store import FIELD
 from pvsyst_auto.project.bifacial import render_bifacial_block
 from pvsyst_auto.project.circuit import MAX_COUNT, inventory as grid_inventory
 from pvsyst_auto.project.paths import safe_filename, workspace_file
-from pvsyst_auto.validation import finite_number as _finite
-from pvsyst_auto.validation import SYNTH_VERSION
+from pvsyst_auto.validation import SYNTH_VERSION, clean_line_text as _clean_text, finite_number as _finite, pos_int as _pos_int
 from pvsyst_auto.weather.preparation import read_object_prefix
 
 DEFAULT_PAN_NAME, DEFAULT_OND_NAME = "Generic_Mono_300W.PAN", "Generic_7.5kW.OND"
@@ -40,24 +39,12 @@ _DEFAULT_SHADING_LINES = (
 )
 
 
-def _pos_int(value, context: str) -> int:
-    if type(value) is not int or not 1 <= value <= MAX_COUNT:
-        raise ValueError(f"{context} must be a positive 32-bit integer")
-    return value
-
-
 def _fmt_angle(value: float, max_decimals: int = 3) -> str:
     """Format an angle preserving up to 3 decimal places while keeping exact 0.1-step values compact."""
     number = 0.0 if abs(value) < 1e-9 else round(float(value), max_decimals)
     number = 0.0 if abs(number) < 1e-9 else number
     text = f"{number:.{max_decimals}f}".rstrip("0")
     return text + "0" if text.endswith(".") else text
-
-
-def _clean_text(value: str, label: str) -> str:
-    if not isinstance(value, str) or not value.strip() or any(ch in value for ch in ("\r", "\n", "\x00")):
-        raise ValueError(f"{label} must be single-line non-empty text")
-    return value.strip()
 
 
 def _normalize_azimuth(degrees: float) -> float:

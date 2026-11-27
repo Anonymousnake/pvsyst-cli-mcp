@@ -161,7 +161,7 @@
   ```sh
   python -m pip install build
   python -m build
-  python -m pip install dist/pvsyst_cli_mcp-0.10.0-py3-none-any.whl
+  python -m pip install dist/pvsyst_cli_mcp-0.11.0-py3-none-any.whl
   python scripts/ci_checks.py --report dist/ci-report.json
   python scripts/run_tests.py --suite workflows -v
   ```
