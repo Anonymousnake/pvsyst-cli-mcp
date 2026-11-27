@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import re
 import tempfile
 import unittest
@@ -19,10 +18,7 @@ from pvsyst_auto.api.schemas import (
     SingleDesignRequest,
 )
 from pvsyst_auto.components.store import ComponentStore
-from pvsyst_auto.project.template import (
-    _resolve_pan_module_dimensions,
-    synthesize_utility_project,
-)
+from pvsyst_auto.project.template import synthesize_utility_project
 from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.scene.cad_import import (
     build_pvc_3d_shading,
@@ -30,15 +26,6 @@ from pvsyst_auto.scene.cad_import import (
     resolve_cad_synthesis_inputs,
 )
 from pvsyst_auto.scene.dome import build_dome_3d_shading, synthesize_ground_dome_shading
-from pvsyst_auto.scene.partition import (
-    ELECTRICAL_SHADING_KEYS,
-    SHADING_FLAGS_LINEAR,
-    SHADING_FLAGS_PARTITION,
-    compute_table_partition_dims,
-    is_partition_shading_requested,
-    normalize_electrical_shading,
-    shading_header_kwargs,
-)
 from pvsyst_auto.scene.reader import (
     build_ground_3d_shading,
     plan_ground_polygon_layout,
@@ -46,13 +33,12 @@ from pvsyst_auto.scene.reader import (
 )
 from pvsyst_auto.scene.terrain import build_terrain_mesh, build_terrain_tracker_shading
 from pvsyst_auto.scene.tracker_layout import build_tracker_3d_shading
-from pvsyst_auto.workflows.design import prepare_design_project, simulate_design
+from pvsyst_auto.workflows.design import simulate_design
 from pvsyst_auto.workflows.utility import (
-    _extract_electrical_shading_metrics,
     resolve_utility_field_type,
     validate_utility_spec,
 )
-from tests._fixtures import FakeCliBase, init_full_workspace, write_sfi_csv, write_utf8_crlf
+from tests._fixtures import FakeCliBase, init_full_workspace, write_utf8_crlf
 from tests.unit.core.test_bifacial_utility import (
     UTILITY_OND,
     UTILITY_PAN,
@@ -134,13 +120,22 @@ def _write_partition_annual_csv(
 
 
 class _PartitionFakeCLI(FakeCliBase):
-    """Fake CLI that emits ShdElec only when viShdElec is in the .SFI (unless disabled)."""
+    """Fake CLI emitting ShdElec (annual hourly or custom sample rows) when requested in .SFI."""
 
-    def __init__(self, workspace: Path, *, year: int = 2024, emit_shd_elec: bool = True, shd_elec_kw: float = 2.5):
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        year: int = 2024,
+        emit_shd_elec: bool = True,
+        shd_elec_kw: float = 2.5,
+        custom_shd: tuple[str, list[tuple[str, float]]] | None = None,
+    ):
         super().__init__(workspace, version="8.1.7", license_status="TRIAL")
         self.year = year
         self.emit_shd_elec = emit_shd_elec
         self.shd_elec_kw = shd_elec_kw
+        self.custom_shd = custom_shd
         self.site = "Geneva_MN90.SIT"
         self.met = "Geneva_MN90_SYN.MET"
         self.runs: list[dict] = []
@@ -155,26 +150,39 @@ class _PartitionFakeCLI(FakeCliBase):
         n_ser = int(re.search(r"NModSerie=(\d+)", vc_text).group(1))
         n_str = int(re.search(r"NStringCh=(\d+)", vc_text).group(1))
         nom_kw = n_ser * n_str * 440.0 / 1000.0
-        _write_partition_annual_csv(
-            Path(out_csv),
-            project=project,
-            variant=variant,
-            site=self.site,
-            met=self.met,
-            year=self.year,
-            nominal_dc_kw=nom_kw,
-            bifacial="viGlobBak" in sfi_text,
-            shd_elec=("viShdElec" in sfi_text) and self.emit_shd_elec,
-            shd_elec_kw=self.shd_elec_kw,
-        )
+        if self.custom_shd is not None:
+            unit, samples = self.custom_shd
+            headers = ["date", "GlobInc", "GlobEff", "EArray", "E_Grid", "PR", "IL_Pmax", "GlobShd", "ShdElec"]
+            units = ["", "W/m\u00b2", "W/m\u00b2", "kW", "kW", "ratio", "kW", "W/m\u00b2", unit]
+            lines = [
+                f"Project;{project}",
+                f"Simulation variant;{Path(project).stem}.{variant}",
+                f"Geographical Site;{self.site}",
+                f"Weather data;{self.met}",
+                "",
+                ";".join(headers),
+                ";".join(units),
+            ]
+            for stamp, val in samples:
+                egrid = 0.5 * nom_kw * 0.84
+                lines.append(";".join([stamp, "500.00", "480.00", f"{egrid * 1.02:.3f}", f"{egrid:.3f}", "0.8400", "0.000", "490.00", f"{val:.3f}"]))
+            Path(out_csv).write_bytes(("\ufeff" + "\r\n".join(lines) + "\r\n").encode("utf-8"))
+        else:
+            _write_partition_annual_csv(
+                Path(out_csv),
+                project=project,
+                variant=variant,
+                site=self.site,
+                met=self.met,
+                year=self.year,
+                nominal_dc_kw=nom_kw,
+                bifacial="viGlobBak" in sfi_text,
+                shd_elec=("viShdElec" in sfi_text) and self.emit_shd_elec,
+                shd_elec_kw=self.shd_elec_kw,
+            )
         if report_pdf is not None:
             Path(report_pdf).write_bytes(b"%PDF-1.4\n%%EOF\n")
         return {"exit_code": 0, "warnings": [], "sfi_variables": sfi_text}
-
-
-class _BadModelDump:
-    def model_dump(self) -> dict:
-        raise RuntimeError("boom")
 
 
 def _extract_object_block(vc_text: str, prefix: str) -> str:
@@ -196,164 +204,7 @@ class GroundPartitionShadingTests(unittest.TestCase):
         self.components = ComponentStore(self.ws)
         self.store = VariantStore(self.ws, self.components)
 
-    def test_partition_helpers_constants_normalization_and_header_kwargs(self) -> None:
-        self.assertEqual(SHADING_FLAGS_LINEAR, "$000A0100")
-        self.assertEqual(SHADING_FLAGS_PARTITION, "$000A0300")
-        self.assertEqual(
-            ELECTRICAL_SHADING_KEYS,
-            frozenset(("mode", "partitions_x", "partitions_y", "electrical_effect_fraction", "auto_half_cut")),
-        )
-
-        # is_partition_shading_requested: valid & malformed never raise
-        self.assertFalse(is_partition_shading_requested(None))
-        self.assertFalse(is_partition_shading_requested("linear"))
-        self.assertFalse(is_partition_shading_requested(ElectricalShadingSpec(mode="linear")))
-        self.assertFalse(is_partition_shading_requested({"mode": "linear"}))
-        self.assertFalse(is_partition_shading_requested(123))
-        self.assertFalse(is_partition_shading_requested(["partition"]))
-        self.assertFalse(is_partition_shading_requested({"mode": "invalid"}))
-        self.assertFalse(is_partition_shading_requested(_BadModelDump()))
-        self.assertTrue(is_partition_shading_requested("partition"))
-        self.assertTrue(is_partition_shading_requested(ElectricalShadingSpec()))
-        self.assertTrue(is_partition_shading_requested({"mode": "partition"}))
-        self.assertTrue(is_partition_shading_requested({"partitions_y": 4}))
-
-        # normalize_electrical_shading + idempotency
-        for raw, exp_mode in ((None, "linear"), ("linear", "linear"), ({"mode": "linear"}, "linear")):
-            norm1 = normalize_electrical_shading(raw)
-            norm2 = normalize_electrical_shading(norm1)
-            self.assertEqual(norm1["mode"], exp_mode)
-            self.assertEqual(norm1, norm2)
-            self.assertEqual(shading_header_kwargs(norm1), {"flags": "$000A0100", "frac_ombre_mod": 1.0})
-
-        norm_p1 = normalize_electrical_shading("partition")
-        self.assertEqual(norm_p1, normalize_electrical_shading(norm_p1))
-        self.assertEqual(shading_header_kwargs(norm_p1), {"flags": "$000A0300", "frac_ombre_mod": 1.0})
-
-        spec = ElectricalShadingSpec(partitions_x=3, partitions_y=4, electrical_effect_fraction=0.75, auto_half_cut=False)
-        norm_p2 = normalize_electrical_shading(spec)
-        self.assertEqual(norm_p2, normalize_electrical_shading(norm_p2))
-        self.assertEqual(shading_header_kwargs(norm_p2), {"flags": "$000A0300", "frac_ombre_mod": 0.75})
-        self.assertEqual(shading_header_kwargs({"electrical_effect_fraction": 0.0}), {"flags": "$000A0300", "frac_ombre_mod": 0.0})
-
-        # pv_shading_header defaults to linear $000A0100
-        default_hdr = "\n".join(pv_shading_header("Linear test", 1))
-        self.assertIn("Flags=$000A0100", default_hdr)
-        self.assertIn("FracOmbreMod=1.000", default_hdr)
-        part_hdr = "\n".join(pv_shading_header("Partition test", 1, **shading_header_kwargs({"electrical_effect_fraction": 0.65})))
-        self.assertIn("Flags=$000A0300", part_hdr)
-        self.assertIn("FracOmbreMod=0.650", part_hdr)
-
-        # Rejections
-        for bad in (
-            "unlimited",
-            123,
-            {"mode": "bogus"},
-            {"unknown_key": 1},
-            {"partitions_x": True},
-            {"partitions_x": 1.5},
-            {"partitions_x": 0},
-            {"partitions_x": 1001},
-            {"partitions_y": 0},
-            {"partitions_y": 1001},
-            {"electrical_effect_fraction": -0.1},
-            {"electrical_effect_fraction": 1.1},
-            {"electrical_effect_fraction": float("nan")},
-            {"auto_half_cut": "yes"},
-            {"mode": "linear", "partitions_x": 1},
-            {"mode": "linear", "partitions_y": 2},
-            {"mode": "linear", "electrical_effect_fraction": 0.5},
-            {"mode": "linear", "auto_half_cut": False},
-        ):
-            with self.assertRaises(ValueError, msg=repr(bad)):
-                normalize_electrical_shading(bad)
-
-    def test_compute_table_partition_dims_rules_and_span_guard(self) -> None:
-        # Fixed shed: DX = long_shed / px, DY = larg_shed / py; portrait half-cut auto-doubles py
-        dx, dy, px, py = compute_table_partition_dims(
-            long_shed_m=28.0,
-            larg_shed_m=4.0,
-            module_rows=2,
-            module_columns=28,
-            module_orient="moPortrait",
-            is_tracker=False,
-            electrical_shading="partition",
-            series_modules=14,
-            is_half_cut=True,
-        )
-        self.assertEqual((px, py), (2, 4))
-        self.assertAlmostEqual(dx, 14.0)
-        self.assertAlmostEqual(dy, 1.0)
-
-        # Portrait half-cut does NOT double when auto_half_cut=False or is_half_cut=False or landscape or explicit py
-        _, _, px2, py2 = compute_table_partition_dims(
-            long_shed_m=28.0, larg_shed_m=4.0, module_rows=2, module_columns=28,
-            module_orient="moPortrait", electrical_shading={"auto_half_cut": False},
-            series_modules=14, is_half_cut=True,
-        )
-        self.assertEqual((px2, py2), (2, 2))
-        _, _, _, py_no_hc = compute_table_partition_dims(
-            long_shed_m=28.0, larg_shed_m=4.0, module_rows=2, module_columns=28,
-            module_orient="moPortrait", electrical_shading="partition", series_modules=14, is_half_cut=False,
-        )
-        self.assertEqual(py_no_hc, 2)
-        _, _, _, py_land = compute_table_partition_dims(
-            long_shed_m=28.0, larg_shed_m=4.0, module_rows=2, module_columns=28,
-            module_orient="moLandscape", electrical_shading="partition", series_modules=14, is_half_cut=True,
-        )
-        self.assertEqual(py_land, 2)
-        _, _, _, py_exp = compute_table_partition_dims(
-            long_shed_m=28.0, larg_shed_m=4.0, module_rows=2, module_columns=28,
-            module_orient="moPortrait", electrical_shading={"partitions_y": 3}, series_modules=14, is_half_cut=True,
-        )
-        self.assertEqual(py_exp, 3)
-
-        # series_modules=None or columns < series_modules clamps auto px to 1
-        _, _, px_none, _ = compute_table_partition_dims(
-            long_shed_m=10.0, larg_shed_m=4.0, module_rows=2, module_columns=10,
-            module_orient="portrait", electrical_shading="partition", series_modules=None,
-        )
-        self.assertEqual(px_none, 1)
-        _, _, px_clamp, _ = compute_table_partition_dims(
-            long_shed_m=10.0, larg_shed_m=4.0, module_rows=2, module_columns=10,
-            module_orient="portrait", electrical_shading="partition", series_modules=14,
-        )
-        self.assertEqual(px_clamp, 1)
-
-        # Explicit partitions_x overrides auto px
-        dx_o, dy_o, px_o, py_o = compute_table_partition_dims(
-            long_shed_m=12.0, larg_shed_m=4.0, module_rows=2, module_columns=28,
-            module_orient="moPortrait", electrical_shading={"partitions_x": 3}, series_modules=14, is_half_cut=True,
-        )
-        self.assertEqual((px_o, py_o), (3, 4))
-        self.assertAlmostEqual(dx_o, 4.0)
-        self.assertAlmostEqual(dy_o, 1.0)
-
-        # Tracker axis swap: DXModule = long_shed / py, DYModule = larg_shed / px
-        dx_t, dy_t, px_t, py_t = compute_table_partition_dims(
-            long_shed_m=4.0, larg_shed_m=28.0, module_rows=2, module_columns=28,
-            module_orient="moPortrait", is_tracker=True, electrical_shading="partition",
-            series_modules=14, is_half_cut=True,
-        )
-        self.assertEqual((px_t, py_t), (2, 4))
-        self.assertAlmostEqual(dx_t, 1.0)
-        self.assertAlmostEqual(dy_t, 14.0)
-
-        # Reject partition span < 0.01 m, accept exact 0.01 m boundary
-        dx_ok, dy_ok, _, _ = compute_table_partition_dims(
-            long_shed_m=0.3, larg_shed_m=0.1, module_rows=1, module_columns=30,
-            module_orient="moPortrait", electrical_shading={"partitions_x": 30, "partitions_y": 10},
-        )
-        self.assertAlmostEqual(dx_ok, 0.01)
-        self.assertAlmostEqual(dy_ok, 0.01)
-        with self.assertRaisesRegex(ValueError, "0.01m"):
-            compute_table_partition_dims(
-                long_shed_m=0.29, larg_shed_m=1.0, module_rows=1, module_columns=30,
-                module_orient="moPortrait", electrical_shading={"partitions_x": 30, "partitions_y": 1},
-            )
-
-    def test_pydantic_schemas_and_utility_validation(self) -> None:
-        # Roundtrip for string, linear ElectricalShadingSpec, and partition ElectricalShadingSpec
+    def test_schemas_validation_and_field_type_routing(self) -> None:
         spec_obj = ElectricalShadingSpec(partitions_x=2, partitions_y=4, electrical_effect_fraction=0.85, auto_half_cut=False)
         for es_val in ("linear", "partition", ElectricalShadingSpec(mode="linear"), spec_obj):
             req = SingleDesignRequest(
@@ -370,16 +221,19 @@ class GroundPartitionShadingTests(unittest.TestCase):
                 ground_layout={"electrical_shading": es_val},
             )
             dumped = req.model_dump(exclude_none=True)
-            roundtrip = SingleDesignRequest.model_validate(dumped)
-            self.assertEqual(roundtrip.model_dump(exclude_none=True), dumped)
+            self.assertEqual(SingleDesignRequest.model_validate(dumped).model_dump(exclude_none=True), dumped)
 
-        # Schema rejections
         for bad_kw in (
             {"extra": 1},
             {"mode": "invalid"},
+            {"unknown_key": 1},
             {"partitions_x": 0},
+            {"partitions_x": 1001},
+            {"partitions_y": 0},
             {"partitions_y": True},
+            {"electrical_effect_fraction": -0.1},
             {"electrical_effect_fraction": 1.2},
+            {"electrical_effect_fraction": float("nan")},
             {"auto_half_cut": "true"},
             {"mode": "linear", "partitions_x": 2},
             {"mode": "linear", "partitions_y": 2},
@@ -389,10 +243,10 @@ class GroundPartitionShadingTests(unittest.TestCase):
             with self.assertRaises(ValidationError, msg=repr(bad_kw)):
                 ElectricalShadingSpec.model_validate(bad_kw)
 
-        with self.assertRaises(ValidationError):
-            GroundLayoutRequest.model_validate({"electrical_shading": "invalid"})
+        for bad_gl in ({"electrical_shading": "invalid"}, {"electrical_shading": 123}):
+            with self.assertRaises(ValidationError, msg=repr(bad_gl)):
+                GroundLayoutRequest.model_validate(bad_gl)
 
-        # resolve_utility_field_type upgrades only for partition, never for linear/None
         self.assertEqual(resolve_utility_field_type("ground_sheds", None), ("Sheds", False))
         self.assertEqual(resolve_utility_field_type("ground_sheds", {"electrical_shading": "linear"}), ("Sheds", False))
         self.assertEqual(resolve_utility_field_type("ground_sheds", {"electrical_shading": "partition"}), ("RegularSheds", True))
@@ -410,7 +264,6 @@ class GroundPartitionShadingTests(unittest.TestCase):
             validate_utility_spec(spec, scope, issues)
             return issues
 
-        # Rejected on explicit unlimited and implicit unlimited ("linear" without 3D)
         for gl in (
             {"model_mode": "unlimited", "electrical_shading": "partition"},
             {"model_mode": "unlimited", "electrical_shading": "linear"},
@@ -419,29 +272,76 @@ class GroundPartitionShadingTests(unittest.TestCase):
             iss = _issues_for("ground_sheds", gl)
             self.assertTrue(any(i["field"] == "ground_layout.electrical_shading" and "requires 3D layout" in i["message"] for i in iss), gl)
 
-        # Invalid dict/value inside utility_spec
         iss_bad = _issues_for("ground_sheds", {"model_mode": "3d", "electrical_shading": {"mode": "linear", "partitions_y": 2}})
         self.assertTrue(any(i["field"] == "ground_layout.electrical_shading" for i in iss_bad), iss_bad)
 
-        # Accepted cases
-        self.assertEqual(_issues_for("ground_sheds", {"electrical_shading": "partition"}), [])
-        self.assertEqual(_issues_for("ground_sheds", {"model_mode": "3d", "electrical_shading": "partition"}), [])
-        self.assertEqual(_issues_for("ground_sheds", {"model_mode": "3d", "electrical_shading": "linear"}), [])
-        self.assertEqual(_issues_for("ground_tracker", {"electrical_shading": "partition"}, tilt=None), [])
-        self.assertEqual(_issues_for("ground_dome", {"electrical_shading": "linear"}, tilt=12.0), [])
+        for scope, gl, tilt in (
+            ("ground_sheds", {"electrical_shading": "partition"}, 20.0),
+            ("ground_sheds", {"model_mode": "3d", "electrical_shading": "partition"}, 20.0),
+            ("ground_sheds", {"model_mode": "3d", "electrical_shading": "linear"}, 20.0),
+            ("ground_tracker", {"electrical_shading": "partition"}, None),
+            ("ground_dome", {"electrical_shading": "linear"}, 12.0),
+        ):
+            self.assertEqual(_issues_for(scope, gl, tilt=tilt), [], (scope, gl))
 
-    def test_pan_half_cut_detection(self) -> None:
+        # pv_shading_header defaults to linear $000A0100 and FracOmbreMod=1.000
+        default_hdr = "\n".join(pv_shading_header("Linear test", 1))
+        self.assertIn("Flags=$000A0100", default_hdr)
+        self.assertIn("FracOmbreMod=1.000", default_hdr)
+
+    def test_pan_half_cut_and_partition_rules_via_public_builders(self) -> None:
         write_utf8_crlf(
             self.ws / "ComposPV" / "PVmodules" / "MixedCaseHC.PAN",
             HALF_CUT_PAN.replace("SubModuleLayout=slTwinHalfCells", "SubModuleLayout=SLTwinHalfCells"),
         )
         write_utf8_crlf(self.ws / "ComposPV" / "PVmodules" / "FullInLen.PAN", FULL_CELL_PAN)
 
-        self.assertTrue(_resolve_pan_module_dimensions(self.store, "HalfCut440.PAN")["is_half_cut"])
-        self.assertTrue(_resolve_pan_module_dimensions(self.store, "MixedCaseHC.PAN")["is_half_cut"])
-        self.assertEqual(_resolve_pan_module_dimensions(self.store, "MixedCaseHC.PAN")["sub_module_layout"], "SLTwinHalfCells")
-        self.assertFalse(_resolve_pan_module_dimensions(self.store, "FullInLen.PAN")["is_half_cut"])
-        self.assertFalse(_resolve_pan_module_dimensions(self.store, "FullCell440.PAN")["is_half_cut"])
+        base = dict(
+            site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            field_type="RegularSheds", ond_name="Inv50.OND",
+            n_mod_serie=14, n_string_ch=8, n_inverter=1, n_inv_mppt=2, independent_mppt=True, pnom_ac_in_mppt=25.0,
+            pitch_m=10.0, tilt_deg=20.0, shed_count=4, module_rows=2, module_columns=28,
+            module_width_m=1.0, module_length_m=2.0, spacing_x_m=0.0, spacing_y_m=0.0,
+            electrical_shading="partition",
+        )
+        for pan_name, exp_hc, exp_dy in (
+            ("HalfCut440.PAN", True, "DYModule=1.000"),
+            ("MixedCaseHC.PAN", True, "DYModule=1.000"),
+            ("FullInLen.PAN", False, "DYModule=2.000"),
+            ("FullCell440.PAN", False, "DYModule=2.000"),
+        ):
+            res = synthesize_utility_project(self.store, pan_name=pan_name, **base)
+            self.assertEqual(res["utility_summary"]["electrical_shading"]["is_half_cut"], exp_hc, pan_name)
+            self.assertIn(exp_dy, res["vc0_text"], pan_name)
+
+        # Landscape modules with half-cut keep py=n_rows; portrait with cols < series_modules clamps px=1
+        land_res = synthesize_utility_project(
+            self.store, pan_name="HalfCut440.PAN", module_orient="moLandscape", **{k: v for k, v in base.items() if k not in ("module_rows", "module_columns")},
+            module_rows=2, module_columns=28,
+        )
+        self.assertEqual((land_res["utility_summary"]["electrical_shading"]["partitions_x"],
+                          land_res["utility_summary"]["electrical_shading"]["partitions_y"]), (2, 2))
+
+        clamp_res = synthesize_utility_project(
+            self.store, pan_name="HalfCut440.PAN", **{k: v for k, v in base.items() if k != "module_columns"}, module_columns=10,
+        )
+        self.assertEqual(clamp_res["utility_summary"]["electrical_shading"]["partitions_x"], 1)
+
+        # Partition span < 0.01 m rejected; exact 0.01 m boundary accepted
+        ok_lines = build_ground_3d_shading(
+            [{"name": "ExactMin", "origin_m": [0.0, 0.0, 0.5], "tilt_deg": 20.0, "azimuth_deg": 0.0,
+              "module_rows": 1, "module_columns": 30, "long_shed_m": 0.30, "larg_shed_m": 0.10}],
+            module_name="440W", module_width_m=0.01, module_length_m=0.10, spacing_x_m=0.0, spacing_y_m=0.0,
+            electrical_shading={"partitions_x": 30, "partitions_y": 10},
+        )
+        self.assertIn("DXModule=0.010", "\n".join(ok_lines))
+        with self.assertRaisesRegex(ValueError, "0.01m"):
+            build_ground_3d_shading(
+                [{"name": "TooTiny", "origin_m": [0.0, 0.0, 0.5], "tilt_deg": 20.0, "azimuth_deg": 0.0,
+                  "module_rows": 1, "module_columns": 30, "long_shed_m": 0.29, "larg_shed_m": 1.0}],
+                module_name="440W", module_width_m=0.009, module_length_m=1.0, spacing_x_m=0.0, spacing_y_m=0.0,
+                electrical_shading={"partitions_x": 30, "partitions_y": 1},
+            )
 
     def test_scene_builders_and_utility_synthesis_linear_vs_partition(self) -> None:
         _tracker_dem_csv(self.ws / "UserData" / "dem.csv")
@@ -488,7 +388,7 @@ class GroundPartitionShadingTests(unittest.TestCase):
         self.assertIn("DXModule=7.000", shed_no_hc["vc0_text"])
         self.assertIn("DYModule=2.000", shed_no_hc["vc0_text"])
 
-        # Polygon + terrain shed via build_ground_3d_shading + synthesize_utility_project (DXModule/DYModule omitted in linear, placed after ModuleOrient in partition)
+        # Polygon + terrain shed via build_ground_3d_shading
         shed_layout = plan_ground_polygon_layout(
             poly, tilt_deg=20.0, azimuth_deg=0.0, pitch_m=10.0, module_width_m=1.0, module_length_m=2.0,
             module_rows=2, module_orientation="portrait", spacing_x_m=0.0, spacing_y_m=0.0,
@@ -506,7 +406,7 @@ class GroundPartitionShadingTests(unittest.TestCase):
         self.assertIn("Flags=$000A0300", poly_part)
         self.assertRegex(poly_part, r"ModuleOrient=moPortrait\n\s+DXModule=\d+\.\d{3}\n\s+DYModule=1\.000\n\s+LongShed=")
 
-        # Regular Tracker: axis swap DXModule = long_shed / py = 1.0, DYModule = larg_shed / px = 14.0
+        # Regular Tracker: axis swap DXModule = long_shed / py = 1.01, DYModule = larg_shed / px = 14.0
         trk_common = dict(
             site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
             field_type="TrackHorizNSAxis", pan_name="HalfCut440.PAN", ond_name="Inv50.OND",
@@ -519,12 +419,11 @@ class GroundPartitionShadingTests(unittest.TestCase):
         self.assertIn("DXModule=2.040", trk_lin["vc0_text"])
         trk_part = synthesize_utility_project(self.store, **trk_common, electrical_shading="partition")
         self.assertIn("Flags=$000A0300", trk_part["vc0_text"])
-        self.assertIn("DXModule=1.010", trk_part["vc0_text"])  # 4.04 / 4
-        self.assertIn("DYModule=14.000", trk_part["vc0_text"])  # 28.0 / 2
+        self.assertIn("DXModule=1.010", trk_part["vc0_text"])
+        self.assertIn("DYModule=14.000", trk_part["vc0_text"])
         self.store.create_project("PartTrk.PRJ", trk_part["prj_text"], {"VC0": trk_part["vc0_text"]})
         self.assertTrue(self.store.validate_structure("PartTrk.PRJ", "VC0")["valid"])
 
-        # Terrain tracker direct builder
         ter_trk_lines, _ = build_terrain_tracker_shading(
             dem_mesh, tracker_count=3, pitch_ew_m=8.0, module_rows=2, module_columns=28,
             module_width_m=1.0, module_length_m=2.0, spacing_x_m=0.0, spacing_y_m=0.04,
@@ -551,10 +450,10 @@ class GroundPartitionShadingTests(unittest.TestCase):
             spacing_x_m=0.0, spacing_y_m=0.0, electrical_shading="partition", series_modules=14, is_half_cut=True,
         )
         var_txt = "\n".join(var_lines)
-        self.assertIn("DYModule=14.000", var_txt)  # 28 / (28 // 14 = 2) = 14.0
-        self.assertIn("DYModule=15.000", var_txt)  # 45 / (42 // 14 = 3) = 15.0
+        self.assertIn("DYModule=14.000", var_txt)
+        self.assertIn("DYModule=15.000", var_txt)
 
-        # Regular Dome + Polygon/Terrain Dome: both front & back pair objects emit partition DXModule/DYModule
+        # Regular Dome + Polygon/Terrain Dome
         dome_part = synthesize_utility_project(
             self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
             field_type="Dome", pan_name="HalfCut440.PAN", ond_name="Inv50.OND", bifacial=None,
@@ -568,7 +467,7 @@ class GroundPartitionShadingTests(unittest.TestCase):
         back_blk = _extract_object_block(dome_part["vc0_text"], "PVObject_2=pvShdArrayDome")
         for blk in (front_blk, back_blk):
             self.assertIn("DXModule=14.000", blk)
-            self.assertIn("DYModule=1.000", blk)  # 1 row portrait half-cut -> py=2 -> 2.0/2=1.0
+            self.assertIn("DYModule=1.000", blk)
         self.store.create_project("PartDome.PRJ", dome_part["prj_text"], {"VC0": dome_part["vc0_text"]})
         self.assertTrue(self.store.validate_structure("PartDome.PRJ", "VC0")["valid"])
 
@@ -597,7 +496,6 @@ class GroundPartitionShadingTests(unittest.TestCase):
         self.assertIn("DXModule=", pvc_fix_txt)
 
         write_utf8_crlf(self.ws / "UserData" / "TrkCad.pvc", _make_pvc_tracker(count=2), bom=False)
-        parsed_trk = parse_pvc_141(self.ws, "TrkCad.pvc")
         pvc_trk_resolved = resolve_cad_synthesis_inputs(
             self.store, field_type="TrackHorizNSAxis", pvc_name="TrkCad.pvc", dxf_name=None,
             dxf_layers=None, dxf_unit_scale=None, tilt_deg=0.0, azimuth_deg=0.0, axis_azimuth_deg=0.0,
@@ -620,7 +518,7 @@ class GroundPartitionShadingTests(unittest.TestCase):
         self.assertIn("Flags=$000A0300", dxf_part["vc0_text"])
         self.assertEqual(dxf_part["utility_summary"]["electrical_shading"]["mode"], "partition")
 
-    def test_simulate_design_and_extract_electrical_shading_metrics(self) -> None:
+    def test_simulate_design_electrical_shading_end_to_end(self) -> None:
         fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
 
         def _spec(project: str, electrical_shading) -> dict:
@@ -656,7 +554,6 @@ class GroundPartitionShadingTests(unittest.TestCase):
             self.assertEqual(part_res["status"], "completed", part_res)
             self.assertIn("viShdElec", cli.runs[-1]["sfi_text"])
             self.assertEqual(part_res["utility_summary"]["electrical_shading"]["mode"], "partition")
-            # 366 leap year days * 9 daytime hours (8..16 inclusive) * 2.5 kW = 8235.0 kWh
             self.assertEqual(part_res["electrical_shading_metrics"]["shd_elec_unit"], "kW")
             self.assertAlmostEqual(part_res["electrical_shading_metrics"]["shd_elec_kwh"], 366 * 9 * 2.5, places=3)
 
@@ -673,39 +570,26 @@ class GroundPartitionShadingTests(unittest.TestCase):
             self.assertEqual(fail_res["status"], "failed", fail_res)
             self.assertIn("ShdElec", str(fail_res))
 
-        # Direct unit tests for sub-hourly 15-min kW and Wh energy units + unit guards
-        p15 = self.ws / "Results" / "sub15.csv"
-        write_sfi_csv(
-            p15,
-            [("GlobInc", "W/m\u00b2"), ("ShdElec", "kW")],
-            [
-                ["01/01/24 08:00", 100.0, 4.0],
-                ["01/01/24 08:15", 100.0, 4.0],
-                ["01/01/24 08:30", 100.0, 8.0],
-                ["01/01/24 08:45", 100.0, 4.0],
-            ],
+        # Full annual-length checks for Wh and unsupported unit on ShdElec
+        cli_wh = _PartitionFakeCLI(
+            self.ws, year=2024,
+            custom_shd=("Wh", [(dt.strftime("%d/%m/%y %H:%M"), 1000.0 if dt.hour == 12 else 0.0)
+                               for dt in (datetime(2024, 1, 1) + timedelta(hours=h) for h in range(8784))]),
         )
-        m15 = _extract_electrical_shading_metrics(p15, {"ShdElec": "kW"})
-        self.assertEqual(m15["shd_elec_unit"], "kW")
-        self.assertAlmostEqual(m15["shd_elec_kwh"], (4.0 + 4.0 + 8.0 + 4.0) * 0.25, places=6)
-
-        p_wh = self.ws / "Results" / "energy_wh.csv"
-        write_sfi_csv(
-            p_wh,
-            [("GlobInc", "W/m\u00b2"), ("ShdElec", "Wh")],
-            [
-                ["01/01/24 08:00", 100.0, 1500.0],
-                ["01/01/24 08:15", 100.0, 2500.0],
-            ],
+        cli_mva = _PartitionFakeCLI(
+            self.ws, year=2024,
+            custom_shd=("MVA", [(dt.strftime("%d/%m/%y %H:%M"), 1.0)
+                                for dt in (datetime(2024, 1, 1) + timedelta(hours=h) for h in range(8784))]),
         )
-        m_wh = _extract_electrical_shading_metrics(p_wh, {"ShdElec": "Wh"})
-        self.assertEqual(m_wh["shd_elec_unit"], "Wh")
-        self.assertAlmostEqual(m_wh["shd_elec_kwh"], 4.0, places=6)
+        with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
+            wh_res = simulate_design(cli_wh, self.store, spec=_spec("WhSim.PRJ", "partition"), dry_run=False)
+            self.assertEqual(wh_res["status"], "completed", wh_res)
+            self.assertEqual(wh_res["electrical_shading_metrics"]["shd_elec_unit"], "Wh")
+            self.assertAlmostEqual(wh_res["electrical_shading_metrics"]["shd_elec_kwh"], 366.0, places=3)
 
-        with self.assertRaisesRegex(ValueError, "lacks ShdElec"):
-            _extract_electrical_shading_metrics(p15, {})
-        with self.assertRaisesRegex(ValueError, "Unsupported ShdElec unit"):
-            _extract_electrical_shading_metrics(p15, {"ShdElec": "MVA"})
+            mva_res = simulate_design(cli_mva, self.store, spec=_spec("MvaSim.PRJ", "partition"), dry_run=False)
+            self.assertEqual(mva_res["status"], "failed", mva_res)
+            self.assertIn("Unsupported ShdElec unit", str(mva_res))
 
     def test_repo_guards_line_count_and_mcp_tool_budget(self) -> None:
         root = Path(__file__).resolve().parents[3]

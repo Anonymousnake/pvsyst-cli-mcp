@@ -215,3 +215,54 @@ def build_electrical_shading_summary(
             "dy_module_m": round(dy_mod, 3),
         })
     return summary
+
+
+def summarize_utility_electrical_shading(
+    electrical_shading: Any,
+    *,
+    field_type: str,
+    cad_resolved: dict[str, Any] | None,
+    ground_3d_layout: dict[str, Any] | None,
+    module_width_m: float,
+    module_length_m: float,
+    module_orient: str,
+    spacing_x_m: float,
+    spacing_y_m: float,
+    module_rows: int,
+    module_columns: int,
+    series_modules: int,
+    is_half_cut: bool,
+) -> dict[str, Any]:
+    """Compute representative-table electrical_shading metadata for utility_summary."""
+    is_trk = field_type in ("TrackHorizNSAxis", "UnlimTracking")
+    if cad_resolved is not None and cad_resolved["mode"] == "pvc":
+        rep_tbl = cad_resolved["first_table"]
+    elif isinstance(ground_3d_layout, dict) and ground_3d_layout.get("tables"):
+        rep_tbl = ground_3d_layout["tables"][0]
+    else:
+        if is_trk:
+            d_across, d_along = (module_length_m, module_width_m) if module_orient == "moPortrait" else (module_width_m, module_length_m)
+            long_m = module_rows * d_across + max(0, module_rows - 1) * spacing_y_m
+            larg_m = module_columns * d_along + max(0, module_columns - 1) * spacing_x_m
+        else:
+            d_across, d_along = (module_width_m, module_length_m) if module_orient == "moPortrait" else (module_length_m, module_width_m)
+            long_m = module_columns * d_across + max(0, module_columns - 1) * spacing_x_m
+            larg_m = module_rows * d_along + max(0, module_rows - 1) * spacing_y_m
+        rep_tbl = {
+            "long_shed_m": long_m,
+            "larg_shed_m": larg_m,
+            "module_rows": module_rows,
+            "module_columns": module_columns,
+            "module_orient": module_orient,
+        }
+    return build_electrical_shading_summary(
+        electrical_shading,
+        long_shed_m=float(rep_tbl["long_shed_m"]),
+        larg_shed_m=float(rep_tbl["larg_shed_m"]),
+        module_rows=int(rep_tbl["module_rows"]),
+        module_columns=int(rep_tbl["module_columns"]),
+        module_orient=str(rep_tbl.get("module_orient", module_orient)),
+        is_tracker=is_trk,
+        series_modules=series_modules,
+        is_half_cut=is_half_cut,
+    )

@@ -14,7 +14,7 @@ from pvsyst_auto.project.synthesize import (
     SYNTH_VERSION, _clean_text, _fmt_angle, _pos_int, synthesize_project_and_variant,
 )
 from pvsyst_auto.scene.partition import (
-    build_electrical_shading_summary, compute_table_partition_dims, normalize_electrical_shading, shading_header_kwargs,
+    compute_table_partition_dims, normalize_electrical_shading, shading_header_kwargs, summarize_utility_electrical_shading,
 )
 from pvsyst_auto.scene.reader import pv_shading_header
 from pvsyst_auto.validation import append_issue as _issue, finite_number as _finite
@@ -853,26 +853,14 @@ def synthesize_utility_project(
         orientations=orientations_list, subarrays=subarrays, pan_name=pan_name, ond_name=ond_name, u_factor=u_factor,
         shading_lines=shading_lines, ageing=ageing_norm, version=version, with_bom=with_bom, allow_missing_met=allow_missing_met,
     )
-    es_summary = None
-    if need_3d:
-        is_trk = field_type in ("TrackHorizNSAxis", "UnlimTracking")
-        if cad_resolved is not None and cad_resolved["mode"] == "pvc":
-            rep_tbl = cad_resolved["first_table"]
-        elif isinstance(ground_3d_layout, dict) and ground_3d_layout.get("tables"):
-            rep_tbl = ground_3d_layout["tables"][0]
-        else:
-            d_across, d_along = ((ml, mw) if module_orient == "moPortrait" else (mw, ml)) if is_trk else ((mw, ml) if module_orient == "moPortrait" else (ml, mw))
-            rep_tbl = {
-                "long_shed_m": (n_rows * d_across + max(0, n_rows - 1) * sy) if is_trk else (n_cols * d_across + max(0, n_cols - 1) * sx),
-                "larg_shed_m": (n_cols * d_along + max(0, n_cols - 1) * sx) if is_trk else (n_rows * d_along + max(0, n_rows - 1) * sy),
-                "module_rows": n_rows, "module_columns": n_cols, "module_orient": module_orient,
-            }
-        es_summary = build_electrical_shading_summary(
-            es_cfg, long_shed_m=float(rep_tbl["long_shed_m"]), larg_shed_m=float(rep_tbl["larg_shed_m"]),
-            module_rows=int(rep_tbl["module_rows"]), module_columns=int(rep_tbl["module_columns"]),
-            module_orient=str(rep_tbl.get("module_orient", module_orient)), is_tracker=is_trk,
-            series_modules=n_mod_serie, is_half_cut=is_half_cut,
+    es_summary = (
+        summarize_utility_electrical_shading(
+            es_cfg, field_type=field_type, cad_resolved=cad_resolved, ground_3d_layout=ground_3d_layout,
+            module_width_m=mw, module_length_m=ml, module_orient=module_orient, spacing_x_m=sx, spacing_y_m=sy,
+            module_rows=n_rows, module_columns=n_cols, series_modules=n_mod_serie, is_half_cut=is_half_cut,
         )
+        if need_3d else None
+    )
     effective_gcr_width = (2.0 * resolved_collector_width) if field_type == "Dome" else resolved_collector_width
     result["utility_summary"] = {
         "field_type": field_type, "include_3d_scene": need_3d, "pitch_m": resolved_pitch, "collector_width_m": resolved_collector_width,
