@@ -232,6 +232,41 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
         self.assertAlmostEqual(min(p[1] for p in z_ocs), 20.0, places=3)
         self.assertAlmostEqual(max(p[1] for p in z_ocs), 24.0, places=3)
 
+        # Entity-level OCS extrusion (210=0, 220=0, 230=-1) on CIRCLE, LWPOLYLINE, and ARC transforms to WCS and carves layout
+        ent_ocs_dxf = "\n".join([
+            "0", "SECTION", "2", "ENTITIES",
+            "0", "LWPOLYLINE", "8", "SITE_BOUNDARY", "70", "1",
+            "10", "0", "20", "0", "10", "100", "20", "0", "10", "100", "20", "100", "10", "0", "20", "100",
+            "0", "CIRCLE", "8", "KEEPOUT", "10", "-20", "20", "20", "30", "0", "40", "4",
+            "210", "0", "220", "0", "230", "-1",
+            "0", "LWPOLYLINE", "8", "KEEPOUT", "70", "1",
+            "210", "0", "220", "0", "230", "-1",
+            "10", "-40", "20", "20", "10", "-36", "20", "20", "10", "-36", "20", "24", "10", "-40", "20", "24",
+            "0", "ARC", "8", "NO_PV", "10", "-60", "20", "20", "30", "0", "40", "3", "50", "0", "51", "180",
+            "210", "0", "220", "0", "230", "-1",
+            "0", "LINE", "8", "NO_PV", "10", "57", "20", "20", "30", "0", "11", "63", "21", "20", "31", "0",
+            "0", "ENDSEC", "0", "EOF",
+        ]) + "\n"
+        (self.ws / "UserData" / "EntOcs.dxf").write_text(ent_ocs_dxf, encoding="utf-8")
+        ent_ocs = parse_ascii_dxf(self.ws, "EntOcs.dxf")
+        self.assertEqual(len(ent_ocs["exclusion_zones"]), 3)
+        ex_bounds = [(round(min(p[0] for p in z), 1), round(max(p[0] for p in z), 1),
+                      round(min(p[1] for p in z), 1), round(max(p[1] for p in z), 1)) for z in ent_ocs["exclusion_zones"]]
+        self.assertIn((16.0, 24.0, 16.0, 24.0), ex_bounds)
+        self.assertIn((36.0, 40.0, 20.0, 24.0), ex_bounds)
+        self.assertIn((57.0, 63.0, 20.0, 23.0), ex_bounds)
+        ent_plan = plan_ground_polygon_layout(
+            ent_ocs["site_polygon"], tilt_deg=0.0, azimuth_deg=0.0, pitch_m=5.0,
+            module_width_m=1.0, module_length_m=2.0, module_rows=1, exclusion_zones=ent_ocs["exclusion_zones"],
+        )
+        for tbl in ent_plan["tables"]:
+            ox, oy, _ = tbl["origin_m"]
+            half_w = 0.5 * float(tbl["long_shed_m"])
+            for ex in ent_ocs["exclusion_zones"]:
+                self.assertFalse(rect_overlaps_polygon(
+                    ox - half_w, ox + half_w, oy, oy + ent_plan["proj_depth_m"], [(p[0], p[1]) for p in ex], tol=1e-4,
+                ))
+
         # Expansion budget guard: huge MINSERT, empty-block 1e9 MINSERT, and nested array explosion fail fast cleanly
         cap_dxf = "\n".join([
             "0", "SECTION", "2", "BLOCKS",

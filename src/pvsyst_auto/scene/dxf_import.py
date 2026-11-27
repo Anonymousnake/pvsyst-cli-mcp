@@ -8,12 +8,7 @@ from typing import Any
 
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.scene.author import MAX_OBSTACLES, obstacle_profiles
-from pvsyst_auto.scene.exclusions import (
-    MAX_EXCLUSION_ZONES,
-    is_self_intersecting_polygon,
-    polygon_area,
-    validate_exclusion_zones,
-)
+from pvsyst_auto.scene.exclusions import MAX_EXCLUSION_ZONES, is_self_intersecting_polygon, polygon_area, validate_exclusion_zones
 from pvsyst_auto.scene.reader import validate_site_polygon
 from pvsyst_auto.validation import finite_number as _finite
 
@@ -34,10 +29,11 @@ _DXF_LAYER_ROLES = frozenset(("boundary", "obstacles", "terrain", "exclusions"))
 
 _FLOAT_FIELDS: dict[str, dict[int, str]] = {
     "VERTEX": {10: "x", 20: "y", 30: "z", 42: "bulge"},
-    "POLYLINE": {30: "z0", 39: "thick"},
+    "LWPOLYLINE": {210: "nx", 220: "ny", 230: "nz"},
+    "POLYLINE": {30: "z0", 39: "thick", 210: "nx", 220: "ny", 230: "nz"},
     "POINT": {10: "x", 20: "y", 30: "z"},
-    "CIRCLE": {10: "cx", 20: "cy", 30: "cz", 39: "thick", 40: "r"},
-    "ARC": {10: "cx", 20: "cy", 30: "cz", 39: "thick", 40: "r", 50: "start", 51: "end"},
+    "CIRCLE": {10: "cx", 20: "cy", 30: "cz", 39: "thick", 40: "r", 210: "nx", 220: "ny", 230: "nz"},
+    "ARC": {10: "cx", 20: "cy", 30: "cz", 39: "thick", 40: "r", 50: "start", 51: "end", 210: "nx", 220: "ny", 230: "nz"},
     "ELLIPSE": {10: "cx", 20: "cy", 30: "cz", 11: "mx", 21: "my", 31: "mz", 40: "ratio", 41: "start", 42: "end", 210: "nx", 220: "ny", 230: "nz"},
     "LINE": {10: "x1", 20: "y1", 30: "z1", 11: "x2", 21: "y2", 31: "z2"},
     "INSERT": {10: "x", 20: "y", 30: "z", 41: "sx", 42: "sy", 43: "sz", 50: "rot", 44: "col_sp", 45: "row_sp", 210: "nx", 220: "ny", 230: "nz"},
@@ -693,10 +689,12 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
                 continue
 
             entity_counts[t] = entity_counts.get(t, 0) + 1
-            z_scale = abs(mat[2][2])
+            has_ocs = "nx" in ent or "ny" in ent or "nz" in ent
+            m_ent = _mat_mul(mat, _ocs_matrix(ent.get("nx", 0.0), ent.get("ny", 0.0), ent.get("nz", 1.0))) if has_ocs else mat
+            z_scale = abs(m_ent[2][2])
             if t == "LWPOLYLINE":
                 local = _discretize_bulge_chain([(p[0], p[1], ent["z0"], p[2]) for p in ent["pts"]], ent["closed"])
-                expanded.append({"type": "CURVE", "layer": layer, "closed": ent["closed"], "thick": ent["thick"] * z_scale, "pts": [_apply_mat(mat, p) for p in local]})
+                expanded.append({"type": "CURVE", "layer": layer, "closed": ent["closed"], "thick": ent["thick"] * z_scale, "pts": [_apply_mat(m_ent, p) for p in local]})
             elif t == "POLYLINE":
                 vlist = ent["vertices"]
                 if ent["flag"] & 64:
@@ -704,14 +702,15 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
                                      "pts3": [_apply_mat(mat, (v["x"], v["y"], v["z"])) for v in vlist if (v["flag"] & 128) and (v["flag"] & 64)]})
                 else:
                     closed = bool(ent["flag"] & 1)
+                    m_poly = mat if (ent["flag"] & 8) else m_ent
                     local = _discretize_bulge_chain([(v["x"], v["y"], v["z"], v.get("bulge", 0.0)) for v in vlist], closed)
-                    expanded.append({"type": "CURVE", "layer": layer, "closed": closed, "thick": ent["thick"] * z_scale, "pts": [_apply_mat(mat, p) for p in local]})
+                    expanded.append({"type": "CURVE", "layer": layer, "closed": closed, "thick": ent["thick"] * abs(m_poly[2][2]), "pts": [_apply_mat(m_poly, p) for p in local]})
             elif t == "CIRCLE":
                 local = _discretize_circle(ent["cx"], ent["cy"], ent["cz"], ent["r"])
-                expanded.append({"type": "CURVE", "layer": layer, "closed": True, "thick": ent["thick"] * z_scale, "pts": [_apply_mat(mat, p) for p in local]})
+                expanded.append({"type": "CURVE", "layer": layer, "closed": True, "thick": ent["thick"] * z_scale, "pts": [_apply_mat(m_ent, p) for p in local]})
             elif t == "ARC":
                 local, full = _discretize_arc(ent["cx"], ent["cy"], ent["cz"], ent["r"], ent["start"], ent["end"])
-                expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": ent["thick"] * z_scale, "pts": [_apply_mat(mat, p) for p in local]})
+                expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": ent["thick"] * z_scale, "pts": [_apply_mat(m_ent, p) for p in local]})
             elif t == "ELLIPSE":
                 local, full = _discretize_ellipse(ent)
                 expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": 0.0, "pts": [_apply_mat(mat, p) for p in local]})
@@ -732,13 +731,7 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
     return expanded, entity_counts
 
 
-def parse_ascii_dxf(
-    workspace: Path,
-    dxf_name: str,
-    *,
-    dxf_layers: dict[str, Any] | None = None,
-    unit_scale: float | None = None,
-) -> dict[str, Any]:
+def parse_ascii_dxf(workspace: Path, dxf_name: str, *, dxf_layers: dict[str, Any] | None = None, unit_scale: float | None = None) -> dict[str, Any]:
     """Parse a UserData/*.dxf ASCII file into site_polygon, exclusion_zones, obstacles, and terrain."""
     _, raw = read_bounded_cad_bytes(workspace, dxf_name, ".dxf")
     if raw.lstrip().startswith(b"AutoCAD Binary DXF"):
