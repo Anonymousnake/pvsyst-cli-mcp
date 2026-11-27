@@ -5,6 +5,11 @@ import math
 from typing import Any
 
 from pvsyst_auto.scene.author import obstacle_profiles
+from pvsyst_auto.scene.exclusions import (
+    rect_overlaps_any_polygon,
+    subtract_exclusions_from_intervals,
+    validate_exclusion_zones,
+)
 from pvsyst_auto.scene.partition import (
     compute_table_partition_dims,
     normalize_electrical_shading,
@@ -48,9 +53,11 @@ def plan_tracker_polygon_layout(
     ground_clearance_m: float = 1.5,
     max_table_columns: int | None = None,
     n_mod_serie: int | None = None,
+    exclusion_zones: list[list[list[float]]] | None = None,
 ) -> dict[str, Any]:
     """Place N-S tracker tables inside a polygon, clipping each row to integer string multiples."""
     poly_world = validate_site_polygon(site_polygon)
+    excl_world = validate_exclusion_zones(exclusion_zones)
     axis_azim = _finite(axis_azimuth_deg, "axis_azimuth_deg")
     pitch_ew = _finite(pitch_ew_m, "pitch_ew_m", positive=True)
     mw = _finite(module_width_m, "module_width_m", positive=True)
@@ -82,6 +89,8 @@ def plan_tracker_polygon_layout(
     rot_rad = math.radians(axis_azim)
     poly_rot = [_rotate(x, y, rot_rad) for x, y in poly_world]
     poly_uv_swapped = [(y, x) for x, y in poly_rot]
+    excl_rot = [[_rotate(x, y, rot_rad) for x, y in p] for p in excl_world]
+    excl_uv_swapped = [[(y, x) for x, y in p] for p in excl_rot]
     us = [p[0] for p in poly_rot]
     u, u_max = min(us) + setback, max(us) - setback
 
@@ -95,6 +104,10 @@ def plan_tracker_polygon_layout(
             (lo, hi) for a0, a1 in left_iv for b0, b1 in right_iv
             if (hi := min(a1, b1) - setback) - (lo := max(a0, b0) + setback) >= min_span - 1e-6
         ]
+        if excl_uv_swapped:
+            overlaps = subtract_exclusions_from_intervals(
+                overlaps, excl_uv_swapped, u, u + long_shed, min_length=min_span - 1e-6
+            )
         row_tables = 0
         for seg_lo, seg_hi in overlaps:
             v = seg_lo
@@ -108,6 +121,12 @@ def plan_tracker_polygon_layout(
                         k for k in range(max_mult, col_quantum - 1, -col_quantum)
                         if _rect_inside_polygon(
                             u, u + long_shed, v, v + (k * length_mod + (k - 1) * sx), poly_rot, setback
+                        )
+                        and (
+                            not excl_rot
+                            or not rect_overlaps_any_polygon(
+                                u, u + long_shed, v, v + (k * length_mod + (k - 1) * sx), excl_rot
+                            )
                         )
                     ),
                     0,
@@ -157,6 +176,8 @@ def plan_tracker_polygon_layout(
         "collector_area_m2": round(collector_area, 2),
         "gcr": round(collector_area / site_area, 4) if site_area > 0.0 else 0.0,
         "chord_width_m": round(long_shed, 4),
+        "exclusion_zone_count": len(excl_world),
+        "exclusion_area_m2": round(sum(polygon_area(p) for p in excl_world), 2),
     }
 
 

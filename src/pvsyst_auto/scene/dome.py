@@ -208,6 +208,7 @@ def build_dome_3d_shading(
     ground_clearance_m: float,
     max_table_columns: int | None,
     obstacles: list[dict[str, Any]] | None = None,
+    exclusion_zones: list[list[list[float]]] | None = None,
     electrical_shading: Any = None,
     series_modules: int | None = None,
     is_half_cut: bool = False,
@@ -229,6 +230,7 @@ def build_dome_3d_shading(
             spacing_x_m=spacing_x_m, spacing_y_m=spacing_y_m, setback_m=setback_m,
             ground_clearance_m=ground_clearance_m, max_table_columns=max_table_columns,
             base_slope_deg=base_slope_deg, proj_depth_override_m=footprint,
+            exclusion_zones=exclusion_zones,
         )
         tables = ground_layout["tables"]
     else:

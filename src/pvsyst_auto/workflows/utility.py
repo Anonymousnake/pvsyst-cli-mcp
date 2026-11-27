@@ -148,6 +148,7 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "bifacial": bif_cfg,
         "include_3d_scene": include_3d,
         "site_polygon": layout.get("site_polygon"),
+        "exclusion_zones": layout.get("exclusion_zones"),
         "setback_m": float(layout.get("setback_m", 0.0)),
         "ground_clearance_m": float(layout.get("ground_clearance_m", 1.5 if scope == "ground_tracker" else 0.5)),
         "max_table_columns": layout.get("max_table_columns"),
@@ -334,7 +335,7 @@ def run_utility_design(
                     raise ValueError(
                         f"3D site_polygon/dxf scene module count ({scene_modules}) "
                         f"disagrees with electrical module count ({electrical_modules}); "
-                        "adjust site_polygon/dxf boundary, setback_m, pitch_m, module_rows, or target capacity to match the electrical design"
+                        "adjust site_polygon/dxf boundary, exclusion_zones, setback_m, pitch_m, module_rows, or target capacity to match the electrical design"
                     )
             if (cad_meta := synth_preview["utility_summary"].get("cad_import")) is not None:
                 from pvsyst_auto.scene.cad_import import check_pvc_electrical_area

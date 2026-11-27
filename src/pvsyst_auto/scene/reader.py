@@ -14,6 +14,14 @@ from pvsyst_auto.scene.author import (AUTHORING_TOOL, MAX_OBSTACLES, MAX_PARTS, 
                                       MAX_VERTICES, NS, PV, SceneValidationError, _diagnostic, _finite,
                                       _string_layout_profile, build_scene, caller_geometry, check_tables,
                                       house_profile, layout_profile, obstacle_profiles, table_profiles)
+from pvsyst_auto.scene.exclusions import (
+    point_in_polygon as _point_in_polygon,
+    point_segment_distance as _point_segment_distance,
+    polygon_area,
+    rect_overlaps_any_polygon,
+    subtract_exclusions_from_intervals,
+    validate_exclusion_zones,
+)
 from pvsyst_auto.scene.mapping import PV_TABLE_SOURCES, assess_module_layout
 from pvsyst_auto.scene.partition import (
     SHADING_FLAGS_LINEAR,
@@ -442,30 +450,6 @@ def validate_site_polygon(vertices: Any) -> list[tuple[float, float]]:
         raise ValueError("site_polygon must enclose a positive non-degenerate area")
     return pts
 
-def polygon_area(pts: list[tuple[float, float]]) -> float:
-    n = len(pts)
-    return 0.5 * abs(sum(pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1] for i in range(n)))
-
-def _point_in_polygon(x: float, y: float, poly: list[tuple[float, float]]) -> bool:
-    """Ray-casting point-in-polygon check (inclusive of boundary)."""
-    inside, n = False, len(poly)
-    for i in range(n):
-        x1, y1 = poly[i]
-        x2, y2 = poly[(i + 1) % n]
-        if _point_segment_distance(x, y, x1, y1, x2, y2) <= 1e-7:
-            return True
-        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
-            inside = not inside
-    return inside
-
-def _point_segment_distance(px: float, py: float, x1: float, y1: float, x2: float, y2: float) -> float:
-    dx, dy = x2 - x1, y2 - y1
-    len_sq = dx * dx + dy * dy
-    if len_sq <= _EPS:
-        return math.hypot(px - x1, py - y1)
-    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / len_sq))
-    return math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
-
 def _min_edge_distance(x: float, y: float, poly: list[tuple[float, float]]) -> float:
     n = len(poly)
     return min(_point_segment_distance(x, y, poly[i][0], poly[i][1], poly[(i + 1) % n][0], poly[(i + 1) % n][1]) for i in range(n))
@@ -507,9 +491,11 @@ def plan_ground_polygon_layout(
     spacing_x_m: float = 0.02, spacing_y_m: float = 0.02, setback_m: float = 0.0,
     ground_clearance_m: float = 0.5, max_table_columns: int | None = None, base_slope_deg: float = 0.0,
     proj_depth_override_m: float | None = None,
+    exclusion_zones: list[list[list[float]]] | None = None,
 ) -> dict[str, Any]:
     """Place maximal non-overlapping finite PV tables inside a 2D site polygon."""
     poly_world = validate_site_polygon(site_polygon)
+    excl_world = validate_exclusion_zones(exclusion_zones)
     tilt, azim, pitch = _finite(tilt_deg, "tilt_deg"), _finite(azimuth_deg, "azimuth_deg"), _finite(pitch_m, "pitch_m")
     setback, clearance, base_slope = _finite(setback_m, "setback_m"), _finite(ground_clearance_m, "ground_clearance_m"), _finite(base_slope_deg, "base_slope_deg")
     if not 0.0 <= tilt <= 90.0:
@@ -540,6 +526,7 @@ def plan_ground_polygon_layout(
         raise ValueError(f"pitch_m ({pitch:.3f} m) must exceed horizontal table depth ({proj_depth:.3f} m)")
     col_step, rot_rad = cell_w + spacing_x_m, math.radians(azim)
     poly_rot = [_rotate(x, y, rot_rad) for x, y in poly_world]
+    excl_rot = [[_rotate(x, y, rot_rad) for x, y in p] for p in excl_world]
     vs = [p[1] for p in poly_rot]
     v, v_max = min(vs) + setback, max(vs) - setback
     tables: list[dict[str, Any]] = []
@@ -550,6 +537,8 @@ def plan_ground_polygon_layout(
         back_iv = _scanline_intervals(v + proj_depth - scan_offset, poly_rot)
         overlaps = [(lo, hi) for a0, a1 in front_iv for b0, b1 in back_iv
                     if (hi := min(a1, b1) - setback) - (lo := max(a0, b0) + setback) >= cell_w - 1e-6]
+        if excl_rot:
+            overlaps = subtract_exclusions_from_intervals(overlaps, excl_rot, v, v + proj_depth, min_length=cell_w - 1e-6)
         row_tables = 0
         for seg_lo, seg_hi in overlaps:
             u = seg_lo
@@ -558,7 +547,8 @@ def plan_ground_polygon_layout(
                 if max_table_columns is not None:
                     max_avail = min(max_avail, max_table_columns)
                 fitted = next((k for k in range(max_avail, 0, -1)
-                               if _rect_inside_polygon(u, u + (k * cell_w + (k - 1) * spacing_x_m), v, v + proj_depth, poly_rot, setback)), 0)
+                               if _rect_inside_polygon(u, u + (k * cell_w + (k - 1) * spacing_x_m), v, v + proj_depth, poly_rot, setback)
+                               and (not excl_rot or not rect_overlaps_any_polygon(u, u + (k * cell_w + (k - 1) * spacing_x_m), v, v + proj_depth, excl_rot))), 0)
                 if fitted > 0:
                     span = fitted * cell_w + (fitted - 1) * spacing_x_m
                     wx, wy = _rotate(u + 0.5 * span, v, -rot_rad)
@@ -586,6 +576,8 @@ def plan_ground_polygon_layout(
         "site_area_m2": round(site_area, 2), "collector_area_m2": round(collector_area, 2),
         "gcr": round(collector_area / site_area, 4) if site_area > 0 else 0.0,
         "proj_depth_m": round(proj_depth, 4), "base_slope_deg": base_slope,
+        "exclusion_zone_count": len(excl_world),
+        "exclusion_area_m2": round(sum(polygon_area(p) for p in excl_world), 2),
     }
 
 def pv_shading_header(
