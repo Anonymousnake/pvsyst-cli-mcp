@@ -275,7 +275,7 @@ def _apply_core_edits(store, lines, arrays, system, *, subarray_id, orientation_
             raise ValueError(f"Thermal editing requires a verified {SEED_LABEL} grid main array")
         flags, flags2 = store._field_indices(lines, main_array, "Flags"), store._field_indices(lines, main_array, "Flags2")
         if (len(flags) != 1 or not store._is_verified_main_flags(FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2])
-                or len(flags2) != 1 or FIELD.fullmatch(lines[flags2[0]].rstrip("\r\n"))[2] != "$082A"):
+                or len(flags2) != 1 or not store._is_verified_main_flags2(FIELD.fullmatch(lines[flags2[0]].rstrip("\r\n"))[2])):
             raise ValueError("Thermal editing requires verified main-array Flags/Flags2")
     elif uv_only:
         store._uv_edit_gate(lines, system, arrays, main_array)
@@ -432,20 +432,24 @@ def _apply_one_control(store, lines, arrays, system, *, param_key, control, resu
         "power_factor_updates", "p50_p90_updates", "power_controls_updates", "ageing_updates",
         "ageing_enabled", "system_unavailability_updates",
     )
-    accepted_versions = NATIVE_TEXT_OR_SEED if param_key == "system_unavailability_updates" else NATIVE_TEXT
-    version_label = SEED_LABEL if param_key == "system_unavailability_updates" else TEXT_LABEL
+    accepted_versions = NATIVE_TEXT_OR_SEED if (param_key == "system_unavailability_updates" or ageing_tx) else NATIVE_TEXT
+    version_label = SEED_LABEL if (param_key == "system_unavailability_updates" or ageing_tx) else TEXT_LABEL
     if (len(root_versions) != 1 or FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2] not in accepted_versions
             or main is None or (not whole_system_control and len(arrays) != 1) or len(kinds) != 1
             or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
             or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] not in accepted_versions for v in versions)
-            or (param_key != "system_unavailability_updates" and has_object(lines, "pvGridStorage"))):
+            or (param_key != "system_unavailability_updates" and not ageing_tx and has_object(lines, "pvGridStorage"))):
         raise ValueError(f"{control} editing requires a native {version_label} PV-only single-subarray Grid variant")
+    if param_key == "ageing_updates":
+        return {result_key: replace_ageing_model(lines, main, payload)}
+    if param_key == "ageing_enabled":
+        return {result_key: replace_ageing_enabled(lines, main, payload)}
     flags_idx = store._field_indices(lines, main, "Flags")
     if len(flags_idx) != 1 or not store._is_verified_main_flags(FIELD.fullmatch(lines[flags_idx[0]].rstrip("\r\n"))[2]):
         raise ValueError(f"{control} editing requires verified main-array Flags/Flags2")
     if not ageing_tx:
         flags2_idx = store._field_indices(lines, main, "Flags2")
-        if len(flags2_idx) != 1 or FIELD.fullmatch(lines[flags2_idx[0]].rstrip("\r\n"))[2] != "$082A":
+        if len(flags2_idx) != 1 or not store._is_verified_main_flags2(FIELD.fullmatch(lines[flags2_idx[0]].rstrip("\r\n"))[2]):
             raise ValueError(f"{control} editing requires verified main-array Flags/Flags2")
     if param_key == "seasonal_updates":
         store._require_no_geometry(lines)

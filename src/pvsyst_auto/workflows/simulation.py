@@ -182,8 +182,14 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
     if azimuth is not None:
         request["azimuth"] = azimuth if not isinstance(azimuth, float) or math.isfinite(azimuth) else str(azimuth)
     if losses is not None:
-        request["losses"] = ({key: str(value) if isinstance(value, float) and not math.isfinite(value) else value
-                              for key, value in losses.items()} if isinstance(losses, dict) else losses)
+        request["losses"] = (
+            {
+                key: str(value) if isinstance(value, float) and not math.isfinite(value) else value
+                for key, value in losses.items()
+            }
+            if isinstance(losses, dict)
+            else losses
+        )
     result = {"status": "blocked", "stage": "preflight", "dry_run": dry_run,
               "request": request, "issues": [], "warnings": [], "transactions": [], "recovery": [],
               "metrics": None, "artifacts": {}, "template_preserved": None}
@@ -234,15 +240,22 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
     if azimuth is not None and (isinstance(azimuth, bool) or not isinstance(azimuth, (int, float))
                                 or not math.isfinite(azimuth) or not -180 <= azimuth <= 180):
         issue("azimuth", "Use finite PVsyst azimuth in -180..180 degrees, zero south, west positive")
-    subarray_losses, main_losses = {}, {}
+    subarray_losses, main_losses, ageing_cfg = {}, {}, None
     if losses is not None:
-        allowed_losses = {"LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor"}
+        allowed_losses = {"LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor", "ageing"}
         if not isinstance(losses, dict):
             issue("losses", "Use an explicit supported loss object")
         else:
             for key, value in losses.items():
-                if (key not in allowed_losses or isinstance(value, bool) or not isinstance(value, (int, float))
-                        or not math.isfinite(value)):
+                if key not in allowed_losses:
+                    issue("losses." + key, "Require a supported finite numeric loss parameter")
+                elif key == "ageing":
+                    from pvsyst_auto.energy.ageing import normalize_ageing_spec
+                    try:
+                        ageing_cfg = normalize_ageing_spec(value)
+                    except ValueError as exc:
+                        issue("losses.ageing", exc)
+                elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
                     issue("losses." + key, "Require a supported finite numeric loss parameter")
                 elif key == "UFactor":
                     main_losses[key] = value
@@ -307,6 +320,12 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                                               main_array_updates=main_losses or None, dry_run=True)
             effective_angles = angles
         result["configuration_preview"] = preview
+        if ageing_cfg and ageing_cfg["enabled"]:
+            age_payload = {k: v for k, v in ageing_cfg.items() if k != "enabled"}
+            result["ageing_preview"] = store.update_parameters(
+                template_project, variant, parameters["sha256"], array_id, orientation_id,
+                ageing_updates=age_payload, dry_run=True,
+            )
         result["configuration_summary"] = {
             "orientation": {**parameters["orientations"][0]["values"], **effective_angles},
             "requested_losses": losses or {},
@@ -495,6 +514,18 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                                               subarray_updates=subarray_losses or None,
                                               main_array_updates=main_losses or None)
             transaction("update_variant_parameters", edited)
+        if ageing_cfg is not None:
+            stage("ageing")
+            age_sha = edited["sha256"] if not tracking_mode else store.inspect(new_project, variant)["sha256"]
+            if ageing_cfg["enabled"]:
+                age_payload = {k: v for k, v in ageing_cfg.items() if k != "enabled"}
+                edited = store.update_parameters(new_project, variant, age_sha, array_id, orientation_id,
+                                                 ageing_updates=age_payload)
+                transaction("update_variant_parameters", edited)
+            elif (store.inspect_parameters(new_project, variant).get("ageing") or {}).get("enabled"):
+                edited = store.update_parameters(new_project, variant, age_sha, array_id, orientation_id,
+                                                 ageing_enabled=False)
+                transaction("update_variant_parameters", edited)
         result["working_files"] = store.inspect_project(new_project)["files"]
         if store.validate_structure(new_project, variant)["valid"] is not True:
             raise ValueError("Configured working variant failed structural validation")

@@ -311,16 +311,22 @@ class CapacityRequest(_StrictModel):
     design_max_operating_temperature_c: StrictInt | StrictFloat | None = None
     design_basis: StrictStr | None = None
     allow_asymmetric_mppt: StrictBool | None = None
+class AgeingLossSpec(_StrictModel):
+    """Zero-template PVsyst ageing configuration (pvAgeing) applied during synthesis or simulation."""
+    enabled: StrictBool = True
+    simulation_year: Annotated[StrictInt, Field(ge=1, le=50)] = 1
+    annual_module_degradation_percent: StrictNum = 0.4
+    imp_degrad_sharing_percent: StrictNum = 80.0
+    keep_mc_values: StrictBool = False
+    modules_rms_year_isc_percent: StrictNum = 0.0
+    modules_rms_year_voc_percent: StrictNum = 0.0
 class LossRequest(_StrictModel):
-    """Optional template loss overrides; only these four parameters are accepted.
-
-    LIDLoss, PMismMPP and ModuleQualityLoss target the subarray, UFactor targets the
-    whole main array. Omitted keys keep their template value and are never fitted.
-    """
+    """Optional loss overrides; LIDLoss, PMismMPP, ModuleQualityLoss, UFactor, and ageing."""
     LIDLoss: StrictNum | None = None
     PMismMPP: StrictNum | None = None
     ModuleQualityLoss: StrictNum | None = None
     UFactor: StrictNum | None = None
+    ageing: AgeingLossSpec | None = None
 class DeclaredValue(_StrictModel):
     """One design value, optionally with its declared unit and manufacturer source.
 
@@ -773,6 +779,8 @@ class EconomicsScenarioInput(_StrictModel):
     csv_names: Annotated[list[StrictStr], Field(min_length=1, max_length=20)] | None = None
     csv_weights: list[StrictNum] | None = None
     annual_yield_kwh: StrictNum | None = None
+    yearly_energy_kwh: dict[StrictStr | StrictInt, StrictNum] | None = None
+    ageing_batch_csv: StrictStr | None = None
     installed_dc_kw: StrictNum | None = None
     battery_kwh: StrictNum | None = None
     capex_total: StrictNum | None = None
