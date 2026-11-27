@@ -1,6 +1,7 @@
 """Offline unit tests for zero-template P50/P90 probabilistic yields, bankability, and opt-in PVGIS horizon."""
 from __future__ import annotations
 
+import asyncio
 import copy
 import email.message
 import io
@@ -682,7 +683,9 @@ class SchemaAndBudgetTests(unittest.TestCase):
         # Hard MCP tool budget check
         self.assertEqual(len(TOOL_GROUPS["Admin & Diagnostics"]), 4)
         self.assertEqual(len(TOOL_GROUPS["Expert & Low-Level"]), 23)
-        counts = {grp: len(create_mcp_server(tool_groups=grp)._tool_manager._tools) for grp in (None, "all", "admin", "expert")}
+        async def _counts():
+            return {grp: len(await create_mcp_server(tool_groups=grp).list_tools()) for grp in (None, "all", "admin", "expert")}
+        counts = asyncio.run(_counts())
         self.assertEqual(counts, {None: 48, "all": 75, "admin": 4, "expert": 23})
 
 
