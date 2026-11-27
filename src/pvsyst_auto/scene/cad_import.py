@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from pvsyst_auto.project.paths import safe_filename
 from pvsyst_auto.scene.author import MAX_OBSTACLES
 from pvsyst_auto.scene.dxf_import import (
     downsample_xyz_points,
@@ -392,7 +393,17 @@ def parse_pvc_141(workspace: Path, pvc_name: str) -> dict[str, Any]:
                             uniq = f"{base_name}_{suffix}"
                         used_names.add(uniq.casefold())
                         cverts = [[round(v[0], 5), round(v[1], 5), round(v[2], 5)] for v in wpts]
-                        vtris = [[a, b, c] for a, b, c in geom["triangles"] if math.sqrt(_dot(cr := _cross(_sub(tuple(cverts[b]), tuple(cverts[a])), _sub(tuple(cverts[c]), tuple(cverts[a]))), cr)) > 1e-8]
+                        seen_tris: set[tuple[tuple[float, float, float], ...]] = set()
+                        vtris = []
+                        for a, b, c in geom["triangles"]:
+                            pa, pb, pc = tuple(cverts[a]), tuple(cverts[b]), tuple(cverts[c])
+                            cr = _cross(_sub(pb, pa), _sub(pc, pa))
+                            if math.sqrt(_dot(cr, cr)) <= 1e-8:
+                                continue
+                            key = tuple(sorted((pa, pb, pc)))
+                            if key not in seen_tris:
+                                seen_tris.add(key)
+                                vtris.append([a, b, c])
                         if vtris:
                             obstacles.append({"kind": "mesh", "name": uniq, "vertices": cverts, "triangles": vtris})
             elif tag == "node":
@@ -459,24 +470,24 @@ def validate_cad_ground_layout(layout: dict, scope: str, mode: str, bad: Any) ->
     pvc_name, dxf_name = layout.get("pvc_name"), layout.get("dxf_name")
     if pvc_name is not None and dxf_name is not None:
         bad("ground_layout.dxf_name", "pvc_name and dxf_name are mutually exclusive")
-    if pvc_name is not None:
-        if not isinstance(pvc_name, str) or not pvc_name.lower().endswith(".pvc"):
-            bad("ground_layout.pvc_name", "pvc_name must be a UserData .pvc filename")
-        if scope == "ground_dome":
+    for key, val, ext in (("pvc_name", pvc_name, ".pvc"), ("dxf_name", dxf_name, ".dxf")):
+        if val is None:
+            continue
+        if not isinstance(val, str):
+            bad(f"ground_layout.{key}", f"{key} must be a UserData {ext} filename")
+        else:
+            try:
+                safe_filename(val, ext)
+            except ValueError as exc:
+                bad(f"ground_layout.{key}", str(exc))
+        if key == "pvc_name" and scope == "ground_dome":
             bad("ground_layout.pvc_name", "pvc_name is supported for scope='ground_sheds' or 'ground_tracker'")
         if layout.get("model_mode") == "unlimited":
-            bad("ground_layout.model_mode", "pvc_name requires 3D layout (omit model_mode or set model_mode='3d')")
+            bad("ground_layout.model_mode", f"{key} requires 3D layout (omit model_mode or set model_mode='3d')")
         for conflict in ("site_polygon", "sub_orientations"):
             if layout.get(conflict) is not None:
-                bad(f"ground_layout.{conflict}", f"pvc_name cannot be combined with {conflict}")
-    if dxf_name is not None:
-        if not isinstance(dxf_name, str) or not dxf_name.lower().endswith(".dxf"):
-            bad("ground_layout.dxf_name", "dxf_name must be a UserData .dxf filename")
-        if layout.get("model_mode") == "unlimited":
-            bad("ground_layout.model_mode", "dxf_name requires 3D layout (omit model_mode or set model_mode='3d')")
-        for conflict in ("site_polygon", "sub_orientations"):
-            if layout.get(conflict) is not None:
-                bad(f"ground_layout.{conflict}", f"dxf_name supplies the boundary polygon and cannot be combined with {conflict}")
+                suffix = "supplies the boundary polygon and " if key == "dxf_name" else ""
+                bad(f"ground_layout.{conflict}", f"{key} {suffix}cannot be combined with {conflict}")
     if layout.get("dxf_layers") is not None:
         if dxf_name is None:
             bad("ground_layout.dxf_layers", "dxf_layers requires ground_layout.dxf_name")
@@ -568,7 +579,8 @@ def resolve_cad_synthesis_inputs(
     rep = parsed["module_spec"]
     chord_mod = rep["module_length_m"] if rep["module_orient"] == "moPortrait" else rep["module_width_m"]
     coll_w = round(rep["module_rows"] * chord_mod + max(0, rep["module_rows"] - 1) * rep["spacing_y_m"], 3)
-    eff_pitch = parsed.get("pitch_estimate_m") or max(pitch_m, coll_w + 0.5)
+    raw_pitch = parsed.get("pitch_estimate_m")
+    eff_pitch = raw_pitch if (raw_pitch is not None and raw_pitch > coll_w) else max(pitch_m, coll_w + 0.5)
     cad_summary = {
         k: parsed[k] for k in ("format", "file_name", "scene_kind", "unit_name", "unit_meter", "table_count",
                                "inferred_module_count", "collector_area_m2", "bounds_m", "pitch_estimate_m", "module_spec")

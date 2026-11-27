@@ -369,6 +369,10 @@ class CadPvcDxfImportTests(unittest.TestCase):
         (self.ws / "UserData" / "Ok.dxf").write_text(_dxf_text(), encoding="utf-8")
         for bad_gl in (
             {"pvc_name": "Ok.pvc", "dxf_name": "Ok.dxf"},
+            {"pvc_name": "../bad.pvc"},
+            {"pvc_name": "sub\\bad.pvc"},
+            {"dxf_name": "sub/bad.dxf"},
+            {"dxf_name": "CON.dxf"},
             {"dxf_name": "Ok.dxf", "site_polygon": [[0, 0], [10, 0], [10, 10]]},
             {"dxf_name": "Ok.dxf", "model_mode": "unlimited"},
             {"dxf_name": "Ok.dxf", "dxf_unit_scale": -1.0},
@@ -383,6 +387,61 @@ class CadPvcDxfImportTests(unittest.TestCase):
         with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
             blk = pvsyst_import_house_pv_scene("Ok.pvc", "VC9", dry_run=True)
             self.assertEqual(blk["status"], "blocked")
+
+    def test_cad_double_sided_obstacle_dedup_and_staggered_pitch(self) -> None:
+        # 1. Double-sided obstacle mesh in .pvc (duplicate reversed triangles) must be deduplicated cleanly
+        pvc_dup = _make_pvc_fixed(rows=2, cols=2).replace(
+            '<triangles material="Material1" count="2"><input semantic="VERTEX" source="#Bldg1-v" offset="0" /><p>0 1 2 0 2 3</p></triangles>',
+            '<triangles material="Material1" count="4"><input semantic="VERTEX" source="#Bldg1-v" offset="0" /><p>0 1 2 0 2 3 2 1 0 3 2 0</p></triangles>',
+        )
+        (self.ws / "UserData" / "DupObs.pvc").write_text(pvc_dup, encoding="utf-8")
+        parsed_pvc = parse_pvc_141(self.ws, "DupObs.pvc")
+        self.assertEqual(len(parsed_pvc["obstacles"]), 1)
+        self.assertEqual(len(parsed_pvc["obstacles"][0]["triangles"]), 2)
+        prep_pvc = prepare_design_project(
+            self.cli, self.store, dry_run=False,
+            spec=_design_spec("DupObsPvc.PRJ", scope="ground_sheds", target_kw=52.8,
+                              ground_layout={"pvc_name": "DupObs.pvc", "ground_clearance_m": 0.8}, tilt=25.0, azim=0.0),
+        )
+        self.assertIn(prep_pvc["status"], ("prepared", "needs_review"), prep_pvc)
+
+        # 2. Double-sided 3DFACE in ASCII .dxf (reversed corner order at identical coords) must deduplicate cleanly
+        dxf_dup = _dxf_text(insunits=6, scale=1.0, rect=(33.0, 15.0)).replace(
+            "\n0\nENDSEC\n0\nEOF\n",
+            "\n" + "\n".join([
+                "0", "3DFACE", "8", "BUILDINGS_SHADE",
+                "10", "-4.0000", "20", "-8.0000", "30", "0.0",
+                "11", "-4.0000", "21", "-8.0000", "31", "4.0",
+                "12", "-1.0000", "22", "-8.0000", "32", "4.0",
+                "13", "-1.0000", "23", "-8.0000", "33", "0.0",
+                "0", "ENDSEC", "0", "EOF",
+            ]) + "\n",
+        )
+        (self.ws / "UserData" / "DupObs.dxf").write_text(dxf_dup, encoding="utf-8")
+        parsed_dxf = parse_ascii_dxf(self.ws, "DupObs.dxf")
+        bldg_obs = [o for o in parsed_dxf["obstacles"] if o.get("kind") == "mesh" and "BUILDINGS_SHADE" in o.get("name", "")]
+        self.assertEqual(len(bldg_obs), 1, parsed_dxf["obstacles"])
+        self.assertEqual(len(bldg_obs[0]["triangles"]), 2)
+        prep_dxf = prepare_design_project(
+            self.cli, self.store, dry_run=False,
+            spec=_design_spec("DupObsDxf.PRJ", scope="ground_sheds", target_kw=52.8,
+                              ground_layout={"dxf_name": "DupObs.dxf", "pitch_m": 10.0, "module_rows": 2, "max_table_columns": 30}, tilt=25.0, azim=0.0),
+        )
+        self.assertIn(prep_dxf["status"], ("prepared", "needs_review"), prep_dxf)
+
+        # 3. Staggered .pvc blocks with Y-offset < coll_w must not fail pitch <= collector_width synthesis
+        staggered = pvc_dup.replace(
+            '<matrix>1 0 0 0 0 0 -1 0 0 1 0 0 0 0 0 1</matrix>\n      <node id="PVcase">',
+            '<matrix>1 0 0 0 0 0 -1 0 0 1 0 0 0 0 0 1</matrix>\n      <node id="BlockB"><translate>0 0 -59.055</translate>'
+            '<instance_geometry url="#Frame0" /></node>\n      <node id="PVcase">',
+        )
+        (self.ws / "UserData" / "Staggered.pvc").write_text(staggered, encoding="utf-8")
+        prep_stag = prepare_design_project(
+            self.cli, self.store, dry_run=False,
+            spec=_design_spec("StaggeredPvc.PRJ", scope="ground_sheds", target_kw=52.8,
+                              ground_layout={"pvc_name": "Staggered.pvc"}, tilt=25.0, azim=0.0),
+        )
+        self.assertIn(prep_stag["status"], ("prepared", "needs_review"), prep_stag)
 
 
 if __name__ == "__main__":

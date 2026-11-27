@@ -300,12 +300,14 @@ def parse_ascii_dxf(
     fallback_polys: list[list[tuple[float, float]]] = []
     obstacles: list[dict[str, Any]] = []
     obs_faces_by_layer: dict[str, tuple[list[list[float]], list[list[int]]]] = {}
+    seen_face_keys: dict[str, set[tuple[tuple[float, float, float], ...]]] = {}
     terrain_pts: list[tuple[float, float, float]] = []
     layers_seen: set[str] = set()
     used_obs: set[str] = set()
 
     def _add_face_obs(layer: str, corners: list[tuple[float, float, float]], indices: list[int]) -> None:
         verts, faces = obs_faces_by_layer.setdefault(layer, ([], []))
+        seen = seen_face_keys.setdefault(layer, set())
         base = len(verts)
         verts.extend([[round(p[0], 5), round(p[1], 5), round(p[2], 5)] for p in corners])
         for k in range(1, len(indices) - 1):
@@ -314,7 +316,10 @@ def parse_ascii_dxf(
             u, v = (pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]), (pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2])
             cx, cy, cz = u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]
             if cx * cx + cy * cy + cz * cz > 1e-12:
-                faces.append(tri)
+                key = tuple(sorted((tuple(pa), tuple(pb), tuple(pc))))
+                if key not in seen:
+                    seen.add(key)
+                    faces.append(tri)
 
     for idx_e, ent in enumerate(entities):
         layer = ent.get("layer", "0")
