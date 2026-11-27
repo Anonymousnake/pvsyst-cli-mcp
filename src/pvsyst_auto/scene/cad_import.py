@@ -16,6 +16,7 @@ from pvsyst_auto.scene.dxf_import import (
     parse_ascii_dxf,
     read_bounded_cad_bytes,
 )
+from pvsyst_auto.scene.exclusions import MAX_EXCLUSION_ZONES
 from pvsyst_auto.scene.reader import build_ground_3d_shading
 from pvsyst_auto.scene.terrain import build_terrain_mesh
 from pvsyst_auto.scene.tracker_layout import build_tracker_3d_shading
@@ -491,6 +492,8 @@ def validate_cad_ground_layout(layout: dict, scope: str, mode: str, bad: Any) ->
             if layout.get(conflict) is not None:
                 suffix = "supplies the boundary polygon and " if key == "dxf_name" else ""
                 bad(f"ground_layout.{conflict}", f"{key} {suffix}cannot be combined with {conflict}")
+    if pvc_name is not None and layout.get("exclusion_zones"):
+        bad("ground_layout.exclusion_zones", "pvc_name supplies pre-placed PV tables and cannot be combined with exclusion_zones")
     if layout.get("dxf_layers") is not None:
         if dxf_name is None:
             bad("ground_layout.dxf_layers", "dxf_layers requires ground_layout.dxf_name")
@@ -522,10 +525,26 @@ def _merge_obstacles(cad_obs: list[dict[str, Any]], user_obs: list[dict[str, Any
     return merged[:MAX_OBSTACLES]
 
 
+def _merge_exclusion_zones(
+    cad_ex: list[list[list[float]]],
+    user_ex: list[list[list[float]]] | None,
+) -> list[list[list[float]]] | None:
+    if not cad_ex and not user_ex:
+        return None
+    merged = [*cad_ex, *(user_ex or ())]
+    if len(merged) > MAX_EXCLUSION_ZONES:
+        raise ValueError(
+            f"Combined DXF ({len(cad_ex)}) and inline ({len(user_ex or ())}) exclusion zones "
+            f"({len(merged)}) exceed the maximum of {MAX_EXCLUSION_ZONES}"
+        )
+    return merged
+
+
 def resolve_cad_synthesis_inputs(
     store: Any, *, field_type: str, pvc_name: str | None, dxf_name: str | None, dxf_layers: dict[str, Any] | None,
     dxf_unit_scale: float | None, tilt_deg: float, azimuth_deg: float, axis_azimuth_deg: float, pitch_m: float,
-    tilt_explicit: bool, azimuth_explicit: bool, obstacles: list[dict[str, Any]] | None, terrain: dict[str, Any] | None,
+    tilt_explicit: bool, azimuth_explicit: bool, obstacles: list[dict[str, Any]] | None,
+    exclusion_zones: list[list[list[float]]] | None = None, terrain: dict[str, Any] | None = None,
     module_name: str, electrical_shading: Any = None, series_modules: int | None = None, is_half_cut: bool = False,
     version: str,
 ) -> dict[str, Any]:
@@ -540,12 +559,16 @@ def resolve_cad_synthesis_inputs(
             if len(parsed["terrain_points"]) >= 3 else None
         )
         return {
-            "mode": "dxf", "site_polygon": parsed["site_polygon"], "obstacles": _merge_obstacles(parsed["obstacles"], obstacles), "terrain": eff_terrain,
+            "mode": "dxf", "site_polygon": parsed["site_polygon"],
+            "exclusion_zones": _merge_exclusion_zones(parsed["exclusion_zones"], exclusion_zones),
+            "obstacles": _merge_obstacles(parsed["obstacles"], obstacles), "terrain": eff_terrain,
             "cad_summary": {k: parsed[k] for k in ("format", "file_name", "unit_scale", "insunits_code", "layers", "site_area_m2", "boundary_simplified", "bounds_m")}
-            | {"obstacle_count": len(parsed["obstacles"]), "terrain_point_count": len(parsed["terrain_points"])},
+            | {"exclusion_zone_count": len(parsed["exclusion_zones"]), "obstacle_count": len(parsed["obstacles"]), "terrain_point_count": len(parsed["terrain_points"])},
         }
 
     assert pvc_name is not None
+    if exclusion_zones:
+        raise ValueError("pvc_name supplies pre-placed PV tables and cannot be combined with exclusion_zones")
     parsed = parse_pvc_141(ws, pvc_name)
     if parsed["scene_kind"] == "mixed":
         raise ValueError(f"{pvc_name} mixes fixed tables and trackers; split into separate fixed and tracker .pvc files")
@@ -625,9 +648,13 @@ def read_cad_scene_preview(components: Any, scene_name: str) -> dict[str, Any]:
             parsed = parse_ascii_dxf(components.workspace, scene_name)
             result.update({
                 "status": "ready", "format": "ascii_dxf", "scene_name": scene_name,
+                "exclusion_zones": parsed["exclusion_zones"],
                 "geometry": {
                     "site_area_m2": parsed["site_area_m2"], "boundary_vertices": len(parsed["site_polygon"]),
-                    "boundary_simplified": parsed["boundary_simplified"], "obstacle_count": len(parsed["obstacles"]),
+                    "boundary_simplified": parsed["boundary_simplified"],
+                    "exclusion_zone_count": len(parsed["exclusion_zones"]),
+                    "exclusion_zones": parsed["exclusion_zones"],
+                    "obstacle_count": len(parsed["obstacles"]),
                     "terrain_point_count": len(parsed["terrain_points"]), "layers": parsed["layers"],
                     "entity_counts": parsed["entity_counts"], "unit_scale": parsed["unit_scale"],
                     "insunits_code": parsed["insunits_code"], "bounds_m": parsed["bounds_m"], "site_polygon": parsed["site_polygon"],

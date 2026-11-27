@@ -22,7 +22,7 @@ GROUND_LAYOUT_KEYS = frozenset((
     "axis_azimuth_deg", "min_phi_deg", "max_phi_deg",
     "backtracking", "irrad_optimiz", "central_gap_m", "pitch_slope_deg",
     "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg",
-    "site_polygon", "setback_m", "ground_clearance_m", "max_table_columns",
+    "site_polygon", "exclusion_zones", "setback_m", "ground_clearance_m", "max_table_columns",
     "obstacles", "base_slope_deg", "terrain", "sub_orientations",
     "top_spacing_m", "dome_wiring",
     "pvc_name", "dxf_name", "dxf_layers", "dxf_unit_scale",
@@ -54,6 +54,7 @@ def resolve_utility_field_type(scope: str, ground_layout: dict | None) -> tuple[
     has_3d = (
         layout.get("model_mode", "unlimited") == "3d"
         or layout.get("site_polygon") is not None
+        or bool(layout.get("exclusion_zones"))
         or bool(layout.get("obstacles"))
         or layout.get("terrain") is not None
         or layout.get("pvc_name") is not None
@@ -93,8 +94,8 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
 
     if scope == "ground_dome" and layout.get("model_mode") == "unlimited":
         bad("ground_layout.model_mode", "scope='ground_dome' requires 3D paired dome shading (model_mode='3d')")
-    elif layout.get("model_mode") == "unlimited" and (layout.get("site_polygon") is not None or layout.get("obstacles") or layout.get("terrain") is not None):
-        bad("ground_layout.model_mode", "site_polygon, obstacles, and terrain require 3D layout (omit model_mode or set model_mode='3d')")
+    elif layout.get("model_mode") == "unlimited" and (layout.get("site_polygon") is not None or bool(layout.get("exclusion_zones")) or layout.get("obstacles") or layout.get("terrain") is not None):
+        bad("ground_layout.model_mode", "site_polygon, exclusion_zones, obstacles, and terrain require 3D layout (omit model_mode or set model_mode='3d')")
     elif mode == "unlimited" and scope == "ground_tracker":
         for key in ("central_gap_m", "pitch_slope_deg", "wind_stow", "wind_stow_speed_ms", "wind_stow_position_deg"):
             if key in layout:
@@ -138,7 +139,7 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
     if sub_orientations is not None:
         if scope != "ground_sheds":
             bad("ground_layout.sub_orientations", "sub_orientations is only supported for scope='ground_sheds'")
-        elif mode != "unlimited" or layout.get("site_polygon") is not None or layout.get("obstacles") or layout.get("terrain") is not None:
+        elif mode != "unlimited" or layout.get("site_polygon") is not None or bool(layout.get("exclusion_zones")) or layout.get("obstacles") or layout.get("terrain") is not None:
             bad("ground_layout.sub_orientations",
                 "sub_orientations requires scope='ground_sheds' with model_mode='unlimited' (no 3D scene/polygon/terrain)")
         elif not isinstance(sub_orientations, list) or not 1 <= len(sub_orientations) <= 16:
@@ -288,6 +289,14 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
             validate_site_polygon(layout["site_polygon"])
         except ValueError as exc:
             bad("ground_layout.site_polygon", exc)
+    if layout.get("exclusion_zones") is not None:
+        from pvsyst_auto.scene.exclusions import validate_exclusion_zones
+        try:
+            validated_ex = validate_exclusion_zones(layout["exclusion_zones"])
+            if validated_ex and layout.get("site_polygon") is None and layout.get("dxf_name") is None and layout.get("pvc_name") is None:
+                bad("ground_layout.exclusion_zones", "exclusion_zones requires ground_layout.site_polygon or ground_layout.dxf_name")
+        except ValueError as exc:
+            bad("ground_layout.exclusion_zones", exc)
     if layout.get("obstacles") is not None:
         from pvsyst_auto.scene.author import obstacle_profiles
         try:

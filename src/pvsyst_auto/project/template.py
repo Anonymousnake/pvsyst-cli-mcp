@@ -515,7 +515,7 @@ def synthesize_utility_project(
     cell_width_m: float | None = None, module_rows: int = 2, module_columns: int = 15, module_orient: str = "moPortrait",
     spacing_x_m: float = 0.020, spacing_y_m: float = 0.020, module_width_m: float | None = None, module_length_m: float | None = None,
     module_name: str | None = None, bifacial: dict | None = None, include_3d_scene: bool | None = None,
-    site_polygon: list[list[float]] | None = None, setback_m: float = 0.0, ground_clearance_m: float = 0.5,
+    site_polygon: list[list[float]] | None = None, exclusion_zones: list[list[list[float]]] | None = None, setback_m: float = 0.0, ground_clearance_m: float = 0.5,
     max_table_columns: int | None = None, obstacles: list[dict] | None = None, base_slope_deg: float = 0.0,
     terrain: dict | None = None, u_factor: float = 29.0, lid_loss: float = 0.0, pmism_mpp: float | None = None,
     module_quality_loss: float | None = None, ageing: dict | None = None, dc_wiring_loss_pct: float = 1.5, dc_wiring_resistance_mohm: float = 0.0,
@@ -557,12 +557,14 @@ def synthesize_utility_project(
             store, field_type=field_type, pvc_name=pvc_name, dxf_name=dxf_name, dxf_layers=dxf_layers,
             dxf_unit_scale=dxf_unit_scale, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg, axis_azimuth_deg=axis_azimuth_deg,
             pitch_m=pitch_m, tilt_explicit=tilt_explicit, azimuth_explicit=azimuth_explicit,
-            obstacles=obstacles, terrain=terrain, module_name=resolved_mod_name, version=version, **es_kw,
+            obstacles=obstacles, exclusion_zones=exclusion_zones, terrain=terrain,
+            module_name=resolved_mod_name, version=version, **es_kw,
         )
         cad_summary = cad_resolved["cad_summary"]
         obstacles = cad_resolved.get("obstacles", obstacles)
         if cad_resolved["mode"] == "dxf":
             site_polygon, terrain = cad_resolved["site_polygon"], cad_resolved["terrain"]
+            exclusion_zones = cad_resolved.get("exclusion_zones")
         else:
             tilt_deg, azimuth_deg, axis_azimuth_deg = cad_resolved["tilt_deg"], cad_resolved["azimuth_deg"], cad_resolved["axis_azimuth_deg"]
             pitch_m, shed_count = cad_resolved["pitch_m"], cad_resolved["shed_count"]
@@ -573,14 +575,17 @@ def synthesize_utility_project(
     sx, sy = _finite(spacing_x_m, "spacing_x_m", minimum=0.0), _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
     need_3d = include_3d_scene if include_3d_scene is not None else (
         field_type in ("RegularSheds", "TrackHorizNSAxis", "Dome")
-        or site_polygon is not None or bool(obstacles) or cad_resolved is not None or es_cfg["mode"] == "partition"
+        or site_polygon is not None or bool(exclusion_zones) or bool(obstacles)
+        or cad_resolved is not None or es_cfg["mode"] == "partition"
     )
     if es_cfg["mode"] == "partition" and not need_3d:
         raise ValueError("electrical_shading='partition' requires include_3d_scene=True")
     if field_type == "Dome" and not need_3d:
         raise ValueError("East-west dome layout requires include_3d_scene=True")
-    if (site_polygon is not None or bool(obstacles) or cad_resolved is not None) and not need_3d:
-        raise ValueError("site_polygon, obstacles, and CAD imports require include_3d_scene=True")
+    if (site_polygon is not None or bool(exclusion_zones) or bool(obstacles) or cad_resolved is not None) and not need_3d:
+        raise ValueError("site_polygon, exclusion_zones, obstacles, and CAD imports require include_3d_scene=True")
+    if exclusion_zones and site_polygon is None and cad_resolved is None:
+        raise ValueError("exclusion_zones requires site_polygon or dxf_name")
     chord_mod = ml if module_orient == "moPortrait" else mw
     scene_collector_width = cad_resolved["collector_width_m"] if (cad_resolved and cad_resolved["mode"] == "pvc") else round(n_rows * chord_mod + max(0, n_rows - 1) * sy, 3)
     if need_3d:
@@ -630,7 +635,7 @@ def synthesize_utility_project(
                     shed_count=shed_count, pitch_m=resolved_pitch, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg,
                     base_slope_deg=eff_base_slope, top_spacing_m=resolved_top_spacing,
                     setback_m=setback_m, ground_clearance_m=ground_clearance_m,
-                    max_table_columns=max_table_columns, obstacles=obstacles, **mod_kw,
+                    max_table_columns=max_table_columns, obstacles=obstacles, exclusion_zones=exclusion_zones, **mod_kw,
                 )
             else:
                 clearance = _finite(ground_clearance_m, "ground_clearance_m", minimum=0.0)
@@ -652,6 +657,7 @@ def synthesize_utility_project(
                     module_orientation="landscape" if module_orient == "moLandscape" else "portrait",
                     spacing_x_m=sx, spacing_y_m=sy, setback_m=setback_m,
                     ground_clearance_m=ground_clearance_m, max_table_columns=max_table_columns, n_mod_serie=n_mod_serie,
+                    exclusion_zones=exclusion_zones,
                 )
                 if terrain_mesh is not None and bool((terrain or {}).get("drape_tables", True)):
                     draped_tables = drape_tracker_tables_on_terrain(
@@ -706,7 +712,7 @@ def synthesize_utility_project(
                     site_polygon, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg, pitch_m=resolved_pitch, module_width_m=mw,
                     module_length_m=ml, module_rows=n_rows, module_orientation="landscape" if module_orient == "moLandscape" else "portrait",
                     spacing_x_m=sx, spacing_y_m=sy, setback_m=setback_m, ground_clearance_m=ground_clearance_m,
-                    max_table_columns=max_table_columns, base_slope_deg=eff_base_slope,
+                    max_table_columns=max_table_columns, base_slope_deg=eff_base_slope, exclusion_zones=exclusion_zones,
                 )
                 tables_3d = ground_3d_layout["tables"]
             else:
@@ -877,7 +883,8 @@ def synthesize_utility_project(
         "field_type": field_type, "include_3d_scene": need_3d, "pitch_m": resolved_pitch, "collector_width_m": resolved_collector_width,
         "gcr": round(effective_gcr_width / resolved_pitch, 4), "shed_count": shed_count, "module_rows": n_rows, "module_columns": n_cols,
         "module_orient": module_orient, "module_width_m": mw, "module_length_m": ml, "module_dimension_source": dim_source,
-        "bifacial_enabled": bool(bifacial and bifacial.get("enabled", True)), "base_slope_deg": eff_base_slope, "obstacle_count": len(obstacles or ()),
+        "bifacial_enabled": bool(bifacial and bifacial.get("enabled", True)), "base_slope_deg": eff_base_slope,
+        "obstacle_count": len(obstacles or ()), "exclusion_zone_count": len(exclusion_zones or ()),
         **({"electrical_shading": es_summary} if es_summary is not None else {}),
         **({"dome": dome_meta} if dome_meta is not None else {}),
         **({"sub_orientations": sub_orient_summaries} if sub_orient_summaries is not None else {}),
