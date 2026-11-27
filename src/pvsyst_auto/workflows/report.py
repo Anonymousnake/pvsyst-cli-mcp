@@ -381,6 +381,7 @@ def generate_report(
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
+    top_p50_explicit = p50_p90 is not None or uncertainty is not None
     top_p50 = resolve_p50_p90_config(p50_p90, uncertainty)
     fin_p50 = resolve_p50_p90_config(financial.get("p50_p90"), financial.get("uncertainty")) if isinstance(financial, dict) else None
     t = _I18N[language]
@@ -445,7 +446,7 @@ def generate_report(
 
     econ_result = evaluate_economics(
         workspace=workspace, scenarios=econ_inputs, financial=financial, tariff=tariff,
-        sensitivity=sensitivity, p50_p90=top_p50, include_cashflow_schedule=True,
+        sensitivity=sensitivity, p50_p90=p50_p90, uncertainty=uncertainty, include_cashflow_schedule=True,
     ) if (financial is not None or tariff is not None) else None
     econ_by_label = {s["label"]: s for s in (econ_result["scenarios"] if econ_result else ())}
 
@@ -459,9 +460,10 @@ def generate_report(
             if isinstance(cand, dict) and "yields_kwh" in cand and "exceedance_curve" in cand:
                 p50_data = cand
             else:
+                sc_p50_explicit = raw_sc.get("p50_p90") is not None or raw_sc.get("uncertainty") is not None
                 cfg = resolve_p50_p90_config(raw_sc.get("p50_p90"), raw_sc.get("uncertainty")) if (
-                    "p50_p90" in raw_sc or "uncertainty" in raw_sc
-                ) else (top_p50 or fin_p50)
+                    sc_p50_explicit
+                ) else (top_p50 if top_p50_explicit else fin_p50)
                 if cfg is not None:
                     p50_data = compute_p50_p90_yields(
                         sc["stats"]["annual_e_grid_kwh"], cfg, installed_dc_kw=sc.get("installed_dc_kw"),

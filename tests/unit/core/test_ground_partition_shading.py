@@ -284,6 +284,25 @@ class GroundPartitionShadingTests(unittest.TestCase):
         ):
             self.assertEqual(_issues_for(scope, gl, tilt=tilt), [], (scope, gl))
 
+        # Pydantic GroundLayoutRequest / SingleDesignRequest with omitted model_mode must preserve omission
+        api_gl = GroundLayoutRequest(electrical_shading="partition").model_dump(exclude_none=True)
+        self.assertNotIn("model_mode", api_gl)
+        self.assertEqual(_issues_for("ground_sheds", api_gl), [])
+        fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
+        api_req = SingleDesignRequest(
+            scope="ground_sheds", new_project="ApiPart.PRJ", year=2024, target_dc_kw=100.0,
+            tilt=20.0, azimuth=0.0, module={"file_name": "HalfCut440.PAN"}, inverter={"file_name": "Inv50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            capacity=_capacity_spec(),
+            ground_layout={"electrical_shading": "partition", "pitch_m": 10.0, "shed_count": 6, "module_rows": 2, "module_columns": 19},
+        ).model_dump(exclude_none=True)
+        cli = _PartitionFakeCLI(self.ws, year=2024)
+        with patch("pvsyst_auto.workflows.utility.inspect_met_calendar", return_value=fake_cal):
+            preflight = simulate_design(cli, self.store, spec=api_req, dry_run=True)
+        self.assertEqual(preflight["status"], "ready", preflight)
+        self.assertEqual(preflight["utility_summary"]["field_type"], "RegularSheds")
+        self.assertEqual(preflight["utility_summary"]["electrical_shading"]["mode"], "partition")
+
         # pv_shading_header defaults to linear $000A0100 and FracOmbreMod=1.000
         default_hdr = "\n".join(pv_shading_header("Linear test", 1))
         self.assertIn("Flags=$000A0100", default_hdr)
@@ -322,10 +341,56 @@ class GroundPartitionShadingTests(unittest.TestCase):
         self.assertEqual((land_res["utility_summary"]["electrical_shading"]["partitions_x"],
                           land_res["utility_summary"]["electrical_shading"]["partitions_y"]), (2, 2))
 
+        # Single-row portrait cols < series_modules clamps px=1 cleanly
         clamp_res = synthesize_utility_project(
-            self.store, pan_name="HalfCut440.PAN", **{k: v for k, v in base.items() if k != "module_columns"}, module_columns=10,
+            self.store, pan_name="HalfCut440.PAN",
+            **{k: v for k, v in base.items() if k not in ("module_rows", "module_columns")},
+            module_rows=1, module_columns=10,
         )
-        self.assertEqual(clamp_res["utility_summary"]["electrical_shading"]["partitions_x"], 1)
+        self.assertEqual(
+            (clamp_res["utility_summary"]["electrical_shading"]["partitions_x"],
+             clamp_res["utility_summary"]["electrical_shading"]["partitions_y"]),
+            (1, 2),
+        )
+
+        # Cross-row string (n_cols < series_modules and n_rows >= 2):
+        # 1) Full-cell single-string table (2x10 = 20 <= 20) -> 1x1 partition (DX=10.0, DY=4.0)
+        one_str = synthesize_utility_project(
+            self.store, pan_name="FullCell440.PAN",
+            **{k: v for k, v in base.items() if k not in ("n_mod_serie", "module_columns")},
+            n_mod_serie=20, module_columns=10,
+        )
+        self.assertEqual(
+            (one_str["utility_summary"]["electrical_shading"]["partitions_x"],
+             one_str["utility_summary"]["electrical_shading"]["partitions_y"]),
+            (1, 1),
+        )
+        self.assertIn("DXModule=10.000", one_str["vc0_text"])
+        self.assertIn("DYModule=4.000", one_str["vc0_text"])
+
+        # 2) Half-cut or >1-string cross-row table rejects auto partitions_y unless explicit
+        with self.assertRaisesRegex(ValueError, "partitions_y"):
+            synthesize_utility_project(
+                self.store, pan_name="HalfCut440.PAN",
+                **{k: v for k, v in base.items() if k not in ("n_mod_serie", "module_columns")},
+                n_mod_serie=20, module_columns=10,
+            )
+        with self.assertRaisesRegex(ValueError, "partitions_y"):
+            synthesize_utility_project(
+                self.store, pan_name="FullCell440.PAN",
+                **{k: v for k, v in base.items() if k != "module_columns"},
+                module_columns=10,
+            )
+        explicit_cross = synthesize_utility_project(
+            self.store, pan_name="HalfCut440.PAN",
+            **{k: v for k, v in base.items() if k not in ("module_columns", "electrical_shading")},
+            module_columns=10, electrical_shading={"partitions_y": 1},
+        )
+        self.assertEqual(
+            (explicit_cross["utility_summary"]["electrical_shading"]["partitions_x"],
+             explicit_cross["utility_summary"]["electrical_shading"]["partitions_y"]),
+            (1, 1),
+        )
 
         # Partition span < 0.01 m rejected; exact 0.01 m boundary accepted
         ok_lines = build_ground_3d_shading(
@@ -494,6 +559,66 @@ class GroundPartitionShadingTests(unittest.TestCase):
         pvc_fix_txt = "\n".join(pvc_fix_lines)
         self.assertIn("Flags=$000A0300", pvc_fix_txt)
         self.assertIn("DXModule=", pvc_fix_txt)
+
+        # Mixed portrait + landscape tables resolve per-table ModuleOrient and partition/linear dims
+        mixed_parsed = {
+            "scene_kind": "fixed",
+            "module_spec": {
+                "module_width_m": 1.0, "module_length_m": 2.0, "module_orient": "moPortrait",
+                "spacing_x_m": 0.0, "spacing_y_m": 0.0, "module_rows": 1, "module_columns": 14,
+            },
+            "tables": [
+                {
+                    "name": "PortTbl", "origin_m": [0.0, 0.0, 0.5], "tilt_deg": 20.0, "azimuth_deg": 0.0,
+                    "long_shed_m": 14.0, "larg_shed_m": 2.0, "module_rows": 1, "module_columns": 14,
+                    "module_orient": "moPortrait",
+                },
+                {
+                    "name": "LandTbl", "origin_m": [0.0, 10.0, 0.5], "tilt_deg": 20.0, "azimuth_deg": 0.0,
+                    "long_shed_m": 14.0, "larg_shed_m": 1.0, "module_rows": 1, "module_columns": 7,
+                    "module_orient": "moLandscape",
+                },
+            ],
+        }
+        mixed_fix_txt = "\n".join(build_pvc_3d_shading(
+            mixed_parsed, module_name="440W", electrical_shading="partition", series_modules=14, is_half_cut=True,
+        ))
+        port_blk = _extract_object_block(mixed_fix_txt, "PVObject_1=pvShdArrayTable")
+        land_blk = _extract_object_block(mixed_fix_txt, "PVObject_2=pvShdArrayTable")
+        self.assertIn("ModuleOrient=moPortrait", port_blk)
+        self.assertIn("DYModule=1.000", port_blk)
+        self.assertIn("ModuleOrient=moLandscape", land_blk)
+        self.assertIn("DYModule=1.000", land_blk)  # Landscape 1-row does NOT double to 0.500
+
+        mixed_trk_tbls = [
+            {
+                "name": "TrkPort", "row_index": 1, "module_rows": 1, "module_columns": 14, "module_count": 14,
+                "long_shed_m": 2.0, "larg_shed_m": 14.0, "origin_m": [0.0, 0.0, 1.5], "axis_azimuth_deg": 0.0,
+                "module_orient": "moPortrait",
+            },
+            {
+                "name": "TrkLand", "row_index": 2, "module_rows": 1, "module_columns": 7, "module_count": 7,
+                "long_shed_m": 1.0, "larg_shed_m": 14.0, "origin_m": [8.0, 0.0, 1.5], "axis_azimuth_deg": 0.0,
+                "module_orient": "moLandscape",
+            },
+        ]
+        mixed_trk_part = "\n".join(build_tracker_3d_shading(
+            mixed_trk_tbls, module_name="440W", module_width_m=1.0, module_length_m=2.0, module_orient="moPortrait",
+            spacing_x_m=0.0, spacing_y_m=0.0, electrical_shading="partition", series_modules=14, is_half_cut=True,
+        )[0])
+        tp1 = _extract_object_block(mixed_trk_part, "PVObject_1=pvShdArrayTracking")
+        tp2 = _extract_object_block(mixed_trk_part, "PVObject_2=pvShdArrayTracking")
+        self.assertIn("ModuleOrient=moPortrait", tp1)
+        self.assertIn("DXModule=1.000", tp1)
+        self.assertIn("ModuleOrient=moLandscape", tp2)
+        self.assertIn("DXModule=1.000", tp2)
+        mixed_trk_lin = "\n".join(build_tracker_3d_shading(
+            mixed_trk_tbls, module_name="440W", module_width_m=1.0, module_length_m=2.0, module_orient="moPortrait",
+            spacing_x_m=0.0, spacing_y_m=0.0, electrical_shading="linear",
+        )[0])
+        tl2 = _extract_object_block(mixed_trk_lin, "PVObject_2=pvShdArrayTracking")
+        self.assertIn("ModuleOrient=moLandscape", tl2)
+        self.assertIn("DXModule=1.000", tl2)
 
         write_utf8_crlf(self.ws / "UserData" / "TrkCad.pvc", _make_pvc_tracker(count=2), bom=False)
         pvc_trk_resolved = resolve_cad_synthesis_inputs(

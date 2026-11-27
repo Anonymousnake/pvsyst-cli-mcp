@@ -109,7 +109,10 @@ def _p50_validate(values: Any) -> dict[str, Any]:
     if type(values["PlotKind"]) is not int or values["PlotKind"] != _P50_PLOT_KIND:
         raise ValueError(f"PlotKind must be the integer {_P50_PLOT_KIND}")
     out["PlotKind"] = _P50_PLOT_KIND
-    out["YearDevFromAver"] = _p50_step(values["YearDevFromAver"], "YearDevFromAver", -100, 100)
+    year_dev = _p50_step(values["YearDevFromAver"], "YearDevFromAver", -100, 100)
+    if year_dev <= -100.0:
+        raise ValueError("YearDevFromAver must exceed -100%")
+    out["YearDevFromAver"] = year_dev
     for key in _P50_VARIAB:
         out[key] = _p50_step(values[key], key, 0, 100)
     out["CustomVarLabel"] = _p50_label(values["CustomVarLabel"])

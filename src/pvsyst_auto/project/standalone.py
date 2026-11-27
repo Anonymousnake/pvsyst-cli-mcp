@@ -369,6 +369,10 @@ def run_standalone_design(
         raise ValueError("scope='stand_alone' requires a 'standalone' specification object")
     if spec.get("losses"):
         raise ValueError("losses overrides are not supported for scope='stand_alone'")
+    if spec.get("p50_p90") is not None:
+        raise ValueError("p50_p90 is not supported for scope='stand_alone'")
+    if spec.get("horizon") is not None:
+        raise ValueError("horizon is not supported for scope='stand_alone'")
 
     raw_prj = spec.get("new_project")
     if not isinstance(raw_prj, str) or not raw_prj.strip():
@@ -379,6 +383,8 @@ def run_standalone_design(
     if raw_weather is not None and not isinstance(raw_weather, dict):
         raise ValueError("Stand-Alone design requires weather as an object")
     weather = raw_weather or {}
+    if weather.get("fetch_horizon") not in (None, False):
+        raise ValueError("weather.fetch_horizon is not supported for scope='stand_alone'")
     if weather.get("mode", "existing") != "existing":
         raise ValueError("Stand-Alone design requires weather.mode='existing'")
     site_name = weather.get("sit_name")

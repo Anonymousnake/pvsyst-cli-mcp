@@ -695,6 +695,7 @@ def evaluate_economics(*, workspace: Path | None = None, scenarios: list[dict] |
     if rank_by not in _VALID_RANK_KEYS: raise ValueError(f"rank_by must be one of: {', '.join(_VALID_RANK_KEYS)}")
     if type(include_cashflow_schedule) is not bool: raise ValueError("include_cashflow_schedule must be a strict boolean")
     fin_cfg, tar_cfg, sens_cfg = _validate_financial(financial), _validate_tariff(tariff), _validate_sensitivity(sensitivity)
+    top_p50_explicit = p50_p90 is not None or uncertainty is not None
     top_p50 = resolve_p50_p90_config(p50_p90, uncertainty)
     top_anchors: dict[int, float] | None = None
     if ageing_batch_csv:
@@ -802,7 +803,11 @@ def evaluate_economics(*, workspace: Path | None = None, scenarios: list[dict] |
             year1_energy_benefit=y1_benefit - y1_demand_savings, year1_demand_savings=y1_demand_savings,
             capex_total=capex, base_annual_opex=opex, replacement_events=sc_replacements, financial=fin_cfg, dc_kw=dc_kw,
             yearly_deg_factors=sc_deg_factors) if sens_cfg is not None else None
-        sc_p50 = resolve_p50_p90_config(sc.get("p50_p90"), sc.get("uncertainty")) if ("p50_p90" in sc or "uncertainty" in sc) else (top_p50 or fin_cfg["p50_p90"])
+        sc_p50 = (
+            resolve_p50_p90_config(sc.get("p50_p90"), sc.get("uncertainty"))
+            if (sc.get("p50_p90") is not None or sc.get("uncertainty") is not None)
+            else (top_p50 if top_p50_explicit else fin_cfg["p50_p90"])
+        )
         p50_res = compute_probabilistic_economics(
             year1_energy_kwh=y1_energy, p50_spec=sc_p50, base_metrics=metrics, installed_dc_kw=dc_kw, financial=fin_cfg,
             run_cashflow_for_scale=lambda s: _compute_cashflow_metrics(
