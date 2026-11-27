@@ -216,7 +216,6 @@ def build_tracker_3d_shading(
     cfg = normalize_electrical_shading(electrical_shading)
     clearance = _finite(ground_clearance_m, "ground_clearance_m", minimum=0.0)
     max_axis_tilt = _finite((terrain_opts or {}).get("max_axis_tilt_deg", 15.0), "max_axis_tilt_deg", minimum=0.0, maximum=45.0)
-    chord_mod = module_length_m if module_orient == "moPortrait" else module_width_m
     parsed_obs = obstacle_profiles(obstacles) if obstacles else []
     total_objs = len(tables) + len(parsed_obs) + (1 if terrain_mesh is not None else 0)
     lines = pv_shading_header("Finite 3D N-S tracker polygon shading scene", total_objs, **shading_header_kwargs(cfg))
@@ -249,20 +248,22 @@ def build_tracker_3d_shading(
             "axis_tilt_deg": round(axis_tilt, 3),
             "module_columns": int(tbl["module_columns"]),
         })
+        tbl_orient = str(tbl.get("module_orient") or module_orient)
         if cfg["mode"] == "partition":
             dx_mod, dy_mod, _, _ = compute_table_partition_dims(
                 long_shed_m=float(tbl["long_shed_m"]),
                 larg_shed_m=float(tbl["larg_shed_m"]),
                 module_rows=int(tbl["module_rows"]),
                 module_columns=int(tbl["module_columns"]),
-                module_orient=module_orient,
+                module_orient=tbl_orient,
                 is_tracker=True,
                 electrical_shading=cfg,
                 series_modules=series_modules,
                 is_half_cut=is_half_cut,
             )
         else:
-            dx_mod = chord_mod + spacing_y_m
+            tbl_chord_mod = module_length_m if tbl_orient in ("moPortrait", "portrait") else module_width_m
+            dx_mod = tbl_chord_mod + spacing_y_m
             dy_mod = float(tbl["larg_shed_m"])
         lines.extend([
             f"      PVObject_{obj_idx}=pvShdArrayTracking",
@@ -285,7 +286,7 @@ def build_tracker_3d_shading(
             f"      ModSpacingY={spacing_y_m:.3f}",
             f"      NModInHeight={tbl['module_rows']}",
             f"      NModInWidth={tbl['module_columns']}",
-            f"      ModuleOrient={module_orient}",
+            f"      ModuleOrient={tbl_orient}",
             f"      DXModule={dx_mod:.3f}",
             f"      DYModule={dy_mod:.3f}",
             f"        LongShed={tbl['long_shed_m']:.6f}",

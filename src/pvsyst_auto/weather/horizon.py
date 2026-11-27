@@ -418,7 +418,7 @@ def resolve_design_horizon(
     if lat is None or lon is None:
         raise HorizonFetchError("Could not resolve site latitude/longitude for PVGIS horizon fetch")
     fetched = fetch_pvgis_horizon(lat, lon, profile_name=profile_name, timeout=timeout)
-    return (fetched if fetched["mode"] == "profile" else None), fetched
+    return (fetched if fetched["mode"] == "profile" else {"mode": "none"}), fetched
 
 
 def render_horizon_lines(horizon: dict[str, Any], *, indent: str = "  ") -> list[str]:

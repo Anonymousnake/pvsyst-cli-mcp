@@ -628,6 +628,67 @@ class OptInAndWorkflowWiringTests(unittest.TestCase):
         self.assertEqual(info["p50_p90"]["mode"], "configured")
         self.assertEqual(info["ageing"]["mode"], "mounted")
 
+    def test_flat_pvgis_clears_inherited_template_horizon_and_standalone_rejections(self):
+        tpl = synthesize_project_and_variant(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            pan_name="Lab440.PAN", ond_name="Lab50.OND", tilt_deg=25.0,
+            horizon=normalize_horizon_spec({
+                "mode": "points", "profile_name": "InheritedHill",
+                "points": [[-180.0, 4.0], [0.0, 9.0], [90.0, 7.0], [180.0, 4.0]],
+            }),
+        )
+        self.assertIn("PVObject_Horizon=pvHorizon", tpl["vc0_text"])
+        self.store.create_project("HzTpl.PRJ", tpl["prj_text"], {"VC0": tpl["vc0_text"]})
+        cli = _FakeUtilityCLI(self.root, year=2024)
+        fake_cal = {"issues": [], "warnings": [], "year": 2024, "rows": 8784}
+        flat_payload = {"outputs": {"horizon_profile": [{"A": a, "H_hor": 0.0} for a in (-180, -90, 0, 90, 180)]}}
+        tpl_spec = SingleDesignRequest(
+            template_project="HzTpl.PRJ", variant="VC0", new_project="ClearedHz.PRJ",
+            year=2024, target_dc_kw=100.0, tilt=25.0, azimuth=0.0,
+            module={"file_name": "Lab440.PAN"}, inverter={"file_name": "Lab50.OND"},
+            weather={"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET", "fetch_horizon": True},
+            capacity=_capacity_spec(),
+        ).model_dump(exclude_none=True)
+
+        class _FakeResp(io.BytesIO):
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+
+        raw_bytes = json.dumps(flat_payload).encode("utf-8")
+        with patch("pvsyst_auto.workflows.simulation.inspect_met_calendar", return_value=fake_cal), \
+             patch("urllib.request.urlopen", return_value=_FakeResp(raw_bytes)):
+            ran = simulate_design(cli, self.store, spec=tpl_spec, dry_run=False)
+        self.assertIn(ran["status"], ("completed", "needs_review"), ran)
+        self.assertEqual(ran["horizon"]["mode"], "none")
+        self.assertTrue(ran["horizon"]["is_flat"])
+        self.assertEqual(self.store.inspect_parameters("ClearedHz.PRJ", "VC0")["horizon"]["mode"], "none")
+        self.assertNotIn("PVObject_Horizon=pvHorizon", (self.root / "Projects" / "ClearedHz.VC0").read_text(encoding="utf-8-sig"))
+
+        # Stand-alone design explicitly rejects p50_p90, horizon, and weather.fetch_horizon=True
+        sa_base = {
+            "scope": "stand_alone",
+            "new_project": "SaReject.PRJ",
+            "weather": {"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            "module": {"file_name": "Lab440.PAN"},
+            "standalone": {"battery_file": "MissingBat.BTR"},
+        }
+        for bad_patch, expected_msg in (
+            ({"p50_p90": {}}, "p50_p90 is not supported"),
+            ({"horizon": {"mode": "points", "points": [[-180, 0], [0, 5], [90, 5], [180, 0]]}}, "horizon is not supported"),
+            ({"weather": {**sa_base["weather"], "fetch_horizon": True}}, "fetch_horizon is not supported"),
+        ):
+            res_bad = simulate_design(cli, self.store, spec={**sa_base, **bad_patch}, dry_run=True)
+            self.assertEqual(res_bad["status"], "blocked", bad_patch)
+            self.assertIn(expected_msg, str(res_bad["issues"]), bad_patch)
+        res_ok_flag = simulate_design(
+            cli, self.store,
+            spec={**sa_base, "weather": {**sa_base["weather"], "fetch_horizon": False}},
+            dry_run=True,
+        )
+        self.assertNotIn("fetch_horizon is not supported", str(res_ok_flag.get("issues")))
+
     def test_feasibility_study_end_to_end_p50_bankability_and_report(self):
         csv_path = _sample_sfi_csv(self.root / "Results" / "study_p50.csv", kw_day=125.0)
         cli = FakeCliBase(self.root)
@@ -658,6 +719,40 @@ class OptInAndWorkflowWiringTests(unittest.TestCase):
         self.assertTrue(done["report"]["has_p50_p90"])
         self.assertIn("Annual Yield Exceedance Probability", Path(done["report"]["report_path"]).read_text(encoding="utf-8"))
 
+        # Explicit top-level p50_p90={"enabled": False} must override enabled financial["p50_p90"]
+        econ_off = evaluate_economics(
+            scenarios=[{
+                "label": "plant",
+                "annual_yield_kwh": 1_500_000.0,
+                "installed_dc_kw": 1000.0,
+                "capex_total": 3_500_000.0,
+            }],
+            financial={"p50_p90": {}},
+            p50_p90={"enabled": False},
+        )
+        self.assertNotIn("p50_p90", econ_off["scenarios"][0])
+        rep_off = generate_report(
+            workspace=self.root, store=self.store, title="Off Report", output_name="p50_off_rep.html",
+            scenarios=[{"label": "plant", "csv_name": csv_path.name, "installed_dc_kw": 120.0, "capex_total": 420_000.0}],
+            financial={"p50_p90": {}},
+            p50_p90={"enabled": False},
+            dry_run=True,
+        )
+        self.assertFalse(rep_off["has_p50_p90"])
+        study_off = run_feasibility_study(
+            cli, self.store,
+            spec={
+                **spec,
+                "p50_p90": {"enabled": False},
+                "financial": {**spec["financial"], "p50_p90": {}},
+                "report": {**spec["report"], "output_name": "bankability_p50_off.html"},
+            },
+            dry_run=True,
+        )
+        self.assertEqual(study_off["status"], "ready")
+        self.assertFalse(study_off["report"]["has_p50_p90"])
+        self.assertNotIn("p90_llcr", study_off["executive_summary"])
+
 
 class SchemaAndBudgetTests(unittest.TestCase):
     def test_strict_request_schemas_and_mcp_tool_budget(self):
@@ -677,6 +772,11 @@ class SchemaAndBudgetTests(unittest.TestCase):
             HorizonRequest(mode="pvgis", latitude=46.24)
         with self.assertRaises(ValidationError):
             P50P90Spec(p90_custom=95, pxx_custom=90)
+        with self.assertRaises(ValidationError):
+            P50P90Spec(year_dev_from_aver_pct=-100)
+        with self.assertRaisesRegex(ValueError, "exceed -100%"):
+            normalize_p50_spec({"year_dev_from_aver_pct": -100})
+        P50P90Spec(year_dev_from_aver_pct=-99.999)
         with self.assertRaises(ValidationError):
             EconomicsFinancialConfig(p50_p90={"evaluation_years": 1}, uncertainty={"evaluation_years": 1})
 

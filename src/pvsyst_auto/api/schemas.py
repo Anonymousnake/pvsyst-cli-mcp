@@ -242,7 +242,7 @@ class GroundSubOrientationSpec(_StrictModel):
     base_slope_deg: StrictNum | None = None
 class GroundLayoutRequest(_StrictModel):
     """Ground multi-row fixed sheds or horizontal N-S single-axis tracker geometry."""
-    model_mode: Literal["unlimited", "3d"] = "unlimited"
+    model_mode: Literal["unlimited", "3d"] | None = None
     pitch_m: StrictNum | None = None
     collector_width_m: StrictNum | None = None
     shed_count: Annotated[StrictInt, Field(ge=1, le=1000)] = 10

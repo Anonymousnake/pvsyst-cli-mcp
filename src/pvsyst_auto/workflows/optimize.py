@@ -525,16 +525,21 @@ def run_feasibility_study(
     est_cli_calls = 0
 
     financial_cfg = spec.get("financial")
-    raw_study_p50 = (
-        spec.get("p50_p90")
-        or (design_spec or {}).get("p50_p90")
-        or (financial_cfg or {}).get("p50_p90")
-        or (financial_cfg or {}).get("uncertainty")
+    raw_study_p50 = next(
+        (v for v in (
+            spec.get("p50_p90"),
+            (design_spec or {}).get("p50_p90"),
+            (financial_cfg or {}).get("p50_p90"),
+            (financial_cfg or {}).get("uncertainty"),
+        ) if v is not None),
+        None,
     )
     study_p50 = None
+    study_p50_pass = None
     if raw_study_p50 is not None:
         from pvsyst_auto.energy.p50_p90 import resolve_p50_p90_config
         study_p50 = resolve_p50_p90_config(raw_study_p50)
+        study_p50_pass = study_p50 if study_p50 is not None else {"enabled": False}
 
     synth_items = spec.get("synthesize_components") or []
     synth_results = [_synthesize_inline_component(comp_store, item, dry_run=dry_run) for item in synth_items]
@@ -708,7 +713,7 @@ def run_feasibility_study(
                 scenarios=[{k: v for k, v in sc.items() if k in ("label", "csv_name", "installed_dc_kw", "battery_kwh", "capex_total") and v is not None} for sc in report_scenarios],
                 ageing_batch_csv=ageing_batch_csv,
                 financial=financial_cfg, tariff=tariff_cfg, sensitivity=sensitivity_cfg,
-                p50_p90=study_p50, include_cashflow_schedule=True,
+                p50_p90=study_p50_pass, include_cashflow_schedule=True,
             )
             stages.append({"stage": "economics", "status": "ok", "best_scenario": econ_result["best_scenario"], "has_sensitivity": sensitivity_cfg is not None and sensitivity_cfg.get("enabled", True)})
         else:
@@ -726,7 +731,7 @@ def run_feasibility_study(
             report_result = generate_report(
                 workspace=ws, store=store, title=report_cfg.get("title") or f"{study_name} Feasibility Report",
                 output_name=safe_out, scenarios=report_scenarios, financial=financial_cfg, tariff=tariff_cfg,
-                sensitivity=sensitivity_cfg, p50_p90=study_p50, bess_optimization=bess_result,
+                sensitivity=sensitivity_cfg, p50_p90=study_p50_pass, bess_optimization=bess_result,
                 language=report_cfg.get("language", "zh"), plotlyjs=report_cfg.get("plotlyjs", "cdn"),
                 thresholds=spec.get("thresholds"), overwrite=bool(report_cfg.get("overwrite", False)), dry_run=dry_run,
             )

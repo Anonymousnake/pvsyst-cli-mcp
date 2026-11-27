@@ -151,16 +151,34 @@ def compute_table_partition_dims(
         raise ValueError(f"Unsupported module_orient: {module_orient!r}")
 
     cfg = normalize_electrical_shading(electrical_shading)
-    px = (
-        cfg["partitions_x"]
-        if cfg["partitions_x"] is not None
-        else (max(1, n_cols // series_modules) if series_modules is not None else 1)
-    )
-    py = (
-        cfg["partitions_y"]
-        if cfg["partitions_y"] is not None
-        else (n_rows * 2 if (is_portrait and cfg["auto_half_cut"] and is_half_cut) else n_rows)
-    )
+    px_raw = cfg["partitions_x"]
+    py_raw = cfg["partitions_y"]
+    if series_modules is not None and n_cols < series_modules and n_rows >= 2:
+        total_mods = n_rows * n_cols
+        if py_raw is None:
+            if not is_half_cut and total_mods <= series_modules:
+                px = px_raw if px_raw is not None else 1
+                py = 1
+            else:
+                raise ValueError(
+                    f"Cannot automatically infer electrical partitions for {n_rows}x{n_cols} table "
+                    f"with series_modules={series_modules} (cross-row strings); "
+                    "set explicit electrical_shading.partitions_y (and partitions_x if needed)"
+                )
+        else:
+            px = px_raw if px_raw is not None else 1
+            py = py_raw
+    else:
+        px = (
+            px_raw
+            if px_raw is not None
+            else (max(1, n_cols // series_modules) if series_modules is not None else 1)
+        )
+        py = (
+            py_raw
+            if py_raw is not None
+            else (n_rows * 2 if (is_portrait and cfg["auto_half_cut"] and is_half_cut) else n_rows)
+        )
     if is_tracker:
         dx_mod = long_m / py
         dy_mod = larg_m / px
