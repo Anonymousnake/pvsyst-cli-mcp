@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from pvsyst_auto.energy.p50_p90 import compute_p50_p90_yields, resolve_p50_p90_config
 from pvsyst_auto.engineering.diagnostics import diagnose_simulation_csv
 from pvsyst_auto.engineering.economics import evaluate_economics
 from pvsyst_auto.native.cli import parse_batch_results
@@ -35,6 +36,10 @@ _I18N = {
         "sec_typical_day": "典型 24 小时功率与分时电价曲线", "sec_demand": "两部制月度最大需量削峰对比",
         "sec_cashflow": "全生命周期累计现金流与财务对比", "sec_sensitivity": "财务敏感性分析龙卷风图 (NPV)",
         "sec_bess_opt": "光储容量寻优收益热力图与 Pareto 前沿", "sec_batch_sweep": "参数扫描寻优曲线 (批处理结果)",
+        "sec_p50": "发电量超越概率分布 (P50 / P75 / P90 / P99)",
+        "kpi_p90_yield": "P90 年发电量", "kpi_uncertainty": "综合不确定度",
+        "kpi_p90_dscr": "P90 最低 DSCR", "kpi_p90_llcr": "P90 LLCR",
+        "p50_prob_axis": "超越概率 P (%)", "p50_yield_axis": "年发电量 (kWh)",
         "batch_opt_label": "最优点", "sec_ranking": "多方案综合排名对比表", "sec_diag": "物理与时序诊断明细",
         "demand_base": "基准最大需量 (kW)", "demand_actual": "加装光储后最大需量 (kW)",
         "sens_factor_labels": {"tariff": "电价水平", "capex": "初始投资 CAPEX", "yield": "年发电量 / 辐照", "degradation": "衰减率"},
@@ -65,6 +70,10 @@ _I18N = {
         "sec_typical_day": "Typical 24-Hour Power & TOU Tariff Profile", "sec_demand": "Monthly Peak Demand Shaving Comparison",
         "sec_cashflow": "Lifetime Cumulative Cashflow & Financial Comparison", "sec_sensitivity": "Financial Sensitivity Tornado Chart (NPV)",
         "sec_bess_opt": "PV+BESS Sizing Heatmap & Pareto Frontier", "sec_batch_sweep": "Parametric Batch Sweep Curves",
+        "sec_p50": "Annual Yield Exceedance Probability (P50 / P75 / P90 / P99)",
+        "kpi_p90_yield": "P90 Yield", "kpi_uncertainty": "Combined Uncertainty",
+        "kpi_p90_dscr": "P90 Min DSCR", "kpi_p90_llcr": "P90 LLCR",
+        "p50_prob_axis": "Exceedance Probability P (%)", "p50_yield_axis": "Annual Yield (kWh)",
         "batch_opt_label": "Optimum", "sec_ranking": "Multi-Scenario Ranking Summary", "sec_diag": "Physics & Time-Series Diagnostics",
         "demand_base": "Baseline Peak Demand (kW)", "demand_actual": "Post-PV/BESS Peak Demand (kW)",
         "sens_factor_labels": {"tariff": "Tariff Rate", "capex": "Initial CAPEX", "yield": "Annual Yield / Irradiance", "degradation": "Degradation Rate"},
@@ -303,10 +312,51 @@ def _build_batch_sweep_figure(parsed_batch: dict[str, Any], *, palette: list[str
     return fig
 
 
+def _build_p50_exceedance_figure(p50_entries: list[tuple[str, dict[str, Any]]], *, palette: list[str], t: dict[str, Any]):
+    """Build an interactive Plotly exceedance probability curve (P50/P75/P90/P99)."""
+    import plotly.graph_objects as go
+
+    if not p50_entries:
+        return None
+    fig = go.Figure()
+    for i, (label, p50_data) in enumerate(p50_entries):
+        curve = p50_data.get("exceedance_curve") or []
+        if not curve:
+            continue
+        color = palette[i % len(palette)]
+        xs = [pt["probability_pct"] for pt in curve]
+        ys = [pt["annual_yield_kwh"] for pt in curve]
+        fig.add_trace(go.Scatter(
+            name=f"{label} (±{p50_data['combined_uncertainty_pct']:.2f}%)",
+            x=xs, y=ys, mode="lines",
+            fill="tozeroy" if (i == 0 and len(p50_entries) == 1) else None,
+            line=dict(color=color, width=2.5),
+        ))
+        mx = [50, 75, 90, 99]
+        my = [p50_data["yields_kwh"][f"P{p}"] for p in mx]
+        fig.add_trace(go.Scatter(
+            name=f"{label} P50/P75/P90/P99",
+            x=mx, y=my,
+            mode="markers+text" if i == 0 else "markers",
+            text=[f"P{p}: {y:,.0f}" for p, y in zip(mx, my)] if i == 0 else None,
+            textposition="top right",
+            marker=dict(size=9, symbol="diamond", color=color),
+        ))
+    fig.add_vline(x=50, line_width=1, line_dash="dash", line_color="#64748b")
+    fig.add_vline(x=90, line_width=1.5, line_dash="dash", line_color="#dc2626")
+    fig.update_layout(
+        template="plotly_white", height=400, margin=dict(l=65, r=30, t=30, b=50),
+        xaxis_title=t["p50_prob_axis"], yaxis_title=t["p50_yield_axis"],
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+    )
+    return fig
+
+
 def generate_report(
     *, workspace: Path | None = None, store=None, title: str, output_name: str,
     scenarios: list[dict[str, Any]], financial: dict[str, Any] | None = None,
     tariff: dict[str, Any] | None = None, sensitivity: dict[str, Any] | None = None,
+    p50_p90: dict[str, Any] | None = None, uncertainty: dict[str, Any] | None = None,
     bess_optimization: dict[str, Any] | None = None, batch_summary_csv: str | None = None,
     language: str = "zh", plotlyjs: str = "cdn", thresholds: dict[str, float] | None = None,
     overwrite: bool = False, dry_run: bool = False,
@@ -331,9 +381,12 @@ def generate_report(
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
+    top_p50 = resolve_p50_p90_config(p50_p90, uncertainty)
+    fin_p50 = resolve_p50_p90_config(financial.get("p50_p90"), financial.get("uncertainty")) if isinstance(financial, dict) else None
     t = _I18N[language]
     parsed_scenarios: list[dict[str, Any]] = []
     econ_inputs: list[dict[str, Any]] = []
+    raw_by_label: dict[str, dict[str, Any]] = {}
     seen_labels: set[str] = set()
     for idx_s, sc in enumerate(scenarios):
         if not isinstance(sc, dict):
@@ -342,6 +395,7 @@ def generate_report(
         if label in seen_labels:
             raise ValueError(f"Duplicate scenario label {label!r}; scenario labels must be unique")
         seen_labels.add(label)
+        raw_by_label[label] = sc
         csv_name, csv_names, proj, var = sc.get("csv_name"), sc.get("csv_names"), sc.get("project"), sc.get("variant")
         if csv_name and csv_names:
             raise ValueError(f"scenarios[{idx_s}] ({label}): specify either csv_name or csv_names, not both")
@@ -382,16 +436,38 @@ def generate_report(
             "installed_dc_kw": sc.get("installed_dc_kw"), "battery_kwh": sc.get("battery_kwh"),
             "stats": csv_stats, "diagnostics": diag,
         })
-        for k in ("installed_dc_kw", "battery_kwh", "capex_total", "annual_opex", "replacement_events"):
+        for k in ("installed_dc_kw", "battery_kwh", "capex_total", "annual_opex", "replacement_events", "uncertainty"):
             if sc.get(k) is not None:
                 econ_entry[k] = sc[k]
+        if isinstance(sc.get("p50_p90"), dict) and not ("yields_kwh" in sc["p50_p90"] and "exceedance_curve" in sc["p50_p90"]):
+            econ_entry["p50_p90"] = sc["p50_p90"]
         econ_inputs.append(econ_entry)
 
     econ_result = evaluate_economics(
         workspace=workspace, scenarios=econ_inputs, financial=financial, tariff=tariff,
-        sensitivity=sensitivity, include_cashflow_schedule=True,
+        sensitivity=sensitivity, p50_p90=top_p50, include_cashflow_schedule=True,
     ) if (financial is not None or tariff is not None) else None
     econ_by_label = {s["label"]: s for s in (econ_result["scenarios"] if econ_result else ())}
+
+    p50_entries: list[tuple[str, dict[str, Any]]] = []
+    for sc in parsed_scenarios:
+        lbl = sc["label"]
+        raw_sc = raw_by_label[lbl]
+        p50_data = (econ_by_label.get(lbl) or {}).get("p50_p90")
+        if p50_data is None:
+            cand = raw_sc.get("p50_p90") or (raw_sc.get("metrics") or {}).get("p50_p90")
+            if isinstance(cand, dict) and "yields_kwh" in cand and "exceedance_curve" in cand:
+                p50_data = cand
+            else:
+                cfg = resolve_p50_p90_config(raw_sc.get("p50_p90"), raw_sc.get("uncertainty")) if (
+                    "p50_p90" in raw_sc or "uncertainty" in raw_sc
+                ) else (top_p50 or fin_p50)
+                if cfg is not None:
+                    p50_data = compute_p50_p90_yields(
+                        sc["stats"]["annual_e_grid_kwh"], cfg, installed_dc_kw=sc.get("installed_dc_kw"),
+                    )
+        if p50_data is not None:
+            p50_entries.append((lbl, p50_data))
 
     palette = ["#2563eb", "#059669", "#d97706", "#7c3aed", "#dc2626", "#0891b2"]
     fig_batch = _build_batch_sweep_figure(parse_batch_results(_resolve_batch_csv(workspace, batch_summary_csv), columns=None),
@@ -401,6 +477,7 @@ def generate_report(
             "status": "ready", "dry_run": True, "report_path": str(out_path),
             "scenario_count": len(parsed_scenarios), "language": language, "plotlyjs": plotlyjs,
             "has_economics": econ_result is not None, "has_batch_sweep": fig_batch is not None,
+            "has_p50_p90": bool(p50_entries),
         }
 
     js_first, js_used = (True if plotlyjs == "embed" else "cdn"), False
@@ -530,6 +607,9 @@ def generate_report(
 
     if fig_batch is not None:
         chart_sections.append((t["sec_batch_sweep"], _plotly_div(fig_batch, include_js=next_js())))
+    fig_p50 = _build_p50_exceedance_figure(p50_entries, palette=palette, t=t) if p50_entries else None
+    if fig_p50 is not None:
+        chart_sections.append((t["sec_p50"], _plotly_div(fig_p50, include_js=next_js())))
 
     primary_diag, primary_yield, primary_dc = primary["diagnostics"], primary["stats"]["annual_e_grid_kwh"], primary.get("installed_dc_kw")
     primary_pr = (primary_diag["weighted_pr"] * 100.0) if primary_diag.get("weighted_pr") is not None else None
@@ -556,6 +636,14 @@ def generate_report(
             kpis.append((t["kpi_equity_irr"], _fmt_num(fin_sum.get("equity_irr_pct"), 2, " %")))
             if fin_sum.get("min_dscr") is not None:
                 kpis.append((t["kpi_min_dscr"], _fmt_num(fin_sum.get("min_dscr"), 2, "x")))
+    if (primary_p50 := next((d for lbl, d in p50_entries if lbl == primary["label"]), None)) is not None:
+        kpis.append((t["kpi_p90_yield"], _fmt_num(primary_p50["yields_kwh"].get("P90"), 1, " kWh")))
+        kpis.append((t["kpi_uncertainty"], _fmt_num(primary_p50.get("combined_uncertainty_pct"), 2, " %")))
+        if isinstance(bank := primary_p50.get("financing_bankability"), dict):
+            if bank.get("p90_min_dscr") is not None:
+                kpis.append((t["kpi_p90_dscr"], _fmt_num(bank.get("p90_min_dscr"), 2, "x")))
+            if bank.get("p90_llcr") is not None:
+                kpis.append((t["kpi_p90_llcr"], _fmt_num(bank.get("p90_llcr"), 2, "x")))
     kpi_html = "".join(f'<div class="kpi"><div class="kpi-label">{html.escape(lbl)}</div><div class="kpi-val">{html.escape(val)}</div></div>' for lbl, val in kpis)
 
     ranking_rows_html = []
@@ -657,5 +745,6 @@ def generate_report(
         "status": "generated", "dry_run": False, "report_path": str(out_path),
         "report_name": out_path.name, "bytes": out_path.stat().st_size, "language": language,
         "plotlyjs": plotlyjs, "scenario_count": len(parsed_scenarios), "chart_count": len(chart_sections),
-        "has_economics": econ_result is not None, "has_batch_sweep": fig_batch is not None, "best_scenario": best_label,
+        "has_economics": econ_result is not None, "has_batch_sweep": fig_batch is not None,
+        "has_p50_p90": fig_p50 is not None, "best_scenario": best_label,
     }

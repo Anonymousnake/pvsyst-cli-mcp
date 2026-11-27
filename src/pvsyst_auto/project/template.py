@@ -522,6 +522,7 @@ def synthesize_utility_project(
     sub_orientations: list[dict] | None = None, subarray_allocations: list[dict] | None = None, top_spacing_m: float = 0.2, dome_wiring: str = "auto",
     pvc_name: str | None = None, dxf_name: str | None = None, dxf_layers: dict | None = None, dxf_unit_scale: float | None = None,
     electrical_shading: str | dict | None = None, tilt_explicit: bool = True, azimuth_explicit: bool = True,
+    p50_p90: dict | None = None, horizon: dict | None = None,
     allow_missing_met: bool = False, version: str = SYNTH_VERSION, with_bom: bool = True,
 ) -> dict:
     """Zero-template synthesizer for utility ground sheds, east-west domes, or single-axis trackers."""
@@ -847,11 +848,21 @@ def synthesize_utility_project(
     if ageing is not None:
         from pvsyst_auto.energy.ageing import normalize_ageing_spec
         ageing_norm = normalize_ageing_spec(ageing)
+    p50_norm = None
+    if p50_p90 is not None:
+        from pvsyst_auto.energy.p50_p90 import normalize_p50_spec
+        p50_norm = normalize_p50_spec(p50_p90)
+    horizon_norm = horizon
+    if horizon is not None and horizon.get("mode") == "points":
+        from pvsyst_auto.weather.horizon import normalize_horizon_spec
+        horizon_norm = normalize_horizon_spec(horizon)
+    horizon_arg = horizon_norm if (isinstance(horizon_norm, dict) and horizon_norm.get("mode") == "profile") else None
 
     result = synthesize_project_and_variant(
         store, project_comment=project_comment, variant_comment=variant_comment, site_name=site_name, met_name=met_name,
         orientations=orientations_list, subarrays=subarrays, pan_name=pan_name, ond_name=ond_name, u_factor=u_factor,
-        shading_lines=shading_lines, ageing=ageing_norm, version=version, with_bom=with_bom, allow_missing_met=allow_missing_met,
+        shading_lines=shading_lines, ageing=ageing_norm, p50_p90=p50_norm, horizon=horizon_arg,
+        version=version, with_bom=with_bom, allow_missing_met=allow_missing_met,
     )
     es_summary = (
         summarize_utility_electrical_shading(
@@ -874,6 +885,9 @@ def synthesize_utility_project(
         **({"ground_3d_layout": ground_3d_layout} if ground_3d_layout is not None else {}),
         **({"terrain": terrain_summary} if terrain_summary is not None else {}),
         **({"ageing": ageing_norm} if ageing_norm is not None and ageing_norm["enabled"] else {}),
+        **({"p50_p90": p50_norm} if p50_norm is not None and p50_norm["enabled"] else {}),
+        **({"horizon": {"mode": "profile", "profile_name": horizon_arg["profile_name"], "point_count": len(horizon_arg["points"])}}
+           if horizon_arg is not None else {}),
         **({"cad_import": cad_summary} if cad_summary is not None else {}),
     }
     return result

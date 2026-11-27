@@ -39,7 +39,8 @@ from pvsyst_auto.workflows.utility_validation import (
 )
 
 def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name: str, met_name: str,
-                          plan: dict, pnom_ac: float, allow_missing_met: bool = False) -> dict:
+                          plan: dict, pnom_ac: float, allow_missing_met: bool = False,
+                          horizon: dict | None = None) -> dict:
     scope = spec["scope"]
     layout = dict(spec.get("ground_layout") or {})
     field_type, include_3d = resolve_utility_field_type(scope, layout)
@@ -166,8 +167,13 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "pmism_mpp": float(losses["PMismMPP"]) if "PMismMPP" in losses else None,
         "module_quality_loss": float(losses["ModuleQualityLoss"]) if "ModuleQualityLoss" in losses else None,
         "ageing": losses.get("ageing"),
+        "p50_p90": spec.get("p50_p90"),
         "with_bom": True,
     }
+    raw_hz = spec.get("horizon")
+    kwargs["horizon"] = horizon if horizon is not None else (
+        raw_hz if isinstance(raw_hz, dict) and raw_hz.get("mode") in ("points", "profile") else None
+    )
     return kwargs
 
 
@@ -234,6 +240,7 @@ def run_utility_design(
     allow_window_creation: bool | None = None,
     synthetic_weather: bool = False,
     report_language: str = "en",
+    horizon: dict | None = None,
 ) -> dict:
     """Synthesize a zero-template utility ground project and optionally run a full-year CLI simulation."""
     new_project = spec["new_project"]
@@ -315,6 +322,7 @@ def run_utility_design(
                 site_name=sit_name, met_name=effective_met,
                 plan=capacity_plan, pnom_ac=pnom_ac,
                 allow_missing_met=synthetic_weather,
+                horizon=horizon,
             )
             synth_preview = synthesize_utility_project(store, **kwargs)
             result["utility_summary"] = synth_preview["utility_summary"]
@@ -485,6 +493,12 @@ def run_utility_design(
                 weather_report=weather_report,
                 validate_output=_validate_utility,
             )
+            if spec.get("p50_p90") is not None and isinstance(result.get("metrics"), dict) and "grid_energy_kwh" in result["metrics"]:
+                from pvsyst_auto.energy.p50_p90 import compute_p50_p90_yields, resolve_p50_p90_config
+                if (p50_cfg := resolve_p50_p90_config(spec["p50_p90"])) is not None:
+                    p50_res = compute_p50_p90_yields(result["metrics"]["grid_energy_kwh"], p50_cfg, installed_dc_kw=nominal_dc_kw)
+                    result["p50_p90"] = p50_res
+                    result["metrics"]["p50_p90"] = p50_res
             flags = result["metrics"]["diagnostic_flags"]
             review = bool(
                 run.get("warnings") or flags or weather_warnings

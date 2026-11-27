@@ -49,14 +49,16 @@ LOCATION_FIELDS = ("latitude", "longitude", "site_label", "altitude", "timezone_
 ISO_COUNTRY = re.compile(r"[A-Z]{2}")
 SPEC_KEYS = frozenset(("scope", "sizing_mode", "auto_sizing", "new_project", "year", "target_dc_kw", "tilt", "azimuth",
     "module", "inverter", "template_project", "variant", "capacity", "electrical_design", "losses",
-    "weather", "report_pages", "report_language", "ground_layout", "bifacial", "transformers", "standalone"))
+    "weather", "report_pages", "report_language", "ground_layout", "bifacial", "transformers", "standalone",
+    "p50_p90", "horizon"))
 SIZING_MODES = ("strict", "auto_from_components")
 AUTO_SIZING_KEYS = frozenset(("voltage_standard", "min_ambient_c", "min_operating_c", "max_operating_c",
     "min_dc_ac_ratio", "max_dc_ac_ratio", "capacity_tolerance_pct", "beta_voc_pct_per_c", "beta_vmp_pct_per_c", "alpha_isc_pct_per_c",
     "allow_asymmetric_mppt"))
 EQUIPMENT_KEYS = frozenset(("file_name", "manufacturer", "model"))
 WEATHER_KEYS = frozenset(("mode", "sit_name", "met_name", "csv_name", "country_code", "time_basis", "location_id",
-    "latitude", "longitude", "site_label", "altitude", "timezone_name", "temperature_method", "weather_manifest_name", "strict_dhi"))
+    "latitude", "longitude", "site_label", "altitude", "timezone_name", "temperature_method", "weather_manifest_name",
+    "strict_dhi", "fetch_horizon"))
 REMOTE_WEATHER_MODES = ("open_meteo", "pvgis_tmy", "nasa_power")
 WEATHER_MODES = ("existing", "synthetic_from_site", "csv", *REMOTE_WEATHER_MODES)
 _PROVIDER_FOR_MODE = {"open_meteo": "open_meteo_era5", "pvgis_tmy": "pvgis_tmy", "nasa_power": "nasa_power"}
@@ -165,6 +167,8 @@ def _check_weather(weather, spec_issues):
         return
     if "strict_dhi" in weather and type(weather["strict_dhi"]) is not bool:
         _bad(spec_issues, "weather.strict_dhi", "Use a strict boolean for strict_dhi")
+    if "fetch_horizon" in weather and type(weather["fetch_horizon"]) is not bool:
+        _bad(spec_issues, "weather.fetch_horizon", "Use a strict boolean for fetch_horizon")
     country_code = weather.get("country_code")
     if country_code is not None and (not _is_text(country_code) or not ISO_COUNTRY.fullmatch(country_code)):
         _bad(spec_issues, "weather.country_code", "Use an explicit uppercase ISO alpha-2 country code")
@@ -292,7 +296,26 @@ def _validate_spec(spec) -> list[dict]:
                     except ValueError as exc: _bad(issues, "losses.ageing", exc)
                 elif key in LOSS_KEYS and not _is_number(value):
                     _bad(issues, f"losses.{key}", "Require a supported finite numeric loss parameter")
+    if (raw_p50 := spec.get("p50_p90")) is not None:
+        from pvsyst_auto.energy.p50_p90 import normalize_p50_spec
+        try: normalize_p50_spec(raw_p50)
+        except ValueError as exc: _bad(issues, "p50_p90", exc)
+    hz_norm = None
+    if (raw_hz := spec.get("horizon")) is not None:
+        from pvsyst_auto.weather.horizon import normalize_horizon_spec
+        try: hz_norm = normalize_horizon_spec(raw_hz)
+        except ValueError as exc: _bad(issues, "horizon", exc)
     _check_weather(spec.get("weather"), issues)
+    w_obj = spec.get("weather")
+    fetch_hz = isinstance(w_obj, dict) and w_obj.get("fetch_horizon") is True
+    if fetch_hz and hz_norm is not None and hz_norm["mode"] != "pvgis":
+        _bad(issues, "weather.fetch_horizon", "weather.fetch_horizon=true contradicts explicit non-PVGIS horizon")
+    if (fetch_hz or (hz_norm is not None and hz_norm["mode"] == "pvgis")) and isinstance(w_obj, dict):
+        has_hz_coords = hz_norm is not None and hz_norm.get("latitude") is not None
+        has_w_coords = ((w_obj.get("latitude") is not None and w_obj.get("longitude") is not None)
+                        or w_obj.get("location_id") is not None or _is_text(w_obj.get("sit_name")) or _is_text(w_obj.get("csv_name")))
+        if not has_hz_coords and not has_w_coords:
+            _bad(issues, "horizon", "PVGIS horizon fetch requires horizon.latitude/longitude, weather coordinates/location_id, or weather.sit_name/csv_name")
     return issues
 def _entries(root):
     """Workspace project entries; an absent folder is an empty workspace, nothing else is."""
@@ -633,6 +656,22 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     variant = spec.get("variant") or template.get("variant") or SEED_VARIANT
     pan_name, ond_name = Path(components["PAN"]["name"]).name, Path(components["OND"]["name"]).name
     manifest_name, inherited_review = weather.get("weather_manifest_name") or "", auto_sizing_review
+    acquired_loc = None
+    def _resolve_hz(acq_loc=None):
+        if spec.get("horizon") is None and weather.get("fetch_horizon") is not True:
+            return None, None
+        from pvsyst_auto.weather.horizon import resolve_design_horizon
+        pair, stopped_hz = _phase(result, "horizon", lambda: resolve_design_horizon(
+            workspace=cli.workspace, horizon_spec=spec.get("horizon"), weather_spec=weather,
+            sit_name=sit_name, acquired_location=acq_loc, dry_run=dry_run))
+        if stopped_hz is not None: return None, stopped_hz
+        hz_val, hz_info = pair
+        if hz_info is not None:
+            result["preview"]["horizon"] = hz_info
+            if not dry_run:
+                result["horizon"] = hz_info
+                result["warnings"].extend(hz_info.get("warnings") or ())
+        return hz_val, None
     if mode in ("csv", *REMOTE_WEATHER_MODES):
         if mode in REMOTE_WEATHER_MODES:
             def request_weather(run):
@@ -657,6 +696,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
                 _issue(result, "weather.location", f"The resolved place uses a standard UTC offset of {offset:+g} h while create-site accepts at most +{CREATE_SITE_MAX_OFFSET_HOURS} h; nothing was downloaded or written")
                 return _stop(result, "acquisition")
             if dry_run:
+                _, stopped_hz = _resolve_hz(_acquired_place(plan))
+                if stopped_hz is not None: return stopped_hz
                 result["preview"]["weather"] = plan
                 _inherit(result, plan, "acquisition")
                 result["warnings"].append("The acquisition plan is complete but no CSV/SIT/MET exists yet, so the native weather preflight and the annual simulation are planned, not performed")
@@ -669,8 +710,9 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             if acquire.get("review_required"): inherited_review = True
             if acquire.get("status") not in ACQUIRE_SUCCESS:
                 return _stop(result, "acquisition", "failed" if acquire.get("status") == "failed" else "blocked")
+            acquired_loc = _acquired_place(acquire)
             csv_name = (acquire.get("created_files", {}).get("csv") or {}).get("name") or csv_name
-            if not country_code and _is_text(place_country := _acquired_place(acquire).get("country_code")):
+            if not country_code and _is_text(place_country := acquired_loc.get("country_code")):
                 country_code = place_country
                 result["warnings"].append(f"weather.country_code was not supplied; the prepared SIT/MET use the ISO code {country_code} of the acquired place")
         prepare, stopped = _phase(result, "weather_prepare", lambda: prepare_weather(
@@ -683,7 +725,10 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         if prepare.get("status") not in (("ready",) if dry_run else PREPARE_SUCCESS):
             return _stop(result, "weather_prepare", "failed" if prepare.get("status") == "failed" else "blocked")
         if prepare.get("status") == "needs_review": inherited_review = True
-        if dry_run: return _stop(result, "planned", "ready_for_weather")
+        if dry_run:
+            _, stopped_hz = _resolve_hz(acquired_loc)
+            if stopped_hz is not None: return stopped_hz
+            return _stop(result, "planned", "ready_for_weather")
         manifest_name = Path((prepare.get("artifacts") or {}).get("manifest", "")).name or manifest_name
     elif synthetic_weather:
         result["warnings"].append(f"weather.mode='synthetic_from_site' runs PVsystCLI with --synthetic-weather from the monthly site file {sit_name} without a pre-built hourly .MET file.")
@@ -695,6 +740,8 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         if error is not None:
             _issue(result, "workspace_init", error)
             return _stop(result, "workspace_init", "failed")
+    resolved_horizon, stopped_hz = _resolve_hz(acquired_loc)
+    if stopped_hz is not None: return stopped_hz
     if fallback:
         if dry_run: return _stop(result, "planned", "ready_for_weather")
         seed, stopped = _phase(result, "template_seed", lambda: prepare_standard_template(
@@ -736,7 +783,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             capacity_plan=utility_plan, sit_name=sit_name, met_name=met_name,
             weather_manifest_name=manifest_name, dry_run=dry_run, prepare_only=prepare_only,
             preparation_context=context.get("preparation_context"), allow_window_creation=allow_window_creation,
-            synthetic_weather=synthetic_weather, report_language=report_language))
+            synthetic_weather=synthetic_weather, report_language=report_language, horizon=resolved_horizon))
     else:
         runner = prepare_template if prepare_only else simulate_template
         runner_kwargs = {"allow_window_creation": allow_window_creation} if prepare_only else {}
@@ -745,14 +792,15 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             pan_name=pan_name, ond_name=ond_name, site_name=sit_name, met_name=met_name, tilt=tilt,
             year=year, dry_run=dry_run, capacity=flat_capacity, weather_manifest_name=manifest_name,
             azimuth=azimuth, losses=losses or None, report_pages=spec.get("report_pages"),
-            synthetic_weather=synthetic_weather, report_language=report_language, **context, **runner_kwargs))
+            synthetic_weather=synthetic_weather, report_language=report_language,
+            p50_p90=spec.get("p50_p90"), horizon=resolved_horizon, **context, **runner_kwargs))
     if stopped is not None:
         result["warnings"].append(RETAINED_NOTE)
         return stopped
     result["preview"][phase_name] = simulation
     result["artifacts"]["project_preparation" if prepare_only else "simulate"] = dict(simulation.get("artifacts") or {})
     result["metrics"] = simulation.get("metrics")
-    for k in ("diagnostics", "bifacial_metrics", "electrical_shading_metrics", "utility_summary"):
+    for k in ("diagnostics", "bifacial_metrics", "electrical_shading_metrics", "utility_summary", "p50_p90"):
         if simulation.get(k) is not None: result[k] = simulation[k]
     result["recovery"] = list(simulation.get("recovery") or [])
     _inherit(result, simulation, phase_name)

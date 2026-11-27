@@ -503,6 +503,7 @@ def synthesize_variant_text(*, variant_comment: str, site_body: list[str], meteo
                             version: str = SYNTH_VERSION, u_factor: float = 20.0,
                             shading_lines: list[str] | None = None, bifacial_lines: list[str] | None = None,
                             storage_lines: list[str] | None = None, ageing: dict | None = None,
+                            p50_p90: dict | None = None, horizon: dict | None = None,
                             with_bom: bool = True) -> str:
     """Synthesize a complete CRLF PVsyst .VC0 calculation variant string."""
     comment = _clean_text(variant_comment, "variant_comment")
@@ -530,6 +531,16 @@ def synthesize_variant_text(*, variant_comment: str, site_body: list[str], meteo
         if ageing_norm["enabled"]:
             main_flags2 = "$0010082A"
             ageing_lines = render_ageing_lines(ageing_norm, indent="  ")
+    horizon_lines: list[str] = []
+    if horizon is not None and horizon.get("mode") in ("profile", "points"):
+        from pvsyst_auto.weather.horizon import render_horizon_lines
+        horizon_lines = [*render_horizon_lines(horizon, indent="  "), ""]
+    p50_lines: list[str] = []
+    if p50_p90 is not None:
+        from pvsyst_auto.energy.p50_p90 import normalize_p50_spec, render_p50_lines
+        p50_norm = normalize_p50_spec(p50_p90)
+        if p50_norm["enabled"]:
+            p50_lines = render_p50_lines(p50_norm, indent="  ")
     lines = [
         "PVObject_=pvVCalcul", f"  Comment={comment}", f"  Version={version}", "  Flags=$00100001",
         "  SystemKindCustom=False", "  PRCorrTemp=False", "",
@@ -537,12 +548,15 @@ def synthesize_variant_text(*, variant_comment: str, site_body: list[str], meteo
         *meteo_lines, "", f"  Orientations, list of={len(norm_orients)} TOrientGroup", "",
         *(ln for orient in norm_orients for ln in synthesize_orientation_block(orient, version=version)),
         "  End of Orientations", "", "  PerezUsedInSimul=True", "  TranspositionAlgorithm=CircSolSeparate", "  ACLossesRef=STC", "",
+        *horizon_lines,
         "  PVObject_PVMainArray=pvMainArray", "    Flags=$00100400", f"  Flags2={main_flags2}", f"  UFactor={uf:.1f}",
         "  Alpha=0.9", "  UFAverEffic=18.4", "  MVNbTransfos=1", "  UseSpectralCorr=False",
         *ageing_lines, *circuit_lines, *subarray_lines, "  End of PVObject pvMainArray", "",
         "  PVObject_System=pvSystem", "    Flags=$00", "    SystemType=Grid", "  End of PVObject pvSystem", "",
         *(list(shading_lines) if shading_lines is not None else list(_DEFAULT_SHADING_LINES)),
     ]
+    if p50_lines:
+        lines.extend(["", *p50_lines])
     if bifacial_lines:
         lines.extend(["", *bifacial_lines])
     if storage_lines:
@@ -572,6 +586,7 @@ def synthesize_project_and_variant(
     independent_mppt: bool = True, pnom_ac_in_mppt: float = 7.5, tilt_deg: float = 25.0, azimuth_deg: float = 0.0,
     u_factor: float = 20.0, shading_lines: list[str] | None = None, bifacial_lines: list[str] | None = None,
     storage_lines: list[str] | None = None, ageing: dict | None = None,
+    p50_p90: dict | None = None, horizon: dict | None = None,
     version: str = SYNTH_VERSION, with_bom: bool = True, allow_missing_met: bool = False,
 ) -> dict:
     """Synthesize a matched (.PRJ, .VC0) pair directly in memory with zero demo templates."""
@@ -617,7 +632,7 @@ def synthesize_project_and_variant(
         variant_comment=variant_comment, site_body=site_body, meteo_lines=meteo_lines, orientations=orientations,
         subarrays=subarrays, default_pan=resolved_pan, default_ond=resolved_ond, version=version, u_factor=u_factor,
         shading_lines=shading_lines, bifacial_lines=bifacial_lines, storage_lines=storage_lines, ageing=ageing,
-        with_bom=with_bom,
+        p50_p90=p50_p90, horizon=horizon, with_bom=with_bom,
     )
     return {
         "prj_text": prj_text, "vc0_text": vc0_text, "site_name": resolved_site, "site_identity": site_identity, "met_name": resolved_met,

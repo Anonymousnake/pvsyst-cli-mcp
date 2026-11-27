@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from typing import Annotated, Literal
-from pydantic import Field, StrictBool, StrictInt, StrictStr
+from pydantic import Field, StrictBool, StrictInt, StrictStr, model_validator
 from pvsyst_auto.components.builder import build_sourced_component
 from pvsyst_auto.workflows.design import prepare_design_project
 from pvsyst_auto.project.tracking import create_tracking_variant
@@ -141,21 +141,28 @@ class PowerControlsUpdates(_StrictModel):
     power_factor: PowerFactorUpdates
     grid_limit: PowerControlLimitUpdates
 class P50P90Updates(_StrictModel):
-    """P50/P90 probabilistic simulation parameters on an existing result block."""
-    MeteoKind: Literal["SpecYear", "TMY"]
-    P90Custom: StrictInt
-    PxxCustom: StrictInt
-    PxxReport: StrictBool
-    PxxMainResults: StrictBool
-    PlotKind: StrictInt
-    YearDevFromAver: StrictNum
-    MeteoAnnualVariab: StrictNum
-    PVModelVariab: StrictNum
-    InverterVariab: StrictNum
-    SoilingVariab: StrictNum
-    DegradVariab: StrictNum
-    CustomVariab: StrictNum
-    CustomVarLabel: StrictStr
+    """Zero-template P50/P90 probabilistic parameters (mount, update, or remove via mode='none')."""
+    mode: Literal["set", "none"] | None = None
+    MeteoKind: Literal["SpecYear", "TMY", "MonthAverage"] = "TMY"
+    P90Custom: StrictInt = 90
+    PxxCustom: StrictInt = 95
+    PxxReport: StrictBool = True
+    PxxMainResults: StrictBool = False
+    PlotKind: StrictInt = 1
+    YearDevFromAver: StrictNum = 0.0
+    MeteoAnnualVariab: StrictNum = 4.0
+    PVModelVariab: StrictNum = 1.0
+    InverterVariab: StrictNum = 0.5
+    SoilingVariab: StrictNum = 1.0
+    DegradVariab: StrictNum = 1.0
+    CustomVariab: StrictNum = 0.0
+    CustomVarLabel: StrictStr = "Custom variability"
+
+    @model_validator(mode="after")
+    def _validate_mode(self):
+        if self.mode == "none" and (self.model_fields_set - {"mode"}):
+            raise ValueError("p50_p90_updates with mode='none' accepts no additional keys")
+        return self
 class ACCablingUpdates(_StrictModel):
     """Explicit native cable geometry; omitted conductor/section inherit active source."""
     length_m: StrictNum
@@ -329,13 +336,17 @@ def pvsyst_update_variant_parameters(project: str, variant: str,
     def _dump(model, *, exclude_none: bool = True):
         return model.model_dump(exclude_none=exclude_none) if model is not None else None
 
+    p50_payload = (
+        None if p50_p90_updates is None
+        else ({"mode": "none"} if p50_p90_updates.mode == "none" else _dump(p50_p90_updates, exclude_none=True))
+    )
     return variant_call("update_parameters", project, variant, expected_sha256,
                         subarray_id, orientation_id, subarray_updates, orientation_updates,
                         _dump(generator_updates),
                         dry_run, power_sharing_enabled, independent_mppt_enabled, main_array_updates, variant_name, add_utf8_bom,
                         _dump(soiling_updates), _dump(grid_limit_updates), _dump(auxiliary_updates),
                         _dump(seasonal_updates), _dump(horizon_updates), _dump(inverter_temperature_updates),
-                        _dump(power_factor_updates), _dump(p50_p90_updates, exclude_none=False),
+                        _dump(power_factor_updates), p50_payload,
                         _dump(power_controls_updates), _dump(string_mismatch_updates),
                         _dump(ageing_updates), _dump(iam_updates), ageing_enabled,
                         _dump(system_unavailability_updates), _dump(bifacial_updates),

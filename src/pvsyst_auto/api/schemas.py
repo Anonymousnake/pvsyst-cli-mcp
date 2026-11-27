@@ -20,6 +20,7 @@ from pvsyst_auto.api.schemas_economics import (
     EconomicsVatConfig,
     FeasibilityBessSizingConfig,
     FeasibilityInlineComponent,
+    P50P90Spec,
     ReportScenarioInput,
 )
 from pvsyst_auto.api.schemas_scene import (
@@ -150,6 +151,21 @@ class WeatherRequest(_StrictModel):
     temperature_method: StrictStr = "endpoint_mean"
     weather_manifest_name: StrictStr | None = None
     strict_dhi: StrictBool = False
+    fetch_horizon: StrictBool = False
+class HorizonRequest(_StrictModel):
+    """Opt-in far-horizon specification (explicit points, PVGIS v5.3 fetch, or none)."""
+    mode: Literal["none", "points", "pvgis"] = "points"
+    points: list[list[StrictNum]] | None = None
+    profile_name: StrictStr | None = None
+    latitude: StrictNum | None = None
+    longitude: StrictNum | None = None
+    timeout_seconds: StrictNum | None = None
+
+    @model_validator(mode="after")
+    def _validate_horizon(self):
+        from pvsyst_auto.weather.horizon import normalize_horizon_spec
+        normalize_horizon_spec(self.model_dump(exclude_none=True))
+        return self
 class TemperatureRequest(_StrictModel):
     """Design temperatures in degC; min_ambient_basis names its source or method."""
     min_ambient_c: StrictNum | None = None
@@ -402,6 +418,8 @@ class SingleDesignRequest(_StrictModel):
     bifacial: BifacialUpdates | None = None
     transformers: TransformersConfig | None = None
     standalone: StandaloneDesignSpec | None = None
+    p50_p90: P50P90Spec | None = None
+    horizon: HorizonRequest | None = None
 class SourceTextRequest(_StrictModel):
     """One caller-declared source; its text is checked here and never returned."""
     kind: Literal["manufacturer", "site", "assumption"]

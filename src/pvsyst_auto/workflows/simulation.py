@@ -142,7 +142,7 @@ def simulate_template(cli, store, *, template_project="", variant="", new_projec
                       tilt=None, year=None, dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
                       report_pages=None, report_language="en", tracking=None, tracking_variant="",
                       nominal_dc_power_kw=None, tracking_power_source="",
-                      synthetic_weather=False):
+                      synthetic_weather=False, p50_p90=None, horizon=None):
     # Hold one workspace lock; use separate workspaces for parallel native runs.
     with store.lock:
         return _simulate_template(cli, store, template_project, variant, new_project,
@@ -150,7 +150,7 @@ def simulate_template(cli, store, *, template_project="", variant="", new_projec
                                   report_pages=report_pages, report_language=report_language,
                                   tracking=tracking, tracking_variant=tracking_variant,
                                   nominal_dc_power_kw=nominal_dc_power_kw, tracking_power_source=tracking_power_source,
-                                  synthetic_weather=synthetic_weather)
+                                  synthetic_weather=synthetic_weather, p50_p90=p50_p90, horizon=horizon)
 
 
 def prepare_template(cli, store, **kwargs):
@@ -164,7 +164,7 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                        dry_run=True, capacity=None, weather_manifest_name="", azimuth=None, losses=None,
                        *, report_pages=None, report_language="en", prepare_only=False, preparation_context=None,
                        tracking=None, tracking_variant="", nominal_dc_power_kw=None, tracking_power_source="",
-                       allow_window_creation=None, synthetic_weather=False):
+                       allow_window_creation=None, synthetic_weather=False, p50_p90=None, horizon=None):
     tracking_mode = tracking is not None
     request = dict(template_project=template_project, variant=variant, new_project=new_project,
                    pan_name=pan_name, ond_name=ond_name, site_name=site_name, met_name=met_name,
@@ -261,6 +261,20 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                     main_losses[key] = value
                 else:
                     subarray_losses[key] = value
+    p50_cfg = horizon_cfg = None
+    if p50_p90 is not None:
+        from pvsyst_auto.energy.p50_p90 import resolve_p50_p90_config
+        try: p50_cfg = resolve_p50_p90_config(p50_p90)
+        except ValueError as exc: issue("p50_p90", exc)
+    if horizon is not None:
+        if not isinstance(horizon, dict) or horizon.get("mode") not in ("points", "profile", "none"):
+            issue("horizon", "horizon must be a normalized points/profile/none configuration")
+        elif horizon.get("mode") == "points":
+            from pvsyst_auto.weather.horizon import normalize_horizon_spec
+            try: horizon_cfg = normalize_horizon_spec(horizon)
+            except ValueError as exc: issue("horizon", exc)
+        else:
+            horizon_cfg = horizon
     if result["issues"]:
         return result
     angles = {"FieldTilt": tilt}
@@ -325,6 +339,19 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             result["ageing_preview"] = store.update_parameters(
                 template_project, variant, parameters["sha256"], array_id, orientation_id,
                 ageing_updates=age_payload, dry_run=True,
+            )
+        if not tracking_mode and horizon_cfg is not None:
+            hz_pay = {"mode": "none"} if horizon_cfg["mode"] == "none" else {
+                "mode": "profile", "profile_name": horizon_cfg["profile_name"], "points": horizon_cfg["points"],
+            }
+            result["horizon_preview"] = store.update_parameters(
+                template_project, variant, parameters["sha256"], array_id, orientation_id,
+                horizon_updates=hz_pay, dry_run=True,
+            )
+        if not tracking_mode and p50_cfg is not None:
+            result["p50_p90_preview"] = store.update_parameters(
+                template_project, variant, parameters["sha256"], array_id, orientation_id,
+                p50_p90_updates=p50_cfg["native"], dry_run=True,
             )
         result["configuration_summary"] = {
             "orientation": {**parameters["orientations"][0]["values"], **effective_angles},
@@ -526,6 +553,17 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                 edited = store.update_parameters(new_project, variant, age_sha, array_id, orientation_id,
                                                  ageing_enabled=False)
                 transaction("update_variant_parameters", edited)
+        if not tracking_mode and horizon_cfg is not None:
+            stage("horizon")
+            hz_pay = {"mode": "none"} if horizon_cfg["mode"] == "none" else {
+                "mode": "profile", "profile_name": horizon_cfg["profile_name"], "points": horizon_cfg["points"],
+            }
+            edited = store.update_parameters(new_project, variant, edited["sha256"], array_id, orientation_id, horizon_updates=hz_pay)
+            transaction("update_variant_parameters", edited)
+        if not tracking_mode and p50_cfg is not None:
+            stage("p50_p90")
+            edited = store.update_parameters(new_project, variant, edited["sha256"], array_id, orientation_id, p50_p90_updates=p50_cfg["native"])
+            transaction("update_variant_parameters", edited)
         result["working_files"] = store.inspect_project(new_project)["files"]
         if store.validate_structure(new_project, variant)["valid"] is not True:
             raise ValueError("Configured working variant failed structural validation")
@@ -586,6 +624,11 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                 weather_report=weather_report,
                 validate_output=_validate_tracking,
             )
+            if p50_cfg is not None and isinstance(result.get("metrics"), dict) and "grid_energy_kwh" in result["metrics"]:
+                from pvsyst_auto.energy.p50_p90 import compute_p50_p90_yields
+                p50_res = compute_p50_p90_yields(result["metrics"]["grid_energy_kwh"], p50_cfg, installed_dc_kw=nominal)
+                result["p50_p90"] = p50_res
+                result["metrics"]["p50_p90"] = p50_res
             flags = result["metrics"]["diagnostic_flags"]
             review = (tracking_mode or run.get("warnings") or flags or weather_warnings
                       or result.get("weather_comparison", {}).get("needs_review", False)
