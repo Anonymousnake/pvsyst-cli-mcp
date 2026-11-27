@@ -479,7 +479,7 @@ def pvsyst_create_house_pv_scene(project: StrictStr, variant: StrictStr, output_
 
 @categorized_tool()
 def pvsyst_read_house_pv_scene(scene_name: StrictStr) -> dict:
-    """Parse a UserData/*.pvc2 XML scene back into structured house, layout, and string_layout arguments."""
+    """Parse a UserData/*.pvc2 scene or external CAD (.pvc 1.4.1 / ASCII .dxf) into structured geometry and design arguments."""
     return read_house_pv_scene(components(), scene_name)
 
 @categorized_tool()
@@ -491,6 +491,13 @@ def pvsyst_import_house_pv_scene(scene_name: StrictStr, variant_name: StrictStr,
     supporting linear and module_layout shading."""
     if method != "native":
         raise ValueError("Legacy Win32 GUI scene import ('gui') was removed in v0.6.0; use method='native'")
+    if isinstance(scene_name, str) and scene_name.lower().endswith((".pvc", ".dxf")):
+        return {
+            "status": "blocked", "stage": "preflight", "method": method,
+            "scene_name": scene_name, "dry_run": dry_run, "native_consumption_verified": False,
+            "issues": ["External .pvc (1.4.1) and .dxf CAD scenes are imported for utility ground plants via "
+                       "pvsyst_simulate_design / pvsyst_prepare_design_project (ground_layout.pvc_name or dxf_name), not pvsyst_import_house_pv_scene."],
+        }
     store = variant_store()
     with store.lock:
         if shading_mode != "module_layout":

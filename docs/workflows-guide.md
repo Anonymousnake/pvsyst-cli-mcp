@@ -19,10 +19,10 @@
 | `module` / `inverter` | 组件与逆变器标识：可传精确的 `{"manufacturer": "...", "model": "..."}` 或直接传工作区文件名 `{"file_name": "..."}` |
 | `template_project` / `variant` | 可选；指定作为底板的模板工程与变体，不传则自动扫描工作区择优或使用内置标准种子 |
 | `weather` | 气象数据模式：`existing`（已有 `.SIT`/`.MET`）、`synthetic_from_site`（基于已有 `.SIT` 原生合成逐时气象）、`csv`（本地标准逐时 CSV）、`open_meteo`（Open-Meteo ERA5）、`pvgis_tmy`（PVGIS v5.3 TMY）或 `nasa_power`（NASA POWER） |
-| `capacity` / `electrical_design` | 默认严格模式（`sizing_mode="strict"`）下**二选一必填**：`capacity` 直接给电压/电流边界，`electrical_design` 给温度系数与极值推导；若设 `sizing_mode="auto_from_components"` 则**两者都必须省略**，由工具按组件参数自动推导 |
-| `losses` | 可选损失参数覆盖，支持 `LIDLoss`、`PMismMPP`、`ModuleQualityLoss` 与主阵列 `UFactor` |
-| `scope` | 可选场景范围：`fixed_unshaded_grid`（默认）、`ground_sheds`、`ground_tracker` 或 `stand_alone`（仅 `pvsyst_simulate_design`） |
-| `ground_layout` | 地面电站布局配置（`ground_sheds`/`ground_tracker`）：支持 `model_mode="unlimited"\|"3d"`、多朝向无限棚架 `sub_orientations`、有限地块 `site_polygon`、`obstacles`、`base_slope_deg` 与 3D DEM `terrain` |
+| `capacity` / `electrical_design` | 默认严格模式（`sizing_mode="strict"`）下**二选一必填**：`capacity` 直接给电压/电流边界（可设 `allow_asymmetric_mppt=true` 对余数 MPPT 通道分群选型），`electrical_design` 给温度系数与极值推导；若设 `sizing_mode="auto_from_components"` 则**两者都必须省略**，由工具按组件参数自动推导（`ground_sheds`/`ground_tracker` 单朝向默认自动开启余数 MPPT 平衡分群） |
+| `losses` | 可选损失参数覆盖，支持 `LIDLoss`、`PMismMPP`、`ModuleQualityLoss`、主阵列 `UFactor` 与零模板老化 `ageing`（`simulation_year`、`annual_module_degradation_percent`、`imp_degrad_sharing_percent`） |
+| `scope` | 可选场景范围：`fixed_unshaded_grid`（默认）、`ground_sheds`、`ground_tracker`、`ground_dome`（东西向双坡屋脊阵列）或 `stand_alone`（仅 `pvsyst_simulate_design`） |
+| `ground_layout` | 地面电站布局配置（`ground_sheds`/`ground_tracker`/`ground_dome`）：支持 `model_mode="unlimited"\|"3d"`、多朝向无限棚架 `sub_orientations`、有限地块 `site_polygon`、`obstacles`、`base_slope_deg`、3D DEM `terrain`（棚架/东西向坡面/跟踪器均支持连续地形贴合与整串齐行），以及外部 CAD 直导 `pvc_name`（COLLADA 1.4.1 `.pvc`）或 `dxf_name` / `dxf_layers` / `dxf_unit_scale`（ASCII `.dxf`） |
 | `bifacial` / `transformers` / `standalone` | 可选双面组件参数、MV/HV 多级变压器配置（含 PVsyst 8.1.7 原生容量与损耗预检）及离网光储柴 `standalone` 规格 |
 | `report_pages` / `report_language` | 可选 PDF 报告页名列表与输出语言代码（仅支持 `"en"` 或 `"zh"`） |
 
@@ -161,7 +161,7 @@
   ```sh
   python -m pip install build
   python -m build
-  python -m pip install dist/pvsyst_cli_mcp-0.9.0-py3-none-any.whl
+  python -m pip install dist/pvsyst_cli_mcp-0.10.0-py3-none-any.whl
   python scripts/ci_checks.py --report dist/ci-report.json
   python scripts/run_tests.py --suite workflows -v
   ```

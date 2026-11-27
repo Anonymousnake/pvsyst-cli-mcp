@@ -488,6 +488,10 @@ class GroundLayoutRequest(_StrictModel):
     sub_orientations: Annotated[list[GroundSubOrientationSpec], Field(min_length=1, max_length=16)] | None = None
     top_spacing_m: StrictNum | None = None
     dome_wiring: Literal["auto", "dual_mppt", "mixed"] | None = None
+    pvc_name: StrictStr | None = None
+    dxf_name: StrictStr | None = None
+    dxf_layers: dict[StrictStr, StrictStr | list[StrictStr]] | None = None
+    dxf_unit_scale: StrictNum | None = None
 class AutoSizingOptions(_StrictModel):
     """Optional bounds used when sizing_mode='auto_from_components' derives capacity from PAN/OND."""
     voltage_standard: Literal["IEC", "UL"] = "IEC"

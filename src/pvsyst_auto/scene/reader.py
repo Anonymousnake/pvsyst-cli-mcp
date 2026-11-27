@@ -108,7 +108,11 @@ def _legacy_tree(expected):
     return expected
 
 def read_house_pv_scene(components, scene_name):
-    """Read authored geometry plus reusable arguments; never write or verify a native project."""
+    """Read authored geometry (.pvc2) or external CAD (.pvc 1.4.1 / ASCII .dxf) preview; never writes."""
+    if isinstance(scene_name, str) and scene_name.lower().endswith((".pvc", ".dxf")):
+        from pvsyst_auto.scene.cad_import import read_cad_scene_preview
+        with components.lock:
+            return read_cad_scene_preview(components, scene_name)
     result = {"status": "unsupported", "issues": [], "diagnostics": [], "required_inputs": [],
               "source_verified": False, "imported": False, "native_consumption_verified": False}
     with components.lock:
