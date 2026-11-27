@@ -384,6 +384,8 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
                         result["issues"].extend(plan["issues"])
                         result["inputs"] = assets
                         return result
+                    if plan.get("asymmetric_mppt"):
+                        raise ValueError("Asymmetric MPPT plans are only supported for zero-template utility synthesis")
                     count = plan["module_count"]
                 nominal = count * float(pan["PNom"][0]) / 1000
             if not math.isfinite(nominal) or nominal <= 0:

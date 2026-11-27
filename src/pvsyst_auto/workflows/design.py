@@ -52,7 +52,8 @@ SPEC_KEYS = frozenset(("scope", "sizing_mode", "auto_sizing", "new_project", "ye
     "weather", "report_pages", "report_language", "ground_layout", "bifacial", "transformers", "standalone"))
 SIZING_MODES = ("strict", "auto_from_components")
 AUTO_SIZING_KEYS = frozenset(("voltage_standard", "min_ambient_c", "min_operating_c", "max_operating_c",
-    "min_dc_ac_ratio", "max_dc_ac_ratio", "capacity_tolerance_pct", "beta_voc_pct_per_c", "beta_vmp_pct_per_c", "alpha_isc_pct_per_c"))
+    "min_dc_ac_ratio", "max_dc_ac_ratio", "capacity_tolerance_pct", "beta_voc_pct_per_c", "beta_vmp_pct_per_c", "alpha_isc_pct_per_c",
+    "allow_asymmetric_mppt"))
 EQUIPMENT_KEYS = frozenset(("file_name", "manufacturer", "model"))
 WEATHER_KEYS = frozenset(("mode", "sit_name", "met_name", "csv_name", "country_code", "time_basis", "location_id",
     "latitude", "longitude", "site_label", "altitude", "timezone_name", "temperature_method", "weather_manifest_name", "strict_dhi"))
@@ -61,7 +62,7 @@ WEATHER_MODES = ("existing", "synthetic_from_site", "csv", *REMOTE_WEATHER_MODES
 _PROVIDER_FOR_MODE = {"open_meteo": "open_meteo_era5", "pvgis_tmy": "pvgis_tmy", "nasa_power": "nasa_power"}
 _RAW_SUFFIX_FOR_MODE = {"open_meteo": "_openmeteo_raw.json", "pvgis_tmy": "_pvgis_tmy_raw.json", "nasa_power": "_nasapower_raw.json"}
 LOSS_KEYS = frozenset(("LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor"))
-CAPACITY_KEYS = frozenset((*CAPACITY_NUMBERS, "min_dc_ac_ratio", "capacity_tolerance_pct", "voltage_standard", "design_basis"))
+CAPACITY_KEYS = frozenset((*CAPACITY_NUMBERS, "min_dc_ac_ratio", "capacity_tolerance_pct", "voltage_standard", "design_basis", "allow_asymmetric_mppt"))
 ENVELOPE_NESTED = ("temperatures", "envelope", "coefficients", "module_limits", "mppt_limits", "effective_irradiance")
 ACQUIRE_SUCCESS = ("prepared",)
 PREPARE_SUCCESS = ("prepared", "needs_review")
@@ -132,6 +133,8 @@ def _check_capacity(capacity, target, spec_issues):
         _bad(spec_issues, "capacity.capacity_tolerance_pct", "Use 0..20 percent")
     if capacity.get("voltage_standard") not in ("IEC", "UL"):
         _bad(spec_issues, "capacity.voltage_standard", "Explicitly choose IEC or UL")
+    if "allow_asymmetric_mppt" in capacity and capacity["allow_asymmetric_mppt"] is not None and type(capacity["allow_asymmetric_mppt"]) is not bool:
+        _bad(spec_issues, "capacity.allow_asymmetric_mppt", "Use a strict boolean for allow_asymmetric_mppt")
     basis = capacity.get("design_basis")
     if not _is_text(basis) or len(basis) > 2000:
         _bad(spec_issues, "capacity.design_basis", "Provide a printable design basis up to 2000 characters")
@@ -259,7 +262,14 @@ def _validate_spec(spec) -> list[dict]:
         elif not isinstance(auto_sizing, dict): _bad(issues, "auto_sizing", "Provide auto_sizing as an object")
         else:
             for key in sorted(set(auto_sizing) - AUTO_SIZING_KEYS): _bad(issues, f"auto_sizing.{key}", "Unknown auto_sizing option")
+            if "allow_asymmetric_mppt" in auto_sizing and auto_sizing["allow_asymmetric_mppt"] is not None and type(auto_sizing["allow_asymmetric_mppt"]) is not bool:
+                _bad(issues, "auto_sizing.allow_asymmetric_mppt", "Use a strict boolean for allow_asymmetric_mppt")
     capacity, design = spec.get("capacity"), spec.get("electrical_design")
+    asym_supported = scope in ("ground_sheds", "ground_tracker") and not (isinstance(spec.get("ground_layout"), dict) and spec["ground_layout"].get("sub_orientations"))
+    if isinstance(auto_sizing, dict) and auto_sizing.get("allow_asymmetric_mppt") is True and not asym_supported:
+        _bad(issues, "auto_sizing.allow_asymmetric_mppt", "allow_asymmetric_mppt is only supported for single-orientation ground_sheds and ground_tracker")
+    if isinstance(capacity, dict) and capacity.get("allow_asymmetric_mppt") is True and not asym_supported:
+        _bad(issues, "capacity.allow_asymmetric_mppt", "allow_asymmetric_mppt is only supported for single-orientation ground_sheds and ground_tracker")
     if sizing_mode == "auto_from_components":
         if capacity is not None or design is not None:
             _bad(issues, "sizing_mode", "sizing_mode='auto_from_components' cannot be combined with explicit capacity or electrical_design")
@@ -540,9 +550,15 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         return _stop(result, "discovery")
     sizing_mode, auto_sizing_review = spec.get("sizing_mode", "strict"), False
     if sizing_mode == "auto_from_components":
+        auto_opts = dict(spec.get("auto_sizing") or {})
+        asym_supported = scope in ("ground_sheds", "ground_tracker") and not (
+            isinstance(spec.get("ground_layout"), dict) and spec["ground_layout"].get("sub_orientations")
+        )
+        if auto_opts.get("allow_asymmetric_mppt") is None:
+            auto_opts["allow_asymmetric_mppt"] = asym_supported
         suggested, stopped = _phase(result, "design_envelope", lambda: suggest_sizing(
             store, pan_name=Path(components["PAN"]["name"]).name, ond_name=Path(components["OND"]["name"]).name,
-            target_dc_kw=target, **dict(spec.get("auto_sizing") or {})))
+            target_dc_kw=target, **auto_opts))
         if stopped is not None: return stopped
         result["preview"]["envelope"] = suggested
         _inherit(result, suggested, "auto_sizing")
