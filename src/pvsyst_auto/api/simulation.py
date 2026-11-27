@@ -486,6 +486,8 @@ def pvsyst_generate_report(
         p50_p90: P50P90Spec | None = None,
         bess_optimization: dict[StrictStr, Any] | None = None,
         batch_summary_csv: StrictStr | None = None,
+        layout_preview: dict[StrictStr, Any] | None = None,
+        include_3d_layout: StrictBool = False,
         language: Literal["zh", "en"] = "zh",
         plotlyjs: Literal["cdn", "embed"] = "cdn",
         thresholds: dict[StrictStr, StrictNum] | None = None,
@@ -495,7 +497,8 @@ def pvsyst_generate_report(
     under workspace/Results (monthly yield/PR combo, loss waterfall, typical 24h PV/load/BESS/TOU
     profile, monthly peak demand shaving, 25-year cumulative cashflow, sensitivity tornado chart,
     optional BESS sizing heatmap/Pareto frontier, optional UserBatch parametric sweep curve chart
-    via batch_summary_csv, diagnostics table, and print-ready CSS)."""
+    via batch_summary_csv, optional 2D plan-view & 3D terrain/array layout maps via layout_preview
+    or saved VCx pvShading, diagnostics table, and print-ready CSS)."""
     from pvsyst_auto.workflows.report import generate_report
     return generate_report(
         workspace=cli().workspace,
@@ -509,6 +512,8 @@ def pvsyst_generate_report(
         p50_p90=p50_p90.model_dump(exclude_none=True) if p50_p90 is not None else None,
         bess_optimization=bess_optimization,
         batch_summary_csv=batch_summary_csv,
+        layout_preview=layout_preview,
+        include_3d_layout=include_3d_layout,
         language=language,
         plotlyjs=plotlyjs,
         thresholds=thresholds,

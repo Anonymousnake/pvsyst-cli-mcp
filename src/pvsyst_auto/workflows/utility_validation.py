@@ -25,7 +25,8 @@ GROUND_LAYOUT_KEYS = frozenset((
     "site_polygon", "exclusion_zones", "setback_m", "ground_clearance_m", "max_table_columns",
     "obstacles", "base_slope_deg", "terrain", "sub_orientations",
     "top_spacing_m", "dome_wiring",
-    "pvc_name", "dxf_name", "dxf_layers", "dxf_unit_scale",
+    "pvc_name", "pvc_subset", "pvc_orientation_tolerance_deg",
+    "dxf_name", "dxf_layers", "dxf_unit_scale",
     "electrical_shading",
 ))
 SUB_ORIENTATION_KEYS = frozenset((

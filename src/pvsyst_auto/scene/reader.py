@@ -10,6 +10,7 @@ from typing import Any
 
 from pvsyst_auto.components.editor import ASSIGNMENT, objects
 from pvsyst_auto.project.paths import project_name, safe_filename, variant_id, workspace_file
+from pvsyst_auto.validation import SEED_RECORD_VERSION, SYNTH_VERSION, clean_line_text as _clean_text, pos_int as _pos_int
 from pvsyst_auto.scene.author import (AUTHORING_TOOL, MAX_OBSTACLES, MAX_PARTS, MAX_TABLES, MAX_TRIANGLES,
                                       MAX_VERTICES, NS, PV, SceneValidationError, _diagnostic, _finite,
                                       _string_layout_profile, build_scene, caller_geometry, check_tables,
@@ -29,7 +30,6 @@ from pvsyst_auto.scene.partition import (
     normalize_electrical_shading,
     shading_header_kwargs,
 )
-from pvsyst_auto.validation import SEED_RECORD_VERSION, SYNTH_VERSION
 
 XML_NS = {"n": NS, "pv": PV}
 MAX_BYTES = 64 * 1024 * 1024
@@ -625,13 +625,17 @@ def build_ground_3d_shading(
     for tbl in tables:
         obj_idx += 1
         ox, oy, oz = tbl["origin_m"]
-        tbl_orient = str(tbl.get("module_orient") or module_orient)
+        tbl_mod_orient = str(tbl.get("module_orient") or module_orient)
+        raw_oid = tbl.get("orientation_id")
+        tbl_orient_id = orientation_id if raw_oid is None else raw_oid
+        if type(tbl_orient_id) is not int or tbl_orient_id < 1:
+            raise ValueError("Table orientation_id must be a positive integer")
         part_lines: list[str] = []
         if cfg["mode"] == "partition":
             dx_mod, dy_mod, _, _ = compute_table_partition_dims(
                 long_shed_m=float(tbl["long_shed_m"]), larg_shed_m=float(tbl["larg_shed_m"]),
                 module_rows=int(tbl["module_rows"]), module_columns=int(tbl["module_columns"]),
-                module_orient=tbl_orient, is_tracker=False, electrical_shading=cfg,
+                module_orient=tbl_mod_orient, is_tracker=False, electrical_shading=cfg,
                 series_modules=series_modules, is_half_cut=is_half_cut,
             )
             part_lines = [f"      DXModule={dx_mod:.3f}", f"      DYModule={dy_mod:.3f}"]
@@ -642,10 +646,10 @@ def build_ground_3d_shading(
             "        ColorBord=$00505050", f"        DOrigine={ox:.6f},{oy:.6f},{oz:.6f}",
             f"        DInclin={tbl['tilt_deg']:.6f}", f"        BaseSlope={tbl.get('base_slope_deg', 0.0):.6f}",
             f"        DAzimut={tbl['azimuth_deg']:.6f}", "        Source=osPVCollada", "      NElemChamps=1",
-            f"      NoOrient={orientation_id}", f"      PanneauPVName={module_name};{module_width_m:.3f};{module_length_m:.3f}",
+            f"      NoOrient={tbl_orient_id}", f"      PanneauPVName={module_name};{module_width_m:.3f};{module_length_m:.3f}",
             f"      ModSpacingX={spacing_x_m:.3f}", f"      ModSpacingY={spacing_y_m:.3f}",
             f"      NModInHeight={tbl['module_rows']}", f"      NModInWidth={tbl['module_columns']}",
-            f"      ModuleOrient={tbl_orient}", *part_lines, f"        LongShed={tbl['long_shed_m']:.6f}",
+            f"      ModuleOrient={tbl_mod_orient}", *part_lines, f"        LongShed={tbl['long_shed_m']:.6f}",
             f"        LargShed={tbl['larg_shed_m']:.6f}", "        Cadre=0.000,0.000,0.000,0.000,",
             "      TypeOrigine=2", "      End of PVObject pvShdArrayTable",
         ])
@@ -655,3 +659,103 @@ def build_ground_3d_shading(
         lines.extend(emit_pvshd_ground(terrain_mesh, object_index=obj_idx, version=SEED_RECORD_VERSION))
     lines.extend(emit_shading_obstacles(parsed_obstacles, start_index=obj_idx + 1))
     return [*lines, "    End of ListeObjets", "  End of PVObject pvShading"]
+
+
+def _validate_ground_array_modules(*, module_rows: int, module_columns: int, module_width_m: float, module_length_m: float,
+                                   module_name: str, module_orient: str, spacing_x_m: float, spacing_y_m: float) -> tuple[int, int, float, float, float, float, str]:
+    n_rows, n_cols = _pos_int(module_rows, "module_rows"), _pos_int(module_columns, "module_columns")
+    mw, ml = _finite(module_width_m, "module_width_m", minimum=0.1), _finite(module_length_m, "module_length_m", minimum=0.1)
+    sx, sy = _finite(spacing_x_m, "spacing_x_m", minimum=0.0), _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
+    if module_orient not in ("moPortrait", "moLandscape"):
+        raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
+    return n_rows, n_cols, mw, ml, sx, sy, _clean_text(module_name, "module_name")
+
+
+def _synthesize_ground_array_shading(
+    *, obj_type: str, shading_comment: str, obj_comment: str, n_elems: int, origin: tuple[float, float, float],
+    tilt_deg: float, base_slope_deg: float, azimuth_deg: float, orientation_id: int, name: str, mw: float, ml: float,
+    n_rows: int, n_cols: int, module_orient: str, sx: float, sy: float, dx_module: float, dy_module: float,
+    long_shed: float, larg_shed: float, pitch_ns: float, pitch_ew: float, version: str, extra_lines: list[str] = (),
+    header_kwargs: dict | None = None,
+) -> list[str]:
+    return [
+        *pv_shading_header(shading_comment, 1, **(header_kwargs or {})), f"      PVObject_1={obj_type}", f"        Comment={obj_comment}",
+        f"        Version={version}", "        Flags=$02200074", "        NoObjCreated=1",
+        "        ColorTechn=$00FF0000", "        ColorSurf=$00FF9999", "        ColorBord=$00505050",
+        f"        DOrigine={origin[0]:.6f},{origin[1]:.6f},{origin[2]:.6f}", f"        DInclin={tilt_deg:.6f}",
+        f"        BaseSlope={base_slope_deg:.6f}", f"        DAzimut={azimuth_deg:.6f}", "        Source=osPVsyst",
+        f"      NElemChamps={n_elems}", f"      NoOrient={_pos_int(orientation_id, 'orientation_id')}",
+        f"      PanneauPVName={name};{mw:.3f};{ml:.3f}", f"      ModSpacingX={sx:.3f}", f"      ModSpacingY={sy:.3f}",
+        f"      NModInHeight={n_rows}", f"      NModInWidth={n_cols}", f"      ModuleOrient={module_orient}",
+        f"      DXModule={dx_module:.3f}", f"      DYModule={dy_module:.3f}",
+        f"        LongShed={long_shed:.6f}", f"        LargShed={larg_shed:.6f}", "        Cadre=0.000,0.000,0.000,0.000,",
+        "        TypeOrigine=2", f"        PitchNS={pitch_ns:.3f}", f"        PitchEW={pitch_ew:.3f}",
+        *extra_lines, f"      End of PVObject {obj_type}", "    End of ListeObjets", "  End of PVObject pvShading",
+    ]
+
+
+def synthesize_ground_shed_shading(*, shed_count: int = 10, pitch_m: float = 10.0, tilt_deg: float = 20.0, azimuth_deg: float = 0.0,
+                                   base_slope_deg: float = 0.0, module_rows: int = 2, module_columns: int = 25,
+                                   module_width_m: float = 1.052, module_length_m: float = 2.131, module_name: str = "PV Module",
+                                   module_orient: str = "moPortrait", spacing_x_m: float = 0.020, spacing_y_m: float = 0.020,
+                                   origin: tuple[float, float, float] = (0.0, 0.0, 0.0), orientation_id: int = 1,
+                                   electrical_shading=None, series_modules: int | None = None, is_half_cut: bool = False,
+                                   version: str = SYNTH_VERSION) -> list[str]:
+    """Synthesize a complete 3D PVObject_Ombrage=pvShading containing a pvShdArrayShed field."""
+    cfg = normalize_electrical_shading(electrical_shading)
+    n_sheds, pitch = _pos_int(shed_count, "shed_count"), _finite(pitch_m, "pitch_m", minimum=0.1)
+    tilt = _finite(tilt_deg, "tilt_deg", minimum=0.0, maximum=90.0)
+    azim = _finite(azimuth_deg, "azimuth_deg", minimum=-180.0, maximum=180.0)
+    slope = _finite(base_slope_deg, "base_slope_deg", minimum=-45.0, maximum=45.0)
+    n_rows, n_cols, mw, ml, sx, sy, name = _validate_ground_array_modules(
+        module_rows=module_rows, module_columns=module_columns, module_width_m=module_width_m, module_length_m=module_length_m,
+        module_name=module_name, module_orient=module_orient, spacing_x_m=spacing_x_m, spacing_y_m=spacing_y_m,
+    )
+    cell_w, cell_h = (mw, ml) if module_orient == "moPortrait" else (ml, mw)
+    larg_shed, long_shed = n_rows * cell_h + max(0, n_rows - 1) * sy, n_cols * cell_w + max(0, n_cols - 1) * sx
+    if cfg["mode"] == "partition":
+        dx_mod, dy_mod, _, _ = compute_table_partition_dims(
+            long_shed_m=long_shed, larg_shed_m=larg_shed, module_rows=n_rows, module_columns=n_cols,
+            module_orient=module_orient, is_tracker=False, electrical_shading=cfg, series_modules=series_modules, is_half_cut=is_half_cut,
+        )
+    else:
+        dx_mod, dy_mod = cell_w + sx, cell_h + sy
+    return _synthesize_ground_array_shading(
+        obj_type="pvShdArrayShed", shading_comment="Ground shed 3D shading scene", obj_comment="Shed field #1",
+        n_elems=n_sheds, origin=origin, tilt_deg=tilt, base_slope_deg=slope, azimuth_deg=azim, orientation_id=orientation_id,
+        name=name, mw=mw, ml=ml, n_rows=n_rows, n_cols=n_cols, module_orient=module_orient, sx=sx, sy=sy,
+        dx_module=dx_mod, dy_module=dy_mod, long_shed=long_shed, larg_shed=larg_shed, pitch_ns=pitch, pitch_ew=0.0,
+        version=version, header_kwargs=shading_header_kwargs(cfg),
+    )
+
+
+def synthesize_ground_tracker_shading(*, tracker_count: int = 10, pitch_ew_m: float = 12.0, axis_azimuth_deg: float = 0.0,
+                                      module_rows: int = 2, module_columns: int = 25, module_width_m: float = 1.052,
+                                      module_length_m: float = 2.131, module_name: str = "PV Module", module_orient: str = "moPortrait",
+                                      spacing_x_m: float = 0.020, spacing_y_m: float = 0.020, origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                                      orientation_id: int = 1, electrical_shading=None, series_modules: int | None = None,
+                                      is_half_cut: bool = False, version: str = SYNTH_VERSION) -> list[str]:
+    """Synthesize a complete 3D PVObject_Ombrage=pvShading containing a pvShdArrayTracking field."""
+    cfg = normalize_electrical_shading(electrical_shading)
+    n_trk, pitch = _pos_int(tracker_count, "tracker_count"), _finite(pitch_ew_m, "pitch_ew_m", minimum=0.1)
+    azim = _finite(axis_azimuth_deg, "axis_azimuth_deg", minimum=-180.0, maximum=180.0)
+    n_rows, n_cols, mw, ml, sx, sy, name = _validate_ground_array_modules(
+        module_rows=module_rows, module_columns=module_columns, module_width_m=module_width_m, module_length_m=module_length_m,
+        module_name=module_name, module_orient=module_orient, spacing_x_m=spacing_x_m, spacing_y_m=spacing_y_m,
+    )
+    chord_mod, length_mod = (ml, mw) if module_orient == "moPortrait" else (mw, ml)
+    long_shed, larg_shed = n_rows * chord_mod + max(0, n_rows - 1) * sy, n_cols * length_mod + max(0, n_cols - 1) * sx
+    if cfg["mode"] == "partition":
+        dx_mod, dy_mod, _, _ = compute_table_partition_dims(
+            long_shed_m=long_shed, larg_shed_m=larg_shed, module_rows=n_rows, module_columns=n_cols,
+            module_orient=module_orient, is_tracker=True, electrical_shading=cfg, series_modules=series_modules, is_half_cut=is_half_cut,
+        )
+    else:
+        dx_mod, dy_mod = chord_mod + sy, larg_shed
+    return _synthesize_ground_array_shading(
+        obj_type="pvShdArrayTracking", shading_comment="Ground tracker 3D shading scene", obj_comment="Array of trackers #1",
+        n_elems=n_trk, origin=origin, tilt_deg=0.0, base_slope_deg=0.0, azimuth_deg=azim, orientation_id=orientation_id,
+        name=name, mw=mw, ml=ml, n_rows=n_rows, n_cols=n_cols, module_orient=module_orient, sx=sx, sy=sy,
+        dx_module=dx_mod, dy_module=dy_mod, long_shed=long_shed, larg_shed=larg_shed, pitch_ns=0.0, pitch_ew=pitch,
+        version=version, extra_lines=["        AxisOrig=2"], header_kwargs=shading_header_kwargs(cfg),
+    )

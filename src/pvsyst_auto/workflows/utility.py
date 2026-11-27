@@ -156,6 +156,8 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "base_slope_deg": float(layout.get("base_slope_deg", 0.0)),
         "terrain": layout.get("terrain"),
         "pvc_name": layout.get("pvc_name"),
+        "pvc_subset": layout.get("pvc_subset"),
+        "pvc_orientation_tolerance_deg": layout.get("pvc_orientation_tolerance_deg"),
         "dxf_name": layout.get("dxf_name"),
         "dxf_layers": layout.get("dxf_layers"),
         "dxf_unit_scale": layout.get("dxf_unit_scale"),

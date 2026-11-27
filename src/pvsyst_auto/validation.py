@@ -98,3 +98,17 @@ def append_issue(result: dict[str, Any], field: str, message: Any) -> None:
 def append_warning(result: dict[str, Any], field: str, message: Any) -> None:
     """Append a ``{field, message}`` warning entry to ``result['warnings']``."""
     result["warnings"].append({"field": field, "message": str(message)})
+
+
+def pos_int(value: Any, context: str, *, maximum: int = 2147483647) -> int:
+    """Validate that value is a strict positive integer up to maximum."""
+    if type(value) is not int or not 1 <= value <= maximum:
+        raise ValueError(f"{context} must be a positive 32-bit integer")
+    return value
+
+
+def clean_line_text(value: str, label: str) -> str:
+    """Validate single-line non-empty text and return it stripped."""
+    if not isinstance(value, str) or not value.strip() or any(ch in value for ch in ("\r", "\n", "\x00")):
+        raise ValueError(f"{label} must be single-line non-empty text")
+    return value.strip()

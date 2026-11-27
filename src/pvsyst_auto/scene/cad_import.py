@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import math
 import re
-import statistics
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,14 @@ from pvsyst_auto.scene.dxf_import import (
     read_bounded_cad_bytes,
 )
 from pvsyst_auto.scene.exclusions import MAX_EXCLUSION_ZONES
+from pvsyst_auto.scene.pvc_clustering import (
+    MAX_PVC_ORIENTATION_TOLERANCE_DEG,
+    MIN_PVC_ORIENTATION_TOLERANCE_DEG,
+    circular_azimuth_diff_deg,
+    cluster_fixed_pvc_orientations,
+    estimate_pvc_pitch as _estimate_pvc_pitch,
+    filter_pvc_subset,
+)
 from pvsyst_auto.scene.reader import build_ground_3d_shading
 from pvsyst_auto.scene.terrain import build_terrain_mesh
 from pvsyst_auto.scene.tracker_layout import build_tracker_3d_shading
@@ -260,7 +267,7 @@ def _fixed_table_from_pvc(name: str, wpts: list[tuple[float, float, float]], tri
     mw, ml, sx, sy = _pvc_module_params(params)
     orient, n_rows, n_cols = _infer_grid_counts(long_shed, larg_shed, mw, ml, sx, sy, tracker=False)
     return {
-        "name": name, "origin_m": [round(origin_m[0], 6), round(origin_m[1], 6), round(origin_m[2], 6)],
+        "kind": "fixed", "name": name, "origin_m": [round(origin_m[0], 6), round(origin_m[1], 6), round(origin_m[2], 6)],
         "long_shed_m": round(long_shed, 6), "larg_shed_m": round(larg_shed, 6), "tilt_deg": tilt_deg,
         "azimuth_deg": az_deg, "base_slope_deg": round(base_slope, 3), "module_orient": orient,
         "module_rows": n_rows, "module_columns": n_cols, "module_count": n_rows * n_cols,
@@ -299,7 +306,7 @@ def _tracker_table_from_pvc(name: str, wpts: list[tuple[float, float, float]], t
     mw, ml, sx, sy = _pvc_module_params(params)
     orient, n_rows, n_cols = _infer_grid_counts(long_shed, larg_shed, mw, ml, sx, sy, tracker=True)
     return {
-        "name": name, "origin_m": [round(origin_m[0], 6), round(origin_m[1], 6), round(origin_m[2], 6)],
+        "kind": "tracker", "name": name, "origin_m": [round(origin_m[0], 6), round(origin_m[1], 6), round(origin_m[2], 6)],
         "long_shed_m": round(long_shed, 6), "larg_shed_m": round(larg_shed, 6),
         "axis_azimuth_deg": axis_az, "axis_tilt_deg": round(axis_tilt, 3),
         "min_phi_deg": round(_clamp(float(params.get("min_phi", -60.0)), -90.0, 0.0), 2),
@@ -309,21 +316,7 @@ def _tracker_table_from_pvc(name: str, wpts: list[tuple[float, float, float]], t
     }
 
 
-def _estimate_pvc_pitch(tables: list[dict[str, Any]], *, tracker: bool, az_deg: float) -> float | None:
-    if len(tables) < 2:
-        return None
-    rad = math.radians(az_deg)
-    step_vec = (math.cos(rad), -math.sin(rad)) if tracker else (math.sin(rad), math.cos(rad))
-    projs = sorted(float(t["origin_m"][0]) * step_vec[0] + float(t["origin_m"][1]) * step_vec[1] for t in tables)
-    row_centers = [projs[0]]
-    for p in projs[1:]:
-        if p - row_centers[-1] > 0.5:
-            row_centers.append(p)
-    diffs = [round(row_centers[i + 1] - row_centers[i], 3) for i in range(len(row_centers) - 1) if row_centers[i + 1] - row_centers[i] > 0.5]
-    return round(float(statistics.median(diffs)), 3) if diffs else None
-
-
-def parse_pvc_141(workspace: Path, pvc_name: str) -> dict[str, Any]:
+def parse_pvc_141(workspace: Path, pvc_name: str, *, pvc_subset: str | None = None) -> dict[str, Any]:
     """Parse a UserData/*.pvc COLLADA 1.4.1 file (PVcase) into tables, obstacles, and terrain."""
     _, raw = read_bounded_cad_bytes(workspace, pvc_name, ".pvc")
     text = raw.decode("utf-8-sig")
@@ -442,7 +435,7 @@ def parse_pvc_141(workspace: Path, pvc_name: str) -> dict[str, Any]:
         dom_ax = math.degrees(math.atan2(sx_a, sy_a)) if math.hypot(sx_a, sy_a) > 1e-6 else 0.0
         summary.update(dominant_axis_azimuth_deg=round(dom_ax, 2), min_phi_deg=min(t["min_phi_deg"] for t in tracker_tables),
                        max_phi_deg=max(t["max_phi_deg"] for t in tracker_tables), pitch_estimate_m=_estimate_pvc_pitch(tracker_tables, tracker=True, az_deg=dom_ax))
-    return summary
+    return filter_pvc_subset(summary, pvc_subset) if pvc_subset is not None else summary
 
 
 def build_pvc_3d_shading(parsed: dict[str, Any], *, module_name: str, obstacles: list[dict[str, Any]] | None = None,
@@ -508,6 +501,29 @@ def validate_cad_ground_layout(layout: dict, scope: str, mode: str, bad: Any) ->
             bad("ground_layout.dxf_unit_scale", "dxf_unit_scale requires ground_layout.dxf_name")
         elif not _is_number(val) or float(val) <= 0:
             bad("ground_layout.dxf_unit_scale", "dxf_unit_scale must be a positive finite number")
+    pvc_subset = layout.get("pvc_subset")
+    if pvc_subset is not None:
+        if pvc_name is None:
+            bad("ground_layout.pvc_subset", "pvc_subset requires ground_layout.pvc_name")
+        elif pvc_subset not in ("fixed", "tracker"):
+            bad("ground_layout.pvc_subset", "pvc_subset must be 'fixed' or 'tracker'")
+        elif pvc_subset == "fixed" and scope != "ground_sheds":
+            bad("ground_layout.pvc_subset", "pvc_subset='fixed' requires scope='ground_sheds'")
+        elif pvc_subset == "tracker" and scope != "ground_tracker":
+            bad("ground_layout.pvc_subset", "pvc_subset='tracker' requires scope='ground_tracker'")
+    tol = layout.get("pvc_orientation_tolerance_deg")
+    if tol is not None:
+        if pvc_name is None:
+            bad("ground_layout.pvc_orientation_tolerance_deg", "pvc_orientation_tolerance_deg requires ground_layout.pvc_name")
+        elif scope != "ground_sheds":
+            bad("ground_layout.pvc_orientation_tolerance_deg", "pvc_orientation_tolerance_deg is only supported for scope='ground_sheds' fixed tables")
+        elif pvc_subset == "tracker":
+            bad("ground_layout.pvc_orientation_tolerance_deg", "pvc_orientation_tolerance_deg cannot be combined with pvc_subset='tracker'")
+        elif not _is_number(tol) or not (MIN_PVC_ORIENTATION_TOLERANCE_DEG <= float(tol) <= MAX_PVC_ORIENTATION_TOLERANCE_DEG):
+            bad(
+                "ground_layout.pvc_orientation_tolerance_deg",
+                f"pvc_orientation_tolerance_deg must lie in {MIN_PVC_ORIENTATION_TOLERANCE_DEG}..{MAX_PVC_ORIENTATION_TOLERANCE_DEG} degrees",
+            )
 
 
 def _merge_obstacles(cad_obs: list[dict[str, Any]], user_obs: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
@@ -546,7 +562,7 @@ def resolve_cad_synthesis_inputs(
     tilt_explicit: bool, azimuth_explicit: bool, obstacles: list[dict[str, Any]] | None,
     exclusion_zones: list[list[list[float]]] | None = None, terrain: dict[str, Any] | None = None,
     module_name: str, electrical_shading: Any = None, series_modules: int | None = None, is_half_cut: bool = False,
-    version: str,
+    version: str, pvc_subset: str | None = None, pvc_orientation_tolerance_deg: float | None = None,
 ) -> dict[str, Any]:
     """Resolve .pvc 1.4.1 or ASCII .dxf inputs for synthesize_utility_project."""
     ws = getattr(getattr(store, "components", None), "workspace", None)
@@ -569,26 +585,41 @@ def resolve_cad_synthesis_inputs(
     assert pvc_name is not None
     if exclusion_zones:
         raise ValueError("pvc_name supplies pre-placed PV tables and cannot be combined with exclusion_zones")
-    parsed = parse_pvc_141(ws, pvc_name)
+    parsed = parse_pvc_141(ws, pvc_name, pvc_subset=pvc_subset)
     if parsed["scene_kind"] == "mixed":
-        raise ValueError(f"{pvc_name} mixes fixed tables and trackers; split into separate fixed and tracker .pvc files")
+        raise ValueError(
+            f"{pvc_name} mixes fixed tables and trackers; pass ground_layout.pvc_subset='fixed' or 'tracker', "
+            "or split into separate fixed and tracker .pvc files"
+        )
     if parsed["scene_kind"] == "fixed" and field_type != "RegularSheds":
         raise ValueError(f"{pvc_name} contains fixed PV tables and requires scope='ground_sheds'")
     if parsed["scene_kind"] == "tracker" and field_type != "TrackHorizNSAxis":
         raise ValueError(f"{pvc_name} contains single-axis trackers and requires scope='ground_tracker'")
 
+    pvc_clusters: list[dict[str, Any]] | None = None
+    if pvc_orientation_tolerance_deg is not None:
+        if parsed["scene_kind"] != "fixed":
+            raise ValueError("pvc_orientation_tolerance_deg is only supported for fixed .pvc tables")
+        tagged_tables, pvc_clusters = cluster_fixed_pvc_orientations(parsed["tables"], pvc_orientation_tolerance_deg)
+        parsed = {**parsed, "tables": tagged_tables}
+
     eff_tilt, eff_azim, eff_axis = tilt_deg, azimuth_deg, axis_azimuth_deg
     if parsed["scene_kind"] == "fixed":
-        dom_t, dom_a = parsed["dominant_tilt_deg"], parsed["dominant_azimuth_deg"]
-        if tilt_explicit and abs(tilt_deg - dom_t) > 5.0:
-            raise ValueError(f"spec.tilt ({tilt_deg}°) differs from .pvc frame tilt ({dom_t}°) by > 5°")
-        if azimuth_explicit and abs((azimuth_deg - dom_a + 180.0) % 360.0 - 180.0) > 5.0:
-            raise ValueError(f"spec.azimuth ({azimuth_deg}°) differs from .pvc frame azimuth ({dom_a}°) by > 5°")
-        eff_tilt = dom_t if not tilt_explicit else tilt_deg
-        eff_azim = dom_a if not azimuth_explicit else azimuth_deg
+        if pvc_clusters is not None and len(pvc_clusters) > 1:
+            eff_tilt = float(pvc_clusters[0]["tilt_deg"])
+            eff_azim = float(pvc_clusters[0]["azimuth_deg"])
+        else:
+            dom_t = float(pvc_clusters[0]["tilt_deg"]) if pvc_clusters else parsed["dominant_tilt_deg"]
+            dom_a = float(pvc_clusters[0]["azimuth_deg"]) if pvc_clusters else parsed["dominant_azimuth_deg"]
+            if tilt_explicit and abs(tilt_deg - dom_t) > 5.0:
+                raise ValueError(f"spec.tilt ({tilt_deg}°) differs from .pvc frame tilt ({dom_t}°) by > 5°")
+            if azimuth_explicit and circular_azimuth_diff_deg(azimuth_deg, dom_a) > 5.0:
+                raise ValueError(f"spec.azimuth ({azimuth_deg}°) differs from .pvc frame azimuth ({dom_a}°) by > 5°")
+            eff_tilt = dom_t if not tilt_explicit else tilt_deg
+            eff_azim = dom_a if not azimuth_explicit else azimuth_deg
     else:
         dom_ax = parsed["dominant_axis_azimuth_deg"]
-        if azimuth_explicit and abs((axis_azimuth_deg - dom_ax + 180.0) % 360.0 - 180.0) > 5.0:
+        if azimuth_explicit and circular_azimuth_diff_deg(axis_azimuth_deg, dom_ax) > 5.0:
             raise ValueError(f"axis azimuth ({axis_azimuth_deg}°) differs from .pvc tracker axis ({dom_ax}°) by > 5°")
         if not azimuth_explicit:
             eff_axis = dom_ax
@@ -610,6 +641,8 @@ def resolve_cad_synthesis_inputs(
     chord_mod = rep["module_length_m"] if rep["module_orient"] == "moPortrait" else rep["module_width_m"]
     coll_w = round(rep["module_rows"] * chord_mod + max(0, rep["module_rows"] - 1) * rep["spacing_y_m"], 3)
     raw_pitch = parsed.get("pitch_estimate_m")
+    if raw_pitch is None and pvc_clusters:
+        raw_pitch = pvc_clusters[0].get("pitch_estimate_m")
     eff_pitch = raw_pitch if (raw_pitch is not None and raw_pitch > coll_w) else max(pitch_m, coll_w + 0.5)
     cad_summary = {
         k: parsed[k] for k in ("format", "file_name", "scene_kind", "unit_name", "unit_meter", "table_count",
@@ -617,12 +650,25 @@ def resolve_cad_synthesis_inputs(
     } | {"obstacle_count": len(parsed["obstacles"]), "terrain_point_count": len(parsed["terrain_points"]),
          "dominant_tilt_deg": eff_tilt if parsed["scene_kind"] == "fixed" else 0.0,
          "dominant_azimuth_deg": eff_azim if parsed["scene_kind"] == "fixed" else eff_axis}
+    if pvc_subset is not None:
+        cad_summary.update(
+            pvc_subset=pvc_subset,
+            original_scene_kind=parsed.get("original_scene_kind"),
+            filtered_out_table_count=parsed.get("filtered_out_table_count", 0),
+        )
+    if pvc_clusters is not None:
+        cad_summary.update(
+            orientation_tolerance_deg=float(pvc_orientation_tolerance_deg),
+            orientation_count=len(pvc_clusters),
+            orientations=pvc_clusters,
+        )
     return {
         "mode": "pvc", "shading_lines": shading_lines, "tilt_deg": eff_tilt, "azimuth_deg": eff_azim, "axis_azimuth_deg": eff_axis,
         "pitch_m": max(eff_pitch, 0.2), "collector_width_m": coll_w, "shed_count": parsed["table_count"],
         "module_rows": rep["module_rows"], "module_columns": rep["module_columns"], "module_orient": rep["module_orient"],
         "obstacles": eff_obs, "min_phi_deg": parsed.get("min_phi_deg", -60.0), "max_phi_deg": parsed.get("max_phi_deg", 60.0),
         "terrain_summary": terrain_summary, "cad_summary": cad_summary, "first_table": parsed["tables"][0],
+        **({"pvc_orientations": pvc_clusters} if pvc_clusters is not None else {}),
     }
 
 
@@ -637,11 +683,13 @@ def read_cad_scene_preview(components: Any, scene_name: str) -> dict[str, Any]:
             scope = "ground_sheds" if parsed["scene_kind"] == "fixed" else ("ground_tracker" if parsed["scene_kind"] == "tracker" else None)
             result.update({
                 "status": "ready", "format": "pvc_1.4.1", "scene_name": scene_name,
-                "geometry": {k: parsed[k] for k in ("scene_kind", "table_count", "inferred_module_count", "collector_area_m2",
+                "geometry": {k: parsed[k] for k in ("scene_kind", "table_count", "fixed_count", "tracker_count",
+                                                    "inferred_module_count", "collector_area_m2",
                                                     "obstacle_count", "terrain_point_count", "bounds_m", "unit_name", "unit_meter",
                                                     "module_spec", "pitch_estimate_m")}
                 | ({k: parsed[k] for k in ("dominant_tilt_deg", "dominant_azimuth_deg") if k in parsed})
-                | ({k: parsed[k] for k in ("dominant_axis_azimuth_deg", "min_phi_deg", "max_phi_deg") if k in parsed}),
+                | ({k: parsed[k] for k in ("dominant_axis_azimuth_deg", "min_phi_deg", "max_phi_deg") if k in parsed})
+                | ({"available_subsets": ["fixed", "tracker"]} if parsed["scene_kind"] == "mixed" else {}),
                 "recommended_design_args": {**({"scope": scope} if scope else {}), "ground_layout": {"pvc_name": scene_name, "model_mode": "3d"}},
             })
         elif lower.endswith(".dxf"):
@@ -679,7 +727,8 @@ def check_pvc_electrical_area(
     if not isinstance(cad_meta, dict) or cad_meta.get("format") != "pvc_1.4.1":
         return
     elec_mods = int(electrical_modules)
-    elec_area = round(elec_mods * float(utility_summary["module_width_m"]) * float(utility_summary["module_length_m"]), 2)
+    mod_area = float(utility_summary["module_width_m"]) * float(utility_summary["module_length_m"])
+    elec_area = round(elec_mods * mod_area, 2)
     cad_area = float(cad_meta["collector_area_m2"])
     if elec_area > cad_area * 1.001:
         raise ValueError(
@@ -696,4 +745,21 @@ def check_pvc_electrical_area(
             f"Imported .pvc scene geometry suggests {cad_meta['inferred_module_count']} modules ({cad_area:.1f} m2) "
             f"while electrical sizing places {elec_mods} modules ({elec_area:.1f} m2)."
         )
+    cad_orients = cad_meta.get("orientations")
+    sub_orients = utility_summary.get("sub_orientations")
+    if isinstance(cad_orients, list) and isinstance(sub_orients, list) and len(cad_orients) == len(sub_orients) >= 2:
+        sub_by_id = {int(s["orientation_id"]): s for s in sub_orients}
+        for cl in cad_orients:
+            oid = int(cl["orientation_id"])
+            if (sub := sub_by_id.get(oid)) is None:
+                continue
+            sub_area = round(int(sub["module_count"]) * mod_area, 2)
+            cl_area = float(cl["collector_area_m2"])
+            cl["electrical_area_m2"] = sub_area
+            cl["area_utilization"] = round(sub_area / cl_area, 4) if cl_area > 0 else 0.0
+            if sub_area > cl_area * 1.001:
+                raise ValueError(
+                    f".pvc orientation #{oid} ({cl['label']}) electrical module area ({sub_area:.2f} m2) "
+                    f"exceeds its clustered 3D collector area ({cl_area:.2f} m2)"
+                )
 

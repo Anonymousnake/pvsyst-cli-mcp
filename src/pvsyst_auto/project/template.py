@@ -13,10 +13,14 @@ from pvsyst_auto.project.paths import project_path
 from pvsyst_auto.project.synthesize import (
     SYNTH_VERSION, _clean_text, _fmt_angle, _pos_int, synthesize_project_and_variant,
 )
-from pvsyst_auto.scene.partition import (
-    compute_table_partition_dims, normalize_electrical_shading, shading_header_kwargs, summarize_utility_electrical_shading,
+from pvsyst_auto.scene.partition import normalize_electrical_shading, summarize_utility_electrical_shading
+from pvsyst_auto.scene.reader import (
+    _synthesize_ground_array_shading,
+    _validate_ground_array_modules,
+    pv_shading_header,
+    synthesize_ground_shed_shading,
+    synthesize_ground_tracker_shading,
 )
-from pvsyst_auto.scene.reader import pv_shading_header
 from pvsyst_auto.validation import append_issue as _issue, finite_number as _finite
 from pvsyst_auto.validation import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
@@ -368,106 +372,6 @@ def _prepare(cli, store, ond_electrical, pan_name, ond_name, new_project, dry_ru
     return result
 
 
-def _validate_ground_array_modules(*, module_rows: int, module_columns: int, module_width_m: float, module_length_m: float,
-                                   module_name: str, module_orient: str, spacing_x_m: float, spacing_y_m: float) -> tuple[int, int, float, float, float, float, str]:
-    n_rows, n_cols = _pos_int(module_rows, "module_rows"), _pos_int(module_columns, "module_columns")
-    mw, ml = _finite(module_width_m, "module_width_m", minimum=0.1), _finite(module_length_m, "module_length_m", minimum=0.1)
-    sx, sy = _finite(spacing_x_m, "spacing_x_m", minimum=0.0), _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
-    if module_orient not in ("moPortrait", "moLandscape"):
-        raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
-    return n_rows, n_cols, mw, ml, sx, sy, _clean_text(module_name, "module_name")
-
-
-def _synthesize_ground_array_shading(
-    *, obj_type: str, shading_comment: str, obj_comment: str, n_elems: int, origin: tuple[float, float, float],
-    tilt_deg: float, base_slope_deg: float, azimuth_deg: float, orientation_id: int, name: str, mw: float, ml: float,
-    n_rows: int, n_cols: int, module_orient: str, sx: float, sy: float, dx_module: float, dy_module: float,
-    long_shed: float, larg_shed: float, pitch_ns: float, pitch_ew: float, version: str, extra_lines: list[str] = (),
-    header_kwargs: dict | None = None,
-) -> list[str]:
-    return [
-        *pv_shading_header(shading_comment, 1, **(header_kwargs or {})), f"      PVObject_1={obj_type}", f"        Comment={obj_comment}",
-        f"        Version={version}", "        Flags=$02200074", "        NoObjCreated=1",
-        "        ColorTechn=$00FF0000", "        ColorSurf=$00FF9999", "        ColorBord=$00505050",
-        f"        DOrigine={origin[0]:.6f},{origin[1]:.6f},{origin[2]:.6f}", f"        DInclin={tilt_deg:.6f}",
-        f"        BaseSlope={base_slope_deg:.6f}", f"        DAzimut={azimuth_deg:.6f}", "        Source=osPVsyst",
-        f"      NElemChamps={n_elems}", f"      NoOrient={_pos_int(orientation_id, 'orientation_id')}",
-        f"      PanneauPVName={name};{mw:.3f};{ml:.3f}", f"      ModSpacingX={sx:.3f}", f"      ModSpacingY={sy:.3f}",
-        f"      NModInHeight={n_rows}", f"      NModInWidth={n_cols}", f"      ModuleOrient={module_orient}",
-        f"      DXModule={dx_module:.3f}", f"      DYModule={dy_module:.3f}",
-        f"        LongShed={long_shed:.6f}", f"        LargShed={larg_shed:.6f}", "        Cadre=0.000,0.000,0.000,0.000,",
-        "        TypeOrigine=2", f"        PitchNS={pitch_ns:.3f}", f"        PitchEW={pitch_ew:.3f}",
-        *extra_lines, f"      End of PVObject {obj_type}", "    End of ListeObjets", "  End of PVObject pvShading",
-    ]
-
-
-def synthesize_ground_shed_shading(*, shed_count: int = 10, pitch_m: float = 10.0, tilt_deg: float = 20.0, azimuth_deg: float = 0.0,
-                                   base_slope_deg: float = 0.0, module_rows: int = 2, module_columns: int = 25,
-                                   module_width_m: float = 1.052, module_length_m: float = 2.131, module_name: str = "PV Module",
-                                   module_orient: str = "moPortrait", spacing_x_m: float = 0.020, spacing_y_m: float = 0.020,
-                                   origin: tuple[float, float, float] = (0.0, 0.0, 0.0), orientation_id: int = 1,
-                                   electrical_shading=None, series_modules: int | None = None, is_half_cut: bool = False,
-                                   version: str = SYNTH_VERSION) -> list[str]:
-    """Synthesize a complete 3D PVObject_Ombrage=pvShading containing a pvShdArrayShed field."""
-    cfg = normalize_electrical_shading(electrical_shading)
-    n_sheds, pitch = _pos_int(shed_count, "shed_count"), _finite(pitch_m, "pitch_m", minimum=0.1)
-    tilt = _finite(tilt_deg, "tilt_deg", minimum=0.0, maximum=90.0)
-    azim = _finite(azimuth_deg, "azimuth_deg", minimum=-180.0, maximum=180.0)
-    slope = _finite(base_slope_deg, "base_slope_deg", minimum=-45.0, maximum=45.0)
-    n_rows, n_cols, mw, ml, sx, sy, name = _validate_ground_array_modules(
-        module_rows=module_rows, module_columns=module_columns, module_width_m=module_width_m, module_length_m=module_length_m,
-        module_name=module_name, module_orient=module_orient, spacing_x_m=spacing_x_m, spacing_y_m=spacing_y_m,
-    )
-    cell_w, cell_h = (mw, ml) if module_orient == "moPortrait" else (ml, mw)
-    larg_shed, long_shed = n_rows * cell_h + max(0, n_rows - 1) * sy, n_cols * cell_w + max(0, n_cols - 1) * sx
-    if cfg["mode"] == "partition":
-        dx_mod, dy_mod, _, _ = compute_table_partition_dims(
-            long_shed_m=long_shed, larg_shed_m=larg_shed, module_rows=n_rows, module_columns=n_cols,
-            module_orient=module_orient, is_tracker=False, electrical_shading=cfg, series_modules=series_modules, is_half_cut=is_half_cut,
-        )
-    else:
-        dx_mod, dy_mod = cell_w + sx, cell_h + sy
-    return _synthesize_ground_array_shading(
-        obj_type="pvShdArrayShed", shading_comment="Ground shed 3D shading scene", obj_comment="Shed field #1",
-        n_elems=n_sheds, origin=origin, tilt_deg=tilt, base_slope_deg=slope, azimuth_deg=azim, orientation_id=orientation_id,
-        name=name, mw=mw, ml=ml, n_rows=n_rows, n_cols=n_cols, module_orient=module_orient, sx=sx, sy=sy,
-        dx_module=dx_mod, dy_module=dy_mod, long_shed=long_shed, larg_shed=larg_shed, pitch_ns=pitch, pitch_ew=0.0,
-        version=version, header_kwargs=shading_header_kwargs(cfg),
-    )
-
-
-def synthesize_ground_tracker_shading(*, tracker_count: int = 10, pitch_ew_m: float = 12.0, axis_azimuth_deg: float = 0.0,
-                                      module_rows: int = 2, module_columns: int = 25, module_width_m: float = 1.052,
-                                      module_length_m: float = 2.131, module_name: str = "PV Module", module_orient: str = "moPortrait",
-                                      spacing_x_m: float = 0.020, spacing_y_m: float = 0.020, origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
-                                      orientation_id: int = 1, electrical_shading=None, series_modules: int | None = None,
-                                      is_half_cut: bool = False, version: str = SYNTH_VERSION) -> list[str]:
-    """Synthesize a complete 3D PVObject_Ombrage=pvShading containing a pvShdArrayTracking field."""
-    cfg = normalize_electrical_shading(electrical_shading)
-    n_trk, pitch = _pos_int(tracker_count, "tracker_count"), _finite(pitch_ew_m, "pitch_ew_m", minimum=0.1)
-    azim = _finite(axis_azimuth_deg, "axis_azimuth_deg", minimum=-180.0, maximum=180.0)
-    n_rows, n_cols, mw, ml, sx, sy, name = _validate_ground_array_modules(
-        module_rows=module_rows, module_columns=module_columns, module_width_m=module_width_m, module_length_m=module_length_m,
-        module_name=module_name, module_orient=module_orient, spacing_x_m=spacing_x_m, spacing_y_m=spacing_y_m,
-    )
-    chord_mod, length_mod = (ml, mw) if module_orient == "moPortrait" else (mw, ml)
-    long_shed, larg_shed = n_rows * chord_mod + max(0, n_rows - 1) * sy, n_cols * length_mod + max(0, n_cols - 1) * sx
-    if cfg["mode"] == "partition":
-        dx_mod, dy_mod, _, _ = compute_table_partition_dims(
-            long_shed_m=long_shed, larg_shed_m=larg_shed, module_rows=n_rows, module_columns=n_cols,
-            module_orient=module_orient, is_tracker=True, electrical_shading=cfg, series_modules=series_modules, is_half_cut=is_half_cut,
-        )
-    else:
-        dx_mod, dy_mod = chord_mod + sy, larg_shed
-    return _synthesize_ground_array_shading(
-        obj_type="pvShdArrayTracking", shading_comment="Ground tracker 3D shading scene", obj_comment="Array of trackers #1",
-        n_elems=n_trk, origin=origin, tilt_deg=0.0, base_slope_deg=0.0, azimuth_deg=azim, orientation_id=orientation_id,
-        name=name, mw=mw, ml=ml, n_rows=n_rows, n_cols=n_cols, module_orient=module_orient, sx=sx, sy=sy,
-        dx_module=dx_mod, dy_module=dy_mod, long_shed=long_shed, larg_shed=larg_shed, pitch_ns=0.0, pitch_ew=pitch,
-        version=version, extra_lines=["        AxisOrig=2"], header_kwargs=shading_header_kwargs(cfg),
-    )
-
-
 def _resolve_pan_module_dimensions(store, pan_name: str) -> dict | None:
     """Auto-extract (width_m, length_m, model_name, sub_module_layout, is_half_cut) from a readable .PAN file."""
     components = getattr(store, "components", None) if store is not None else None
@@ -520,7 +424,8 @@ def synthesize_utility_project(
     terrain: dict | None = None, u_factor: float = 29.0, lid_loss: float = 0.0, pmism_mpp: float | None = None,
     module_quality_loss: float | None = None, ageing: dict | None = None, dc_wiring_loss_pct: float = 1.5, dc_wiring_resistance_mohm: float = 0.0,
     sub_orientations: list[dict] | None = None, subarray_allocations: list[dict] | None = None, top_spacing_m: float = 0.2, dome_wiring: str = "auto",
-    pvc_name: str | None = None, dxf_name: str | None = None, dxf_layers: dict | None = None, dxf_unit_scale: float | None = None,
+    pvc_name: str | None = None, pvc_subset: str | None = None, pvc_orientation_tolerance_deg: float | None = None,
+    dxf_name: str | None = None, dxf_layers: dict | None = None, dxf_unit_scale: float | None = None,
     electrical_shading: str | dict | None = None, tilt_explicit: bool = True, azimuth_explicit: bool = True,
     p50_p90: dict | None = None, horizon: dict | None = None,
     allow_missing_met: bool = False, version: str = SYNTH_VERSION, with_bom: bool = True,
@@ -558,7 +463,8 @@ def synthesize_utility_project(
             dxf_unit_scale=dxf_unit_scale, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg, axis_azimuth_deg=axis_azimuth_deg,
             pitch_m=pitch_m, tilt_explicit=tilt_explicit, azimuth_explicit=azimuth_explicit,
             obstacles=obstacles, exclusion_zones=exclusion_zones, terrain=terrain,
-            module_name=resolved_mod_name, version=version, **es_kw,
+            module_name=resolved_mod_name, version=version, pvc_subset=pvc_subset,
+            pvc_orientation_tolerance_deg=pvc_orientation_tolerance_deg, **es_kw,
         )
         cad_summary = cad_resolved["cad_summary"]
         obstacles = cad_resolved.get("obstacles", obstacles)
@@ -767,7 +673,8 @@ def synthesize_utility_project(
             "dc_wiring_loss_pct": dc_wiring_loss_pct, "dc_wiring_resistance_mohm": dc_wiring_resistance_mohm,
         }
 
-    if subarray_allocations and (field_type == "Dome" or sub_orientations):
+    pvc_clusters = cad_resolved.get("pvc_orientations") if (cad_resolved and cad_resolved["mode"] == "pvc") else None
+    if subarray_allocations and (field_type == "Dome" or sub_orientations or (pvc_clusters and len(pvc_clusters) >= 2)):
         raise ValueError("subarray_allocations is only supported for single-orientation ground_sheds and ground_tracker")
     sub_orient_summaries: list[dict] | None = None
     resolved_allocs: list[dict] | None = None
@@ -825,6 +732,17 @@ def synthesize_utility_project(
                 "inverter_count": sni, "mppt_count": snp, "string_count": sns, "module_count": sub_mods,
                 "share_pct": round((sub_mods / total_sub_mods) * 100.0, 2) if total_sub_mods > 0 else 0.0,
             })
+    elif pvc_clusters and len(pvc_clusters) >= 2:
+        from pvsyst_auto.scene.pvc_clustering import build_pvc_multi_orient_synthesis_blocks
+        orientations_list, subarrays, sub_orient_summaries = build_pvc_multi_orient_synthesis_blocks(
+            pvc_clusters, field_type=field_type, pan_name=pan_name, ond_name=ond_name,
+            n_mod_serie=n_mod_serie, n_string_ch=n_string_ch, n_inverter=n_inverter,
+            n_inv_mppt=n_inv_mppt if n_inv_mppt is not None else (n_string_ch if independent_mppt else 1),
+            independent_mppt=independent_mppt, pnom_ac_in_mppt=pnom_ac_in_mppt,
+            lid_loss=lid_loss, pmism_mpp=pmism_mpp, module_quality_loss=module_quality_loss,
+            dc_wiring_loss_pct=dc_wiring_loss_pct, dc_wiring_resistance_mohm=dc_wiring_resistance_mohm,
+            bifacial=bifacial, module_area_m2=mw * ml,
+        )
     elif subarray_allocations:
         if not independent_mppt:
             raise ValueError("subarray_allocations requires independent_mppt=True")
