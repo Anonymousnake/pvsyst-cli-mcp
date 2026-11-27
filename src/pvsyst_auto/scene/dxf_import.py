@@ -8,7 +8,12 @@ from typing import Any
 
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.scene.author import MAX_OBSTACLES, obstacle_profiles
-from pvsyst_auto.scene.exclusions import MAX_EXCLUSION_ZONES, polygon_area, validate_exclusion_zones
+from pvsyst_auto.scene.exclusions import (
+    MAX_EXCLUSION_ZONES,
+    is_self_intersecting_polygon,
+    polygon_area,
+    validate_exclusion_zones,
+)
 from pvsyst_auto.scene.reader import validate_site_polygon
 from pvsyst_auto.validation import finite_number as _finite
 
@@ -35,7 +40,7 @@ _FLOAT_FIELDS: dict[str, dict[int, str]] = {
     "ARC": {10: "cx", 20: "cy", 30: "cz", 39: "thick", 40: "r", 50: "start", 51: "end"},
     "ELLIPSE": {10: "cx", 20: "cy", 30: "cz", 11: "mx", 21: "my", 31: "mz", 40: "ratio", 41: "start", 42: "end", 210: "nx", 220: "ny", 230: "nz"},
     "LINE": {10: "x1", 20: "y1", 30: "z1", 11: "x2", 21: "y2", 31: "z2"},
-    "INSERT": {10: "x", 20: "y", 30: "z", 41: "sx", 42: "sy", 43: "sz", 50: "rot", 44: "col_sp", 45: "row_sp"},
+    "INSERT": {10: "x", 20: "y", 30: "z", 41: "sx", 42: "sy", 43: "sz", 50: "rot", 44: "col_sp", 45: "row_sp", 210: "nx", 220: "ny", 230: "nz"},
 }
 
 
@@ -188,6 +193,18 @@ def _mat_mul(
     )
 
 
+def _ocs_matrix(nx: float, ny: float, nz: float) -> tuple[tuple[float, float, float, float], ...]:
+    n_len = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if n_len <= 1e-9:
+        return _mat_identity()
+    nx, ny, nz = nx / n_len, ny / n_len, nz / n_len
+    ax, ay, az = (nz, 0.0, -nx) if (abs(nx) < 1.0 / 64.0 and abs(ny) < 1.0 / 64.0) else (-ny, nx, 0.0)
+    a_len = math.sqrt(ax * ax + ay * ay + az * az)
+    ax, ay, az = ax / a_len, ay / a_len, az / a_len
+    bx, by, bz = ny * az - nz * ay, nz * ax - nx * az, nx * ay - ny * ax
+    return ((ax, bx, nx, 0.0), (ay, by, ny, 0.0), (az, bz, nz, 0.0))
+
+
 def _insert_matrix(
     base: tuple[float, float, float], pos: tuple[float, float, float], scale: tuple[float, float, float], rot_deg: float,
 ) -> tuple[tuple[float, float, float, float], ...]:
@@ -288,14 +305,8 @@ def _discretize_ellipse(ent: dict[str, Any]) -> tuple[list[tuple[float, float, f
         if full:
             sweep = tau
     n_seg = max(8, min(64, int(math.ceil(sweep / math.radians(10.0)))))
-    pts = [
-        (
-            cx + math.cos(t) * mx + math.sin(t) * bx,
-            cy + math.cos(t) * my + math.sin(t) * by,
-            cz + math.cos(t) * mz + math.sin(t) * bz,
-        )
-        for t in (start_rad + sweep * j / n_seg for j in range(n_seg if full else n_seg + 1))
-    ]
+    pts = [(cx + math.cos(t) * mx + math.sin(t) * bx, cy + math.cos(t) * my + math.sin(t) * by, cz + math.cos(t) * mz + math.sin(t) * bz)
+           for t in (start_rad + sweep * j / n_seg for j in range(n_seg if full else n_seg + 1))]
     return pts, full
 
 
@@ -468,7 +479,8 @@ def _new_entity(et: str) -> dict[str, Any] | None:
                 "ctrl_pts": [], "fit_pts": [], "_c_cur": [None, None, None], "_f_cur": [None, None, None]}
     if et == "INSERT":
         return {"type": "INSERT", "layer": "0", "name": "", "x": 0.0, "y": 0.0, "z": 0.0,
-                "sx": 1.0, "sy": 1.0, "sz": 1.0, "rot": 0.0, "cols": 1, "rows": 1, "col_sp": 0.0, "row_sp": 0.0}
+                "sx": 1.0, "sy": 1.0, "sz": 1.0, "rot": 0.0, "cols": 1, "rows": 1, "col_sp": 0.0, "row_sp": 0.0,
+                "nx": 0.0, "ny": 0.0, "nz": 1.0}
     return None
 
 
@@ -659,10 +671,13 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
                     raise ValueError(f"DXF INSERT array ({rows}x{cols}) exceeds maximum expansion budget ({MAX_DXF_ENTITIES})")
                 bkey = ent["name"].casefold()
                 blk = blocks.get(bkey)
-                if blk is None or depth >= MAX_DXF_INSERT_DEPTH or bkey in active:
+                if blk is None or bkey in active:
                     continue
+                if depth >= MAX_DXF_INSERT_DEPTH:
+                    raise ValueError(f"DXF INSERT nesting depth exceeded maximum ({MAX_DXF_INSERT_DEPTH})")
                 rot = ent["rot"]
                 c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+                m_ocs = _ocs_matrix(ent.get("nx", 0.0), ent.get("ny", 0.0), ent.get("nz", 1.0))
                 active.add(bkey)
                 try:
                     for ir in range(rows):
@@ -672,7 +687,7 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
                                 raise ValueError(f"DXF entity/INSERT expansion exceeded maximum budget ({MAX_DXF_ENTITIES})")
                             dx, dy = ic * ent["col_sp"] * c - ir * ent["row_sp"] * s, ic * ent["col_sp"] * s + ir * ent["row_sp"] * c
                             m_ins = _insert_matrix(tuple(blk["base"]), (ent["x"] + dx, ent["y"] + dy, ent["z"]), (ent["sx"], ent["sy"], ent["sz"]), rot)
-                            _walk(blk["entities"], _mat_mul(mat, m_ins), layer, depth + 1, active)
+                            _walk(blk["entities"], _mat_mul(mat, _mat_mul(m_ocs, m_ins)), layer, depth + 1, active)
                 finally:
                     active.remove(bkey)
                 continue
@@ -840,7 +855,12 @@ def parse_ascii_dxf(
     for raw_ex in exclusion_polys:
         simp_ex, _ = _simplify_closed_polygon(raw_ex, 64)
         rounded_ex = [[round(x, 4), round(y, 4)] for x, y in simp_ex]
-        if len(rounded_ex) >= 3 and (area := polygon_area([(p[0], p[1]) for p in rounded_ex])) > 1e-3:
+        if len(rounded_ex) < 3:
+            continue
+        pts_ex = [(p[0], p[1]) for p in rounded_ex]
+        if is_self_intersecting_polygon(pts_ex):
+            raise ValueError(f"DXF {dxf_name!r} contains a self-intersecting exclusion polygon")
+        if (area := polygon_area(pts_ex)) > 1e-3:
             excl_candidates.append((area, rounded_ex))
     if len(excl_candidates) > MAX_EXCLUSION_ZONES:
         raise ValueError(

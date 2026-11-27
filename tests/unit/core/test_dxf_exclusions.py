@@ -144,11 +144,11 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
             "10", "10.0", "20", "10.0", "10", "12.0", "20", "10.0",
             "10", "12.0", "20", "12.0", "10", "10.0", "20", "12.0",
             "0", "ENDBLK",
-            # Deep nesting L8..L1 (8 levels deep) + L9 beyond max depth
-            *[ln for idx in range(9, 0, -1) for ln in (
+            # Deep nesting L8..L1 (8 levels allowed; >8 rejected in Deep9.dxf below)
+            *[ln for idx in range(8, 0, -1) for ln in (
                 ["0", "BLOCK", "2", f"L{idx}", "10", "0", "20", "0", "30", "0",
                  "0", "CIRCLE", "8", "DEEP_EXCL", "10", f"{10 + idx * 5}", "20", "40", "40", "1.0"]
-                + (["0", "INSERT", "8", "0", "2", f"L{idx + 1}", "10", "0", "20", "0", "30", "0"] if idx < 9 else [])
+                + (["0", "INSERT", "8", "0", "2", f"L{idx + 1}", "10", "0", "20", "0", "30", "0"] if idx < 8 else [])
                 + ["0", "ENDBLK"]
             )],
             # Cyclic A -> B -> A
@@ -185,9 +185,52 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
             and abs(min(p[1] for p in z) - 20.0) < 1e-3 and abs(max(p[1] for p in z) - 24.0) < 1e-3
             for z in parsed["exclusion_zones"]
         ))
-        # L9 circle at x=55 must NOT be present (depth > 8 blocked), L8 at x=50 MUST be present
+        # L8 circle at x=50 MUST be present
         self.assertTrue(any(abs(sum(p[0] for p in z) / len(z) - 50.0) < 0.2 for z in parsed["exclusion_zones"]))
-        self.assertFalse(any(abs(sum(p[0] for p in z) / len(z) - 55.0) < 0.2 for z in parsed["exclusion_zones"]))
+
+        # Exceeding MAX_DXF_INSERT_DEPTH (9 block levels B0..B8) fails loudly instead of silently dropping
+        deep9 = "\n".join([
+            "0", "SECTION", "2", "BLOCKS",
+            *[ln for idx in range(9) for ln in (
+                ["0", "BLOCK", "2", f"B{idx}", "10", "0", "20", "0", "30", "0"]
+                + (["0", "INSERT", "8", "0", "2", f"B{idx + 1}", "10", "0", "20", "0", "30", "0"] if idx < 8 else [
+                    "0", "LWPOLYLINE", "8", "0", "70", "1",
+                    "10", "2", "20", "2", "10", "6", "20", "2", "10", "6", "20", "6", "10", "2", "20", "6",
+                ])
+                + ["0", "ENDBLK"]
+            )],
+            "0", "ENDSEC", "0", "SECTION", "2", "ENTITIES",
+            "0", "LWPOLYLINE", "8", "SITE_BOUNDARY", "70", "1",
+            "10", "0", "20", "0", "10", "50", "20", "0", "10", "50", "20", "50", "10", "0", "20", "50",
+            "0", "INSERT", "8", "KEEPOUT", "2", "B0", "10", "0", "20", "0", "30", "0",
+            "0", "ENDSEC", "0", "EOF",
+        ]) + "\n"
+        (self.ws / "UserData" / "Deep9.dxf").write_text(deep9, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "depth"):
+            parse_ascii_dxf(self.ws, "Deep9.dxf")
+
+        # INSERT with extrusion (210=0, 220=0, 230=-1) transforms OCS (-20, 20, 0) -> WCS [16..20] x [20..24]
+        ocs_dxf = "\n".join([
+            "0", "SECTION", "2", "BLOCKS",
+            "0", "BLOCK", "2", "SQ", "10", "0", "20", "0", "30", "0",
+            "0", "LWPOLYLINE", "8", "0", "70", "1",
+            "10", "0", "20", "0", "10", "4", "20", "0", "10", "4", "20", "4", "10", "0", "20", "4",
+            "0", "ENDBLK", "0", "ENDSEC",
+            "0", "SECTION", "2", "ENTITIES",
+            "0", "LWPOLYLINE", "8", "SITE_BOUNDARY", "70", "1",
+            "10", "0", "20", "0", "10", "100", "20", "0", "10", "100", "20", "100", "10", "0", "20", "100",
+            "0", "INSERT", "8", "KEEPOUT", "2", "SQ", "10", "-20", "20", "20", "30", "0",
+            "210", "0", "220", "0", "230", "-1",
+            "0", "ENDSEC", "0", "EOF",
+        ]) + "\n"
+        (self.ws / "UserData" / "OcsExtrude.dxf").write_text(ocs_dxf, encoding="utf-8")
+        ocs_parsed = parse_ascii_dxf(self.ws, "OcsExtrude.dxf")
+        self.assertEqual(len(ocs_parsed["exclusion_zones"]), 1)
+        z_ocs = ocs_parsed["exclusion_zones"][0]
+        self.assertAlmostEqual(min(p[0] for p in z_ocs), 16.0, places=3)
+        self.assertAlmostEqual(max(p[0] for p in z_ocs), 20.0, places=3)
+        self.assertAlmostEqual(min(p[1] for p in z_ocs), 20.0, places=3)
+        self.assertAlmostEqual(max(p[1] for p in z_ocs), 24.0, places=3)
 
         # Expansion budget guard: huge MINSERT, empty-block 1e9 MINSERT, and nested array explosion fail fast cleanly
         cap_dxf = "\n".join([
@@ -386,8 +429,13 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
             "0", "ENDSEC", "0", "EOF",
         ]) + "\n"
         (self.ws / "UserData" / "Bowtie.dxf").write_text(bowtie_dxf, encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "simple"):
+        with self.assertRaisesRegex(ValueError, "self-intersecting"):
             parse_ascii_dxf(self.ws, "Bowtie.dxf")
+        # Symmetric zero-signed-area bowtie must also be rejected (never silently dropped)
+        sym_bowtie_dxf = bowtie_dxf.replace("10\n3\n20\n0", "10\n4\n20\n0")
+        (self.ws / "UserData" / "SymBowtie.dxf").write_text(sym_bowtie_dxf, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "self-intersecting"):
+            parse_ascii_dxf(self.ws, "SymBowtie.dxf")
         # Concave L-shape remains accepted
         l_shape = [[2.0, 2.0], [8.0, 2.0], [8.0, 4.0], [4.0, 4.0], [4.0, 8.0], [2.0, 8.0]]
         self.assertEqual(len(validate_exclusion_zones([l_shape])), 1)
