@@ -115,7 +115,7 @@ def rect_overlaps_polygon(
     shifted = [(px - u0, py - v0) for px, py in poly]
     pxs = [p[0] for p in shifted]
     pys = [p[1] for p in shifted]
-    if max(pxs) <= _EPS or min(pxs) >= w - _EPS or max(pys) <= _EPS or min(pys) >= h - _EPS:
+    if max(pxs) <= 0.0 or min(pxs) >= w or max(pys) <= 0.0 or min(pys) >= h:
         return False
 
     def _lerp_x(xb: float, a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
