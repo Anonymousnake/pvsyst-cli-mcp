@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal
-from pydantic import Field, StrictBool, StrictInt, StrictStr
+from pydantic import Field, StrictBool, StrictInt, StrictStr, model_validator
 
 from pvsyst_auto.api.schemas_scene import (
     ConstantNativeLoad,
@@ -10,6 +10,46 @@ from pvsyst_auto.api.schemas_scene import (
     StrictNum,
     _StrictModel,
 )
+from pvsyst_auto.energy.p50_p90 import normalize_p50_spec
+
+
+class P50P90Spec(_StrictModel):
+    """Probabilistic P50/P90 uncertainty specification (snake_case or native PVsyst keys)."""
+    enabled: StrictBool | None = None
+    evaluation_years: Annotated[StrictInt, Field(ge=1, le=50)] | None = None
+    meteo_kind: Literal["SpecYear", "TMY", "MonthAverage"] | None = None
+    p90_custom: Annotated[StrictInt, Field(ge=51, le=98)] | None = None
+    pxx_custom: Annotated[StrictInt, Field(ge=52, le=99)] | None = None
+    pxx_report: StrictBool | None = None
+    pxx_main_results: StrictBool | None = None
+    plot_kind: Literal[1] | None = None
+    year_dev_from_aver_pct: StrictNum | None = None
+    meteo_annual_variab_pct: StrictNum | None = None
+    pv_model_variab_pct: StrictNum | None = None
+    inverter_variab_pct: StrictNum | None = None
+    soiling_variab_pct: StrictNum | None = None
+    degrad_variab_pct: StrictNum | None = None
+    custom_variab_pct: StrictNum | None = None
+    custom_var_label: StrictStr | None = None
+    MeteoKind: Literal["SpecYear", "TMY", "MonthAverage"] | None = None
+    P90Custom: Annotated[StrictInt, Field(ge=51, le=98)] | None = None
+    PxxCustom: Annotated[StrictInt, Field(ge=52, le=99)] | None = None
+    PxxReport: StrictBool | None = None
+    PxxMainResults: StrictBool | None = None
+    PlotKind: Literal[1] | None = None
+    YearDevFromAver: StrictNum | None = None
+    MeteoAnnualVariab: StrictNum | None = None
+    PVModelVariab: StrictNum | None = None
+    InverterVariab: StrictNum | None = None
+    SoilingVariab: StrictNum | None = None
+    DegradVariab: StrictNum | None = None
+    CustomVariab: StrictNum | None = None
+    CustomVarLabel: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def _validate_p50_spec(self):
+        normalize_p50_spec(self.model_dump(exclude_none=True))
+        return self
 
 
 class EconomicsReplacementEvent(_StrictModel):
@@ -98,6 +138,14 @@ class EconomicsFinancialConfig(_StrictModel):
     battery_replacement_cost_ratio: StrictNum | None = None
     battery_replacement_cost: StrictNum | None = None
     replacement_events: list[EconomicsReplacementEvent] | None = None
+    p50_p90: P50P90Spec | None = None
+    uncertainty: P50P90Spec | None = None
+
+    @model_validator(mode="after")
+    def _validate_financial_p50(self):
+        if self.p50_p90 is not None and self.uncertainty is not None:
+            raise ValueError("Specify either p50_p90 or uncertainty, not both")
+        return self
 class EconomicsScenarioInput(_StrictModel):
     label: StrictStr
     csv_name: StrictStr | None = None
@@ -111,6 +159,14 @@ class EconomicsScenarioInput(_StrictModel):
     capex_total: StrictNum | None = None
     annual_opex: StrictNum | None = None
     replacement_events: list[EconomicsReplacementEvent] | None = None
+    p50_p90: P50P90Spec | None = None
+    uncertainty: P50P90Spec | None = None
+
+    @model_validator(mode="after")
+    def _validate_scenario_p50(self):
+        if self.p50_p90 is not None and self.uncertainty is not None:
+            raise ValueError("Specify either p50_p90 or uncertainty, not both")
+        return self
 class ReportScenarioInput(_StrictModel):
     label: StrictStr
     csv_name: StrictStr | None = None
@@ -123,6 +179,16 @@ class ReportScenarioInput(_StrictModel):
     capex_total: StrictNum | None = None
     annual_opex: StrictNum | None = None
     replacement_events: list[EconomicsReplacementEvent] | None = None
+    p50_p90: P50P90Spec | dict[StrictStr, Any] | None = None
+    uncertainty: P50P90Spec | None = None
+
+    @model_validator(mode="after")
+    def _validate_report_scenario_p50(self):
+        if self.p50_p90 is not None and self.uncertainty is not None:
+            raise ValueError("Specify either p50_p90 or uncertainty, not both")
+        if isinstance(self.p50_p90, dict) and not ("yields_kwh" in self.p50_p90 and "exceedance_curve" in self.p50_p90):
+            normalize_p50_spec(self.p50_p90)
+        return self
 class BessSizingParams(_StrictModel):
     soc_min: StrictNum = 0.10
     soc_max: StrictNum = 0.95

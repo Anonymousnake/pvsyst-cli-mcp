@@ -57,7 +57,7 @@ _EXCLUSIVE_CONTROLS = (
 
 _COMPOSABLE_CONTROLS = frozenset({
     "soiling_updates", "system_unavailability_updates", "grid_limit_updates", "auxiliary_updates",
-    "inverter_temperature_updates", "power_factor_updates", "p50_p90_updates",
+    "inverter_temperature_updates", "power_factor_updates", "p50_p90_updates", "horizon_updates",
     "power_controls_updates", "bifacial_updates", "spectral_updates", "native_economics_updates",
 })
 
@@ -429,28 +429,30 @@ def _apply_one_control(store, lines, arrays, system, *, param_key, control, resu
     kinds = store._field_indices(lines, system, "SystemType") if system is not None else []
     whole_system_control = param_key in (
         "soiling_updates", "grid_limit_updates", "auxiliary_updates", "inverter_temperature_updates",
-        "power_factor_updates", "p50_p90_updates", "power_controls_updates", "ageing_updates",
+        "power_factor_updates", "p50_p90_updates", "horizon_updates", "power_controls_updates", "ageing_updates",
         "ageing_enabled", "system_unavailability_updates",
     )
-    accepted_versions = NATIVE_TEXT_OR_SEED if (param_key == "system_unavailability_updates" or ageing_tx) else NATIVE_TEXT
-    version_label = SEED_LABEL if (param_key == "system_unavailability_updates" or ageing_tx) else TEXT_LABEL
+    zero_tpl_versions = param_key in ("system_unavailability_updates", "p50_p90_updates", "horizon_updates") or ageing_tx
+    accepted_versions = NATIVE_TEXT_OR_SEED if zero_tpl_versions else NATIVE_TEXT
+    version_label = SEED_LABEL if zero_tpl_versions else TEXT_LABEL
     if (len(root_versions) != 1 or FIELD.fullmatch(lines[root_versions[0]].rstrip("\r\n"))[2] not in accepted_versions
             or main is None or (not whole_system_control and len(arrays) != 1) or len(kinds) != 1
             or FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2] != "Grid"
             or any(len(v) != 1 or FIELD.fullmatch(lines[v[0]].rstrip("\r\n"))[2] not in accepted_versions for v in versions)
-            or (param_key != "system_unavailability_updates" and not ageing_tx and has_object(lines, "pvGridStorage"))):
+            or (not zero_tpl_versions and has_object(lines, "pvGridStorage"))):
         raise ValueError(f"{control} editing requires a native {version_label} PV-only single-subarray Grid variant")
     if param_key == "ageing_updates":
         return {result_key: replace_ageing_model(lines, main, payload)}
     if param_key == "ageing_enabled":
         return {result_key: replace_ageing_enabled(lines, main, payload)}
-    flags_idx = store._field_indices(lines, main, "Flags")
-    if len(flags_idx) != 1 or not store._is_verified_main_flags(FIELD.fullmatch(lines[flags_idx[0]].rstrip("\r\n"))[2]):
-        raise ValueError(f"{control} editing requires verified main-array Flags/Flags2")
-    if not ageing_tx:
-        flags2_idx = store._field_indices(lines, main, "Flags2")
-        if len(flags2_idx) != 1 or not store._is_verified_main_flags2(FIELD.fullmatch(lines[flags2_idx[0]].rstrip("\r\n"))[2]):
+    if param_key not in ("p50_p90_updates", "horizon_updates"):
+        flags_idx = store._field_indices(lines, main, "Flags")
+        if len(flags_idx) != 1 or not store._is_verified_main_flags(FIELD.fullmatch(lines[flags_idx[0]].rstrip("\r\n"))[2]):
             raise ValueError(f"{control} editing requires verified main-array Flags/Flags2")
+        if not ageing_tx:
+            flags2_idx = store._field_indices(lines, main, "Flags2")
+            if len(flags2_idx) != 1 or not store._is_verified_main_flags2(FIELD.fullmatch(lines[flags2_idx[0]].rstrip("\r\n"))[2]):
+                raise ValueError(f"{control} editing requires verified main-array Flags/Flags2")
     if param_key == "seasonal_updates":
         store._require_no_geometry(lines)
     if not whole_system_control:
@@ -471,16 +473,16 @@ def _apply_one_control(store, lines, arrays, system, *, param_key, control, resu
         return {result_key: replace_system_unavailability(lines, system, payload)}
 
     horizon_sensitive = param_key in (
-        "seasonal_updates", "inverter_temperature_updates", "power_factor_updates", "p50_p90_updates",
+        "seasonal_updates", "inverter_temperature_updates", "power_factor_updates",
         "power_controls_updates", "string_mismatch_updates", "ageing_updates", "ageing_enabled", "iam_updates",
     ) or (param_key == "auxiliary_updates" and payload.get("mode") == "profile")
     if (not whole_system_control and orientation_id != 1
             or (not whole_system_control and [g[2] for g in store._orientation_list(lines)[1]] != [1])
-            or (param_key not in ("inverter_temperature_updates", "power_factor_updates", "power_controls_updates", "p50_p90_updates", "auxiliary_updates")
+            or (param_key not in ("inverter_temperature_updates", "power_factor_updates", "power_controls_updates", "p50_p90_updates", "horizon_updates", "auxiliary_updates")
                 and has_object(lines, "pvLoad"))
             or (horizon_sensitive and any("PVObject_Horizon=" in line for line in lines))):
         raise ValueError(f"{control} editing requires one orientation, no loads and a supported horizon state")
-    if param_key not in ("inverter_temperature_updates", "power_factor_updates", "power_controls_updates", "auxiliary_updates"):
+    if param_key not in ("inverter_temperature_updates", "power_factor_updates", "power_controls_updates", "p50_p90_updates", "horizon_updates", "auxiliary_updates"):
         flags = store._field_indices(lines, system, "Flags")
         if len(flags) != 1 or not re.fullmatch(r"\$0{1,8}", FIELD.fullmatch(lines[flags[0]].rstrip("\r\n"))[2]):
             raise ValueError(f"{control} editing requires plain Grid system Flags=$00")

@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 from typing import Any
 from pvsyst_auto.energy.ageing import load_ageing_batch_curve, normalize_yearly_energy_anchors, yearly_degradation_factors
+from pvsyst_auto.energy.p50_p90 import compute_probabilistic_economics, resolve_p50_p90_config
 from pvsyst_auto.native.cli import parse_batch_results
 from pvsyst_auto.project.paths import safe_filename, workspace_file
 from pvsyst_auto.results import BATCH_ENERGY_TO_KWH, RegularResultCsv, iter_aligned_result_rows
@@ -197,7 +198,8 @@ def _validate_financial(financial: dict | None) -> dict:
         "financing": _validate_financing(raw.get("financing")), "battery_replacement_year": bat_rep_year,
         "battery_replacement_cost_ratio": _opt_fin(raw, "battery_replacement_cost_ratio", "financial.battery_replacement_cost_ratio", minimum=0.0, maximum=2.0),
         "battery_replacement_cost": _opt_fin(raw, "battery_replacement_cost", "financial.battery_replacement_cost", minimum=0.0),
-        "replacement_events": _parse_replacement_events(raw.get("replacement_events"), life, "financial")}
+        "replacement_events": _parse_replacement_events(raw.get("replacement_events"), life, "financial"),
+        "p50_p90": resolve_p50_p90_config(raw.get("p50_p90"), raw.get("uncertainty"))}
 def _lookup_rate(stamp, tariff: dict) -> tuple[str, float, float]:
     """Return (period_name, import_rate, export_rate) for a given timestamp."""
     if tariff["mode"] == "feed_in": return "flat_export", tariff["import_tariff"], tariff["feed_in_tariff"]
@@ -687,12 +689,13 @@ def _compute_sensitivity(*, sens_cfg: dict, base_metrics: dict, year1_energy_kwh
         "base": {k: base_metrics[k] for k in ("npv", "irr_pct", "lcoe", "simple_payback_years")}, "factors": rows}
 def evaluate_economics(*, workspace: Path | None = None, scenarios: list[dict] | None = None,
     batch_summary_csv: str | None = None, ageing_batch_csv: str | None = None, financial: dict | None = None,
-    tariff: dict | None = None, sensitivity: dict | None = None,
-    rank_by: str = "npv", include_cashflow_schedule: bool = True) -> dict:
+    tariff: dict | None = None, sensitivity: dict | None = None, p50_p90: dict | None = None,
+    uncertainty: dict | None = None, rank_by: str = "npv", include_cashflow_schedule: bool = True) -> dict:
     """Evaluate single or multi-scenario PV/PV+BESS financial KPIs, TOU/demand settlement, sensitivity, and rankings."""
     if rank_by not in _VALID_RANK_KEYS: raise ValueError(f"rank_by must be one of: {', '.join(_VALID_RANK_KEYS)}")
     if type(include_cashflow_schedule) is not bool: raise ValueError("include_cashflow_schedule must be a strict boolean")
     fin_cfg, tar_cfg, sens_cfg = _validate_financial(financial), _validate_tariff(tariff), _validate_sensitivity(sensitivity)
+    top_p50 = resolve_p50_p90_config(p50_p90, uncertainty)
     top_anchors: dict[int, float] | None = None
     if ageing_batch_csv:
         if workspace is None: raise ValueError("workspace is required when loading ageing_batch_csv")
@@ -799,10 +802,19 @@ def evaluate_economics(*, workspace: Path | None = None, scenarios: list[dict] |
             year1_energy_benefit=y1_benefit - y1_demand_savings, year1_demand_savings=y1_demand_savings,
             capex_total=capex, base_annual_opex=opex, replacement_events=sc_replacements, financial=fin_cfg, dc_kw=dc_kw,
             yearly_deg_factors=sc_deg_factors) if sens_cfg is not None else None
+        sc_p50 = resolve_p50_p90_config(sc.get("p50_p90"), sc.get("uncertainty")) if ("p50_p90" in sc or "uncertainty" in sc) else (top_p50 or fin_cfg["p50_p90"])
+        p50_res = compute_probabilistic_economics(
+            year1_energy_kwh=y1_energy, p50_spec=sc_p50, base_metrics=metrics, installed_dc_kw=dc_kw, financial=fin_cfg,
+            run_cashflow_for_scale=lambda s: _compute_cashflow_metrics(
+                year1_energy_kwh=y1_energy * s, year1_gross_benefit=(y1_benefit - y1_demand_savings) * s + y1_demand_savings,
+                year1_demand_savings=y1_demand_savings, capex_total=capex, base_annual_opex=opex,
+                replacement_events=sc_replacements, financial=fin_cfg, dc_kw=dc_kw, yearly_deg_factors=sc_deg_factors),
+        ) if sc_p50 is not None else None
         if not include_cashflow_schedule: metrics.pop("cashflow_schedule", None)
         entry: dict[str, Any] = {"label": label, "installed_dc_kw": dc_kw, "battery_kwh": bat_kwh if bat_kwh else None,
             "specific_yield_kwh_per_kwp": round(y1_energy / dc_kw, 2) if (dc_kw and dc_kw > 0) else None,
             "year1_energy_kwh": round(y1_energy, 2), "financials": metrics, "warnings": sc_warnings}
+        if p50_res is not None: entry["p50_p90"] = p50_res
         if sc_anchors is not None:
             entry["degradation_source"] = "ageing_curve"
             entry["ageing_anchors_kwh"] = {str(y): round(v, 2) for y, v in sorted(sc_anchors.items())}

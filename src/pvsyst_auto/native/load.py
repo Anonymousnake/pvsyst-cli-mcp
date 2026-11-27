@@ -20,7 +20,7 @@ from pvsyst_auto.components.editor import (
 )
 from pvsyst_auto.native.headless import strip_result_cache
 from pvsyst_auto.project.circuit import inventory as grid_inventory
-from pvsyst_auto.validation import NATIVE_TEXT, NATIVE_TEXT_OR_SEED, SEED_LABEL, TEXT_LABEL
+from pvsyst_auto.validation import NATIVE_TEXT_OR_SEED, SEED_LABEL
 
 # --------------------------------------------------------------------- flat / household load
 START = "PVObject_UserNeeds=pvLoad"
@@ -534,14 +534,15 @@ def _horizon_read(lines):
         raise ValueError("Horizon requires the outer fields, profile scalars and 100 slots")
     if inner["NPtsMax"] != str(_HORIZON_SLOTS) or inner["Mode"] != "1":
         raise ValueError("Horizon editing requires NPtsMax=100 and Mode=1")
-    if inner["LastCompile"] != _HORIZON_LAST_COMPILE:
+    if inner["LastCompile"].upper() not in (_HORIZON_LAST_COMPILE, "$0081"):
         raise ValueError(f"Horizon editing requires the native LastCompile={_HORIZON_LAST_COMPILE}")
     _horizon_number(outer.get("FracAlbedo", ""), "FracAlbedo", 1, 1)
     derived = [k for k in _HORIZON_DERIVED if k in outer]
-    if outer["Flags"] == "$01":
+    flags_upper = outer["Flags"].upper()
+    if flags_upper in ("$01", "$0001"):
         if derived:
             raise ValueError("Flags=$01 must not carry derived horizon factors")
-    elif outer["Flags"] == "$03":
+    elif flags_upper in ("$03", "$0003"):
         if len(derived) != len(_HORIZON_DERIVED):
             raise ValueError("Flags=$03 requires all three derived horizon factors")
         for k in derived:
@@ -659,144 +660,21 @@ def replace_horizon(lines, updates):
         after = {"mode": "profile", "profile_name": name, "points": [[x, y] for x, y in points]}
     return {"before": before, "after": after}
 
-# --------------------------------------------------------------------- P50 / P90 editor
-_P50_HEAD = "P50_P90=TP50_P90"
-_P50_END = "EndTags"
-_P50_PLOTS = "SimulPlots=Start"
-_P50_ROOT_TYPE = "pvVCalcul"
-_P50_ROOT_FLAGS = 0x01800001
-_P50_READ_FLAGS = (0x01800001, 0x01000000, 0x00800001, 0x00000000)
-_P50_ORDER = ("MeteoKind", "P90Custom", "PxxCustom", "PxxReport", "PxxMainResults", "PlotKind",
-              "YearDevFromAver", "MeteoAnnualVariab", "PVModelVariab", "InverterVariab",
-              "SoilingVariab", "DegradVariab", "CustomVariab", "CustomVarLabel")
-_P50_INTS = ("P90Custom", "PxxCustom")
-_P50_BOOLS = ("PxxReport", "PxxMainResults")
-_P50_VARIAB = ("MeteoAnnualVariab", "PVModelVariab", "InverterVariab", "SoilingVariab", "DegradVariab", "CustomVariab")
-_P50_PLOT_KIND = 1
-
-def _p50_step(value, label, low, high):
-    number = finite(value, label, minimum=low, maximum=high)
-    scaled = Decimal(str(number)) * 1000
-    if scaled != scaled.to_integral_value():
-        raise ValueError(f"{label} must use 0.001 increments")
-    return 0.0 if number == 0 else number
-
-def _p50_label(value):
-    if not isinstance(value, str) or not value or value != value.strip():
-        raise ValueError("CustomVarLabel must be a trimmed single-line string")
-    if not value.isascii() or not value.isprintable() or len(value.encode("ascii")) > 80:
-        raise ValueError("CustomVarLabel must be 1..80 printable ASCII bytes")
-    return value
-
-def _p50_validate(values):
-    if not isinstance(values, dict) or set(values) != set(_P50_ORDER):
-        raise ValueError("Require exactly the fourteen native P50 keys")
-    out = {"MeteoKind": values["MeteoKind"]}
-    if out["MeteoKind"] not in ("SpecYear", "TMY"):
-        raise ValueError("MeteoKind must be SpecYear or TMY")
-    for key in _P50_INTS:
-        if type(values[key]) is not int:
-            raise ValueError(f"{key} must be a strict integer")
-        if not 51 <= values[key] <= 99:
-            raise ValueError(f"{key} must stay inside 51..99")
-        out[key] = values[key]
-    if not 51 <= out["P90Custom"] < out["PxxCustom"] <= 99:
-        raise ValueError("Require 51 <= P90Custom < PxxCustom <= 99")
-    for key in _P50_BOOLS:
-        if type(values[key]) is not bool:
-            raise ValueError(f"{key} must be a strict boolean")
-        out[key] = values[key]
-    if type(values["PlotKind"]) is not int or values["PlotKind"] != _P50_PLOT_KIND:
-        raise ValueError(f"PlotKind must be the integer {_P50_PLOT_KIND}")
-    out["PlotKind"] = _P50_PLOT_KIND
-    out["YearDevFromAver"] = _p50_step(values["YearDevFromAver"], "YearDevFromAver", -100, 100)
-    for key in _P50_VARIAB:
-        out[key] = _p50_step(values[key], key, 0, 100)
-    out["CustomVarLabel"] = _p50_label(values["CustomVarLabel"])
-    return out
-
-def _p50_read(lines, require_template=False):
-    heads = [i for i, ln in enumerate(lines) if ln.strip() == _P50_HEAD]
-    if len(heads) > 1:
-        raise ValueError("Require at most one root P50_P90 block")
-    if not heads:
-        return None
-    head = heads[0]
-    tail = next((i for i in range(head + 1, len(lines)) if lines[i].strip() == _P50_END), None)
-    if tail is None:
-        raise ValueError("Unclosed P50_P90 block")
-    plots = [i for i, ln in enumerate(lines) if ln.strip() == _P50_PLOTS]
-    if len(plots) != 1 or head > plots[0] or tail > plots[0]:
-        raise ValueError("Require one SimulPlots marker after the whole P50_P90 block")
-    eol = "\r\n" if lines[head].endswith("\r\n") else "\n"
-    try:
-        blocks = objects("".join(lines[:head]) + f"End of PVObject {_P50_ROOT_TYPE}{eol}")
-    except ValueError:
-        raise ValueError("Root object prefix is unbalanced") from None
-    roots = [b for b in blocks if not b.path]
-    if len(roots) != 1 or roots[0].object_type != _P50_ROOT_TYPE:
-        raise ValueError(f"Require a single {_P50_ROOT_TYPE} root object above P50_P90")
-    if roots[0].one("Version")[1] not in NATIVE_TEXT:
-        raise ValueError(f"P50 requires root Version={TEXT_LABEL}")
-    raw_flags = roots[0].one("Flags")[1]
-    if not re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags):
-        raise ValueError("P50 root Flags must be a hexadecimal token")
-    state = int(raw_flags[1:], 16)
-    if require_template and state != _P50_ROOT_FLAGS:
-        raise ValueError("P50 editing requires the observed result-template root Flags $01800001")
-    if state not in _P50_READ_FLAGS:
-        raise ValueError("P50 root Flags is not one of the recorded native states")
-    fields = {}
-    for i in range(head + 1, tail):
-        if lines[i].strip().startswith(("PVObject_", "End of ", _P50_HEAD)):
-            raise ValueError("P50_P90 must stay a flat tag block")
-        match = ASSIGNMENT.fullmatch(lines[i].rstrip("\r\n"))
-        if match is None or match[2] not in _P50_ORDER or match[2] in fields:
-            raise ValueError("Unknown or duplicate P50 field inside the block")
-        fields[match[2]] = (i, match[4])
-    if set(fields) != set(_P50_ORDER):
-        raise ValueError("P50_P90 requires all fourteen native fields")
-    decoded = {}
-    for key in _P50_ORDER:
-        raw = fields[key][1]
-        if key in _P50_BOOLS:
-            if raw not in ("True", "False"):
-                raise ValueError(f"{key} must be native True or False")
-            decoded[key] = raw == "True"
-        elif key in _P50_INTS or key == "PlotKind":
-            if not re.fullmatch(r"-?[0-9]+", raw):
-                raise ValueError(f"{key} must be a native integer")
-            decoded[key] = int(raw)
-        elif key in ("MeteoKind", "CustomVarLabel"):
-            decoded[key] = raw
-        else:
-            try:
-                decoded[key] = float(raw)
-            except (ValueError, OverflowError):
-                raise ValueError(f"{key} must be a native number") from None
-    return fields, _p50_validate(decoded)
-
-def p50_state(lines):
-    """Return native P50 state; absent blocks report 'none', invalid ones report an issue."""
-    try:
-        got = _p50_read(lines)
-    except ValueError as exc:
-        return {"mode": None, "issue": str(exc)}
-    return {"mode": "none", "values": None} if got is None else {"mode": "configured", "values": got[1]}
-
-def replace_p50(lines, updates):
-    """Replace the fourteen existing native P50 values in place."""
-    target = _p50_validate(updates)
-    got = _p50_read(lines, require_template=True)
-    if got is None:
-        raise ValueError("Require an existing root P50_P90 block; this editor never creates one")
-    fields, before = got
-    if before == target:
-        return {"before": before, "after": before}
-    for key, (index, raw) in fields.items():
-        val = target[key]
-        rendered = ("True" if val is True else "False") if key in _P50_BOOLS else (
-            format(val, ".3f") if key in _P50_VARIAB or key == "YearDevFromAver" else str(val))
-        if rendered != raw:
-            lines[index] = replace_value(lines[index], rendered)
-    return {"before": before, "after": target}
+# --------------------------------------------------------------------- P50 / P90 editor (delegated to energy.p50_p90)
+from pvsyst_auto.energy.p50_p90 import (
+    _P50_BOOLS,
+    _P50_END,
+    _P50_HEAD,
+    _P50_INTS,
+    _P50_ORDER,
+    _P50_PLOT_KIND,
+    _P50_PLOTS,
+    _P50_ROOT_TYPE,
+    _P50_VARIAB,
+    _p50_label,
+    _p50_read,
+    _p50_step,
+    _p50_validate,
+    p50_state,
+    replace_p50,
+)

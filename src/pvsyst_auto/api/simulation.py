@@ -31,7 +31,7 @@ from pvsyst_auto.api.schemas import (
     EconomicsFinancialConfig, EconomicsScenarioInput, EconomicsSensitivityConfig,
     EconomicsTariffConfig, EconomicsTouPeriod, FeasibilityBessSizingConfig, FeasibilityInlineComponent,
     GridAvailabilityProfile, GridStorageDesign, GridStorageUpdates, HouseTaskRequest,
-    LossRequest, NativeLoadRequest, ReportScenarioInput, SingleDesignRequest, StrictNum,
+    LossRequest, NativeLoadRequest, P50P90Spec, ReportScenarioInput, SingleDesignRequest, StrictNum,
     SourceDeclarationRequest, SourceTextRequest, SourcedDesignGoals, SourcedHouseTaskRequest,
     TrackingControls, _StrictModel,
 )
@@ -108,6 +108,7 @@ class FeasibilityStudyRequest(_StrictModel):
     sensitivity: EconomicsSensitivityConfig | None = None
     report: FeasibilityReportConfig | None = None
     ageing_years: Annotated[list[Annotated[StrictInt, Field(ge=1, le=50)]], Field(min_length=2, max_length=20)] | None = None
+    p50_p90: P50P90Spec | None = None
     thresholds: dict[StrictStr, StrictNum] | None = None
 
 
@@ -449,6 +450,7 @@ def pvsyst_evaluate_economics(
         financial: EconomicsFinancialConfig | None = None,
         tariff: EconomicsTariffConfig | None = None,
         sensitivity: EconomicsSensitivityConfig | None = None,
+        p50_p90: P50P90Spec | None = None,
         rank_by: Literal[
             "npv", "irr", "equity_irr", "lcoe", "simple_payback_years",
             "discounted_payback_years", "year1_net_benefit",
@@ -468,6 +470,7 @@ def pvsyst_evaluate_economics(
         financial=financial.model_dump(exclude_none=True) if financial is not None else None,
         tariff=tariff.model_dump(exclude_none=True) if tariff is not None else None,
         sensitivity=sensitivity.model_dump(exclude_none=True) if sensitivity is not None else None,
+        p50_p90=p50_p90.model_dump(exclude_none=True) if p50_p90 is not None else None,
         rank_by=rank_by,
         include_cashflow_schedule=include_cashflow_schedule,
     )
@@ -480,6 +483,7 @@ def pvsyst_generate_report(
         financial: EconomicsFinancialConfig | None = None,
         tariff: EconomicsTariffConfig | None = None,
         sensitivity: EconomicsSensitivityConfig | None = None,
+        p50_p90: P50P90Spec | None = None,
         bess_optimization: dict[StrictStr, Any] | None = None,
         batch_summary_csv: StrictStr | None = None,
         language: Literal["zh", "en"] = "zh",
@@ -502,6 +506,7 @@ def pvsyst_generate_report(
         financial=financial.model_dump(exclude_none=True) if financial is not None else None,
         tariff=tariff.model_dump(exclude_none=True) if tariff is not None else None,
         sensitivity=sensitivity.model_dump(exclude_none=True) if sensitivity is not None else None,
+        p50_p90=p50_p90.model_dump(exclude_none=True) if p50_p90 is not None else None,
         bess_optimization=bess_optimization,
         batch_summary_csv=batch_summary_csv,
         language=language,
