@@ -153,6 +153,8 @@ def _verify_and_plan_seed_variant(store, final_lines: list[str], *, pan_name: st
         if pan_fields is None:
             pan_fields = pan_validation_fields(store.components._read(_component_path(store, "PAN", pan_name)).decode("utf-8-sig"))
         plan = plan_capacity(store, final_lines, SEED_SUBARRAY, pan_fields, ond_electrical, capacity)
+        if plan.get("asymmetric_mppt"):
+            raise ValueError("Asymmetric MPPT plans are only supported for zero-template utility synthesis")
     return block, plan
 
 
@@ -489,7 +491,7 @@ def synthesize_utility_project(
     max_table_columns: int | None = None, obstacles: list[dict] | None = None, base_slope_deg: float = 0.0,
     terrain: dict | None = None, u_factor: float = 29.0, lid_loss: float = 0.0, pmism_mpp: float | None = None,
     module_quality_loss: float | None = None, dc_wiring_loss_pct: float = 1.5, dc_wiring_resistance_mohm: float = 0.0,
-    sub_orientations: list[dict] | None = None, top_spacing_m: float = 0.2, dome_wiring: str = "auto",
+    sub_orientations: list[dict] | None = None, subarray_allocations: list[dict] | None = None, top_spacing_m: float = 0.2, dome_wiring: str = "auto",
     allow_missing_met: bool = False, version: str = SYNTH_VERSION, with_bom: bool = True,
 ) -> dict:
     """Zero-template synthesizer for utility ground sheds, east-west domes, or single-axis trackers."""
@@ -682,17 +684,24 @@ def synthesize_utility_project(
                     end_pos = next(i for i, ln in enumerate(shading_lines) if ln.strip() == "End of ListeObjets")
                     shading_lines[end_pos:end_pos] = extra_lines
 
-    def _subarray_entry(sub_id: int, comment: str, n_mod: int, n_str: int, n_inv: int, n_mppt: int) -> dict:
+    def _subarray_entry(sub_id: int, comment: str, n_mod: int, n_str: int, n_inv: int, n_mppt: int, *,
+                        orientation_id: int | None = None, power_sharing_inverter_id: int = -1,
+                        pnom_override: float | None = None) -> dict:
         return {
-            "subarray_id": sub_id, "orientation_id": sub_id, "comment": comment, "pan_name": pan_name, "ond_name": ond_name,
+            "subarray_id": sub_id, "orientation_id": orientation_id if orientation_id is not None else sub_id,
+            "comment": comment, "pan_name": pan_name, "ond_name": ond_name,
             "n_mod_serie": n_mod, "n_string_ch": n_str, "n_inverter": n_inv, "n_inv_mppt": n_mppt,
-            "independent_mppt": independent_mppt, "pnom_ac_in_mppt": pnom_ac_in_mppt, "lid_loss": lid_loss,
+            "independent_mppt": independent_mppt, "power_sharing_inverter_id": power_sharing_inverter_id,
+            "pnom_ac_in_mppt": pnom_override if pnom_override is not None else pnom_ac_in_mppt, "lid_loss": lid_loss,
             **({"pmism_mpp": pmism_mpp} if pmism_mpp is not None else {}),
             **({"module_quality_loss": module_quality_loss} if module_quality_loss is not None else {}),
             "dc_wiring_loss_pct": dc_wiring_loss_pct, "dc_wiring_resistance_mohm": dc_wiring_resistance_mohm,
         }
 
+    if subarray_allocations and (field_type == "Dome" or sub_orientations):
+        raise ValueError("subarray_allocations is only supported for single-orientation ground_sheds and ground_tracker")
     sub_orient_summaries: list[dict] | None = None
+    resolved_allocs: list[dict] | None = None
     dome_meta: dict | None = None
     if field_type == "Dome":
         if bifacial is not None and bifacial.get("enabled", True):
@@ -747,6 +756,26 @@ def synthesize_utility_project(
                 "inverter_count": sni, "mppt_count": snp, "string_count": sns, "module_count": sub_mods,
                 "share_pct": round((sub_mods / total_sub_mods) * 100.0, 2) if total_sub_mods > 0 else 0.0,
             })
+    elif subarray_allocations:
+        if not independent_mppt:
+            raise ValueError("subarray_allocations requires independent_mppt=True")
+        orientations_list, subarrays, resolved_allocs = [orient_spec], [], []
+        for idx_a, alloc in enumerate(subarray_allocations, start=1):
+            pfx = f"subarray_allocations[{idx_a - 1}]"
+            if not isinstance(alloc, dict):
+                raise ValueError(f"{pfx} must be an object")
+            sid = _pos_int(alloc.get("subarray_id", idx_a), f"{pfx}.subarray_id")
+            snm, sns = _pos_int(alloc["n_mod_serie"], f"{pfx}.n_mod_serie"), _pos_int(alloc["n_string_ch"], f"{pfx}.n_string_ch")
+            sni, snp = _pos_int(alloc["n_inverter"], f"{pfx}.n_inverter"), _pos_int(alloc["n_inv_mppt"], f"{pfx}.n_inv_mppt")
+            ps_raw = alloc.get("power_sharing_inverter_id", -1)
+            if type(ps_raw) is not int or ps_raw < -1:
+                raise ValueError(f"{pfx}.power_sharing_inverter_id must be -1 or a non-negative integer")
+            pnom_sub = _finite(alloc.get("pnom_ac_in_mppt", pnom_ac_in_mppt), f"{pfx}.pnom_ac_in_mppt", positive=True)
+            cmt = _clean_text(alloc.get("comment") or f"Sub-array #{sid}", f"{pfx}.comment")
+            subarrays.append(_subarray_entry(sid, cmt, snm, sns, sni, snp, orientation_id=1,
+                                             power_sharing_inverter_id=ps_raw, pnom_override=pnom_sub))
+            resolved_allocs.append({"subarray_id": sid, "comment": cmt, "n_mod_serie": snm, "n_string_ch": sns,
+                                    "n_inverter": sni, "n_inv_mppt": snp, "power_sharing_inverter_id": ps_raw, "pnom_ac_in_mppt": pnom_sub})
     else:
         orientations_list = [orient_spec]
         sub_mppt = n_inv_mppt if n_inv_mppt is not None else (n_string_ch if independent_mppt else 1)
@@ -765,6 +794,7 @@ def synthesize_utility_project(
         "bifacial_enabled": bool(bifacial and bifacial.get("enabled", True)), "base_slope_deg": eff_base_slope, "obstacle_count": len(obstacles or ()),
         **({"dome": dome_meta} if dome_meta is not None else {}),
         **({"sub_orientations": sub_orient_summaries} if sub_orient_summaries is not None else {}),
+        **({"asymmetric_mppt": True, "subarray_allocations": resolved_allocs} if resolved_allocs is not None else {}),
         **({"ground_3d_layout": ground_3d_layout} if ground_3d_layout is not None else {}),
         **({"terrain": terrain_summary} if terrain_summary is not None else {}),
     }

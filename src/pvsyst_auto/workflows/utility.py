@@ -520,6 +520,7 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "tilt_deg": default_tilt if scope in ("ground_sheds", "ground_dome") else 0.0,
         "azimuth_deg": default_azim if scope in ("ground_sheds", "ground_dome") else 0.0,
         "sub_orientations": resolved_sub_orients,
+        "subarray_allocations": plan.get("subarray_allocations"),
         "top_spacing_m": float(layout.get("top_spacing_m", 0.2)),
         "dome_wiring": str(layout.get("dome_wiring", "auto")),
         "axis_azimuth_deg": axis_azim,

@@ -8,6 +8,7 @@ import re
 
 from pvsyst_auto.components.editor import objects, pan_validation_fields, replace_value, root_block
 from pvsyst_auto.components.store import electrical_inventory
+from pvsyst_auto.engineering.asymmetric_sizing import search_asymmetric_mppt
 from pvsyst_auto.project.circuit import circuit_nodes, inventory, positive_integer, resize_capacity
 from pvsyst_auto.validation import (
     append_issue as _issue, append_warning as _warn, finite_number as _finite,
@@ -30,7 +31,7 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
     result = {"status": "blocked", "issues": []}
     def issue(field, message):
         result["issues"].append({"field": "capacity." + field, "message": message})
-    allowed = {*NUMBERS, "min_dc_ac_ratio", "capacity_tolerance_pct", "voltage_standard", "design_basis"}
+    allowed = {*NUMBERS, "min_dc_ac_ratio", "capacity_tolerance_pct", "voltage_standard", "design_basis", "allow_asymmetric_mppt"}
     if not isinstance(request, dict):
         issue("request", "Use a capacity object")
         return result
@@ -40,6 +41,10 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
         if request.get(name) is None or request.get(name) == "":
             issue(name, "Required design input is missing; no value is inferred")
     values = {**request, "capacity_tolerance_pct": request.get("capacity_tolerance_pct", 5)}
+    allow_asym_raw = values.get("allow_asymmetric_mppt", False)
+    allow_asym = False if allow_asym_raw is None else allow_asym_raw
+    if type(allow_asym) is not bool:
+        issue("allow_asymmetric_mppt", "Use a strict boolean for allow_asymmetric_mppt")
     for name in (*NUMBERS, "capacity_tolerance_pct"):
         value = values.get(name)
         if value is None and name == "capacity_tolerance_pct":
@@ -167,7 +172,37 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
                     if error <= values["capacity_tolerance_pct"] + 1e-9:
                         candidates.append(((round(error, 9), count, abs(series - old_series), series, parallel), series, parallel, count, power))
         if not candidates:
-            raise ValueError("No supported integral plan meets the declared voltage/current/ratio/tolerance bounds; explicit editable node counts may be required")
+            feasible_s = [
+                s for s in range(1, 101)
+                if (s * values["hot_vmp_v"] >= voltage_min and s * values["cold_vmp_v"] <= voltage_max
+                    and s * values["cold_voc_v"] <= min(absolute_max, module_limit))
+            ]
+            asym = (
+                search_asymmetric_mppt(
+                    target_dc_kw=values["target_dc_kw"], tol=values["capacity_tolerance_pct"], module_kw=module_kw,
+                    ac_kw=ac_kw, ports=ports, feasible_series=feasible_s, max_parallel=max_leaf, min_ratio=min_ratio,
+                    max_ratio=values["max_dc_ac_ratio"], ref_series=old_series,
+                )
+                if allow_asym and "NElements" in leaf.fields and "NElements" in group.fields
+                else None
+            )
+            if asym is None:
+                raise ValueError("No supported integral plan meets the declared voltage/current/ratio/tolerance bounds; explicit editable node counts may be required")
+            s_win, c_win, tot_str, max_s, inst_dc = asym["series"], asym["count"], asym["total_strings"], asym["max_strings_per_mppt"], asym["installed_dc"]
+            result.update(
+                status="ready", design=values, asymmetric_mppt=True, subarray_allocations=asym["allocations"],
+                series_modules=s_win, parallel_strings_per_mppt=None, mppt_per_inverter=ports, inverter_count=c_win,
+                string_count=tot_str, module_count=tot_str * s_win, installed_dc_kw=inst_dc,
+                installed_ac_kw=asym["installed_ac"], dc_ac_ratio=asym["ratio"],
+                capacity_error_pct=(inst_dc - values["target_dc_kw"]) / values["target_dc_kw"] * 100, steps=[],
+                checks={"hot_string_vmp_v": s_win * values["hot_vmp_v"], "cold_string_vmp_v": s_win * values["cold_vmp_v"],
+                        "cold_string_voc_v": s_win * values["cold_voc_v"], "inverter_absolute_max_v": absolute_max,
+                        "module_system_max_v": module_limit, "mppt_operating_current_a": max_s * values["module_max_operating_current_a"],
+                        "mppt_short_circuit_current_a": max_s * values["module_max_short_circuit_current_a"]},
+                search_bounds={"series_modules": [1, 100], "parallel_strings_per_mppt": [1, 100], "inverter_count": [1, 10000]},
+                selection="asymmetric MPPT remainder fallback: capacity error rounded to 1e-9 percent, then fewer inverters, then series closest to template",
+            )
+            return result
         _, series, parallel, count, power = min(candidates)
         strings, candidate, steps = count * ports * parallel, lines.copy(), []
         if count != old_inv:
@@ -629,6 +664,7 @@ def suggest_sizing(
     min_ambient_c: float = -10.0, min_operating_c: float = 0.0, max_operating_c: float = 65.0,
     min_dc_ac_ratio: float = 0.85, max_dc_ac_ratio: float = 1.25, capacity_tolerance_pct: float = 8.0,
     beta_voc_pct_per_c: float | None = None, beta_vmp_pct_per_c: float | None = None, alpha_isc_pct_per_c: float | None = None,
+    allow_asymmetric_mppt: bool = True,
 ) -> dict:
     """Estimate a safe electrical capacity envelope and recommended string/inverter layout from PAN/OND."""
     result = {"status": "blocked", "estimated": True, "requires_review": True, "issues": [], "assumptions": [], "recommended": None, "capacity": None}
@@ -639,6 +675,8 @@ def suggest_sizing(
 
     try:
         target = _finite(target_dc_kw, "target_dc_kw", minimum=0.0, strict_min=True)
+        if type(allow_asymmetric_mppt) is not bool:
+            raise ValueError("allow_asymmetric_mppt must be a strict boolean")
         if voltage_standard not in ("IEC", "UL"):
             raise ValueError("voltage_standard must be 'IEC' or 'UL'")
         t_min, t_op_min, t_op_max = (_finite(min_ambient_c, "min_ambient_c", minimum=-60.0, maximum=40.0),
@@ -735,12 +773,18 @@ def suggest_sizing(
             for count in {math.floor(ideal), math.ceil(ideal)}:
                 if count >= 1 and (err_pct := abs((installed_dc := per_inv_kw * count) - target) / target * 100.0) <= tol + 1e-9:
                     candidates.append(((round(err_pct, 4), round(abs(ratio - preferred_ratio), 4), count, abs(series - mid_series), series, parallel), series, parallel, count, installed_dc, ratio, err_pct))
-    if not candidates:
+    asym = (
+        None if candidates or not allow_asymmetric_mppt else
+        search_asymmetric_mppt(
+            target_dc_kw=target, tol=tol, module_kw=module_kw, ac_kw=pnom_ac, ports=nb_mppt,
+            feasible_series=list(range(min_series, max_series + 1)), max_parallel=max_parallel,
+            min_ratio=min_ratio, max_ratio=max_ratio, preferred_ratio=preferred_ratio, ref_series=mid_series,
+        )
+    )
+    if not candidates and asym is None:
         issue("sizing", f"No integral configuration meets target_dc_kw={target:g} kW (+/-{tol:g}%) with DC/AC in [{min_ratio:g}, {max_ratio:g}], series in [{min_series}, {max_series}], and parallel/MPPT in [1, {max_parallel}]")
         return result
 
-    _, series, parallel, count, installed_dc, ratio, err_pct = min(candidates)
-    strings, installed_ac = count * nb_mppt * parallel, count * pnom_ac
     capacity_payload = {
         "target_dc_kw": target, "min_dc_ac_ratio": min_ratio, "max_dc_ac_ratio": max_ratio, "capacity_tolerance_pct": tol,
         "voltage_standard": voltage_standard, "cold_voc_v": cold_voc, "cold_vmp_v": cold_vmp, "hot_vmp_v": hot_vmp,
@@ -749,8 +793,19 @@ def suggest_sizing(
         "design_min_temperature_c": t_min, "design_min_operating_temperature_c": t_op_min, "design_max_operating_temperature_c": t_op_max,
         "design_basis": f"Auto-estimated from {pan_path.name} ({pan_lib}) and {ond_path.name} ({ond_lib}): T=[{t_min:g}, {t_op_min:g}, {t_op_max:g}] degC, beta_voc={beta_voc:.2f}%/C, beta_vmp={beta_vmp:.2f}%/C, DC/AC in [{min_ratio:g}, {max_ratio:g}]",
     }
+    if candidates:
+        _, series, parallel, count, installed_dc, ratio, err_pct = min(candidates)
+        strings, installed_ac = count * nb_mppt * parallel, count * pnom_ac
+        rec_extra = {"parallel_strings_per_mppt": parallel}
+    else:
+        assert asym is not None
+        series, count, strings = asym["series"], asym["count"], asym["total_strings"]
+        installed_dc, installed_ac, ratio = asym["installed_dc"], asym["installed_ac"], asym["ratio"]
+        capacity_payload["allow_asymmetric_mppt"] = True
+        assumptions.append(asym["description"])
+        rec_extra = {"parallel_strings_per_mppt": None, "asymmetric_mppt": True, "subarray_allocations": asym["allocations"]}
     result.update(status="ready", recommended={
-        "series_modules": series, "parallel_strings_per_mppt": parallel, "mppt_per_inverter": nb_mppt,
+        "series_modules": series, **rec_extra, "mppt_per_inverter": nb_mppt,
         "inverter_count": count, "string_count": strings, "module_count": strings * series,
         "installed_dc_kw": round(installed_dc, 4), "installed_ac_kw": round(installed_ac, 4), "dc_ac_ratio": round(ratio, 4),
         "capacity_error_pct": round((installed_dc - target) / target * 100.0, 4),

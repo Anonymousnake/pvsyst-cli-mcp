@@ -310,6 +310,7 @@ class CapacityRequest(_StrictModel):
     design_min_operating_temperature_c: StrictInt | StrictFloat | None = None
     design_max_operating_temperature_c: StrictInt | StrictFloat | None = None
     design_basis: StrictStr | None = None
+    allow_asymmetric_mppt: StrictBool | None = None
 class LossRequest(_StrictModel):
     """Optional template loss overrides; only these four parameters are accepted.
 
@@ -493,6 +494,7 @@ class AutoSizingOptions(_StrictModel):
     beta_voc_pct_per_c: StrictNum | None = None
     beta_vmp_pct_per_c: StrictNum | None = None
     alpha_isc_pct_per_c: StrictNum | None = None
+    allow_asymmetric_mppt: StrictBool | None = None
 
 class TransformerCableSpec(_StrictModel):
     """MV or HV outgoing collection/transmission cable specification."""

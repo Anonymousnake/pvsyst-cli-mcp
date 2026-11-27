@@ -380,7 +380,8 @@ def pvsyst_suggest_sizing(
         capacity_tolerance_pct: StrictNum = 8.0,
         beta_voc_pct_per_c: StrictNum | None = None,
         beta_vmp_pct_per_c: StrictNum | None = None,
-        alpha_isc_pct_per_c: StrictNum | None = None) -> dict:
+        alpha_isc_pct_per_c: StrictNum | None = None,
+        allow_asymmetric_mppt: StrictBool = True) -> dict:
     """Read-only sizing assistant: derive recommended series/parallel/inverter counts and a drop-in
     capacity envelope from readable PAN/OND files with explicit assumptions (requires engineering review)."""
     return suggest_sizing(
@@ -393,6 +394,7 @@ def pvsyst_suggest_sizing(
         beta_voc_pct_per_c=beta_voc_pct_per_c,
         beta_vmp_pct_per_c=beta_vmp_pct_per_c,
         alpha_isc_pct_per_c=alpha_isc_pct_per_c,
+        allow_asymmetric_mppt=allow_asymmetric_mppt,
     )
 
 
