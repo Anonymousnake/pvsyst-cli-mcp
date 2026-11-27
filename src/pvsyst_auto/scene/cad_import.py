@@ -445,7 +445,8 @@ def parse_pvc_141(workspace: Path, pvc_name: str) -> dict[str, Any]:
 
 
 def build_pvc_3d_shading(parsed: dict[str, Any], *, module_name: str, obstacles: list[dict[str, Any]] | None = None,
-                         terrain_mesh: Any = None, version: str = SYNTH_VERSION) -> list[str]:
+                         terrain_mesh: Any = None, electrical_shading: Any = None, series_modules: int | None = None,
+                         is_half_cut: bool = False, version: str = SYNTH_VERSION) -> list[str]:
     """Build native PVsyst pvShading lines directly from a parsed .pvc 1.4.1 scene."""
     if parsed["scene_kind"] == "mixed":
         raise ValueError("Mixed fixed + tracker .pvc scenes are not supported in a single utility variant")
@@ -454,13 +455,15 @@ def build_pvc_3d_shading(parsed: dict[str, Any], *, module_name: str, obstacles:
         return build_ground_3d_shading(
             tables, module_name=module_name, module_width_m=rep["module_width_m"], module_length_m=rep["module_length_m"],
             module_orient=rep["module_orient"], spacing_x_m=rep["spacing_x_m"], spacing_y_m=rep["spacing_y_m"],
-            obstacles=obstacles, terrain_mesh=terrain_mesh, version=version,
+            obstacles=obstacles, terrain_mesh=terrain_mesh, electrical_shading=electrical_shading,
+            series_modules=series_modules, is_half_cut=is_half_cut, version=version,
         )
     lines, _ = build_tracker_3d_shading(
         tables, module_name=module_name, module_width_m=rep["module_width_m"], module_length_m=rep["module_length_m"],
         module_orient=rep["module_orient"], spacing_x_m=rep["spacing_x_m"], spacing_y_m=rep["spacing_y_m"],
         ground_clearance_m=float(tables[0]["origin_m"][2]), obstacles=obstacles,
-        terrain_mesh=terrain_mesh, terrain_opts={"drape_tables": False}, version=version,
+        terrain_mesh=terrain_mesh, terrain_opts={"drape_tables": False},
+        electrical_shading=electrical_shading, series_modules=series_modules, is_half_cut=is_half_cut, version=version,
     )
     return lines
 
@@ -523,7 +526,8 @@ def resolve_cad_synthesis_inputs(
     store: Any, *, field_type: str, pvc_name: str | None, dxf_name: str | None, dxf_layers: dict[str, Any] | None,
     dxf_unit_scale: float | None, tilt_deg: float, azimuth_deg: float, axis_azimuth_deg: float, pitch_m: float,
     tilt_explicit: bool, azimuth_explicit: bool, obstacles: list[dict[str, Any]] | None, terrain: dict[str, Any] | None,
-    module_name: str, version: str,
+    module_name: str, electrical_shading: Any = None, series_modules: int | None = None, is_half_cut: bool = False,
+    version: str,
 ) -> dict[str, Any]:
     """Resolve .pvc 1.4.1 or ASCII .dxf inputs for synthesize_utility_project."""
     ws = getattr(getattr(store, "components", None), "workspace", None)
@@ -575,7 +579,10 @@ def resolve_cad_synthesis_inputs(
         eff_terrain_mesh = build_terrain_mesh({"name": f"PVC_{Path(pvc_name).stem}"[:40], "points": parsed["terrain_points"], "drape_tables": False}, workspace=ws)
         terrain_summary = eff_terrain_mesh.summary()
 
-    shading_lines = build_pvc_3d_shading(parsed, module_name=module_name, obstacles=eff_obs, terrain_mesh=eff_terrain_mesh, version=version)
+    shading_lines = build_pvc_3d_shading(
+        parsed, module_name=module_name, obstacles=eff_obs, terrain_mesh=eff_terrain_mesh,
+        electrical_shading=electrical_shading, series_modules=series_modules, is_half_cut=is_half_cut, version=version,
+    )
     rep = parsed["module_spec"]
     chord_mod = rep["module_length_m"] if rep["module_orient"] == "moPortrait" else rep["module_width_m"]
     coll_w = round(rep["module_rows"] * chord_mod + max(0, rep["module_rows"] - 1) * rep["spacing_y_m"], 3)
@@ -592,7 +599,7 @@ def resolve_cad_synthesis_inputs(
         "pitch_m": max(eff_pitch, 0.2), "collector_width_m": coll_w, "shed_count": parsed["table_count"],
         "module_rows": rep["module_rows"], "module_columns": rep["module_columns"], "module_orient": rep["module_orient"],
         "obstacles": eff_obs, "min_phi_deg": parsed.get("min_phi_deg", -60.0), "max_phi_deg": parsed.get("max_phi_deg", 60.0),
-        "terrain_summary": terrain_summary, "cad_summary": cad_summary,
+        "terrain_summary": terrain_summary, "cad_summary": cad_summary, "first_table": parsed["tables"][0],
     }
 
 

@@ -9,6 +9,7 @@ from pvsyst_auto.engineering.sizing import plan_capacity
 from pvsyst_auto.project.bifacial import normalize_bifacial_spec
 from pvsyst_auto.project.synthesize import synthesize_project_and_variant
 from pvsyst_auto.project.template import _mppt_inputs
+from pvsyst_auto.scene.partition import is_partition_shading_requested, normalize_electrical_shading
 from pvsyst_auto.validation import is_finite_number as _is_number, is_strict_int as _is_int
 
 UTILITY_SCOPES = ("ground_sheds", "ground_tracker", "ground_dome")
@@ -25,6 +26,7 @@ GROUND_LAYOUT_KEYS = frozenset((
     "obstacles", "base_slope_deg", "terrain", "sub_orientations",
     "top_spacing_m", "dome_wiring",
     "pvc_name", "dxf_name", "dxf_layers", "dxf_unit_scale",
+    "electrical_shading",
 ))
 SUB_ORIENTATION_KEYS = frozenset((
     "label", "tilt", "azimuth", "target_dc_kw", "weight",
@@ -56,6 +58,7 @@ def resolve_utility_field_type(scope: str, ground_layout: dict | None) -> tuple[
         or layout.get("terrain") is not None
         or layout.get("pvc_name") is not None
         or layout.get("dxf_name") is not None
+        or is_partition_shading_requested(layout.get("electrical_shading"))
     )
     if scope == "ground_sheds":
         return ("RegularSheds", True) if has_3d else ("Sheds", False)
@@ -107,6 +110,17 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
 
     from pvsyst_auto.scene.cad_import import validate_cad_ground_layout
     validate_cad_ground_layout(layout, scope, mode, bad)
+    if (raw_es := layout.get("electrical_shading")) is not None:
+        try:
+            normalize_electrical_shading(raw_es)
+        except ValueError as exc:
+            bad("ground_layout.electrical_shading", exc)
+        if mode == "unlimited" or layout.get("model_mode") == "unlimited":
+            bad(
+                "ground_layout.electrical_shading",
+                "electrical_shading requires 3D layout (omit model_mode or set model_mode='3d'); "
+                "use electrical_effect/shading_factor/cell_width_m for model_mode='unlimited'",
+            )
 
     if scope != "ground_dome":
         for key in sorted(set(layout) & DOME_ONLY_KEYS):

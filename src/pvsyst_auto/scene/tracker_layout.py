@@ -5,6 +5,11 @@ import math
 from typing import Any
 
 from pvsyst_auto.scene.author import obstacle_profiles
+from pvsyst_auto.scene.partition import (
+    compute_table_partition_dims,
+    normalize_electrical_shading,
+    shading_header_kwargs,
+)
 from pvsyst_auto.scene.reader import (
     _rect_inside_polygon,
     _rotate,
@@ -200,17 +205,21 @@ def build_tracker_3d_shading(
     terrain_mesh: Any = None,
     terrain_opts: dict[str, Any] | None = None,
     orientation_id: int = 1,
+    electrical_shading: Any = None,
+    series_modules: int | None = None,
+    is_half_cut: bool = False,
     version: str = SYNTH_VERSION,
 ) -> tuple[list[str], dict[str, Any] | None]:
     """Emit PVObject_Ombrage=pvShading for variable-length 3D trackers + optional terrain/obstacles."""
     if not tables:
         raise ValueError("build_tracker_3d_shading requires at least one tracker table")
+    cfg = normalize_electrical_shading(electrical_shading)
     clearance = _finite(ground_clearance_m, "ground_clearance_m", minimum=0.0)
     max_axis_tilt = _finite((terrain_opts or {}).get("max_axis_tilt_deg", 15.0), "max_axis_tilt_deg", minimum=0.0, maximum=45.0)
     chord_mod = module_length_m if module_orient == "moPortrait" else module_width_m
     parsed_obs = obstacle_profiles(obstacles) if obstacles else []
     total_objs = len(tables) + len(parsed_obs) + (1 if terrain_mesh is not None else 0)
-    lines = pv_shading_header("Finite 3D N-S tracker polygon shading scene", total_objs)
+    lines = pv_shading_header("Finite 3D N-S tracker polygon shading scene", total_objs, **shading_header_kwargs(cfg))
 
     drape = terrain_mesh is not None and bool((terrain_opts or {}).get("drape_tables", True))
     follow_slope = bool((terrain_opts or {}).get("follow_slope", True))
@@ -240,6 +249,21 @@ def build_tracker_3d_shading(
             "axis_tilt_deg": round(axis_tilt, 3),
             "module_columns": int(tbl["module_columns"]),
         })
+        if cfg["mode"] == "partition":
+            dx_mod, dy_mod, _, _ = compute_table_partition_dims(
+                long_shed_m=float(tbl["long_shed_m"]),
+                larg_shed_m=float(tbl["larg_shed_m"]),
+                module_rows=int(tbl["module_rows"]),
+                module_columns=int(tbl["module_columns"]),
+                module_orient=module_orient,
+                is_tracker=True,
+                electrical_shading=cfg,
+                series_modules=series_modules,
+                is_half_cut=is_half_cut,
+            )
+        else:
+            dx_mod = chord_mod + spacing_y_m
+            dy_mod = float(tbl["larg_shed_m"])
         lines.extend([
             f"      PVObject_{obj_idx}=pvShdArrayTracking",
             f"        Comment={tbl['name']}",
@@ -262,8 +286,8 @@ def build_tracker_3d_shading(
             f"      NModInHeight={tbl['module_rows']}",
             f"      NModInWidth={tbl['module_columns']}",
             f"      ModuleOrient={module_orient}",
-            f"      DXModule={chord_mod + spacing_y_m:.3f}",
-            f"      DYModule={tbl['larg_shed_m']:.3f}",
+            f"      DXModule={dx_mod:.3f}",
+            f"      DYModule={dy_mod:.3f}",
             f"        LongShed={tbl['long_shed_m']:.6f}",
             f"        LargShed={tbl['larg_shed_m']:.6f}",
             "        Cadre=0.000,0.000,0.000,0.000,",

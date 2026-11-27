@@ -15,6 +15,12 @@ from pvsyst_auto.scene.author import (AUTHORING_TOOL, MAX_OBSTACLES, MAX_PARTS, 
                                       _string_layout_profile, build_scene, caller_geometry, check_tables,
                                       house_profile, layout_profile, obstacle_profiles, table_profiles)
 from pvsyst_auto.scene.mapping import PV_TABLE_SOURCES, assess_module_layout
+from pvsyst_auto.scene.partition import (
+    SHADING_FLAGS_LINEAR,
+    compute_table_partition_dims,
+    normalize_electrical_shading,
+    shading_header_kwargs,
+)
 from pvsyst_auto.validation import SEED_RECORD_VERSION, SYNTH_VERSION
 
 XML_NS = {"n": NS, "pv": PV}
@@ -582,11 +588,18 @@ def plan_ground_polygon_layout(
         "proj_depth_m": round(proj_depth, 4), "base_slope_deg": base_slope,
     }
 
-def pv_shading_header(comment: str, total_objs: int) -> list[str]:
+def pv_shading_header(
+    comment: str,
+    total_objs: int,
+    *,
+    flags: str = SHADING_FLAGS_LINEAR,
+    frac_ombre_mod: float = 1.0,
+) -> list[str]:
     """Return the standard 3D pvShading header and ListeObjets opening lines."""
+    frac = _finite(frac_ombre_mod, "frac_ombre_mod", minimum=0.0, maximum=1.0)
     return [
-        "  PVObject_Ombrage=pvShading", f"    Comment={comment}", "    Flags=$000A0300",
-        "    Precision=1", "    FracOmbreMod=1.000", "    FracOmbreThin=0.400", "    GCROffset=1.0",
+        "  PVObject_Ombrage=pvShading", f"    Comment={comment}", f"    Flags={flags}",
+        "    Precision=1", f"    FracOmbreMod={frac:.3f}", "    FracOmbreThin=0.400", "    GCROffset=1.0",
         "    DisplayedRef=refGeographical", "", f"    ListeObjets, list of={total_objs} TShdObject", "",
     ]
 
@@ -606,18 +619,29 @@ def build_ground_3d_shading(
     tables: list[dict[str, Any]], *, module_name: str, module_width_m: float, module_length_m: float,
     module_orient: str = "moPortrait", spacing_x_m: float = 0.02, spacing_y_m: float = 0.02,
     obstacles: list[dict[str, Any]] | None = None, terrain_mesh: Any = None, orientation_id: int = 1,
+    electrical_shading: Any = None, series_modules: int | None = None, is_half_cut: bool = False,
     version: str = SYNTH_VERSION,
 ) -> list[str]:
     """Emit a PVObject_Ombrage=pvShading block for finite ground tables + optional terrain + 3D obstacles."""
     if not tables:
         raise ValueError("build_ground_3d_shading requires at least one table")
+    cfg = normalize_electrical_shading(electrical_shading)
     parsed_obstacles = obstacle_profiles(obstacles) if obstacles else []
     total_objs = len(tables) + len(parsed_obstacles) + (1 if terrain_mesh is not None else 0)
-    lines = pv_shading_header("Finite 3D ground polygon shading scene", total_objs)
+    lines = pv_shading_header("Finite 3D ground polygon shading scene", total_objs, **shading_header_kwargs(cfg))
     obj_idx = 0
     for tbl in tables:
         obj_idx += 1
         ox, oy, oz = tbl["origin_m"]
+        part_lines: list[str] = []
+        if cfg["mode"] == "partition":
+            dx_mod, dy_mod, _, _ = compute_table_partition_dims(
+                long_shed_m=float(tbl["long_shed_m"]), larg_shed_m=float(tbl["larg_shed_m"]),
+                module_rows=int(tbl["module_rows"]), module_columns=int(tbl["module_columns"]),
+                module_orient=module_orient, is_tracker=False, electrical_shading=cfg,
+                series_modules=series_modules, is_half_cut=is_half_cut,
+            )
+            part_lines = [f"      DXModule={dx_mod:.3f}", f"      DYModule={dy_mod:.3f}"]
         lines.extend([
             f"      PVObject_{obj_idx}=pvShdArrayTable", f"        Comment={tbl['name']}",
             f"        Version={version}", "        Flags=$02200074", f"        NoObjCreated={obj_idx}",
@@ -628,7 +652,7 @@ def build_ground_3d_shading(
             f"      NoOrient={orientation_id}", f"      PanneauPVName={module_name};{module_width_m:.3f};{module_length_m:.3f}",
             f"      ModSpacingX={spacing_x_m:.3f}", f"      ModSpacingY={spacing_y_m:.3f}",
             f"      NModInHeight={tbl['module_rows']}", f"      NModInWidth={tbl['module_columns']}",
-            f"      ModuleOrient={module_orient}", f"        LongShed={tbl['long_shed_m']:.6f}",
+            f"      ModuleOrient={module_orient}", *part_lines, f"        LongShed={tbl['long_shed_m']:.6f}",
             f"        LargShed={tbl['larg_shed_m']:.6f}", "        Cadre=0.000,0.000,0.000,0.000,",
             "      TypeOrigine=2", "      End of PVObject pvShdArrayTable",
         ])

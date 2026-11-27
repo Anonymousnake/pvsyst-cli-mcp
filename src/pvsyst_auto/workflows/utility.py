@@ -157,6 +157,7 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "dxf_name": layout.get("dxf_name"),
         "dxf_layers": layout.get("dxf_layers"),
         "dxf_unit_scale": layout.get("dxf_unit_scale"),
+        "electrical_shading": layout.get("electrical_shading"),
         "tilt_explicit": spec.get("tilt") is not None,
         "azimuth_explicit": ((spec.get("azimuth") is not None or layout.get("axis_azimuth_deg") is not None)
                              if scope == "ground_tracker" else (spec.get("azimuth") is not None)),
@@ -199,6 +200,25 @@ def _extract_bifacial_metrics(csv_path: Path, units: dict) -> dict:
     return out
 
 
+def _extract_electrical_shading_metrics(csv_path: Path, units: dict) -> dict:
+    """Compute annual electrical shading loss summary (ShdElec) from hourly or sub-hourly SFI CSV."""
+    shd_unit = units.get("ShdElec")
+    if not shd_unit:
+        raise ValueError("Partition shading output lacks ShdElec column/unit")
+    p_info = POWER_UNIT_KIND.get(shd_unit)
+    if p_info is None:
+        raise ValueError(f"Unsupported ShdElec unit: {shd_unit!r}")
+    res = summarize_results(csv_path, ("ShdElec",))
+    if res["rows"] >= 2 and res["step_minutes"] is None:
+        raise ValueError("Partition shading output does not have a regular timestamp cadence")
+    step_hours = (res["step_minutes"] or 60.0) / 60.0
+    p_scale, p_is_power = p_info
+    return {
+        "shd_elec_kwh": res["summary"]["ShdElec"]["sum"] * p_scale * (step_hours if p_is_power else 1.0),
+        "shd_elec_unit": shd_unit,
+    }
+
+
 def run_utility_design(
     cli, store, *,
     spec: dict,
@@ -234,6 +254,7 @@ def run_utility_design(
         "recovery": [],
         "metrics": None,
         "bifacial_metrics": None,
+        "electrical_shading_metrics": None,
         "utility_summary": None,
         "capacity_plan": capacity_plan,
         "artifacts": {},
@@ -383,7 +404,11 @@ def run_utility_design(
         else:
             stage("simulation")
             bifacial_enabled = bool(synth_preview["utility_summary"]["bifacial_enabled"])
+            es_meta = (synth_preview["utility_summary"] or {}).get("electrical_shading")
+            partition_enabled = isinstance(es_meta, dict) and es_meta.get("mode") == "partition"
             variables = list(VAR_GROUPS["all_common"]) + ["viGlobShd"]
+            if partition_enabled:
+                variables.append("viShdElec")
             if bifacial_enabled:
                 variables.extend(BIFACIAL_EXTRA_VARS)
             if trf_spec:
@@ -416,6 +441,8 @@ def run_utility_design(
                 units = result_units(paths["csv"], strict=True)
                 if not units.get("GlobShd"):
                     raise ValueError("Native utility output lacks GlobShd column/unit")
+                if partition_enabled and not units.get("ShdElec"):
+                    raise ValueError("Native utility output lacks ShdElec column/unit")
                 rows = 0
                 headers = []
                 ratio_indices: set[int] = set()
@@ -438,6 +465,8 @@ def run_utility_design(
                     rows += 1
                 if bifacial_enabled:
                     result["bifacial_metrics"] = _extract_bifacial_metrics(paths["csv"], units)
+                if partition_enabled:
+                    result["electrical_shading_metrics"] = _extract_electrical_shading_metrics(paths["csv"], units)
                 result["utility_output"] = {"hourly_rows": rows, "numeric_columns": headers[1:], "units": units}
 
             diag_needs_review = verify_and_read_simulation_results(
