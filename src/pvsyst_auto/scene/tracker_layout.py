@@ -207,7 +207,7 @@ def build_tracker_3d_shading(
         raise ValueError("build_tracker_3d_shading requires at least one tracker table")
     clearance = _finite(ground_clearance_m, "ground_clearance_m", minimum=0.0)
     max_axis_tilt = _finite((terrain_opts or {}).get("max_axis_tilt_deg", 15.0), "max_axis_tilt_deg", minimum=0.0, maximum=45.0)
-    length_mod = module_width_m if module_orient == "moPortrait" else module_length_m
+    chord_mod = module_length_m if module_orient == "moPortrait" else module_width_m
     parsed_obs = obstacle_profiles(obstacles) if obstacles else []
     total_objs = len(tables) + len(parsed_obs) + (1 if terrain_mesh is not None else 0)
     lines = pv_shading_header("Finite 3D N-S tracker polygon shading scene", total_objs)
@@ -262,7 +262,7 @@ def build_tracker_3d_shading(
             f"      NModInHeight={tbl['module_rows']}",
             f"      NModInWidth={tbl['module_columns']}",
             f"      ModuleOrient={module_orient}",
-            f"      DXModule={length_mod + spacing_x_m:.3f}",
+            f"      DXModule={chord_mod + spacing_y_m:.3f}",
             f"      DYModule={tbl['larg_shed_m']:.3f}",
             f"        LongShed={tbl['long_shed_m']:.6f}",
             f"        LargShed={tbl['larg_shed_m']:.6f}",

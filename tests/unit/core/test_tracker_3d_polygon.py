@@ -1,6 +1,7 @@
 """Unit tests for PR 3: 3D tracker polygon clipping (integer string multiples), obstacles, and terrain."""
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,7 +13,6 @@ from pvsyst_auto.project.variants import VariantStore
 from pvsyst_auto.scene.tracker_layout import (
     build_tracker_3d_shading,
     plan_tracker_polygon_layout,
-    tracker_columns_per_string,
 )
 from pvsyst_auto.workflows.design import prepare_design_project, simulate_design
 from pvsyst_auto.workflows.utility import resolve_utility_field_type, validate_utility_spec
@@ -49,16 +49,83 @@ class Tracker3DPolygonTests(unittest.TestCase):
         self.assertEqual(len(default_tools), 48)
         self.assertEqual(len(all_tools), 75)
 
-    def test_tracker_columns_per_string_quanta(self) -> None:
-        self.assertEqual(tracker_columns_per_string(None, 1), 1)
-        self.assertEqual(tracker_columns_per_string(28, 1), 28)
-        self.assertEqual(tracker_columns_per_string(28, 2), 14)
-        self.assertEqual(tracker_columns_per_string(27, 2), 27)
-        self.assertEqual(tracker_columns_per_string(24, 3), 8)
-        with self.assertRaises(ValueError):
-            tracker_columns_per_string(0, 1)
-        with self.assertRaises(ValueError):
-            tracker_columns_per_string(20, 0)
+    def test_tracker_partition_consistency_and_whole_string_contract(self) -> None:
+        _tracker_dem_csv(self.ws / "UserData" / "trk_dem.csv")
+        common = dict(
+            site_name="Geneva_MN90.SIT",
+            met_name="Geneva_MN90_SYN.MET",
+            field_type="TrackHorizNSAxis",
+            pan_name="Bifi440.PAN",
+            ond_name="Inv50.OND",
+            n_mod_serie=10,
+            n_string_ch=8,
+            n_inverter=1,
+            n_inv_mppt=2,
+            independent_mppt=True,
+            pnom_ac_in_mppt=25.0,
+            pitch_m=8.0,
+            module_rows=2,
+            module_width_m=1.0,
+            module_length_m=2.0,
+            spacing_x_m=0.02,
+            spacing_y_m=0.04,
+        )
+        reg_vc = synthesize_utility_project(self.store, shed_count=4, module_columns=10, **common)["vc0_text"]
+        ter_vc = synthesize_utility_project(
+            self.store, shed_count=4, module_columns=10, terrain={"csv_name": "trk_dem.csv"}, **common
+        )["vc0_text"]
+        poly_vc = synthesize_utility_project(
+            self.store, site_polygon=[[0.0, 0.0], [30.0, 0.0], [30.0, 25.0], [0.0, 25.0]], **common
+        )["vc0_text"]
+        for vc in (reg_vc, ter_vc, poly_vc):
+            self.assertIn("LongShed=4.040000", vc)
+            self.assertIn("DXModule=2.040", vc)
+            self.assertNotIn("DXModule=1.020", vc)
+
+        # Whole-string divisibility via external synthesis contract for 2P coprime (n_mod_serie=15) & even (n_mod_serie=12)
+        odd_vc = synthesize_utility_project(
+            self.store,
+            site_polygon=[[0.0, 0.0], [28.0, 0.0], [28.0, 40.0], [0.0, 22.0]],
+            **{**common, "n_mod_serie": 15},
+        )["vc0_text"]
+        odd_widths = [int(w) for w in re.findall(r"NModInWidth=(\d+)", odd_vc)]
+        self.assertGreater(len(set(odd_widths)), 1, odd_widths)
+        self.assertTrue(all(w % 15 == 0 and (2 * w) % 15 == 0 for w in odd_widths), odd_widths)
+
+        even_vc = synthesize_utility_project(
+            self.store,
+            site_polygon=[[0.0, 0.0], [28.0, 0.0], [28.0, 40.0], [0.0, 22.0]],
+            **{**common, "n_mod_serie": 12},
+        )["vc0_text"]
+        even_widths = [int(w) for w in re.findall(r"NModInWidth=(\d+)", even_vc)]
+        self.assertGreater(len(set(even_widths)), 1, even_widths)
+        self.assertTrue(all(w % 6 == 0 and (2 * w) % 12 == 0 for w in even_widths), even_widths)
+
+        # Invalid module_rows rejection via external prepare_design_project contract
+        cli = _FakeUtilityCLI(self.ws, year=2024, nominal_dc_kw=44.0, use_sfi_writer=False)
+        bad_rows = prepare_design_project(
+            cli,
+            self.store,
+            dry_run=True,
+            spec={
+                "scope": "ground_tracker",
+                "new_project": "BadRows.PRJ",
+                "year": 2024,
+                "target_dc_kw": 44.0,
+                "azimuth": 0.0,
+                "module": {"file_name": "Bifi440.PAN"},
+                "inverter": {"file_name": "Inv50.OND"},
+                "capacity": _capacity_spec(target_dc_kw=44.0),
+                "ground_layout": {
+                    "pitch_m": 6.0,
+                    "module_rows": 0,
+                    "site_polygon": [[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0]],
+                },
+                "weather": {"mode": "existing", "sit_name": "Geneva_MN90.SIT", "met_name": "Geneva_MN90_SYN.MET"},
+            },
+        )
+        self.assertEqual(bad_rows["status"], "blocked")
+        self.assertTrue(any("module_rows" in str(item) for item in bad_rows["issues"]), bad_rows["issues"])
 
     def test_irregular_polygon_clipping_1p_and_2p_preserves_whole_strings(self) -> None:
         # Irregular tapered trapezoid wider at east than west -> produces varying tracker lengths

@@ -438,7 +438,7 @@ def synthesize_ground_tracker_shading(*, tracker_count: int = 10, pitch_ew_m: fl
         obj_type="pvShdArrayTracking", shading_comment="Ground tracker 3D shading scene", obj_comment="Array of trackers #1",
         n_elems=n_trk, origin=origin, tilt_deg=0.0, base_slope_deg=0.0, azimuth_deg=azim, orientation_id=orientation_id,
         name=name, mw=mw, ml=ml, n_rows=n_rows, n_cols=n_cols, module_orient=module_orient, sx=sx, sy=sy,
-        dx_module=length_mod + sx, dy_module=larg_shed, long_shed=long_shed, larg_shed=larg_shed, pitch_ns=0.0, pitch_ew=pitch,
+        dx_module=chord_mod + sy, dy_module=larg_shed, long_shed=long_shed, larg_shed=larg_shed, pitch_ns=0.0, pitch_ew=pitch,
         version=version, extra_lines=["        AxisOrig=2"],
     )
 
