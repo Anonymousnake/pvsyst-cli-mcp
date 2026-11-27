@@ -10,11 +10,11 @@
 |---|---|---|
 | `api` | MCP 协议层、引导层（`instructions`/Prompt/Resource）、入参校验、工具分组注册与进程内共享上下文 | `context.py`、`projects.py`、`schemas.py`、`simulation.py` |
 | `workflows` | 串联文件准备、零模板合成、批处理扫描、自动优化、PV+BESS 两阶段寻优、一站式可研编排、Plotly 交互报告与交付打包的端到端工作流 | `batch.py`、`bess_optimize.py`、`design.py`、`house.py`、`optimize.py`、`report.py`、`revision.py`、`simulation.py`、`sourced_design.py`、`utility.py` |
-| `engineering` | 自动选型、物理诊断引擎、财务/TOU/两部制需量/项目融资与敏感性评估、可研简报核对、工程参数交接单与多方案结果对比 | `comparison.py`、`diagnostics.py`、`economics.py`、`review.py`、`sizing.py` |
+| `engineering` | 自动选型、非对称 MPPT 选型、物理诊断引擎、财务/TOU/两部制需量/项目融资与敏感性评估、可研简报核对、工程参数交接单与多方案结果对比 | `asymmetric_sizing.py`、`comparison.py`、`diagnostics.py`、`economics.py`、`review.py`、`sizing.py` |
 | `project` | `.PRJ` / `.VCx` 文本解析、并网/离网零模板工程合成器、`pvBiFacial` 双面建模、原地朝向转换、棚架/跟踪/季节朝向、原生 PDF `TEcoEvaluation` 与逆变器/组串拓扑 | `bifacial.py`、`circuit.py`、`paths.py`、`standalone.py`、`synthesize.py`、`template.py`、`tracking.py`、`variant_updates.py`、`variants.py` |
 | `components` | `.PAN` / `.OND` / `.BTR` / `.GEN` 组件库管理与 mtime 元数据索引、单/三电压曲线编辑、商业字段、无模板单二极管/三电压 OND/锂电 BTR/柴发 GEN 合成与 `.PAN` 改参重拟合 | `builder.py`、`editor.py`、`single_diode.py`、`store.py` |
-| `scene` | `.pvc2` 3D 房屋与光伏网格构建、有限 3D 地面多边形裁剪与 3D DEM 连续地形贴合（`pvShdGround`）、XML 回读及空间坐标比对 | `author.py`、`mapping.py`、`reader.py`、`terrain.py` |
-| `energy` | 负荷曲线（含 `household`/`probability`）、AC 耦合储能系统、弱网确定性停电生成、TOU 48 槽 `PowerShift` 排程规划、多级 MV/HV 变压器、AC/DC 线缆、光谱修正、系统停运与详细损失字段读写 | `dc.py`、`profiles.py`、`storage.py`、`system.py`、`transformers.py` |
+| `scene` | `.pvc2` 3D 房屋与光伏网格构建、东西向双坡（Dome）、有限 3D 地面多边形裁剪与 3D DEM 连续地形贴合（`pvShdGround`）、`.pvc` 1.4.1 / ASCII `.dxf` CAD 导入及空间坐标比对 | `author.py`、`cad_import.py`、`dome.py`、`dxf_import.py`、`mapping.py`、`reader.py`、`terrain.py`、`tracker_layout.py` |
+| `energy` | 负荷曲线（含 `household`/`probability`）、AC 耦合储能系统、弱网确定性停电生成、TOU 48 槽 `PowerShift` 排程规划、多级 MV/HV 变压器、AC/DC 线缆、零模板 `pvAgeing` 老化与衰降曲线、光谱修正、系统停运与详细损失字段读写 | `ageing.py`、`dc.py`、`profiles.py`、`storage.py`、`system.py`、`transformers.py` |
 | `weather` | 地理编码、Open-Meteo ERA5 / PVGIS v5.3 TMY / NASA POWER 下载、亚小时 CSV 与 `.SIT`/`.MET` 制备与核对 | `acquisition.py`、`preparation.py`、`review.py` |
 | `native` | `PVsystCLI.exe` 命令行封装、免 GUI 3D 阴影/精细接线与地平线/P50/限发/负荷构建、以及私有非输入桌面进程隔离 | `_winlaunch.py`、`cli.py`、`headless.py`、`load.py` |
 | `results.py` | 仿真结果 CSV 解析与逐时/亚小时指标汇总、年度能量平衡校核与双结果逐时对比 | `results.py` |

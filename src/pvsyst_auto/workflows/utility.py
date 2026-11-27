@@ -43,6 +43,7 @@ GROUND_LAYOUT_KEYS = frozenset((
     "site_polygon", "setback_m", "ground_clearance_m", "max_table_columns",
     "obstacles", "base_slope_deg", "terrain", "sub_orientations",
     "top_spacing_m", "dome_wiring",
+    "pvc_name", "dxf_name", "dxf_layers", "dxf_unit_scale",
 ))
 SUB_ORIENTATION_KEYS = frozenset((
     "label", "tilt", "azimuth", "target_dc_kw", "weight",
@@ -65,25 +66,20 @@ BIFACIAL_EXTRA_VARS = (
 def resolve_utility_field_type(scope: str, ground_layout: dict | None) -> tuple[str, bool]:
     """Map (scope, ground_layout.model_mode) to native (field_type, include_3d_scene)."""
     layout = ground_layout or {}
-    mode = layout.get("model_mode", "unlimited")
-    if scope == "ground_sheds":
-        has_3d = (
-            (mode == "3d")
-            or (layout.get("site_polygon") is not None)
-            or bool(layout.get("obstacles"))
-            or (layout.get("terrain") is not None)
-        )
-        return ("RegularSheds", True) if has_3d else ("Sheds", False)
-    if scope == "ground_tracker":
-        has_3d = (
-            (mode == "3d")
-            or (layout.get("site_polygon") is not None)
-            or bool(layout.get("obstacles"))
-            or (layout.get("terrain") is not None)
-        )
-        return ("TrackHorizNSAxis", True) if has_3d else ("UnlimTracking", False)
     if scope == "ground_dome":
         return ("Dome", True)
+    has_3d = (
+        layout.get("model_mode", "unlimited") == "3d"
+        or layout.get("site_polygon") is not None
+        or bool(layout.get("obstacles"))
+        or layout.get("terrain") is not None
+        or layout.get("pvc_name") is not None
+        or layout.get("dxf_name") is not None
+    )
+    if scope == "ground_sheds":
+        return ("RegularSheds", True) if has_3d else ("Sheds", False)
+    if scope == "ground_tracker":
+        return ("TrackHorizNSAxis", True) if has_3d else ("UnlimTracking", False)
     raise ValueError(f"Not a utility scope: {scope!r}")
 
 
@@ -127,6 +123,9 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
             for key in ("inactive_band_width_1_m", "inactive_band_width_2_m"):
                 if key in layout:
                     bad(f"ground_layout.{key}", f"{key} requires model_mode='unlimited' for {scope}")
+
+    from pvsyst_auto.scene.cad_import import validate_cad_ground_layout
+    validate_cad_ground_layout(layout, scope, mode, bad)
 
     if scope != "ground_dome":
         for key in sorted(set(layout) & DOME_ONLY_KEYS):
@@ -212,7 +211,7 @@ def validate_utility_spec(spec: dict, scope: str, issues: list[dict]) -> None:
                     else "Use a finite tilt in 0..90 degrees" if name == "tilt"
                     else "Use finite PVsyst azimuth in -180..180 degrees, zero south and west positive")
             if value is None:
-                if not has_sub_orients:
+                if not has_sub_orients and not layout.get("pvc_name"):
                     bad(name, note)
             elif not _is_number(value) or not low <= value <= high or (scope == "ground_dome" and name == "tilt" and value <= 0):
                 bad(name, note)
@@ -457,7 +456,7 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
     shed_count = int(layout.get("shed_count", 10))
     module_rows = int(layout.get("module_rows", 1 if scope == "ground_dome" else 2))
     module_columns = int(layout.get("module_columns", 25))
-    if include_3d and layout.get("site_polygon") is None:
+    if include_3d and layout.get("site_polygon") is None and layout.get("pvc_name") is None and layout.get("dxf_name") is None:
         face_mult = 2 if scope == "ground_dome" else 1
         scene_modules = face_mult * shed_count * module_rows * module_columns
         electrical_modules = int(plan["module_count"])
@@ -560,6 +559,13 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "obstacles": layout.get("obstacles"),
         "base_slope_deg": float(layout.get("base_slope_deg", 0.0)),
         "terrain": layout.get("terrain"),
+        "pvc_name": layout.get("pvc_name"),
+        "dxf_name": layout.get("dxf_name"),
+        "dxf_layers": layout.get("dxf_layers"),
+        "dxf_unit_scale": layout.get("dxf_unit_scale"),
+        "tilt_explicit": spec.get("tilt") is not None,
+        "azimuth_explicit": ((spec.get("azimuth") is not None or layout.get("axis_azimuth_deg") is not None)
+                             if scope == "ground_tracker" else (spec.get("azimuth") is not None)),
         "u_factor": float(losses.get("UFactor", 29.0)),
         "lid_loss": float(losses.get("LIDLoss", 0.0)),
         "pmism_mpp": float(losses["PMismMPP"]) if "PMismMPP" in losses else None,
@@ -703,10 +709,13 @@ def run_utility_design(
                 electrical_modules = int(capacity_plan["module_count"])
                 if scene_modules != electrical_modules:
                     raise ValueError(
-                        f"3D site_polygon scene module count ({scene_modules}) "
+                        f"3D site_polygon/dxf scene module count ({scene_modules}) "
                         f"disagrees with electrical module count ({electrical_modules}); "
-                        "adjust site_polygon/setback_m/pitch_m/module_rows or target capacity to match the electrical design"
+                        "adjust site_polygon/dxf boundary, setback_m, pitch_m, module_rows, or target capacity to match the electrical design"
                     )
+            if (cad_meta := synth_preview["utility_summary"].get("cad_import")) is not None:
+                from pvsyst_auto.scene.cad_import import check_pvc_electrical_area
+                check_pvc_electrical_area(cad_meta, synth_preview["utility_summary"], capacity_plan["module_count"], result["warnings"])
             if synth_preview["utility_summary"]["bifacial_enabled"]:
                 is_bifi_pan = _pan_is_bifacial(store, pan_info)
                 if is_bifi_pan is False:

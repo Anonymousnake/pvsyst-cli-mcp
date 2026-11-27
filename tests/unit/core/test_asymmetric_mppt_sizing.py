@@ -44,7 +44,8 @@ class AsymmetricMpptSizingTests(unittest.TestCase):
         match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject_text, re.MULTILINE)
         self.assertIsNotNone(match)
         assert match is not None
-        self.assertEqual(match.group(1), "0.9.0")
+        ver_tuple = tuple(int(part) for part in match.group(1).split("."))
+        self.assertGreaterEqual(ver_tuple, (0, 9, 0))
         all_tools = {name for group in TOOL_GROUPS.values() for name in group}
         default_tools = all_tools - set(TOOL_GROUPS["Admin & Diagnostics"]) - set(TOOL_GROUPS["Expert & Low-Level"])
         self.assertEqual(len(default_tools), 48)

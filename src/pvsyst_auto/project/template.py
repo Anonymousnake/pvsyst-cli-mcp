@@ -492,6 +492,8 @@ def synthesize_utility_project(
     terrain: dict | None = None, u_factor: float = 29.0, lid_loss: float = 0.0, pmism_mpp: float | None = None,
     module_quality_loss: float | None = None, ageing: dict | None = None, dc_wiring_loss_pct: float = 1.5, dc_wiring_resistance_mohm: float = 0.0,
     sub_orientations: list[dict] | None = None, subarray_allocations: list[dict] | None = None, top_spacing_m: float = 0.2, dome_wiring: str = "auto",
+    pvc_name: str | None = None, dxf_name: str | None = None, dxf_layers: dict | None = None, dxf_unit_scale: float | None = None,
+    tilt_explicit: bool = True, azimuth_explicit: bool = True,
     allow_missing_met: bool = False, version: str = SYNTH_VERSION, with_bom: bool = True,
 ) -> dict:
     """Zero-template synthesizer for utility ground sheds, east-west domes, or single-axis trackers."""
@@ -499,6 +501,8 @@ def synthesize_utility_project(
         raise ValueError(f"Unsupported utility field_type: {field_type!r}")
     if module_orient not in ("moPortrait", "moLandscape"):
         raise ValueError("module_orient must be 'moPortrait' or 'moLandscape'")
+    if pvc_name is not None and dxf_name is not None:
+        raise ValueError("pvc_name and dxf_name are mutually exclusive")
 
     pan_dims = _resolve_pan_module_dimensions(store, pan_name)
     if module_width_m is not None and module_length_m is not None:
@@ -513,15 +517,34 @@ def synthesize_utility_project(
         dim_source = "default"
     resolved_mod_name = module_name or (pan_dims["model_name"] if pan_dims and pan_dims.get("model_name") else None) or "Mono 440 Wp Twin 144 half-cells bifacial"
 
+    cad_resolved = cad_summary = None
+    if pvc_name is not None or dxf_name is not None:
+        from pvsyst_auto.scene.cad_import import resolve_cad_synthesis_inputs
+        cad_resolved = resolve_cad_synthesis_inputs(
+            store, field_type=field_type, pvc_name=pvc_name, dxf_name=dxf_name, dxf_layers=dxf_layers,
+            dxf_unit_scale=dxf_unit_scale, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg, axis_azimuth_deg=axis_azimuth_deg,
+            pitch_m=pitch_m, tilt_explicit=tilt_explicit, azimuth_explicit=azimuth_explicit,
+            obstacles=obstacles, terrain=terrain, module_name=resolved_mod_name, version=version,
+        )
+        cad_summary = cad_resolved["cad_summary"]
+        obstacles = cad_resolved.get("obstacles", obstacles)
+        if cad_resolved["mode"] == "dxf":
+            site_polygon, terrain = cad_resolved["site_polygon"], cad_resolved["terrain"]
+        else:
+            tilt_deg, azimuth_deg, axis_azimuth_deg = cad_resolved["tilt_deg"], cad_resolved["azimuth_deg"], cad_resolved["axis_azimuth_deg"]
+            pitch_m, shed_count = cad_resolved["pitch_m"], cad_resolved["shed_count"]
+            module_rows, module_columns, module_orient = cad_resolved["module_rows"], cad_resolved["module_columns"], cad_resolved["module_orient"]
+            min_phi_deg, max_phi_deg = cad_resolved["min_phi_deg"], cad_resolved["max_phi_deg"]
+
     n_rows, n_cols = _pos_int(module_rows, "module_rows"), _pos_int(module_columns, "module_columns")
     sx, sy = _finite(spacing_x_m, "spacing_x_m", minimum=0.0), _finite(spacing_y_m, "spacing_y_m", minimum=0.0)
-    need_3d = include_3d_scene if include_3d_scene is not None else (field_type in ("RegularSheds", "TrackHorizNSAxis", "Dome") or site_polygon is not None or bool(obstacles))
+    need_3d = include_3d_scene if include_3d_scene is not None else (field_type in ("RegularSheds", "TrackHorizNSAxis", "Dome") or site_polygon is not None or bool(obstacles) or cad_resolved is not None)
     if field_type == "Dome" and not need_3d:
         raise ValueError("East-west dome layout requires include_3d_scene=True")
-    if (site_polygon is not None or bool(obstacles)) and not need_3d:
-        raise ValueError("site_polygon and obstacles require include_3d_scene=True")
+    if (site_polygon is not None or bool(obstacles) or cad_resolved is not None) and not need_3d:
+        raise ValueError("site_polygon, obstacles, and CAD imports require include_3d_scene=True")
     chord_mod = ml if module_orient == "moPortrait" else mw
-    scene_collector_width = round(n_rows * chord_mod + max(0, n_rows - 1) * sy, 3)
+    scene_collector_width = cad_resolved["collector_width_m"] if (cad_resolved and cad_resolved["mode"] == "pvc") else round(n_rows * chord_mod + max(0, n_rows - 1) * sy, 3)
     if need_3d:
         if collector_width_m is not None and abs((override_w := _finite(collector_width_m, "collector_width_m", minimum=0.1)) - scene_collector_width) > 1e-3:
             raise ValueError(f"collector_width_m ({override_w:.3f}) disagrees with the 3D scene chord width ({scene_collector_width:.3f}); omit collector_width_m or match the scene dimensions")
@@ -552,11 +575,13 @@ def synthesize_utility_project(
     }
 
     shading_lines = ground_3d_layout = terrain_summary = terrain_mesh = None
-    if terrain is not None:
+    if cad_resolved is not None and cad_resolved["mode"] == "pvc":
+        shading_lines, terrain_summary = cad_resolved["shading_lines"], cad_resolved["terrain_summary"]
+    elif terrain is not None:
         from pvsyst_auto.scene.terrain import build_terrain_mesh
         terrain_mesh = build_terrain_mesh(terrain, workspace=store.workspace)
         terrain_summary, need_3d = terrain_mesh.summary(), True
-    if need_3d:
+    if need_3d and shading_lines is None:
         mod_kw = {"module_rows": n_rows, "module_columns": n_cols, "module_width_m": mw, "module_length_m": ml,
                   "module_name": resolved_mod_name, "module_orient": module_orient, "spacing_x_m": sx, "spacing_y_m": sy, "version": version}
         if field_type == "Dome":
@@ -803,5 +828,6 @@ def synthesize_utility_project(
         **({"ground_3d_layout": ground_3d_layout} if ground_3d_layout is not None else {}),
         **({"terrain": terrain_summary} if terrain_summary is not None else {}),
         **({"ageing": ageing_norm} if ageing_norm is not None and ageing_norm["enabled"] else {}),
+        **({"cad_import": cad_summary} if cad_summary is not None else {}),
     }
     return result
