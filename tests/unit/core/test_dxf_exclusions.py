@@ -96,6 +96,15 @@ class ExclusionsUnitTests(unittest.TestCase):
         self.assertFalse(rect_overlaps_polygon(500010.0, 500020.0, 4500000.0, 4500010.0, utm_poly))
         self.assertTrue(rect_overlaps_polygon(500010.0, 500020.05, 4500000.0, 4500010.0, utm_poly))
 
+        # Consistent unshrunk-box overlap semantics (touching=False, tiny interior overlap/corner poke=True)
+        self.assertFalse(rect_overlaps_polygon(10.0, 20.0, 0.0, 10.0, rect_poly, tol=0.0))
+        self.assertTrue(rect_overlaps_polygon(10.0, 20.001, 0.0, 10.0, rect_poly))
+        self.assertFalse(rect_overlaps_polygon(10.0, 20.001, 0.0, 10.0, rect_poly, tol=0.05))
+        self.assertTrue(rect_overlaps_polygon(10.0, 20.005, 0.0, 10.0, [(20.0, 4.0), (25.0, 4.0), (25.0, 6.0), (20.0, 6.0)]))
+        # Concave U-poly: open bay allowed, overlapping arms rejected
+        self.assertFalse(rect_overlaps_polygon(10.0, 20.0, 5.0, 15.0, u_poly))
+        self.assertTrue(rect_overlaps_polygon(9.99, 20.0, 5.0, 15.0, u_poly))
+
     def test_interval_subtraction_trapezoid_slab_cases(self) -> None:
         # 1. Small pad completely inside band (y0=0, y1=10)
         pad = [(12.0, 3.0), (18.0, 3.0), (18.0, 7.0), (12.0, 7.0)]

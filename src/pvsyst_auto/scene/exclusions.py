@@ -79,51 +79,68 @@ def segments_intersect(
     )
 
 
+def _clip_polygon_half_plane(
+    pts: list[tuple[float, float]], inside_fn, intersect_fn
+) -> list[tuple[float, float]]:
+    if not pts:
+        return []
+    out: list[tuple[float, float]] = []
+    prev = pts[-1]
+    prev_in = inside_fn(prev)
+    for cur in pts:
+        cur_in = inside_fn(cur)
+        if cur_in:
+            if not prev_in:
+                out.append(intersect_fn(prev, cur))
+            out.append(cur)
+        elif prev_in:
+            out.append(intersect_fn(prev, cur))
+        prev, prev_in = cur, cur_in
+    return out
+
+
 def rect_overlaps_polygon(
     u0: float, u1: float, v0: float, v1: float,
     poly: list[tuple[float, float]], *, tol: float = 1e-7,
 ) -> bool:
-    """Return True if rectangle [u0, u1] x [v0, v1] overlaps the interior of poly by > tol."""
+    """Return True if unshrunk rectangle [u0, u1] x [v0, v1] shares positive area with poly."""
     if u0 > u1:
         u0, u1 = u1, u0
     if v0 > v1:
         v0, v1 = v1, v0
-    if u1 - u0 > 2.0 * tol:
-        su0, su1 = u0 + tol, u1 - tol
-    else:
-        su0 = su1 = 0.5 * (u0 + u1)
-    if v1 - v0 > 2.0 * tol:
-        sv0, sv1 = v0 + tol, v1 - tol
-    else:
-        sv0 = sv1 = 0.5 * (v0 + v1)
-
-    pxs = [p[0] for p in poly]
-    pys = [p[1] for p in poly]
-    if max(pxs) < su0 - _EPS or min(pxs) > su1 + _EPS or max(pys) < sv0 - _EPS or min(pys) > sv1 + _EPS:
+    w, h = u1 - u0, v1 - v0
+    if w <= 0.0 or h <= 0.0 or len(poly) < 3:
         return False
 
-    for cu, cv in ((su0, sv0), (su1, sv0), (su1, sv1), (su0, sv1)):
-        if _ray_cast_inside(cu, cv, poly):
-            return True
+    shifted = [(px - u0, py - v0) for px, py in poly]
+    pxs = [p[0] for p in shifted]
+    pys = [p[1] for p in shifted]
+    if max(pxs) <= _EPS or min(pxs) >= w - _EPS or max(pys) <= _EPS or min(pys) >= h - _EPS:
+        return False
 
-    for px, py in poly:
-        if su0 < px < su1 and sv0 < py < sv1:
-            return True
+    def _lerp_x(xb: float, a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+        dx = b[0] - a[0]
+        if abs(dx) <= 1e-18:
+            return (xb, a[1])
+        t = max(0.0, min(1.0, (xb - a[0]) / dx))
+        return (xb, a[1] + t * (b[1] - a[1]))
 
-    rect_edges = (
-        (su0, sv0, su1, sv0),
-        (su1, sv0, su1, sv1),
-        (su1, sv1, su0, sv1),
-        (su0, sv1, su0, sv0),
-    )
-    n = len(poly)
-    for i in range(n):
-        x1, y1 = poly[i]
-        x2, y2 = poly[(i + 1) % n]
-        for rx1, ry1, rx2, ry2 in rect_edges:
-            if segments_intersect(x1, y1, x2, y2, rx1, ry1, rx2, ry2):
-                return True
-    return False
+    def _lerp_y(yb: float, a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+        dy = b[1] - a[1]
+        if abs(dy) <= 1e-18:
+            return (a[0], yb)
+        t = max(0.0, min(1.0, (yb - a[1]) / dy))
+        return (a[0] + t * (b[0] - a[0]), yb)
+
+    clipped = _clip_polygon_half_plane(shifted, lambda p: p[0] >= 0.0, lambda a, b: _lerp_x(0.0, a, b))
+    clipped = _clip_polygon_half_plane(clipped, lambda p: p[0] <= w, lambda a, b: _lerp_x(w, a, b))
+    clipped = _clip_polygon_half_plane(clipped, lambda p: p[1] >= 0.0, lambda a, b: _lerp_y(0.0, a, b))
+    clipped = _clip_polygon_half_plane(clipped, lambda p: p[1] <= h, lambda a, b: _lerp_y(h, a, b))
+    if len(clipped) < 3:
+        return False
+
+    area_tol = max(tol * max(w, h, 1.0) * 0.5, 1e-12) if tol > 0.0 else 1e-12
+    return polygon_area(clipped) > area_tol
 
 
 def rect_overlaps_any_polygon(
