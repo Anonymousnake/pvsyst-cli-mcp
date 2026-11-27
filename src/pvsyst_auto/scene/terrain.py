@@ -452,12 +452,21 @@ def build_terrain_tracker_shading(
     follow_slope: bool = True,
     max_axis_tilt_deg: float = 15.0,
     obstacles: list[dict[str, Any]] | None = None,
+    electrical_shading: Any = None,
+    series_modules: int | None = None,
+    is_half_cut: bool = False,
     version: str = SYNTH_VERSION,
 ) -> tuple[list[str], dict[str, Any]]:
     """Build a 3D pvShading scene with per-tracker draped pvShdArrayTracking + pvShdGround terrain."""
     from pvsyst_auto.scene.author import obstacle_profiles
+    from pvsyst_auto.scene.partition import (
+        compute_table_partition_dims,
+        normalize_electrical_shading,
+        shading_header_kwargs,
+    )
     from pvsyst_auto.scene.reader import emit_shading_obstacles, pv_shading_header
 
+    cfg = normalize_electrical_shading(electrical_shading)
     if module_orient == "moLandscape":
         dim_along_axis = module_length_m
         dim_across_axis = module_width_m
@@ -466,6 +475,21 @@ def build_terrain_tracker_shading(
         dim_across_axis = module_length_m
     long_shed = module_rows * dim_across_axis + max(0, module_rows - 1) * spacing_y_m
     larg_shed = module_columns * dim_along_axis + max(0, module_columns - 1) * spacing_x_m
+    if cfg["mode"] == "partition":
+        dx_mod, dy_mod, _, _ = compute_table_partition_dims(
+            long_shed_m=long_shed,
+            larg_shed_m=larg_shed,
+            module_rows=module_rows,
+            module_columns=module_columns,
+            module_orient=module_orient,
+            is_tracker=True,
+            electrical_shading=cfg,
+            series_modules=series_modules,
+            is_half_cut=is_half_cut,
+        )
+    else:
+        dx_mod = dim_across_axis + spacing_y_m
+        dy_mod = larg_shed
 
     parsed_obstacles = obstacle_profiles(obstacles) if obstacles else []
     total_objs = tracker_count + 1 + len(parsed_obstacles)
@@ -477,7 +501,11 @@ def build_terrain_tracker_shading(
     axis_dx, axis_dy = math.sin(az_rad), math.cos(az_rad)
     step_dx, step_dy = math.cos(az_rad), -math.sin(az_rad)
 
-    lines = pv_shading_header("3D Terrain-draped horizontal N-S tracker shading scene", total_objs)
+    lines = pv_shading_header(
+        "3D Terrain-draped horizontal N-S tracker shading scene",
+        total_objs,
+        **shading_header_kwargs(cfg),
+    )
 
     tracker_summaries: list[dict[str, Any]] = []
     start_offset = -0.5 * (tracker_count - 1) * pitch_ew_m
@@ -520,8 +548,8 @@ def build_terrain_tracker_shading(
             f"      NModInHeight={module_rows}",
             f"      NModInWidth={module_columns}",
             f"      ModuleOrient={module_orient}",
-            f"      DXModule={dim_across_axis + spacing_y_m:.3f}",
-            f"      DYModule={larg_shed:.3f}",
+            f"      DXModule={dx_mod:.3f}",
+            f"      DYModule={dy_mod:.3f}",
             f"        LongShed={long_shed:.6f}",
             f"        LargShed={larg_shed:.6f}",
             "        Cadre=0.000,0.000,0.000,0.000,",

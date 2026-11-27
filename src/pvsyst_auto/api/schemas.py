@@ -31,6 +31,7 @@ from pvsyst_auto.api.schemas_scene import (
     BuildingObstacle,
     ConstantNativeLoad,
     DailyNativeLoad,
+    ElectricalShadingSpec,
     FlatRoof,
     GableRoof,
     GridAvailabilityProfile,
@@ -263,6 +264,7 @@ class GroundLayoutRequest(_StrictModel):
     dxf_name: StrictStr | None = None
     dxf_layers: dict[StrictStr, StrictStr | list[StrictStr]] | None = None
     dxf_unit_scale: StrictNum | None = None
+    electrical_shading: Literal["linear", "partition"] | ElectricalShadingSpec | None = None
 class AutoSizingOptions(_StrictModel):
     """Optional bounds used when sizing_mode='auto_from_components' derives capacity from PAN/OND."""
     voltage_standard: Literal["IEC", "UL"] = "IEC"

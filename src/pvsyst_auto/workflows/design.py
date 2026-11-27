@@ -752,7 +752,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     result["preview"][phase_name] = simulation
     result["artifacts"]["project_preparation" if prepare_only else "simulate"] = dict(simulation.get("artifacts") or {})
     result["metrics"] = simulation.get("metrics")
-    for k in ("diagnostics", "bifacial_metrics", "utility_summary"):
+    for k in ("diagnostics", "bifacial_metrics", "electrical_shading_metrics", "utility_summary"):
         if simulation.get(k) is not None: result[k] = simulation[k]
     result["recovery"] = list(simulation.get("recovery") or [])
     _inherit(result, simulation, phase_name)

@@ -293,3 +293,23 @@ class GridStorageDesign(_GridStorageScheduleBase):
     charger_euro_efficiency_pct: StrictNum
     battery_inverter_max_efficiency_pct: StrictNum
     battery_inverter_euro_efficiency_pct: StrictNum
+class ElectricalShadingSpec(_StrictModel):
+    """3D ground partition-based electrical shading options (PVsyst 8.1 pvShading Flags=$000A0300)."""
+    mode: Literal["linear", "partition"] = "partition"
+    partitions_x: Annotated[StrictInt, Field(ge=1, le=1000)] | None = None
+    partitions_y: Annotated[StrictInt, Field(ge=1, le=1000)] | None = None
+    electrical_effect_fraction: Annotated[StrictNum, Field(ge=0.0, le=1.0)] | None = None
+    auto_half_cut: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def _validate_linear_rejects_partition_opts(self):
+        if self.mode == "linear":
+            disallowed = [
+                k for k in ("partitions_x", "partitions_y", "electrical_effect_fraction", "auto_half_cut")
+                if getattr(self, k) is not None
+            ]
+            if disallowed:
+                raise ValueError(
+                    "electrical_shading mode='linear' cannot set partition-only option(s): " + ", ".join(disallowed)
+                )
+        return self

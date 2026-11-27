@@ -5,6 +5,11 @@ import math
 from typing import Any
 
 from pvsyst_auto.scene.author import obstacle_profiles
+from pvsyst_auto.scene.partition import (
+    compute_table_partition_dims,
+    normalize_electrical_shading,
+    shading_header_kwargs,
+)
 from pvsyst_auto.scene.reader import emit_shading_obstacles, plan_ground_polygon_layout, pv_shading_header
 from pvsyst_auto.validation import SEED_RECORD_VERSION, SYNTH_VERSION, finite_number as _finite
 
@@ -62,11 +67,23 @@ def emit_dome_pair_objects(
     larg_shed_m: float,
     pitch_ns_m: float,
     top_spacing_m: float,
+    electrical_shading: Any = None,
+    series_modules: int | None = None,
+    is_half_cut: bool = False,
     version: str = SYNTH_VERSION,
 ) -> list[str]:
     """Emit a paired front/back pvShdArrayDome object pair sharing identical origin and front azimuth."""
-    cell_w, cell_h = (module_width_m, module_length_m) if module_orient == "moPortrait" else (module_length_m, module_width_m)
-    dx_mod, dy_mod = cell_w + spacing_x_m, cell_h + spacing_y_m
+    cfg = normalize_electrical_shading(electrical_shading)
+    if cfg["mode"] == "partition":
+        dx_mod, dy_mod, _, _ = compute_table_partition_dims(
+            long_shed_m=long_shed_m, larg_shed_m=larg_shed_m,
+            module_rows=module_rows, module_columns=module_columns,
+            module_orient=module_orient, is_tracker=False, electrical_shading=cfg,
+            series_modules=series_modules, is_half_cut=is_half_cut,
+        )
+    else:
+        cell_w, cell_h = (module_width_m, module_length_m) if module_orient == "moPortrait" else (module_length_m, module_width_m)
+        dx_mod, dy_mod = cell_w + spacing_x_m, cell_h + spacing_y_m
     ox, oy, oz = origin
 
     def _one(obj_idx: int, comment: str, orient_id: int, is_main: bool, pair_idx: int) -> list[str]:
@@ -132,9 +149,13 @@ def synthesize_ground_dome_shading(
     front_orient_id: int = 1,
     back_orient_id: int = 2,
     obstacles: list[dict[str, Any]] | None = None,
+    electrical_shading: Any = None,
+    series_modules: int | None = None,
+    is_half_cut: bool = False,
     version: str = SYNTH_VERSION,
 ) -> list[str]:
     """Synthesize a regular paired 3D pvShdArrayDome scene plus optional 3D obstacles."""
+    cfg = normalize_electrical_shading(electrical_shading)
     n_sheds = _pos_int(shed_count, "shed_count")
     pitch = _finite(pitch_m, "pitch_m", minimum=0.1)
     tilt = _finite(tilt_deg, "tilt_deg")
@@ -149,7 +170,7 @@ def synthesize_ground_dome_shading(
     if pitch <= footprint:
         raise ValueError(f"pitch_m ({pitch:.3f} m) must exceed dome footprint depth ({footprint:.3f} m)")
     parsed_obs = obstacle_profiles(obstacles) if obstacles else []
-    lines = pv_shading_header("East-West dome 3D shading scene", 2 + len(parsed_obs))
+    lines = pv_shading_header("East-West dome 3D shading scene", 2 + len(parsed_obs), **shading_header_kwargs(cfg))
     lines.extend(emit_dome_pair_objects(
         obj_idx_front=1, obj_idx_back=2, comment_prefix="Dome field #1", n_elems=n_sheds,
         origin=origin, tilt_deg=tilt, base_slope_deg=slope, azimuth_deg=azim,
@@ -157,7 +178,8 @@ def synthesize_ground_dome_shading(
         module_name=module_name, module_width_m=module_width_m, module_length_m=module_length_m,
         module_rows=n_rows, module_columns=n_cols, module_orient=module_orient,
         spacing_x_m=spacing_x_m, spacing_y_m=spacing_y_m,
-        long_shed_m=long_shed, larg_shed_m=larg_shed, pitch_ns_m=pitch, top_spacing_m=gap, version=version,
+        long_shed_m=long_shed, larg_shed_m=larg_shed, pitch_ns_m=pitch, top_spacing_m=gap,
+        electrical_shading=cfg if cfg["mode"] == "partition" else "linear", series_modules=series_modules, is_half_cut=is_half_cut, version=version,
     ))
     lines.extend(emit_shading_obstacles(parsed_obs, start_index=3))
     return [*lines, "    End of ListeObjets", "  End of PVObject pvShading"]
@@ -186,9 +208,13 @@ def build_dome_3d_shading(
     ground_clearance_m: float,
     max_table_columns: int | None,
     obstacles: list[dict[str, Any]] | None = None,
+    electrical_shading: Any = None,
+    series_modules: int | None = None,
+    is_half_cut: bool = False,
     version: str = SYNTH_VERSION,
 ) -> tuple[list[str], dict[str, Any]]:
     """Build polygon/terrain-draped paired pvShdArrayDome 3D shading scene."""
+    cfg = normalize_electrical_shading(electrical_shading)
     cell_w, cell_h = (module_width_m, module_length_m) if module_orient == "moPortrait" else (module_length_m, module_width_m)
     larg_shed = module_rows * cell_h + max(0, module_rows - 1) * spacing_y_m
     footprint = dome_footprint_depth_m(larg_shed, tilt_deg, top_spacing_m)
@@ -228,7 +254,7 @@ def build_dome_3d_shading(
         )
     parsed_obs = obstacle_profiles(obstacles) if obstacles else []
     total_objs = 2 * len(tables) + len(parsed_obs) + (1 if terrain_mesh is not None else 0)
-    lines = pv_shading_header("East-West dome 3D polygon/terrain shading scene", total_objs)
+    lines = pv_shading_header("East-West dome 3D polygon/terrain shading scene", total_objs, **shading_header_kwargs(cfg))
     obj_idx = 0
     for idx_t, tbl in enumerate(tables, start=1):
         ox, oy, oz = tbl["origin_m"]
@@ -240,7 +266,7 @@ def build_dome_3d_shading(
             module_rows=tbl["module_rows"], module_columns=tbl["module_columns"], module_orient=module_orient,
             spacing_x_m=spacing_x_m, spacing_y_m=spacing_y_m,
             long_shed_m=tbl["long_shed_m"], larg_shed_m=tbl["larg_shed_m"], pitch_ns_m=0.0, top_spacing_m=top_spacing_m,
-            version=version,
+            electrical_shading=cfg if cfg["mode"] == "partition" else "linear", series_modules=series_modules, is_half_cut=is_half_cut, version=version,
         ))
         obj_idx += 2
     if terrain_mesh is not None:
