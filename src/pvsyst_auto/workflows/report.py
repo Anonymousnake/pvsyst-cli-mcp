@@ -361,6 +361,7 @@ def generate_report(
     tariff: dict[str, Any] | None = None, sensitivity: dict[str, Any] | None = None,
     p50_p90: dict[str, Any] | None = None, uncertainty: dict[str, Any] | None = None,
     bess_optimization: dict[str, Any] | None = None, batch_summary_csv: str | None = None,
+    ageing_batch_csv: str | None = None,
     layout_preview: dict[str, Any] | None = None, include_3d_layout: bool = False,
     language: str = "zh", plotlyjs: str = "cdn", thresholds: dict[str, float] | None = None,
     overwrite: bool = False, dry_run: bool = False,
@@ -456,7 +457,7 @@ def generate_report(
         econ_inputs.append(econ_entry)
 
     econ_result = evaluate_economics(
-        workspace=workspace, scenarios=econ_inputs, financial=financial, tariff=tariff,
+        workspace=workspace, scenarios=econ_inputs, ageing_batch_csv=ageing_batch_csv, financial=financial, tariff=tariff,
         sensitivity=sensitivity, p50_p90=p50_p90, uncertainty=uncertainty, include_cashflow_schedule=True,
     ) if (financial is not None or tariff is not None) else None
     econ_by_label = {s["label"]: s for s in (econ_result["scenarios"] if econ_result else ())}
@@ -483,8 +484,9 @@ def generate_report(
             p50_entries.append((lbl, p50_data))
 
     palette = ["#2563eb", "#059669", "#d97706", "#7c3aed", "#dc2626", "#0891b2"]
-    fig_batch = _build_batch_sweep_figure(parse_batch_results(_resolve_batch_csv(workspace, batch_summary_csv), columns=None),
-                                          palette=palette, opt_label=t["batch_opt_label"]) if batch_summary_csv else None
+    sweep_csv = batch_summary_csv or ageing_batch_csv
+    fig_batch = _build_batch_sweep_figure(parse_batch_results(_resolve_batch_csv(workspace, sweep_csv), columns=None),
+                                          palette=palette, opt_label=t["batch_opt_label"]) if sweep_csv else None
     best_label = econ_result["best_scenario"] if econ_result is not None else max(parsed_scenarios, key=lambda sc: sc["stats"]["annual_e_grid_kwh"])["label"]
     primary = next((sc for sc in parsed_scenarios if sc["label"] == best_label), parsed_scenarios[0])
     primary_suffix = f" ({primary['label']})" if len(parsed_scenarios) > 1 else ""

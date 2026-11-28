@@ -240,4 +240,79 @@ class InteractiveReportTests(unittest.TestCase):
             language="en", dry_run=False)
         self.assertEqual(gen2["status"], "generated")
         self.assertIn("Parametric Batch Sweep Curves", Path(gen2["report_path"]).read_text(encoding="utf-8"))
+    def test_feasibility_study_report_uses_simulated_ageing_curve(self) -> None:
+        from pvsyst_auto.components.store import ComponentStore
+        from pvsyst_auto.native.cli import PVsystCLI
+        from pvsyst_auto.project.synthesize import synthesize_project_and_variant
+        from pvsyst_auto.project.variants import VariantStore
+        from pvsyst_auto.workflows.optimize import run_feasibility_study
+        from tests._fixtures import init_full_workspace
+        from tests.unit.core.test_bifacial_utility import UTILITY_OND, UTILITY_PAN
+        from tests.unit.core.test_synthesize import MET_TEXT, SITE_TEXT
+        from tests.unit.core.test_zero_template_ageing import _make_batch_ageing_csv, _make_tou_sfi_csv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = init_full_workspace(Path(tmp))
+            (ws / "UserBatch").mkdir(exist_ok=True)
+            (ws / "Sites" / "Geneva_MN90.SIT").write_text(SITE_TEXT, encoding="utf-8")
+            (ws / "Meteo" / "Geneva_MN90_SYN.MET").write_text(MET_TEXT, encoding="utf-8")
+            (ws / "ComposPV" / "PVmodules" / "Bifi440.PAN").write_text(UTILITY_PAN, encoding="utf-8")
+            (ws / "ComposPV" / "Inverters" / "Inv50.OND").write_text(UTILITY_OND, encoding="utf-8")
+            store = VariantStore(ws, ComponentStore(ws))
+            synth = synthesize_project_and_variant(
+                store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+                pan_name="Bifi440.PAN", ond_name="Inv50.OND", n_mod_serie=17, n_string_ch=6,
+                n_inverter=1, n_inv_mppt=2, pnom_ac_in_mppt=25.0,
+            )
+            store.create_project("FsRpt.PRJ", synth["prj_text"], {"VC0": synth["vc0_text"]})
+            base_csv = _make_tou_sfi_csv(ws / "Results" / "fs_base.csv", days=36)
+            fake_cli_exe = Path(tmp) / "PVsystCLI.exe"
+            fake_cli_exe.write_bytes(b"stub")
+            cli = PVsystCLI(fake_cli_exe, ws)
+
+            def fake_batch(project, variant, *, batch_params, batch_rvt, **_):
+                stem = Path(batch_params).name.replace("_BatchParams.CSV", "")
+                summary = ws / "UserBatch" / f"{stem}_BatchResults.CSV"
+                _make_batch_ageing_csv(
+                    summary,
+                    [("SIM_1", 1, 219000.0, ""), ("SIM_2", 10, 170000.0, ""), ("SIM_3", 25, 110000.0, "")],
+                )
+                return {"batch_summary": str(summary), "batch_hourly": [], "batch_runs": 3, "seconds": 1, "warnings": []}
+
+            spec = {
+                "study_name": "AgeFeasReport",
+                "existing_csv": base_csv.name,
+                "existing_project": "FsRpt.PRJ",
+                "existing_variant": "VC0",
+                "installed_dc_kw": 100.0,
+                "ageing_years": [1, 10, 25],
+                "financial": {"currency": "USD", "project_life_years": 25, "capex_per_kw": 800.0, "annual_degradation_pct": 0.40},
+                "tariff": {"mode": "feed_in", "feed_in_tariff": 0.08},
+                "report": {"output_name": "age_feas.html", "language": "en"},
+            }
+            with patch.object(cli, "license_info", return_value={"status": "ACTIVE"}), \
+                 patch.object(cli, "run_simulation", side_effect=fake_batch):
+                done = run_feasibility_study(cli, store, spec=spec, dry_run=False, confirm=True)
+            self.assertTrue(done["report"]["has_batch_sweep"])
+            expected_npv = f"{done['executive_summary']['npv']:,.0f} USD"
+            html_text = Path(done["report"]["report_path"]).read_text(encoding="utf-8")
+            self.assertIn(expected_npv, html_text)
+
+            import pvsyst_auto.api.simulation as api_sim
+            from pvsyst_auto.api.schemas import (
+                EconomicsFinancialConfig, EconomicsTariffConfig, ReportScenarioInput,
+            )
+
+            batch_csv_name = Path(done["ageing_sweep"]["artifacts"]["batch_summary"]).name
+            with patch.dict(os.environ, {"PVSYST_WORKSPACE": str(ws), "PVSYST_CLI": str(fake_cli_exe)}):
+                mcp_res = api_sim.pvsyst_generate_report(
+                    title="MCP Ageing Report", output_name="mcp_age_feas.html",
+                    scenarios=[ReportScenarioInput(label="Base", csv_name=base_csv.name, installed_dc_kw=100.0)],
+                    financial=EconomicsFinancialConfig(**spec["financial"]),
+                    tariff=EconomicsTariffConfig(**spec["tariff"]),
+                    ageing_batch_csv=batch_csv_name,
+                    language="en", dry_run=False,
+                )
+            self.assertTrue(mcp_res["has_batch_sweep"])
+            self.assertIn(expected_npv, Path(mcp_res["report_path"]).read_text(encoding="utf-8"))
 if __name__ == "__main__": unittest.main()
