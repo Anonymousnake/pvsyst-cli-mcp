@@ -672,8 +672,11 @@ class CommercialComponentTests(unittest.TestCase):
         ond_res = self.store.list("OND", min_power_w=50_000.0, min_mppt=6, min_system_voltage_v=1500.0)
         self.assertEqual([i["name"] for i in ond_res["items"]], ["Delta_110k.OND"])
         self.assertEqual(ond_res["items"][0]["specs"]["nb_mppt"], 9)
-        # Verify workspace index persisted & cache hit avoids re-reading unchanged files
+        # Default read-only list writes no disk index; persist_index=True persists cache under lock & cache hit avoids re-reading
         index_path = self.root / "ComposPV" / ".mcp-component-index.json"
+        self.assertFalse(index_path.exists())
+        self.store.list("PAN", persist_index=True)
+        self.store.list("OND", persist_index=True)
         self.assertTrue(index_path.is_file())
         saved_index = json.loads(index_path.read_text(encoding="utf-8"))
         self.assertIn("PAN", saved_index)

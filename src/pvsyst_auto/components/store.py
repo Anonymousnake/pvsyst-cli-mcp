@@ -416,25 +416,27 @@ class ComponentStore:
         return dict(entry)
 
     def _persist_workspace_index(self, kind: str, items: list[dict]) -> None:
-        compos = self.workspace / "ComposPV"
-        index_path = compos / ".mcp-component-index.json"
-        if not compos.is_dir() or compos.is_symlink() or index_path.is_symlink():
-            return
-        try:
-            existing = json.loads(index_path.read_text(encoding="utf-8")) if index_path.is_file() else {}
-            if not isinstance(existing, dict):
+        with self.lock:
+            compos = self.workspace / "ComposPV"
+            index_path = compos / ".mcp-component-index.json"
+            if not compos.is_dir() or compos.is_symlink() or index_path.is_symlink():
+                return
+            try:
+                existing = json.loads(index_path.read_text(encoding="utf-8")) if index_path.is_file() else {}
+                if not isinstance(existing, dict):
+                    existing = {}
+            except (OSError, ValueError):
                 existing = {}
-        except (OSError, ValueError):
-            existing = {}
-        existing[kind] = items
-        try:
-            write_json(index_path, existing)
-        except OSError:
-            pass
+            existing[kind] = items
+            try:
+                write_json(index_path, existing)
+            except OSError:
+                pass
 
     def list(self, kind: str, library: str = "workspace", query: str = "", offset: int = 0, limit: int = 100, *,
              min_power_w: float | None = None, max_power_w: float | None = None, bifacial: bool | None = None,
-             min_system_voltage_v: float | None = None, min_mppt: int | None = None, manufacturer: str | None = None) -> dict:
+             min_system_voltage_v: float | None = None, min_mppt: int | None = None, manufacturer: str | None = None,
+             persist_index: bool = False) -> dict:
         kind = self._kind(kind)
         if offset < 0 or not 1 <= limit <= 200:
             raise ValueError("Offset must be >= 0 and limit between 1 and 200")
@@ -477,7 +479,7 @@ class ComponentStore:
             except (ValueError, FileNotFoundError):
                 if not has_elec_filter and not query:
                     matched.append({"name": path.name, "format": "unrecognized"})
-        if library == "workspace" and all_indexed:
+        if persist_index and library == "workspace" and all_indexed:
             self._persist_workspace_index(kind, all_indexed)
         return {"total": len(matched), "offset": offset, "items": matched[offset:offset + limit]}
 

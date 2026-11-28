@@ -60,7 +60,7 @@ Detailed guides: [engineering delivery, scenario comparison, AC storage, and bri
 | `pvsyst_clone_variant` | Clone a variant into a new `.VCx` (within or across projects) with optional component updates |
 | `pvsyst_get_variant_parameters`, `pvsyst_update_variant_parameters` | Read stored variant state and apply guarded parameter updates (angles, series count, MPPT/string counts, losses, horizon, seasonal tilt, temperature, PF, grid limits, P50/P90, system unavailability periods/random/removal, bifacial `pvBiFacial`, spectral correction, or native `TEcoEvaluation` for PDF financial pages) |
 | `pvsyst_configure_transformers` | Configure multi-stage MV/HV transformers (MV-only, parallel MV, or cascaded MV+HV), MV/HV AC collection cables (ISO 60228 sections), and night disconnect on a new `.VCx` variant; enforces PVsyst 8.1.7 native `PNomInvAC` basis and preflight bounds (`80%–200%` rating, strictly positive datasheet losses, `<= 1%` iron / `<= 5%` copper, `hv.output_voltage_kv >= mv.output_voltage_kv`) |
-| `pvsyst_convert_orientation` | Convert an existing Grid variant's orientation type in-place (`fixed` <-> `seasonal` <-> `sheds` <-> `tracker_ns` <-> `tracker_2axis`) into a new `.VCx` variant, automatically stripping incompatible 3D shading/result caches (paired `dome` conversions are rejected) |
+| `pvsyst_convert_orientation` | Convert an existing Grid variant's orientation type in-place (`fixed` <-> `seasonal` <-> `sheds` <-> `tracker_ns` <-> `tracker_2axis` <-> `dome`) into a new `.VCx` variant, automatically stripping incompatible 3D shading/result caches |
 | `pvsyst_create_tracking_variant` | Create a new variant with updated axis/backtracking/limit parameters from an existing tracking template |
 | `pvsyst_create_dc_cabling_variant` | Headlessly set DC wiring resistance (`mOhm`) or STC loss (`%`, using 1-diode `.PAN` STC MPP solver) across subarray and `StringNode` entries and save as a new `.VCx` variant (built-in unreadable modules allow `resistance` mode) |
 | `pvsyst_create_ac_cabling_variant` | Configure uniform per-inverter AC cable length (`0.1 m` precision) and section in a new variant |
@@ -212,7 +212,7 @@ The following 18 legacy entry points were removed. The paths below follow the co
 | `pvsyst_clone_component` | `pvsyst_build_sourced_component` for PAN/OND template derivation; generic component cloning was removed |
 | `pvsyst_clone_project` | `pvsyst_clone_variant` can clone an individual VC; whole-project cloning has no direct replacement (removed) |
 | `pvsyst_copy_component` | `pvsyst_build_sourced_component` for PAN/OND template derivation; generic component copying was removed |
-| `pvsyst_create_dome_allocation_variant` | No direct replacement (removed; paired `dome` conversions are not supported by `pvsyst_convert_orientation`) |
+| `pvsyst_create_dome_allocation_variant` | Use `pvsyst_convert_orientation(target_type="dome")` on existing variants or `pvsyst_simulate_design(scope="ground_dome")` for zero-template E-W dome synthesis |
 | `pvsyst_create_load_variant` | `pvsyst_create_native_load_variant` with `mode="hourly"` and a prepared load manifest |
 | `pvsyst_create_mv_night_disconnect_variant` | `pvsyst_configure_transformers` with `mv={"night_disconnect": ...}` (toggles `NightDisconnect` and bit 29 in-place on an existing MV variant; rebuilds MV settings when other `mv`/`hv` fields are given) |
 | `pvsyst_create_peak_shaving_variant` | `pvsyst_create_grid_storage_variant` with the `PeakShaving` limits or discharge-timing updates |

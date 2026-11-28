@@ -46,11 +46,11 @@
 | LID 与组件 MPP 失配 | MCP 可读写 | `LIDLoss` 与 `PMismMPP`（`0..100%`）；写 `PMismMPP` 时自动清除子阵列默认位 `0x00040000` |
 | 组串电压失配 | MCP 可读写 | `string_mismatch_updates`（`default` / `constant`），操作 `PMismString` 与子阵列默认位 bit 17 |
 | 积灰损失（Soiling） | MCP 可读写 | `soiling_updates`（`none` / `constant` / `monthly`，`0.1%` 精度），配合 `soiling` SFI 预设可导出 `GlobSlg`/`SlgLoss` |
-| 入射角修正（IAM） | MCP 可读写 | `iam_updates` 支持切换 `component` 与 `ashrae`（`b0` 参数） |
+| 入射角修正（IAM） | MCP 可读写 | `iam_updates` 支持切换 `component` 与 `ashrae`（`ashrae_b0` 参数） |
 | 辅助耗电（Auxiliaries） | MCP 可读写 | `auxiliary_updates` 支持 `none`、`constant`（运行/夜间 kW）及两类带阈值的 `profile` 模式 |
 | 组件老化（Ageing） | MCP 可读写 + 零模板挂载（已过 8.1.7 实测） | `ageing_updates`（年数、年均衰减率、RMS 失配参数、Imp 分配比例 `imp_degrad_sharing_percent`）与 `ageing_enabled`（`pvMainArray.Flags2` bit 20 开关）支持在任意原生 Grid 变体零模板挂载 `pvAgeing`；`simulate_design(losses={"ageing":...})` 零模板合成即写 `pvAgeing`；`pvsyst_run_feasibility_study(ageing_years=...)` 可自动跑多年批处理衰降扫描并向经济性注入逐年发电曲线 |
 | PV 系统不可用时段 | MCP 可读写（已过 8.1.7 实测） | `system_unavailability_updates` 支持 `mode="periods"`（写入 1..1000 条 `date_beg`/`duration_hours` 计划检修/故障时段）、`mode="random"`（按目标年停运比例/时段数/平均时长与随机种子生成）及 `mode="none"` 清除；支持含 3D 场景与多朝向变体叠加 |
-| 光谱修正（Spectral Correction） | MCP 可读写（已过 8.1.7 实测） | `spectral_updates` 支持 `mode="first_solar"`（依 `.MET` 含有的 PW/RH 数据计算 First Solar 光谱修正）、`mode="user_monthly"`（12 个月自定义光谱修正系数）与 `mode="none"` 清除 |
+| 光谱修正（Spectral Correction） | MCP 可读写（已过 8.1.7 实测） | `spectral_updates`（`SpectralUpdates`）使用 `enabled`（`bool`）、`coeff_set`（`SiMono`/`SiPoly`/`CdTe`/`CIS`/`aSi`/`Custom`）、`use_default_coeffs`、`use_rel_hum` 与 6 项 `coefficients` 配置或关闭 First Solar 光谱修正 |
 
 ## 能量管理（Energy Management）
 
@@ -68,7 +68,7 @@
 |---|---|---|
 | 固定倾角与多平面管理 | MCP 可读写 | 支持改倾角/方位角、追加固定平面（`clone_orientation`）、子阵重绑定（`NoOrientation`）及删除独占平面（`remove_orientation`） |
 | 季节性倾角调整 | MCP 可读写 | `seasonal_updates` 设置夏/冬倾角与冬季月份掩码 `WinterMonths` |
-| 朝向类型原地转换 | MCP 已封装 | `pvsyst_convert_orientation`（在 `fixed` / `seasonal` / `sheds` / `tracker_ns` / `tracker_2axis` 之间原地转换，自动清理不兼容的 3D 阴影/结果缓存；拒绝 `dome` 转换） |
+| 朝向类型原地转换 | MCP 已封装 | `pvsyst_convert_orientation`（在 `fixed` / `seasonal` / `sheds` / `tracker_ns` / `tracker_2axis` / `dome` 之间原地转换，自动清理不兼容的 3D 阴影/结果缓存，支持东西向配对 `pvDomeOrient` 双坡转换） |
 | 棚架与遮阳板（Sheds / SunShields） | MCP 已封装 | `pvsyst_create_shed_geometry_variant` 修改现有棚架/遮阳板模板的间距、倾角、排数、宽度与电气阴影开关 |
 | 单轴 / 双轴跟踪器参数 | MCP 已封装 | `pvsyst_create_tracking_variant` 支持 9 种原生跟踪类型的所属几何、角度限值、回溯（Backtracking）与间距修改 |
 | 无限水平轴跟踪仿真 | MCP 已封装 | `pvsyst_create_tracking_variant` + `pvsyst_run_engineering_task` 支持修改并运行 `UnlimTracking` 全年仿真 |
@@ -86,7 +86,7 @@
 
 | 功能项 | 当前支持状态 | 底层模块与注意事项 |
 |---|---|---|
-| 商业组件电气筛选与索引缓存 | MCP 已封装 | `pvsyst_list_components` 支持 `min_power_w`/`max_power_w`/`bifacial`/`min_system_voltage_v`/`min_mppt`/`manufacturer` 筛选，工作区自动维护 mtime 缓存 `.mcp-component-index.json` |
+| 商业组件电气筛选与索引缓存 | MCP 已封装 | `pvsyst_list_components` 支持 `min_power_w`/`max_power_w`/`bifacial`/`min_system_voltage_v`/`min_mppt`/`manufacturer` 筛选；默认只读查询不落盘，显式传入 `persist_index=True` 时在锁保护下维护 `.mcp-component-index.json` mtime 缓存 |
 | 规格书无模板 `.PAN`/`.OND` 合成 | MCP 已封装（已过 8.1.7 实测） | `pvsyst_build_sourced_component(template_name=None)` 调用 `single_diode.py` 数值求解五参数单二极管模型（自动写双面 bit 23 `$00800000`）与 Mode-1 8 点逆变器效率曲线；620W 双面 `.PAN` + 110kW `.OND` 已过 PVsystCLI 8.1.7 零警告实测 |
 | 多权威气象数据源与一键制备 | MCP 已封装 | `pvsyst_acquire_weather` 支持 `provider="open_meteo_era5" \| "pvgis_tmy" \| "nasa_power"` 及 `prepare=true` 一键串接 `prepare_weather`；`pvsyst_simulate_design` 的 `weather.mode` 同步支持 `pvgis_tmy` 与 `nasa_power` |
 | 财务 / 分时电价（TOU）、两部制需量、项目融资、实测衰减曲线与敏感性评估 | MCP 已封装 | `pvsyst_evaluate_economics`（纯 Python，独立于 `.VC0` 的 `TEcoEvaluation`）流式结算小时/子小时 CSV 或批处理汇总表，支持多年实测/插值 `yearly_energy_kwh` 与 `ageing_batch_csv` 分段线性衰降曲线、两部制月度需量削峰与按容/按需对比、电池中途更换、可组合项目融资（`debt`、`tax`、`depreciation`、`inflation`、`salvage`、`working_capital`、DSCR/LLCR 与杠杆股权 IRR）、多因子敏感性龙卷风、25 年衰减现金流、LCOE、NPV、IRR、静动态回收期与多方案排名 |

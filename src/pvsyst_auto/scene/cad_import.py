@@ -33,6 +33,9 @@ from pvsyst_auto.validation import is_finite_number as _is_number
 
 COLLADA_141_NS = "http://www.collada.org/2005/11/COLLADASchema"
 MAX_CAD_TABLES = 2000
+MAX_PVC_NODE_DEPTH = 64
+MAX_PVC_INSTANCES = 50_000
+MAX_PVC_TERRAIN_POINTS = 500_000
 _EPS = 1e-9
 _TERRAIN_RE = re.compile(r"(?:topo|terrain|dtm|dem|contour|elev|ground|grade|surf)", re.I)
 
@@ -369,8 +372,11 @@ def parse_pvc_141(workspace: Path, pvc_name: str, *, pvc_subset: str | None = No
         raise ValueError("Missing library_visual_scenes/visual_scene in .pvc file")
 
     fixed_tables, tracker_tables, obstacles, terrain_pts, used_names = [], [], [], [], set()
+    instance_count = [0]
 
-    def _walk(node: ET.Element, parent_m: list[list[float]]) -> None:
+    def _walk(node: ET.Element, parent_m: list[list[float]], depth: int = 0) -> None:
+        if depth > MAX_PVC_NODE_DEPTH:
+            raise ValueError(f".pvc node nesting depth exceeds ceiling ({MAX_PVC_NODE_DEPTH})")
         m = parent_m
         for ch in node:
             tag = ch.tag.split("}")[-1]
@@ -397,9 +403,16 @@ def parse_pvc_141(workspace: Path, pvc_name: str, *, pvc_subset: str | None = No
                 geom = geoms.get((gid := (ch.get("url") or "").lstrip("#")))
                 if geom is None:
                     continue
+                instance_count[0] += 1
+                if instance_count[0] > MAX_PVC_INSTANCES:
+                    raise ValueError(f".pvc instance count exceeds ceiling ({MAX_PVC_INSTANCES})")
                 if len(fixed_tables) + len(tracker_tables) >= MAX_CAD_TABLES:
                     raise ValueError(f".pvc table count exceeds ceiling ({MAX_CAD_TABLES})")
                 bound_names = [materials.get((im.get("target") or "").lstrip("#"), im.get("symbol", "")) for im in ch.findall(".//c:instance_material", ns)]
+                label_all = " ".join([gid, geom["name"], node_label, *bound_names, *geom["material_symbols"]])
+                is_terrain = geom["kind"] not in ("fixed", "tracker") and bool(_TERRAIN_RE.search(label_all))
+                if is_terrain and len(terrain_pts) + len(geom["points"]) > MAX_PVC_TERRAIN_POINTS:
+                    raise ValueError(f".pvc terrain point count exceeds ceiling ({MAX_PVC_TERRAIN_POINTS})")
                 wpts = [_mat_apply(m, p) for p in geom["points"]]
                 base_name = f"{node_label}_{gid}" if len(node_label) < 60 else gid
                 if geom["kind"] == "fixed":
@@ -407,8 +420,7 @@ def parse_pvc_141(workspace: Path, pvc_name: str, *, pvc_subset: str | None = No
                 elif geom["kind"] == "tracker":
                     tracker_tables.append(_tracker_table_from_pvc(base_name, wpts, geom["triangles"], geom["params"], m))
                 else:
-                    label_all = " ".join([gid, geom["name"], node_label, *bound_names, *geom["material_symbols"]])
-                    if _TERRAIN_RE.search(label_all):
+                    if is_terrain:
                         terrain_pts.extend(wpts)
                     elif geom["triangles"] and len(obstacles) < MAX_OBSTACLES:
                         uniq, suffix = base_name, 1
@@ -431,10 +443,10 @@ def parse_pvc_141(workspace: Path, pvc_name: str, *, pvc_subset: str | None = No
                         if vtris:
                             obstacles.append({"kind": "mesh", "name": uniq, "vertices": cverts, "triangles": vtris})
             elif tag == "node":
-                _walk(ch, m)
+                _walk(ch, m, depth + 1)
 
     for top_node in vis_scene.findall("c:node", ns):
-        _walk(top_node, _mat_identity())
+        _walk(top_node, _mat_identity(), 0)
 
     scene_kind = "mixed" if (fixed_tables and tracker_tables) else ("fixed" if fixed_tables else ("tracker" if tracker_tables else None))
     if scene_kind is None:

@@ -16,6 +16,7 @@ MAX_DXF_BYTES = 64 * 1024 * 1024
 MAX_DXF_TERRAIN_POINTS = 2500
 MAX_DXF_INSERT_DEPTH = 8
 MAX_DXF_ENTITIES = 50000
+MAX_DXF_VERTICES = 500_000
 
 _INSUNITS_TO_M: dict[int, float] = {
     0: 1.0, 1: 0.0254, 2: 0.3048, 3: 1609.344, 4: 0.001, 5: 0.01,
@@ -652,15 +653,19 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
     """Expand top-level entities and nested BLOCK/INSERT references into concrete entities."""
     expanded: list[dict[str, Any]] = []
     entity_counts: dict[str, int] = {}
-    work_steps = [0]
+    work_steps, vertex_steps = [0], [0]
+
+    def _charge_verts(n: int) -> None:
+        vertex_steps[0] += n
+        if vertex_steps[0] > MAX_DXF_VERTICES:
+            raise ValueError(f"DXF expanded vertex count exceeded ceiling ({MAX_DXF_VERTICES})")
 
     def _walk(items: list[dict[str, Any]], mat: tuple[tuple[float, float, float, float], ...], parent_layer: str, depth: int, active: set[str]) -> None:
         for ent in items:
             work_steps[0] += 1
             if work_steps[0] > MAX_DXF_ENTITIES:
                 raise ValueError(f"DXF entity/INSERT expansion exceeded maximum budget ({MAX_DXF_ENTITIES})")
-            t = ent["type"]
-            raw_layer = ent.get("layer", "0")
+            t, raw_layer = ent["type"], ent.get("layer", "0")
             layer = parent_layer if (raw_layer == "0" and parent_layer != "0") else raw_layer
             if t == "INSERT":
                 entity_counts["INSERT"] = entity_counts.get("INSERT", 0) + 1
@@ -693,41 +698,40 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
                 continue
 
             entity_counts[t] = entity_counts.get(t, 0) + 1
-            has_ocs = "nx" in ent or "ny" in ent or "nz" in ent
-            m_ent = _mat_mul(mat, _ocs_matrix(ent.get("nx", 0.0), ent.get("ny", 0.0), ent.get("nz", 1.0))) if has_ocs else mat
+            m_ent = _mat_mul(mat, _ocs_matrix(ent.get("nx", 0.0), ent.get("ny", 0.0), ent.get("nz", 1.0))) if ("nx" in ent or "ny" in ent or "nz" in ent) else mat
             z_scale = abs(m_ent[2][2])
             if t == "LWPOLYLINE":
+                _charge_verts(len(ent["pts"]))
                 local = _discretize_bulge_chain([(p[0], p[1], ent["z0"], p[2]) for p in ent["pts"]], ent["closed"])
+                _charge_verts(max(0, len(local) - len(ent["pts"])))
                 expanded.append({"type": "CURVE", "layer": layer, "closed": ent["closed"], "thick": ent["thick"] * z_scale, "pts": [_apply_mat(m_ent, p) for p in local]})
             elif t == "POLYLINE":
                 vlist = ent["vertices"]
+                _charge_verts(len(vlist))
                 if ent["flag"] & 64:
-                    expanded.append({"type": "POLYFACE", "layer": layer, "vertices": vlist,
-                                     "pts3": [_apply_mat(mat, (v["x"], v["y"], v["z"])) for v in vlist if (v["flag"] & 128) and (v["flag"] & 64)]})
+                    expanded.append({"type": "POLYFACE", "layer": layer, "vertices": vlist, "pts3": [_apply_mat(mat, (v["x"], v["y"], v["z"])) for v in vlist if (v["flag"] & 128) and (v["flag"] & 64)]})
                 else:
                     closed, is_3d_poly = bool(ent["flag"] & 1), bool(ent["flag"] & 8)
                     m_poly = mat if is_3d_poly else m_ent
                     local = _discretize_bulge_chain([(v["x"], v["y"], v["z"] if is_3d_poly else ent["z0"], v.get("bulge", 0.0)) for v in vlist], closed)
+                    _charge_verts(max(0, len(local) - len(vlist)))
                     expanded.append({"type": "CURVE", "layer": layer, "closed": closed, "thick": ent["thick"] * abs(m_poly[2][2]), "pts": [_apply_mat(m_poly, p) for p in local]})
-            elif t == "CIRCLE":
-                local = _discretize_circle(ent["cx"], ent["cy"], ent["cz"], ent["r"])
-                expanded.append({"type": "CURVE", "layer": layer, "closed": True, "thick": ent["thick"] * z_scale, "pts": [_apply_mat(m_ent, p) for p in local]})
-            elif t == "ARC":
-                local, full = _discretize_arc(ent["cx"], ent["cy"], ent["cz"], ent["r"], ent["start"], ent["end"])
-                expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": ent["thick"] * z_scale, "pts": [_apply_mat(m_ent, p) for p in local]})
-            elif t == "ELLIPSE":
-                local, full = _discretize_ellipse(ent)
-                expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": 0.0, "pts": [_apply_mat(mat, p) for p in local]})
+            elif t in ("CIRCLE", "ARC", "ELLIPSE", "SPLINE"):
+                if t == "CIRCLE": local, full, tk, mt = _discretize_circle(ent["cx"], ent["cy"], ent["cz"], ent["r"]), True, ent["thick"] * z_scale, m_ent
+                elif t == "ARC": local, full = _discretize_arc(ent["cx"], ent["cy"], ent["cz"], ent["r"], ent["start"], ent["end"]); tk, mt = ent["thick"] * z_scale, m_ent
+                elif t == "ELLIPSE": local, full = _discretize_ellipse(ent); tk, mt = 0.0, mat
+                else: local, full = _discretize_spline(ent); tk, mt = 0.0, mat
+                _charge_verts(len(local))
+                expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": tk, "pts": [_apply_mat(mt, p) for p in local]})
             elif t == "LINE":
-                expanded.append({"type": "CURVE", "layer": layer, "closed": False, "thick": 0.0,
-                                 "pts": [_apply_mat(mat, (ent["x1"], ent["y1"], ent["z1"])), _apply_mat(mat, (ent["x2"], ent["y2"], ent["z2"]))]})
-            elif t == "SPLINE":
-                local, s_closed = _discretize_spline(ent)
-                expanded.append({"type": "CURVE", "layer": layer, "closed": s_closed, "thick": 0.0, "pts": [_apply_mat(mat, p) for p in local]})
+                _charge_verts(2)
+                expanded.append({"type": "CURVE", "layer": layer, "closed": False, "thick": 0.0, "pts": [_apply_mat(mat, (ent["x1"], ent["y1"], ent["z1"])), _apply_mat(mat, (ent["x2"], ent["y2"], ent["z2"]))]})
             elif t == "3DFACE":
+                _charge_verts(4)
                 c = ent["coords"]
                 expanded.append({"type": "3DFACE", "layer": layer, "pts": [_apply_mat(mat, (c.get(10 + k, 0.0), c.get(20 + k, 0.0), c.get(30 + k, 0.0))) for k in range(4)]})
             elif t == "POINT":
+                _charge_verts(1)
                 wx, wy, wz = _apply_mat(mat, (ent["x"], ent["y"], ent["z"]))
                 expanded.append({"type": "POINT", "layer": layer, "x": wx, "y": wy, "z": wz})
 
