@@ -290,10 +290,29 @@ class InteractiveReportTests(unittest.TestCase):
                 "tariff": {"mode": "feed_in", "feed_in_tariff": 0.08},
                 "report": {"output_name": "age_feas.html", "language": "en"},
             }
-            with patch.object(cli, "license_info", return_value={"status": "ACTIVE"}),                  patch.object(cli, "run_simulation", side_effect=fake_batch):
+            with patch.object(cli, "license_info", return_value={"status": "ACTIVE"}), \
+                 patch.object(cli, "run_simulation", side_effect=fake_batch):
                 done = run_feasibility_study(cli, store, spec=spec, dry_run=False, confirm=True)
             self.assertTrue(done["report"]["has_batch_sweep"])
             expected_npv = f"{done['executive_summary']['npv']:,.0f} USD"
             html_text = Path(done["report"]["report_path"]).read_text(encoding="utf-8")
             self.assertIn(expected_npv, html_text)
+
+            import pvsyst_auto.api.simulation as api_sim
+            from pvsyst_auto.api.schemas import (
+                EconomicsFinancialConfig, EconomicsTariffConfig, ReportScenarioInput,
+            )
+
+            batch_csv_name = Path(done["ageing_sweep"]["artifacts"]["batch_summary"]).name
+            with patch.dict(os.environ, {"PVSYST_WORKSPACE": str(ws), "PVSYST_CLI": str(fake_cli_exe)}):
+                mcp_res = api_sim.pvsyst_generate_report(
+                    title="MCP Ageing Report", output_name="mcp_age_feas.html",
+                    scenarios=[ReportScenarioInput(label="Base", csv_name=base_csv.name, installed_dc_kw=100.0)],
+                    financial=EconomicsFinancialConfig(**spec["financial"]),
+                    tariff=EconomicsTariffConfig(**spec["tariff"]),
+                    ageing_batch_csv=batch_csv_name,
+                    language="en", dry_run=False,
+                )
+            self.assertTrue(mcp_res["has_batch_sweep"])
+            self.assertIn(expected_npv, Path(mcp_res["report_path"]).read_text(encoding="utf-8"))
 if __name__ == "__main__": unittest.main()
