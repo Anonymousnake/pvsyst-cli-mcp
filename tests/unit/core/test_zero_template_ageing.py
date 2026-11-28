@@ -440,6 +440,33 @@ class ZeroTemplateAgeingTests(unittest.TestCase):
         )
         self.assertEqual(upd1["ageing"]["after"]["simulation_year"], 15)
 
+        # Ensure Flags=$00 placed after nested TCubicProfile(s) inside pvAgeing is not overwritten
+        vc1_path = self.ws / "Projects" / "AgeSoilTrf.VC1"
+        vc1_before = vc1_path.read_bytes().decode("utf-8-sig")
+        vc1_reordered = vc1_before.replace(
+            "  PVObject_Ageing=pvAgeing\r\n    Flags=$00\r\n",
+            "  PVObject_Ageing=pvAgeing\r\n",
+            1,
+        ).replace(
+            "    End of TCubicProfile\r\n  End of TAgeing",
+            "    End of TCubicProfile\r\n"
+            "    AgeingLossAver=TCubicProfile\r\n      NPtsMax=7\r\n      NPtsEff=7\r\n      Point_1=0.0,-0.004\r\n    End of TCubicProfile\r\n"
+            "    Flags=$00\r\n  End of TAgeing",
+            1,
+        )
+        self.assertIn("AgeingLossAver=TCubicProfile", vc1_reordered)
+        self.assertNotEqual(vc1_reordered, vc1_before)
+        vc1_path.write_bytes(("\ufeff" + vc1_reordered).encode("utf-8"))
+        self.assertEqual(self.store.inspect_parameters("AgeSoilTrf.PRJ", "VC1")["ageing"]["mode"], "mounted")
+        trf2 = configure_transformers(
+            self.store, project="AgeSoilTrf.PRJ", source_variant="VC1", new_variant="VC2",
+            mv={"iron_loss_frac": 0.0012, "copper_loss_frac": 0.01}, dry_run=False,
+        )
+        self.assertEqual(trf2["status"], "created", trf2["issues"])
+        insp2 = self.store.inspect_parameters("AgeSoilTrf.PRJ", "VC2")
+        self.assertEqual(insp2["ageing"]["mode"], "mounted")
+        self.assertEqual(insp2["ageing"]["simulation_year"], 15)
+
 
 if __name__ == "__main__":
     unittest.main()
