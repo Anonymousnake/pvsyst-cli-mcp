@@ -1,6 +1,7 @@
 """Zero-template MV / HV multi-stage transformer & AC collection network builder/editor."""
 from __future__ import annotations
 
+from decimal import Decimal
 import math
 import re
 from typing import Any
@@ -115,12 +116,12 @@ def _normalize_mv(raw: dict[str, Any], default_ref_kw: float | None, *, inverter
         raise ValueError(f"MV transformer loss fractions exceed PVsyst 8.1.7 native limits (iron <= {NATIVE_MAX_IRON_LOSS_FRAC * 100:g}%, copper <= {NATIVE_MAX_COPPER_LOSS_FRAC * 100:g}%; got iron={stc_iron_frac * 100:.2f}%, copper={stc_copper_frac * 100:.2f}% using stc_ref_power_kw={ref_kw:g} kW{ac_suffix})")
     return {
         "count": count, "output_voltage_kv": v_kv, "output_voltage_v": int(round(v_kv * 1000.0)), "stc_ref_power_kw": round(ref_kw, 5),
-        "iron_loss_frac": round(stc_iron_frac if has_ds else main_iron_frac, 5), "copper_loss_frac": round(stc_copper_frac if has_ds else main_copper_frac, 5),
-        "main_iron_loss_frac": round(main_iron_frac, 5), "main_copper_loss_frac": round(main_copper_frac, 5),
+        "iron_loss_frac": round(stc_iron_frac, 5) if has_ds else main_iron_frac, "copper_loss_frac": round(stc_copper_frac, 5) if has_ds else main_copper_frac,
+        "main_iron_loss_frac": main_iron_frac, "main_copper_loss_frac": main_copper_frac,
         "stc_iron_loss_frac": round(stc_iron_frac, 5), "stc_copper_loss_frac": round(stc_copper_frac, 5),
         "iron_loss_kw": round(total_iron_kw, 5), "loss_basis": loss_basis, "loss_basis_power_kw": round(loss_basis_kw, 5),
-        "from_datasheet": has_ds, "ds_nom_power": round(ds_nom_f, 5) if ds_nom_f is not None else None,
-        "ds_iron_loss": round(ds_iron_f, 5) if ds_iron_f is not None else None, "ds_copper_loss": round(ds_copper_f, 5) if ds_copper_f is not None else None,
+        "from_datasheet": has_ds, "ds_nom_power": ds_nom_f,
+        "ds_iron_loss": ds_iron_f, "ds_copper_loss": ds_copper_f,
         "night_disconnect": night, "cable": cable,
     }
 
@@ -135,13 +136,13 @@ def _normalize_hv(raw: dict[str, Any], default_ref_kw: float | None, *, inverter
         iron_frac = ds_iron / ref_kw
     else:
         iron_frac = _finite_pos(raw["iron_loss_frac"] if raw.get("iron_loss_frac") is not None else 0.0007, "hv.iron_loss_frac")
-        ds_iron = round(ref_kw * iron_frac, 5)
+        ds_iron = ref_kw * iron_frac
     if raw.get("copper_loss_kw") is not None:
         ds_copper = _finite_pos(raw["copper_loss_kw"], "hv.copper_loss_kw")
         copper_frac = ds_copper * (ref_kw / (ds_nom * ds_nom))
     else:
         copper_frac = _finite_pos(raw["copper_loss_frac"] if raw.get("copper_loss_frac") is not None else 0.0065, "hv.copper_loss_frac")
-        ds_copper = round(copper_frac * ds_nom * ds_nom / ref_kw, 5)
+        ds_copper = copper_frac * ds_nom * ds_nom / ref_kw
     if min(ds_nom, ds_iron, ds_copper) < NATIVE_MIN_DATASHEET_VALUE:
         raise ValueError("hv datasheet nominal_power_kva, iron_loss_kw, and copper_loss_kw must be strictly positive (>= 1e-9; PVsyst TransfoDataSheetsNotWellDef)")
     nom_iron_frac, nom_copper_frac = ds_iron / ds_nom, ds_copper / ds_nom
@@ -149,10 +150,10 @@ def _normalize_hv(raw: dict[str, Any], default_ref_kw: float | None, *, inverter
         raise ValueError(f"HV transformer datasheet losses exceed PVsyst 8.1.7 native limits (iron/nom <= {NATIVE_MAX_IRON_LOSS_FRAC * 100:g}%, copper/nom <= {NATIVE_MAX_COPPER_LOSS_FRAC * 100:g}%; got iron={nom_iron_frac * 100:.2f}%, copper={nom_copper_frac * 100:.2f}% for nominal_power_kva={ds_nom:g} kVA)")
     return {
         "output_voltage_kv": v_kv, "output_voltage_v": int(round(v_kv * 1000.0)), "stc_ref_power_kw": round(ref_kw, 5),
-        "iron_loss_frac": round(iron_frac, 5), "iron_loss_kw": round(ds_iron, 5), "copper_loss_frac": round(copper_frac, 5),
+        "iron_loss_frac": round(iron_frac, 5), "iron_loss_kw": ds_iron, "copper_loss_frac": round(copper_frac, 5),
         "nom_iron_loss_frac": round(nom_iron_frac, 5), "nom_copper_loss_frac": round(nom_copper_frac, 5),
-        "loss_basis": "datasheet_hv", "ds_nom_power": round(ds_nom, 5), "ds_iron_loss": round(ds_iron, 5),
-        "ds_copper_loss": round(ds_copper, 5), "night_disconnect": night, "cable": cable,
+        "loss_basis": "datasheet_hv", "ds_nom_power": ds_nom, "ds_iron_loss": ds_iron,
+        "ds_copper_loss": ds_copper, "night_disconnect": night, "cable": cable,
     }
 
 
@@ -300,6 +301,12 @@ def _extract_inverter_subtrees(lines: list[str]) -> tuple[int, int, list[list[st
     return inj.line - 1, inj.end_line, inv_blocks, eol
 
 
+def _native_decimal(value: float, places: int) -> str:
+    """Keep native padding when exact and retain validated precision otherwise."""
+    padded = f"{value:.{places}f}"
+    return padded if float(padded) == value else format(Decimal(str(value)), "f")
+
+
 def _format_kv(v_kv: float) -> str:
     return f"{v_kv:g} kV"
 
@@ -318,7 +325,7 @@ def _render_transformer_node(spec: dict[str, Any], *, is_hv: bool, children_line
         f"{indent}STCCopperLossFrac={node_copper:.5f}{eol}",
     ])
     if is_hv or spec.get("from_datasheet"):
-        out.extend([f"{indent}DSNomPower={spec['ds_nom_power']:.5f}{eol}", f"{indent}DSIronLoss={spec['ds_iron_loss']:.5f}{eol}", f"{indent}DSCopperLoss={spec['ds_copper_loss']:.5f}{eol}"])
+        out.extend([f"{indent}DSNomPower={_native_decimal(spec['ds_nom_power'], 5)}{eol}", f"{indent}DSIronLoss={_native_decimal(spec['ds_iron_loss'], 5)}{eol}", f"{indent}DSCopperLoss={_native_decimal(spec['ds_copper_loss'], 5)}{eol}"])
     out.extend([f"{indent}NightDisconnect={'True' if spec['night_disconnect'] else 'False'}{eol}", f"{indent}IsHVTransformer={'True' if is_hv else 'False'}{eol}", f"{indent}TransformerNode End;{eol}"])
     return out
 
@@ -516,11 +523,11 @@ def apply_transformers_to_variant_lines(lines: list[str], *, mv: dict[str, Any] 
                 f"{hdr}VOutHVTransfo={hv_norm['output_voltage_v']}{eol}", f"{hdr}HVWireNoSect={hv_cab.get('wire_no_sect', 15)}{eol}",
                 f"{hdr}HVWireLength={hv_cab.get('length_m', 0.0):.1f}{eol}", f"{hdr}HVWireMetal={hv_cab.get('metal', 'Aluminium')}{eol}",
             ])
-        trf_header.extend([f"{hdr}MVNbTransfos={mv_norm['count']}{eol}", f"{hdr}TrfIronLossFrac={mv_norm['main_iron_loss_frac']:.5f}{eol}", f"{hdr}TrfResLossFrac={mv_norm['main_copper_loss_frac']:.5f}{eol}"])
+        trf_header.extend([f"{hdr}MVNbTransfos={mv_norm['count']}{eol}", f"{hdr}TrfIronLossFrac={_native_decimal(mv_norm['main_iron_loss_frac'], 5)}{eol}", f"{hdr}TrfResLossFrac={_native_decimal(mv_norm['main_copper_loss_frac'], 5)}{eol}"])
         if mv_norm["from_datasheet"]:
-            trf_header.extend([f"{hdr}MVTrfDSNomPower={mv_norm['ds_nom_power']:.2f}{eol}", f"{hdr}MVTrfDSIronLoss={mv_norm['ds_iron_loss']:.4f}{eol}", f"{hdr}MVTrfDSCopperLoss={mv_norm['ds_copper_loss']:.4f}{eol}"])
+            trf_header.extend([f"{hdr}MVTrfDSNomPower={_native_decimal(mv_norm['ds_nom_power'], 2)}{eol}", f"{hdr}MVTrfDSIronLoss={_native_decimal(mv_norm['ds_iron_loss'], 4)}{eol}", f"{hdr}MVTrfDSCopperLoss={_native_decimal(mv_norm['ds_copper_loss'], 4)}{eol}"])
         if hv_norm is not None:
-            trf_header.extend([f"{hdr}HVTrfDSNomPower={hv_norm['ds_nom_power']:.2f}{eol}", f"{hdr}HVTrfDSIronLoss={hv_norm['ds_iron_loss']:.4f}{eol}", f"{hdr}HVTrfDSCopperLoss={hv_norm['ds_copper_loss']:.4f}{eol}"])
+            trf_header.extend([f"{hdr}HVTrfDSNomPower={_native_decimal(hv_norm['ds_nom_power'], 2)}{eol}", f"{hdr}HVTrfDSIronLoss={_native_decimal(hv_norm['ds_iron_loss'], 4)}{eol}", f"{hdr}HVTrfDSCopperLoss={_native_decimal(hv_norm['ds_copper_loss'], 4)}{eol}"])
     cand = cand[:main_start] + kept_header[:insert_pos] + trf_header + kept_header[insert_pos:] + cand[circ_start:]
     cand, _ = strip_result_cache(cand)
     objects("".join(cand))

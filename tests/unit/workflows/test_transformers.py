@@ -125,6 +125,21 @@ class TransformersTests(unittest.TestCase):
         output = (self.root / "Projects" / "TrfTest.VC1").read_text(encoding="utf-8-sig")
         self.assertNotIn("VarList, list of=", output)
         self.assertEqual(int(output.splitlines()[3].split("$")[1], 16) & 1, 0)
+    def test_datasheet_header_preserves_preflight_values(self) -> None:
+        mv = {"nominal_power_kva": 500.004, "iron_loss_kw": 0.00004, "copper_loss_kw": 3}
+        hv = {"nominal_power_kva": 500.004, "iron_loss_kw": 5.00004, "copper_loss_kw": 0.00004}
+        result = configure_transformers(
+            self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC1",
+            mv=mv, hv=hv, dry_run=False,
+        )
+        self.assertEqual(result["status"], "created", result["issues"])
+        source = (self.root / "Projects" / "TrfTest.VC1").read_text(encoding="utf-8-sig")
+        for stage, spec in (("MV", mv), ("HV", hv)):
+            for tag, key in (("NomPower", "nominal_power_kva"), ("IronLoss", "iron_loss_kw"),
+                             ("CopperLoss", "copper_loss_kw")):
+                prefix = f"{stage}TrfDS{tag}="
+                value, = [line.strip()[len(prefix):] for line in source.splitlines() if line.strip().startswith(prefix)]
+                self.assertEqual(float(value), spec[key], prefix)
     def test_validation_rejects_invalid_combinations(self) -> None:
         r1 = configure_transformers(self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC9",
             mv={"count": 1}, remove_transformers=True, dry_run=True)
@@ -271,6 +286,17 @@ class TransformersTests(unittest.TestCase):
         _, s_def = apply_transformers_to_variant_text(vc_demo, mv=mv_ok,
             hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 18000.0}, components=self.comp)
         self.assertAlmostEqual(s_def["hv"]["ds_nom_power"], 9200.0, places=2)
+    def test_fractional_runtime_loss_matches_preflight(self) -> None:
+        result = configure_transformers(
+            self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC1",
+            mv={"stc_ref_power_kw": 440.3, "iron_loss_frac": 0.008806, "copper_loss_frac": 0.001}, dry_run=False,
+        )
+        self.assertEqual(result["status"], "created", result["issues"])
+        src = (self.root / "Projects" / "TrfTest.VC1").read_text(encoding="utf-8-sig")
+        fraction, = [float(line.split("=")[1]) for line in src.splitlines() if line.strip().startswith("TrfIronLossFrac=")]
+        summary = result["transformers"]
+        self.assertAlmostEqual(summary["inverter_ac_power_kw"] * fraction, summary["mv"]["iron_loss_kw"])
+        self.assertLessEqual(summary["inverter_ac_power_kw"] * fraction / 440.3, 0.01)
     def test_pvsyst817_parallel_mv_datasheet_scaling_and_native_checks(self) -> None:
         vc_demo = self._make_demo_utility_vc()
         # 2 x 4,500 kVA MV datasheet transformers (4 kW iron, 40 kW copper per unit) on 8,000 kW AC / 10,120 kWp DC
