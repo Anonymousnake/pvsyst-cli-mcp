@@ -32,7 +32,7 @@ from pvsyst_auto.project.template import SEED_VARIANT, prepare_standard_template
 from pvsyst_auto.weather.acquisition import download_weather
 from pvsyst_auto.weather.preparation import prepare_weather
 from pvsyst_auto.project.standalone import STANDALONE_SCOPE, run_standalone_design
-from pvsyst_auto.workflows.utility import UTILITY_SCOPES, plan_utility_capacity, run_utility_design, validate_utility_spec
+from pvsyst_auto.workflows.utility import UTILITY_SCOPES, plan_utility_capacity, preflight_utility_synthesis, run_utility_design, validate_utility_spec
 SCOPE = "fixed_unshaded_grid"
 SUPPORTED_SCOPES = (SCOPE, *UTILITY_SCOPES, STANDALONE_SCOPE)
 TIME_BASIS = "local_standard_interval_start"
@@ -589,7 +589,7 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
             auto_opts["allow_asymmetric_mppt"] = asym_supported
         suggested, stopped = _phase(result, "design_envelope", lambda: suggest_sizing(
             store, pan_name=Path(components["PAN"]["name"]).name, ond_name=Path(components["OND"]["name"]).name,
-            target_dc_kw=target, **auto_opts))
+            target_dc_kw=target, require_even_strings=(scope == "ground_dome"), **auto_opts))
         if stopped is not None: return stopped
         result["preview"]["envelope"] = suggested
         _inherit(result, suggested, "auto_sizing")
@@ -617,11 +617,26 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
         result["preview"]["envelope"] = {"status": "supplied", "capacity": dict(direct)}
     utility_plan = None
     if is_utility:
-        utility_plan, stopped = _phase(result, "template_capacity", lambda: plan_utility_capacity(store, components["PAN"], components["OND"], flat_capacity))
+        utility_plan, stopped = _phase(result, "template_capacity", lambda: plan_utility_capacity(
+            store, components["PAN"], components["OND"], flat_capacity, require_even_strings=(scope == "ground_dome")))
         if stopped is not None: return stopped
         result["preview"]["utility_capacity"] = utility_plan
         _inherit(result, utility_plan, "template_capacity")
         if utility_plan.get("status") != "ready": return _stop(result, "template_capacity")
+        if mode in ("csv", *REMOTE_WEATHER_MODES):
+            upreflight, up_issues, up_warnings = preflight_utility_synthesis(
+                store, spec=spec, pan_info=components["PAN"], ond_info=components["OND"],
+                capacity_plan=utility_plan, sit_name=sit_name, met_name=met_name,
+                allow_missing_site=True, allow_missing_met=True, horizon=None,
+            )
+            if up_issues:
+                result["issues"].extend(up_issues)
+                return _stop(result, "utility_preflight")
+            if upreflight is not None:
+                result["preview"]["utility_preflight"] = upreflight["utility_summary"]
+                for w in up_warnings:
+                    if w not in result["warnings"]:
+                        result["warnings"].append(w)
     else:
         confirm, stopped = _phase(result, "template_capacity", lambda: discover(flat_capacity))
         if stopped is not None: return stopped

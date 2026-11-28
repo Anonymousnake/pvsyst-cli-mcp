@@ -428,7 +428,8 @@ def synthesize_utility_project(
     dxf_name: str | None = None, dxf_layers: dict | None = None, dxf_unit_scale: float | None = None,
     electrical_shading: str | dict | None = None, tilt_explicit: bool = True, azimuth_explicit: bool = True,
     p50_p90: dict | None = None, horizon: dict | None = None,
-    allow_missing_met: bool = False, version: str = SYNTH_VERSION, with_bom: bool = True,
+    allow_missing_met: bool = False, allow_missing_site: bool = False,
+    version: str = SYNTH_VERSION, with_bom: bool = True,
 ) -> dict:
     """Zero-template synthesizer for utility ground sheds, east-west domes, or single-axis trackers."""
     if field_type not in ("Sheds", "UnlimSheds", "RegularSheds", "UnlimTracking", "TrackHorizNSAxis", "Dome"):
@@ -786,7 +787,7 @@ def synthesize_utility_project(
         store, project_comment=project_comment, variant_comment=variant_comment, site_name=site_name, met_name=met_name,
         orientations=orientations_list, subarrays=subarrays, pan_name=pan_name, ond_name=ond_name, u_factor=u_factor,
         shading_lines=shading_lines, ageing=ageing_norm, p50_p90=p50_norm, horizon=horizon_arg,
-        version=version, with_bom=with_bom, allow_missing_met=allow_missing_met,
+        version=version, with_bom=with_bom, allow_missing_met=allow_missing_met, allow_missing_site=allow_missing_site,
     )
     es_summary = (
         summarize_utility_electrical_shading(

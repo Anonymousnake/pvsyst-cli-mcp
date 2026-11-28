@@ -275,6 +275,94 @@ def _strip_block(lines: list[str], start_marker: str, end_marker: str) -> tuple[
     return out, removed
 
 
+def _empty_shading_lines(eol: str) -> list[str]:
+    return [
+        f"  PVObject_Ombrage=pvShading{eol}",
+        f"    Comment=No shading scene defined{eol}",
+        f"    Flags=$00080000{eol}",
+        f"    Precision=1{eol}",
+        f"  End of PVObject pvShading{eol}",
+    ]
+
+
+def _normalize_empty_shading(lines: list[str], *, eol: str) -> tuple[list[str], bool]:
+    """Preserve an existing empty pvShading block or replace any 3D scene with canonical empty pvShading."""
+    out = list(lines)
+    s_idx = next((i for i, ln in enumerate(out) if ln.strip() == "PVObject_Ombrage=pvShading"), None)
+    if s_idx is None:
+        empty = _empty_shading_lines(eol)
+        end_calc = next((i for i in range(len(out) - 1, -1, -1) if out[i].strip() == "End of PVObject pvVCalcul"), len(out))
+        out[end_calc:end_calc] = [eol, *empty]
+        return out, False
+    e_idx = next((i for i in range(s_idx + 1, len(out)) if out[i].strip() == "End of PVObject pvShading"), None)
+    if e_idx is None:
+        raise ValueError("Unclosed PVObject_Ombrage=pvShading block")
+    has_child = any(
+        ln.strip().startswith("PVObject_") or "ListeObjets, list of=" in ln or "PVObject_ShdTable" in ln
+        for ln in out[s_idx + 1:e_idx]
+    )
+    flag_vals = [
+        m[4] for ln in out[s_idx + 1:e_idx]
+        if (m := ASSIGNMENT.fullmatch(ln.rstrip("\r\n"))) is not None and m[2] == "Flags"
+    ]
+    if not has_child and len(flag_vals) == 1 and flag_vals[0] in ("$00", "$00020000", "$00080000"):
+        return out, False
+    out[s_idx:e_idx + 1] = _empty_shading_lines(eol)
+    return out, True
+
+
+def _collapse_mixed_dome_mppt(lines: list[str], target_sids: set[int], *, eol: str) -> None:
+    """Collapse exclusive InverterNode -> MPPTNode -> StringNode branches to InverterNode -> StringNode."""
+    if not target_sids:
+        return
+    from pvsyst_auto.project.circuit_core import _walk, circuit_nodes
+
+    roots = circuit_nodes(lines)
+    replacements: list[tuple[int, int, list[str]]] = []
+    seen_sids: set[int] = set()
+    for root in roots:
+        for node in _walk(root):
+            if node.kind != "InverterNode":
+                continue
+            owner_raw = node.one("SubArrayId")
+            if owner_raw in (None, "0", "-1"):
+                for item in _walk(node):
+                    if item is not node and (iraw := item.one("SubArrayId")) and iraw.isdigit() and int(iraw) in target_sids:
+                        raise ValueError(f"Cannot collapse shared inverter branch for subarray {iraw} into mixed dome")
+                continue
+            if not owner_raw.isdigit() or int(owner_raw) not in target_sids:
+                continue
+            sid = int(owner_raw)
+            seen_sids.add(sid)
+            if not node.children:
+                raise ValueError(f"Subarray {sid} InverterNode has no child nodes")
+            if all(c.kind == "StringNode" for c in node.children):
+                continue
+            if any(c.kind != "MPPTNode" for c in node.children):
+                raise ValueError(f"Subarray {sid} circuit topology cannot collapse cleanly into mixed dome")
+            str_per_inv = 0
+            for mppt in node.children:
+                if mppt.one("SubArrayId") != owner_raw or not mppt.children or any(gc.kind != "StringNode" or gc.one("SubArrayId") != owner_raw for gc in mppt.children):
+                    raise ValueError(f"Subarray {sid} MPPTNode structure cannot collapse cleanly into mixed dome")
+                m_cnt = int(mppt.one("NElements", "1"))
+                str_per_inv += m_cnt * sum(int(sn.one("NElements", "1")) for sn in mppt.children)
+            first_line = node.children[0].line - 1
+            last_end = node.children[-1].end_line
+            indent = lines[first_line][:len(lines[first_line]) - len(lines[first_line].lstrip(" \t"))]
+            sub_name = node.one("SubArrayName") or node.children[0].one("SubArrayName") or "PV Array"
+            replacements.append((first_line, last_end, [
+                f"{indent}StringNode Start;{eol}",
+                f"{indent}  NElements={str_per_inv}{eol}",
+                f"{indent}  SubArrayId={sid}{eol}",
+                f"{indent}  SubArrayName={sub_name}{eol}",
+                f"{indent}StringNode End;{eol}",
+            ]))
+    if missing := target_sids - seen_sids:
+        raise ValueError(f"Cannot locate exclusive InverterNode branch for subarray {sorted(missing)[0]}")
+    for start_idx, end_idx, new_lines in sorted(replacements, key=lambda item: item[0], reverse=True):
+        lines[start_idx:end_idx] = new_lines
+
+
 def _rewrite_converted_subarrays(lines: list[str], *, target_type: str, eol: str) -> None:
     """Update subarray orientation bindings and mixed-orientation flags in-place."""
     spans, start = [], None
@@ -305,6 +393,15 @@ def _rewrite_converted_subarrays(lines: list[str], *, target_type: str, eol: str
         and len(blocks) == 2
         and all("NoOrientation2" not in d for _, _, d in blocks)
     )
+    if target_type == "dome" and dual_split:
+        s0, s1 = ((d.get("NStringCh") or (None, ""))[1] for _, _, d in blocks)
+        m0, m1 = ((d.get("NModSerie") or (None, ""))[1] for _, _, d in blocks)
+        if not s0.isdigit() or int(s0) < 1 or s0 != s1 or not m0.isdigit() or int(m0) < 1 or m0 != m1:
+            raise ValueError("Converting 2 subarrays to dual-face dome requires equal NStringCh and NModSerie on front and back faces")
+        for _, _, d in blocks:
+            nso1 = (d.get("NStrOrient1") or (None, s0))[1]
+            if nso1 != s0:
+                raise ValueError("Dual-face dome conversion requires all subarray strings on its primary orientation")
     if target_type == "dome" and not dual_split:
         for _, _, d in blocks:
             ps_val = (d.get("PowerSharingInverterId") or (None, "-1"))[1]
@@ -319,17 +416,36 @@ def _rewrite_converted_subarrays(lines: list[str], *, target_type: str, eol: str
             if not raw_str.isdigit() or int(raw_str) < 2 or int(raw_str) % 2 != 0:
                 raise ValueError("Converting a subarray to mixed dome orientation requires an even string count >= 2")
 
+    collapse_sids: set[int] = set()
     for sub_pos, (s, e, d) in reversed(list(enumerate(blocks))):
         mixed_target = target_type == "dome" and not dual_split
         oid1 = str(sub_pos + 1) if dual_split else "1"
         n_str_raw = (d.get("NStringCh") or (None, ""))[1]
+        n_inv_raw = (d.get("NInverter") or (None, "1"))[1]
+        n_mppt_raw = (d.get("NInvMPPT") or (None, "1"))[1]
         if "NoOrientation" in d:
             idx = d["NoOrientation"][0]
             lines[idx] = replace_value(lines[idx], oid1)
-        if "Flags" in d and re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", d["Flags"][1]):
+        fval = int(d["Flags"][1][1:], 16) if ("Flags" in d and re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", d["Flags"][1])) else None
+        is_indep_mppt = (fval is not None and bool(fval & 0x400)) or (n_mppt_raw.isdigit() and int(n_mppt_raw) > 1)
+        if mixed_target and is_indep_mppt:
+            n_inv = int(n_inv_raw) if n_inv_raw.isdigit() else 1
+            if n_inv < 1 or int(n_str_raw) % n_inv != 0:
+                raise ValueError("Cannot collapse independent-MPPT subarray to mixed dome: NStringCh must be divisible by NInverter")
+            if (sid_raw := (d.get("SubArrayId") or (None, str(sub_pos + 1)))[1]).isdigit():
+                collapse_sids.add(int(sid_raw))
+            old_mppt = int(n_mppt_raw) if n_mppt_raw.isdigit() else 1
+            if "NInvMPPT" in d:
+                lines[d["NInvMPPT"][0]] = replace_value(lines[d["NInvMPPT"][0]], "1")
+            if "PNomAC_InMPPT" in d and old_mppt > n_inv and old_mppt % n_inv == 0:
+                try:
+                    p_old = float(d["PNomAC_InMPPT"][1])
+                    lines[d["PNomAC_InMPPT"][0]] = replace_value(lines[d["PNomAC_InMPPT"][0]], f"{p_old * (old_mppt // n_inv):.2f}")
+                except ValueError:
+                    pass
+        if fval is not None:
             fidx, fraw = d["Flags"]
-            fval = int(fraw[1:], 16)
-            fval = (fval | 0x40) if mixed_target else (fval & ~0x40)
+            fval = ((fval | 0x40) & ~0x400) if mixed_target else (fval & ~0x40)
             lines[fidx] = replace_value(lines[fidx], f"${fval:0{max(2, len(fraw) - 1)}X}")
         had_orient2 = "NoOrientation2" in d
         if "Flags2" in d and re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", d["Flags2"][1]):
@@ -353,6 +469,7 @@ def _rewrite_converted_subarrays(lines: list[str], *, target_type: str, eol: str
                 lines.insert(ins, f"{indent}NoOrientation2=2{eol}")
         for idx in sorted((d[k][0] for k in (("NStrOrient2",) if mixed_target else ("NoOrientation2", "NStrOrient2")) if k in d), reverse=True):
             del lines[idx]
+    _collapse_mixed_dome_mppt(lines, collapse_sids, eol=eol)
 
 
 def _build_orientation_block(target_type: str, params: dict[str, Any], *, eol: str, version: str = SYNTH_VERSION) -> tuple[list[str], dict[str, Any]]:
@@ -439,7 +556,7 @@ def convert_orientation_lines(lines: list[str], *, target_type: str, params: dic
     prior_types = [ln.strip().split("=", 1)[1] for ln in lines[start:end + 1] if ln.strip().startswith("FieldType=")]
     new_block, meta = _build_orientation_block(target_type, params or {}, eol=eol)
     cand = list(lines[:start]) + new_block + list(lines[end + 1:])
-    cand, removed_3d = _strip_block(cand, "PVObject_Ombrage=pvShading", "End of PVObject pvShading")
+    cand, removed_3d = _normalize_empty_shading(cand, eol=eol)
     cand, removed_ml = _strip_block(cand, "PVObject_ModuleLayout=pvModuleLayout", "End of PVObject pvModuleLayout")
     cand, _ = strip_result_cache(cand)
     if removed_3d or removed_ml:
@@ -463,13 +580,26 @@ def convert_orientation(store, *, project: str, source_variant: str, new_variant
         candidate_lines, summary = convert_orientation_lines(lines, target_type=target_type, params=params or {})
 
         def verify(checked, _, res):
+            from pvsyst_auto.project.circuit_branches import validate_structure_lines
+
             parsed = objects("".join(checked))
             if target_type == "dome":
                 if len([b for b in parsed if b.object_type == "pvDomeOrient"]) != 2:
                     raise ValueError("Converted dome variant lacks paired pvDomeOrient blocks")
             elif not [b for b in parsed if b.object_type == "pvOrient"]:
                 raise ValueError("Converted variant lost its pvOrient block")
+            val = validate_structure_lines(store, checked)
+            if val["valid"] is not True:
+                raise ValueError(
+                    "Converted variant failed structural validation: "
+                    + "; ".join(val["issues"] + val["unchecked_checks"])
+                )
             res["orientation_conversion"] = summary
+            if target_type == "dome":
+                res.setdefault("warnings", []).append(
+                    "Dome orientation conversion creates paired pvDomeOrient orientations with an empty pvShading block; "
+                    "PVsystCLI dome simulation requires a 3D pvShdArrayDome scene (use scope='ground_dome' to synthesize one)."
+                )
 
         return {"candidate_lines": candidate_lines, "verify": verify}
 

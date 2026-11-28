@@ -1,6 +1,7 @@
 """3D ground electrical partition-shading normalization, dimensioning, and header helpers."""
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from pvsyst_auto.validation import finite_number
@@ -153,7 +154,27 @@ def compute_table_partition_dims(
     cfg = normalize_electrical_shading(electrical_shading)
     px_raw = cfg["partitions_x"]
     py_raw = cfg["partitions_y"]
-    if series_modules is not None and n_cols < series_modules and n_rows >= 2:
+    if is_tracker and series_modules is not None and n_rows >= 2 and n_cols % series_modules != 0:
+        g = math.gcd(series_modules, n_rows)
+        col_quantum = series_modules // g
+        if n_cols % col_quantum == 0:
+            strings_x = n_cols // col_quantum
+            strings_y = n_rows // g
+            px = px_raw if px_raw is not None else strings_x
+            py = (
+                py_raw
+                if py_raw is not None
+                else (strings_y * 2 if (is_portrait and cfg["auto_half_cut"] and is_half_cut) else strings_y)
+            )
+        elif py_raw is None:
+            raise ValueError(
+                f"Cannot automatically infer electrical partitions for {n_rows}x{n_cols} table "
+                f"with series_modules={series_modules} (cross-row strings); "
+                "set explicit electrical_shading.partitions_y (and partitions_x if needed)"
+            )
+        else:
+            px, py = (px_raw if px_raw is not None else 1), py_raw
+    elif series_modules is not None and n_cols < series_modules and n_rows >= 2:
         total_mods = n_rows * n_cols
         if py_raw is None:
             if not is_half_cut and total_mods <= series_modules:

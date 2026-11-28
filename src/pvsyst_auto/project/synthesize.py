@@ -575,6 +575,7 @@ def synthesize_project_and_variant(
     storage_lines: list[str] | None = None, ageing: dict | None = None,
     p50_p90: dict | None = None, horizon: dict | None = None,
     version: str = SYNTH_VERSION, with_bom: bool = True, allow_missing_met: bool = False,
+    allow_missing_site: bool = False,
 ) -> dict:
     """Synthesize a matched (.PRJ, .VC0) pair directly in memory with zero demo templates."""
     resolved_pan, resolved_ond = pan_name or DEFAULT_PAN_NAME, ond_name or DEFAULT_OND_NAME
@@ -584,9 +585,14 @@ def synthesize_project_and_variant(
         safe_filename(met_name, ".MET")
 
     if store is not None and site_name is not None:
-        if not (site_path := workspace_file(store.workspace, "Sites", site_name, ".SIT")).is_file():
+        site_path = workspace_file(store.workspace, "Sites", site_name, ".SIT")
+        if site_path.is_file():
+            resolved_site, site_identity, site_body = load_site_block(site_path)
+        elif allow_missing_site:
+            resolved_site = site_name
+            site_identity, site_body = placeholder_site_block(resolved_site, Path(resolved_site).stem or DEFAULT_PROJECT_SITE_NAME)
+        else:
             raise FileNotFoundError(f"Workspace SIT file is missing: {site_name}")
-        resolved_site, site_identity, site_body = load_site_block(site_path)
     else:
         resolved_site = site_name or DEFAULT_PROJECT_SITE
         site_identity, site_body = placeholder_site_block(resolved_site, Path(resolved_site).stem or DEFAULT_PROJECT_SITE_NAME)

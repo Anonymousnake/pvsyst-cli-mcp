@@ -26,7 +26,7 @@ NUMBERS = (
 CAPACITY_NUMBERS = NUMBERS
 
 
-def plan_capacity(store, lines, array_id, pan, inverter, request):
+def plan_capacity(store, lines, array_id, pan, inverter, request, *, require_even_strings: bool = False):
     """Plan uniform MPPT series/parallel/inverter counts against declared bounds."""
     result = {"status": "blocked", "issues": []}
     def issue(field, message):
@@ -167,6 +167,8 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
                 for count in {math.floor(ideal), math.ceil(ideal)}:
                     if "NElements" not in group.fields and count != old_inv:
                         continue
+                    if require_even_strings and (count * ports * parallel) % 2 != 0:
+                        continue
                     power = per_inverter * count
                     error = abs(power - values["target_dc_kw"]) / values["target_dc_kw"] * 100
                     if error <= values["capacity_tolerance_pct"] + 1e-9:
@@ -186,6 +188,8 @@ def plan_capacity(store, lines, array_id, pan, inverter, request):
                 if allow_asym and "NElements" in leaf.fields and "NElements" in group.fields
                 else None
             )
+            if asym is not None and require_even_strings and asym["total_strings"] % 2 != 0:
+                asym = None
             if asym is None:
                 raise ValueError("No supported integral plan meets the declared voltage/current/ratio/tolerance bounds; explicit editable node counts may be required")
             s_win, c_win, tot_str, max_s, inst_dc = asym["series"], asym["count"], asym["total_strings"], asym["max_strings_per_mppt"], asym["installed_dc"]
@@ -664,7 +668,7 @@ def suggest_sizing(
     min_ambient_c: float = -10.0, min_operating_c: float = 0.0, max_operating_c: float = 65.0,
     min_dc_ac_ratio: float = 0.85, max_dc_ac_ratio: float = 1.25, capacity_tolerance_pct: float = 8.0,
     beta_voc_pct_per_c: float | None = None, beta_vmp_pct_per_c: float | None = None, alpha_isc_pct_per_c: float | None = None,
-    allow_asymmetric_mppt: bool = True,
+    allow_asymmetric_mppt: bool = True, require_even_strings: bool = False,
 ) -> dict:
     """Estimate a safe electrical capacity envelope and recommended string/inverter layout from PAN/OND."""
     result = {"status": "blocked", "estimated": True, "requires_review": True, "issues": [], "assumptions": [], "recommended": None, "capacity": None}
@@ -771,7 +775,9 @@ def suggest_sizing(
                 continue
             ideal = min(10000, max(1, target / per_inv_kw))
             for count in {math.floor(ideal), math.ceil(ideal)}:
-                if count >= 1 and (err_pct := abs((installed_dc := per_inv_kw * count) - target) / target * 100.0) <= tol + 1e-9:
+                if count < 1 or (require_even_strings and (count * nb_mppt * parallel) % 2 != 0):
+                    continue
+                if (err_pct := abs((installed_dc := per_inv_kw * count) - target) / target * 100.0) <= tol + 1e-9:
                     candidates.append(((round(err_pct, 4), round(abs(ratio - preferred_ratio), 4), count, abs(series - mid_series), series, parallel), series, parallel, count, installed_dc, ratio, err_pct))
     asym = (
         None if candidates or not allow_asymmetric_mppt else
@@ -781,8 +787,11 @@ def suggest_sizing(
             min_ratio=min_ratio, max_ratio=max_ratio, preferred_ratio=preferred_ratio, ref_series=mid_series,
         )
     )
+    if asym is not None and require_even_strings and asym["total_strings"] % 2 != 0:
+        asym = None
     if not candidates and asym is None:
-        issue("sizing", f"No integral configuration meets target_dc_kw={target:g} kW (+/-{tol:g}%) with DC/AC in [{min_ratio:g}, {max_ratio:g}], series in [{min_series}, {max_series}], and parallel/MPPT in [1, {max_parallel}]")
+        even_note = " and even string count" if require_even_strings else ""
+        issue("sizing", f"No integral configuration{even_note} meets target_dc_kw={target:g} kW (+/-{tol:g}%) with DC/AC in [{min_ratio:g}, {max_ratio:g}], series in [{min_series}, {max_series}], and parallel/MPPT in [1, {max_parallel}]")
         return result
 
     capacity_payload = {

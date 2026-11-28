@@ -192,9 +192,13 @@ def _infer_inverter_ac_power_kw(lines: list[str], *, components=None) -> tuple[f
     total_ac, sources = 0.0, set()
     ac_by_id: dict[int, float] = {}
     fallback_ratings: dict[int, float] = {}
+    shared_ond_ratings: dict[int, tuple[float, int, float]] = {}
     for sa in subarrays:
         raw_flags = sa.one("Flags")[1].strip() if "Flags" in sa.fields else ""
-        is_indep = bool(re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags) and (int(raw_flags[1:], 16) & _INDEPENDENT_MPPT_BIT))
+        flags_int = int(raw_flags[1:], 16) if re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags) else 0
+        is_indep = bool(flags_int & _INDEPENDENT_MPPT_BIT)
+        ps_id = sa.one("PowerSharingInverterId")[1].strip() if "PowerSharingInverterId" in sa.fields else "-1"
+        is_shared = (ps_id != "-1") or bool(flags_int & 0x100)
         pnom_mppt = None
         if "PNomAC_InMPPT" in sa.fields:
             try:
@@ -206,8 +210,15 @@ def _infer_inverter_ac_power_kw(lines: list[str], *, components=None) -> tuple[f
         ond_pnom = _read_component_positive_float(components, "OND", sa.one("GInverter")[1].strip() if "GInverter" in sa.fields else "", ("TConverter", "pvGInverter"), "PNomConv")
         sub_ac = None
         if is_indep and (n_mppt := _subarray_int_field(sa, "NInvMPPT")) > 0 and pnom_mppt is not None:
-            sub_ac = n_mppt * pnom_mppt
-            sources.add("subarray_independent_mppt")
+            n_inv = _subarray_int_field(sa, "NInverter")
+            if not is_shared and n_inv > 0 and ond_pnom is not None and n_mppt % n_inv == 0 and abs(pnom_mppt - ond_pnom / (n_mppt // n_inv)) <= 0.01:
+                sub_ac = n_inv * ond_pnom
+                sources.add("ond_subarray_ac")
+            else:
+                sub_ac = n_mppt * pnom_mppt
+                sources.add("subarray_independent_mppt")
+                if is_shared and ond_pnom is not None:
+                    shared_ond_ratings[_subarray_int_field(sa, "SubArrayId")] = (ond_pnom, n_mppt, sub_ac)
         if sub_ac is None:
             n_inv = _subarray_int_field(sa, "NInverter")
             if n_inv > 0 and ond_pnom is not None:
@@ -222,7 +233,7 @@ def _infer_inverter_ac_power_kw(lines: list[str], *, components=None) -> tuple[f
             return None, "unknown"
         total_ac += sub_ac
         ac_by_id[_subarray_int_field(sa, "SubArrayId")] = sub_ac
-    if fallback_ratings and len(subarrays) > 1:
+    if (fallback_ratings or shared_ond_ratings) and len(subarrays) > 1:
         bounds = {_subarray_int_field(sa, "SubArrayId"): (sa.line - 1, sa.end_line - 1) for sa in subarrays}
         if len(bounds) != len(subarrays) or 0 in bounds:
             return None, "unknown"
@@ -245,6 +256,27 @@ def _infer_inverter_ac_power_kw(lines: list[str], *, components=None) -> tuple[f
                 total_ac -= sum(ac_by_id.pop(sid) for sid in members)
                 total_ac += rating * sum(g["inverters"] for g, ids in zip(groups, memberships) if ids & members)
                 used_shared_rating = True
+        for identifier in list(shared_ond_ratings):
+            if identifier not in ac_by_id:
+                continue
+            members = {identifier}
+            while True:
+                connected = members.union(*(ids for ids in memberships if members & ids))
+                if connected == members:
+                    break
+                members = connected
+            if len(members) > 1 and members <= set(shared_ond_ratings):
+                ratings = {shared_ond_ratings[sid][0] for sid in members}
+                if len(ratings) == 1:
+                    rating = next(iter(ratings))
+                    mppt_sum = sum(shared_ond_ratings[sid][1] for sid in members)
+                    ac_sum = sum(shared_ond_ratings[sid][2] for sid in members)
+                    exact_group_ac = rating * sum(g["inverters"] for g, ids in zip(groups, memberships) if ids & members)
+                    if abs(ac_sum - exact_group_ac) <= 0.01 * mppt_sum:
+                        for sid in members:
+                            total_ac -= ac_by_id.pop(sid)
+                        total_ac += exact_group_ac
+                        used_shared_rating = True
         if used_shared_rating:
             sources = {"subarray_mixed_ac" if ac_by_id else "shared_circuit_ond_ac"}
     return (round(total_ac, 5), next(iter(sources)) if len(sources) == 1 else "subarray_mixed_ac") if total_ac > 0 else (None, "unknown")

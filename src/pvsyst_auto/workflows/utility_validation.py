@@ -365,7 +365,7 @@ def _ond_pnom_kw(ond_electrical: dict) -> float:
     raise ValueError("OND must declare a positive PNomConv")
 
 
-def plan_utility_capacity(store, pan_info: dict, ond_info: dict, flat_capacity: dict) -> dict:
+def plan_utility_capacity(store, pan_info: dict, ond_info: dict, flat_capacity: dict, *, require_even_strings: bool = False) -> dict:
     """Run strict plan_capacity against an in-memory synthesized single-subarray seed."""
     pan_name = Path(pan_info["name"]).name
     ond_name = Path(ond_info["name"]).name
@@ -390,7 +390,7 @@ def plan_utility_capacity(store, pan_info: dict, ond_info: dict, flat_capacity: 
         with_bom=True,
     )
     _, lines = store._text(synth["vc0_text"].encode("utf-8"))
-    return plan_capacity(store, lines, 1, pan_fields, ond_electrical, flat_capacity)
+    return plan_capacity(store, lines, 1, pan_fields, ond_electrical, flat_capacity, require_even_strings=require_even_strings)
 
 
 def _apportion_sub_orientations(sub_orientations: list[dict], plan: dict) -> list[dict]:
