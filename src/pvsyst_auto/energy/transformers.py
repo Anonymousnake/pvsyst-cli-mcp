@@ -485,10 +485,21 @@ def apply_transformers_to_variant_lines(lines: list[str], *, mv: dict[str, Any] 
     if not remove_transformers:
         assert mv_norm is not None
         flags_val = (flags_val | MV_FLAG | (MV_DS_FLAG if mv_norm["from_datasheet"] else 0) | (NIGHT_FLAG if mv_norm["night_disconnect"] else 0) | (HV_FLAG if hv_norm is not None else 0)) & ~(IRON_DEFAULT_FLAG | RES_DEFAULT_FLAG)
-    kept_header, insert_pos = [], None
+    kept_header, insert_pos, nested_obj = [], None, 0
     for idx in range(main_start, circ_start):
         ln, s = cand[idx], cand[idx].strip()
         if idx == main_start:
+            kept_header.append(ln)
+        elif nested_obj > 0:
+            if s.startswith("PVObject_"):
+                nested_obj += 1
+            elif s.startswith("End of "):
+                nested_obj -= 1
+            kept_header.append(ln)
+        elif s.startswith("PVObject_"):
+            if insert_pos is None:
+                insert_pos = len(kept_header)
+            nested_obj = 1
             kept_header.append(ln)
         elif s.startswith("Flags="):
             kept_header.append(replace_value(ln, f"${flags_val:08X}"))

@@ -398,5 +398,48 @@ class ZeroTemplateAgeingTests(unittest.TestCase):
             )
 
 
+    def test_ageing_preserves_soiling_and_survives_transformer_configuration(self) -> None:
+        from pvsyst_auto.energy.transformers import configure_transformers
+        from pvsyst_auto.project.synthesize import synthesize_project_and_variant
+
+        synth = synthesize_project_and_variant(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            pan_name="Bifi440.PAN", ond_name="Inv50.OND", n_mod_serie=17, n_string_ch=6,
+            n_inverter=1, n_inv_mppt=2, pnom_ac_in_mppt=25.0,
+        )
+        self.store.create_project("AgeSoilTrf.PRJ", synth["prj_text"], {"VC0": synth["vc0_text"]})
+        r1 = self.store.update_parameters(
+            "AgeSoilTrf.PRJ", "VC0", None, 1, 1,
+            soiling_updates={"mode": "constant", "yearly_loss_pct": 2.0},
+        )
+        r2 = self.store.update_parameters(
+            "AgeSoilTrf.PRJ", "VC0", r1["sha256"], 1, 1,
+            ageing_updates={"simulation_year": 5, "annual_module_degradation_percent": 0.4},
+        )
+        insp = self.store.inspect_parameters("AgeSoilTrf.PRJ", "VC0")
+        self.assertEqual(insp["main_array"]["soiling"], {"mode": "constant", "yearly_loss_pct": 2.0})
+        self.assertEqual(insp["ageing"]["mode"], "mounted")
+        r3 = self.store.update_parameters(
+            "AgeSoilTrf.PRJ", "VC0", r2["sha256"], 1, 1,
+            soiling_updates={"mode": "constant", "yearly_loss_pct": 3.0},
+        )
+        self.assertTrue(r3["changed"])
+
+        trf = configure_transformers(
+            self.store, project="AgeSoilTrf.PRJ", source_variant="VC0", new_variant="VC1",
+            mv={"iron_loss_frac": 0.001, "copper_loss_frac": 0.01}, dry_run=False,
+        )
+        self.assertEqual(trf["status"], "created", trf["issues"])
+        insp1 = self.store.inspect_parameters("AgeSoilTrf.PRJ", "VC1")
+        self.assertEqual(insp1["ageing"]["mode"], "mounted")
+        self.assertEqual(insp1["ageing"]["simulation_year"], 5)
+        self.assertEqual(insp1["main_array"]["soiling"], {"mode": "constant", "yearly_loss_pct": 3.0})
+        upd1 = self.store.update_parameters(
+            "AgeSoilTrf.PRJ", "VC1", insp1["sha256"], 1, 1,
+            ageing_updates={"simulation_year": 15, "annual_module_degradation_percent": 0.45},
+        )
+        self.assertEqual(upd1["ageing"]["after"]["simulation_year"], 15)
+
+
 if __name__ == "__main__":
     unittest.main()

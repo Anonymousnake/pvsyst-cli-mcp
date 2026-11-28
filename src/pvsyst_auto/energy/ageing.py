@@ -26,7 +26,7 @@ _AGE_SPEC_KEYS = frozenset((
 _AGE_UPDATE_REQ = ("simulation_year", "annual_module_degradation_percent")
 _AGE_UPDATE_OPT = ("keep_mc_values", IMP_SHARING_KEY, RMS_ISC_KEY, RMS_VOC_KEY)
 _MAIN_ANCHORS = (
-    "PVObject_SystemCircuit=", "ACWireNoSect=", "MVNbTransfos=", "UseSpectralCorr=", "SubArrays=Start",
+    "PVObject_SystemCircuit=", "SubArrays=Start",
 )
 _BATCH_YEAR_KEYS = frozenset(("simulation for year", "simulation year", "noyearsimul"))
 
