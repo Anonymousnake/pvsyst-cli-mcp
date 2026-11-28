@@ -64,6 +64,27 @@ class TransformersTests(unittest.TestCase):
             result = pvsyst_configure_transformers("TrfTest.PRJ", "VC0", "VC1", mv=MvTransformerSpec(stc_ref_power_kw=500), dry_run=False)
             self.assertEqual(result["status"], "created")
             self.assertEqual(result["transformers"]["mv"]["stc_ref_power_kw"], 500)
+    def test_shared_inverter_nameplate_fallback_counts_parent_once(self) -> None:
+        subs = [dict(subarray_id=i, orientation_id=i, n_mod_serie=20, n_string_ch=5,
+                     n_inverter=1, n_inv_mppt=1, independent_mppt=True,
+                     power_sharing_inverter_id=0, pnom_ac_in_mppt=0)
+                for i in (1, 2)]
+        synth = synthesize_project_and_variant(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            pan_name="Lab440.PAN", ond_name="Lab50.OND",
+            orientations=[{"id": 1}, {"id": 2}], subarrays=subs,
+        )
+        for index, source in enumerate((synth["vc0_text"], synth["vc0_text"].replace(
+                "PNomAC_InMPPT=0.00", "PNomAC_InMPPT=25.00", 1))):
+            project = f"Shared{index}.PRJ"
+            self.store.create_project(project, synth["prj_text"], {"VC0": source})
+            result = configure_transformers(
+                self.store, project=project, source_variant="VC0", new_variant="VC1",
+                mv={}, hv={"nominal_power_kva": 50}, dry_run=False,
+            )
+            self.assertEqual(result["status"], "created", result["issues"])
+            self.assertEqual(result["transformers"]["inverter_ac_power_kw"], 50)
+            self.assertEqual(result["transformers"]["mv"]["iron_loss_kw"], 0.05)
     def test_public_hv_fraction_matches_generated_datasheet(self) -> None:
         from unittest.mock import patch
         from pvsyst_auto.api.projects import pvsyst_configure_transformers

@@ -7,7 +7,7 @@ from typing import Any
 
 from pvsyst_auto.components.editor import objects, replace_value
 from pvsyst_auto.native.headless import strip_result_cache
-from pvsyst_auto.project.circuit import circuit_nodes, transformer_state
+from pvsyst_auto.project.circuit import circuit_nodes, inventory, transformer_state
 from pvsyst_auto.project.variant_updates import run_new_variant_transaction
 from pvsyst_auto.validation import finite_number
 
@@ -187,6 +187,8 @@ def _infer_inverter_ac_power_kw(lines: list[str], *, components=None) -> tuple[f
     if not subarrays:
         return None, "unknown"
     total_ac, sources = 0.0, set()
+    ac_by_id: dict[int, float] = {}
+    fallback_ratings: dict[int, float] = {}
     for sa in subarrays:
         raw_flags = sa.one("Flags")[1].strip() if "Flags" in sa.fields else ""
         is_indep = bool(re.fullmatch(r"\$[0-9a-fA-F]{1,8}", raw_flags) and (int(raw_flags[1:], 16) & _INDEPENDENT_MPPT_BIT))
@@ -208,12 +210,40 @@ def _infer_inverter_ac_power_kw(lines: list[str], *, components=None) -> tuple[f
             if n_inv > 0 and ond_pnom is not None:
                 sub_ac = n_inv * ond_pnom
                 sources.add("ond_subarray_ac")
+                if is_indep:
+                    fallback_ratings[_subarray_int_field(sa, "SubArrayId")] = ond_pnom
             elif not is_indep and n_inv > 0 and pnom_mppt is not None:
                 sub_ac = n_inv * pnom_mppt
                 sources.add("subarray_pnom_ac_in_mppt")
         if sub_ac is None or sub_ac <= 0:
             return None, "unknown"
         total_ac += sub_ac
+        ac_by_id[_subarray_int_field(sa, "SubArrayId")] = sub_ac
+    if fallback_ratings and len(subarrays) > 1:
+        bounds = {_subarray_int_field(sa, "SubArrayId"): (sa.line - 1, sa.end_line - 1) for sa in subarrays}
+        if len(bounds) != len(subarrays) or 0 in bounds:
+            return None, "unknown"
+        circuit = inventory(lines, bounds)
+        if not circuit["counts_valid"]:
+            return None, "unknown"
+        groups = circuit["inverter_groups"]
+        memberships = [set(g.get("subarray_ids", [g["subarray_id"]])) for g in groups]
+        used_shared_rating = False
+        for identifier, rating in fallback_ratings.items():
+            if identifier not in ac_by_id:
+                continue
+            members = {identifier}
+            while True:
+                connected = members.union(*(ids for ids in memberships if members & ids))
+                if connected == members:
+                    break
+                members = connected
+            if len(members) > 1:
+                total_ac -= sum(ac_by_id.pop(sid) for sid in members)
+                total_ac += rating * sum(g["inverters"] for g, ids in zip(groups, memberships) if ids & members)
+                used_shared_rating = True
+        if used_shared_rating:
+            sources = {"subarray_mixed_ac" if ac_by_id else "shared_circuit_ond_ac"}
     return (round(total_ac, 5), next(iter(sources)) if len(sources) == 1 else "subarray_mixed_ac") if total_ac > 0 else (None, "unknown")
 
 
