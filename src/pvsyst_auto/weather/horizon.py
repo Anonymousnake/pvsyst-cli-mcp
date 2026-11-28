@@ -413,10 +413,10 @@ def resolve_design_horizon(
 
     profile_name = norm.get("profile_name") if norm is not None else None
     timeout = float(norm.get("timeout_seconds") or REQUEST_TIMEOUT_SECONDS) if norm is not None else float(REQUEST_TIMEOUT_SECONDS)
+    if (lat is None or lon is None) and (not dry_run or weather_spec.get("mode", "existing") in ("existing", "synthetic_from_site")):
+        raise HorizonFetchError("Could not resolve site latitude/longitude for PVGIS horizon fetch")
     if dry_run:
         return None, build_pvgis_horizon_plan(lat, lon, profile_name=profile_name, coordinate_source=coord_source)
-    if lat is None or lon is None:
-        raise HorizonFetchError("Could not resolve site latitude/longitude for PVGIS horizon fetch")
     fetched = fetch_pvgis_horizon(lat, lon, profile_name=profile_name, timeout=timeout)
     return (fetched if fetched["mode"] == "profile" else {"mode": "none"}), fetched
 

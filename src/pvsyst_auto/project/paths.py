@@ -31,9 +31,12 @@ def project_name(project: str) -> str:
     return safe_filename(project, ".PRJ", 180)
 
 
+VARIANT_ID_RE = re.compile(r"V[C-Z][0-9A-Za-z]", re.IGNORECASE)
+
+
 def variant_id(variant: str) -> str:
-    if not isinstance(variant, str) or len(variant) > 40 or not re.fullmatch(r"VC[A-Za-z0-9]+", variant, re.I):
-        raise ValueError("Variant must be a VC identifier without directories")
+    if not isinstance(variant, str) or not VARIANT_ID_RE.fullmatch(variant):
+        raise ValueError("Variant must be a VC0-VZZ identifier without directories")
     return variant.upper()
 
 

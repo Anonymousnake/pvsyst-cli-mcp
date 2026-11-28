@@ -809,16 +809,7 @@ def _preflight(store, components, scene_name, shading_mode, string_layout=None):
             "tables": tables, "source": source, "candidate_text": candidate_text, "layout_tables": layout_tables, "verification": verification}
 
 def _resolve_target_path(store, project, next_variant):
-    try:
-        return store._path(project, next_variant)
-    except ValueError:
-        if not re.fullmatch(r"V[D-Z][0-9A-Z]", next_variant):
-            raise
-        prj_path = store._path(project)
-        target = prj_path.with_name(f"{prj_path.stem}.{next_variant}")
-        if target.is_symlink() or target.resolve().parent != prj_path.parent:
-            raise ValueError("Symlink or escaping project files are not supported") from None
-        return target
+    return store._path(project, next_variant)
 
 def import_house_pv_scene_native(store, components, scene_name, variant_name,
                                  dry_run=True, confirm=False, shading_mode="linear", string_layout=None):

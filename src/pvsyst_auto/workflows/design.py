@@ -674,6 +674,14 @@ def _design_flow(cli, store, spec, dry_run, *, prepare_only=False, source_contex
     template_project = spec.get("template_project") or template.get("project") or seed_project
     variant = spec.get("variant") or template.get("variant") or SEED_VARIANT
     pan_name, ond_name = Path(components["PAN"]["name"]).name, Path(components["OND"]["name"]).name
+    hz_spec = spec.get("horizon")
+    if (not is_utility and not fallback and isinstance(hz_spec, dict)
+            and hz_spec.get("mode", "points") != "none"
+            and isinstance(pname := hz_spec.get("profile_name"), str) and not pname.isascii()):
+        tpl_bytes = store._read(store._path(template_project, variant))
+        if not tpl_bytes.startswith(b"\xef\xbb\xbf"):
+            _issue(result, "horizon.profile_name", "Non-ASCII horizon.profile_name requires a template variant with an explicit UTF-8 BOM")
+            return _stop(result, "horizon")
     manifest_name, inherited_review = weather.get("weather_manifest_name") or "", auto_sizing_review
     acquired_loc = None
     def _resolve_hz(acq_loc=None):

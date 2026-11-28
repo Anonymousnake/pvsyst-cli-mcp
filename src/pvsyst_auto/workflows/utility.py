@@ -346,8 +346,20 @@ def run_utility_design(
         "native_consumption_verified": False,
     }
     if prepare_only:
+        req = {
+            "year": year,
+            "new_project": new_project,
+            "variant": variant,
+            "pan_name": pan_name,
+            "ond_name": ond_name,
+            "site_name": sit_name,
+            "met_name": f"{Path(sit_name).stem}_Synthetic.MET" if synthetic_weather else met_name,
+        }
+        for opt_key in ("tilt", "azimuth", "losses"):
+            if spec.get(opt_key) is not None:
+                req[opt_key] = spec[opt_key]
         result.update(operation="prepare_project", prepared=False, simulated=False,
-                      preparation_context=preparation_context or {})
+                      request=req, preparation_context=preparation_context or {})
 
     def issue(field: str, message) -> None:
         result["issues"].append({"field": field, "message": str(message)})

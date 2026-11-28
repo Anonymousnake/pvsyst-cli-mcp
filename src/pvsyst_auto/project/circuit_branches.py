@@ -6,6 +6,7 @@ import re
 
 from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.components.store import FIELD
+from pvsyst_auto.project.paths import VARIANT_ID_RE
 from pvsyst_auto.project.circuit_core import (
     MAX_COUNT,
     _encode_candidate,
@@ -179,7 +180,7 @@ def clone_subarray(store, project: str, variant: str, source_subarray_id: int, e
         store._check_hash(data, expected_sha256)
         reserved_ids = set()
         for item in store._root().iterdir():
-            if item.stem.casefold() == project[:-4].casefold() and re.fullmatch(r"\.VC[A-Za-z0-9]+", item.suffix, re.I):
+            if item.stem.casefold() == project[:-4].casefold() and item.suffix.startswith(".") and VARIANT_ID_RE.fullmatch(item.suffix[1:]):
                 reserved_ids.update(store._sections(store._text(store._read(store._path(project, item.suffix[1:])))[1])[0])
         candidate, details = clone_subarray_data(store, data, source_subarray_id, clone_orientation=clone_orientation,
                                                  share_inverter=share_inverter, reserved_ids=reserved_ids)

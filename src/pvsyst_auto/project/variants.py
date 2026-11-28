@@ -170,9 +170,9 @@ class VariantStore:
         stem = project[:-4].casefold()
         if path.stem.casefold() == stem:
             return True
-        if re.fullmatch(r"\.(?:PRJ|VC[A-Za-z0-9]+)", path.suffix, re.I):
+        if re.fullmatch(r"\.(?:PRJ|V[C-Z][0-9A-Za-z])", path.suffix, re.I):
             return False
-        return bool(path.name.casefold().startswith(stem + ".") and re.fullmatch(r"(?:PRJ|VC[A-Za-z0-9]+)\..+", path.name[len(project[:-4]) + 1:], re.I))
+        return bool(path.name.casefold().startswith(stem + ".") and re.fullmatch(r"(?:PRJ|V[C-Z][0-9A-Za-z])\..+", path.name[len(project[:-4]) + 1:], re.I))
 
     @staticmethod
     def _read(path: Path) -> bytes:
@@ -586,7 +586,7 @@ class VariantStore:
             target_prj, sources = self._path(new_project), [self._path(source_project)]
             for path in list(self._root().iterdir()):
                 if path.name.casefold() != source_project.casefold() and self._belongs_to_project(path, source_project):
-                    if not re.fullmatch(r"VC[A-Za-z0-9]+", ext := path.suffix[1:], re.I):
+                    if not paths.VARIANT_ID_RE.fullmatch(ext := path.suffix[1:]):
                         raise ValueError(f"Unrecognized project sidecar: {path.name}")
                     sources.append(self._path(source_project, ext))
             if len(sources) == 1:
@@ -672,7 +672,7 @@ class VariantStore:
             members = [self._path(project)]
             for path in self._root().iterdir():
                 if path.name.casefold() != project.casefold() and self._belongs_to_project(path, project):
-                    if not re.fullmatch(r"VC[A-Za-z0-9]+", path.suffix[1:], re.I):
+                    if not paths.VARIANT_ID_RE.fullmatch(path.suffix[1:]):
                         raise ValueError(f"Unrecognized project sidecar: {path.name}")
                     members.append(self._path(project, path.suffix[1:]))
             hashes, sources, warnings = {}, {}, []

@@ -19,7 +19,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.native.cli import PVsystCLI, PVsystError, REPORT_PAGES, VAR_GROUPS
-from pvsyst_auto.project.paths import workspace_file
+from pvsyst_auto.project.paths import VARIANT_ID_RE, workspace_file
 from pvsyst_auto.project.variants import VariantStore
 
 _cli: PVsystCLI | None = None
@@ -447,7 +447,7 @@ def register_guidance(server, active_tools: Collection[str] | None = None) -> No
                 suf = entry.suffix.lstrip(".")
                 if suf.lower() == "prj":
                     prjs.append(entry)
-                elif re.fullmatch(r"V[A-Z0-9]{2}", suf.upper()):
+                elif VARIANT_ID_RE.fullmatch(suf):
                     variants_by_stem.setdefault(entry.stem.casefold(), []).append(suf.upper())
             for prj in sorted(prjs)[:200]:
                 items.append({"project": prj.name, "variants": sorted(variants_by_stem.get(prj.stem.casefold(), ()))})
