@@ -444,5 +444,51 @@ class CadPvcDxfImportTests(unittest.TestCase):
         self.assertIn(prep_stag["status"], ("prepared", "needs_review"), prep_stag)
 
 
+    def test_pvc_tracker_negative_world_z_and_malformed_mesh_guards(self) -> None:
+        neg_z_trk = _make_pvc_tracker(count=6).replace("1500.00", "-2500.00").replace("1800.00", "-2200.00")
+        (self.ws / "UserData" / "NegZTracker.pvc").write_text(neg_z_trk, encoding="utf-8")
+        prep = prepare_design_project(
+            self.cli, self.store, dry_run=False,
+            spec=_design_spec("NegZTrk.PRJ", scope="ground_tracker", target_kw=52.8,
+                              ground_layout={"pvc_name": "NegZTracker.pvc"}, tilt=None, azim=0.0),
+        )
+        self.assertIn(prep["status"], ("prepared", "needs_review"), prep)
+        vc0 = (self.ws / "Projects" / "NegZTrk.VC0").read_text(encoding="utf-8-sig")
+        self.assertIn("DOrigine=", vc0)
+        self.assertIn(",-2.350000", vc0)
+
+        three_vert = f"""<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="{COLLADA_141_NS}" version="1.4.1">
+  <asset><unit meter="1.0" name="meter" /></asset>
+  <library_geometries><geometry id="TriFrame"><mesh>
+    <source id="p"><float_array id="pa" count="9">0 0 1 4 0 1 0 3 2</float_array></source>
+    <vertices id="v"><input semantic="POSITION" source="#p" /></vertices>
+    <triangles count="1"><input semantic="VERTEX" source="#v" offset="0" /><p>0 1 2</p></triangles>
+    <frame_parameters><module_width>1000</module_width><module_height>2000</module_height></frame_parameters>
+  </mesh></geometry></library_geometries>
+  <library_visual_scenes><visual_scene id="Scene"><node id="N"><instance_geometry url="#TriFrame" /></node></visual_scene></library_visual_scenes>
+</COLLADA>"""
+        trunc_poly = f"""<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="{COLLADA_141_NS}" version="1.4.1">
+  <asset><unit meter="1.0" name="meter" /></asset>
+  <library_geometries><geometry id="BadPoly"><mesh>
+    <source id="p"><float_array id="pa" count="12">0 0 1 4 0 1 4 3 2 0 3 2</float_array></source>
+    <vertices id="v"><input semantic="POSITION" source="#p" /></vertices>
+    <polylist count="1"><input semantic="VERTEX" source="#v" offset="0" /><vcount>4</vcount><p>0 1 2</p></polylist>
+    <frame_parameters><module_width>1000</module_width><module_height>2000</module_height></frame_parameters>
+  </mesh></geometry></library_geometries>
+  <library_visual_scenes><visual_scene id="Scene"><node id="N"><instance_geometry url="#BadPoly" /></node></visual_scene></library_visual_scenes>
+</COLLADA>"""
+        for fname, body in (("ThreeVert.pvc", three_vert), ("TruncPoly.pvc", trunc_poly)):
+            (self.ws / "UserData" / fname).write_text(body, encoding="utf-8")
+            preview = read_house_pv_scene(self.components, fname)
+            self.assertEqual(preview["status"], "unsupported", fname)
+            blk = prepare_design_project(
+                self.cli, self.store, dry_run=True,
+                spec=_design_spec("BadCad.PRJ", scope="ground_sheds", target_kw=52.8, ground_layout={"pvc_name": fname}),
+            )
+            self.assertEqual(blk["status"], "blocked", fname)
+
+
 if __name__ == "__main__":
     unittest.main()
