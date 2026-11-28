@@ -8,7 +8,7 @@ from typing import Any
 
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.scene.author import MAX_OBSTACLES, obstacle_profiles
-from pvsyst_auto.scene.exclusions import MAX_EXCLUSION_ZONES, is_self_intersecting_polygon, polygon_area, validate_exclusion_zones
+from pvsyst_auto.scene.exclusions import MAX_EXCLUSION_ZONES, is_self_intersecting_polygon, polygon_area, round_closed_polygon, validate_exclusion_zones
 from pvsyst_auto.scene.reader import validate_site_polygon
 from pvsyst_auto.validation import finite_number as _finite
 
@@ -110,11 +110,15 @@ def _simplify_closed_polygon(pts: list[tuple[float, float]], max_verts: int = 64
     return best, True
 
 
-def _extrude_polygon_prism(poly: list[tuple[float, float]], z0: float, z1: float) -> tuple[list[list[float]], list[list[int]]]:
-    n = len(poly)
-    area2 = sum(poly[i][0] * poly[(i + 1) % n][1] - poly[(i + 1) % n][0] * poly[i][1] for i in range(n))
-    pts = list(reversed(poly)) if area2 < 0.0 else list(poly)
-    verts = [[round(x, 5), round(y, 5), round(z0, 5)] for x, y in pts] + [[round(x, 5), round(y, 5), round(z1, 5)] for x, y in pts]
+def _extrude_polygon_prism(poly: list[tuple[float, float]], z0: float, z1: float) -> tuple[list[list[float]], list[list[int]]] | None:
+    pts_2d = round_closed_polygon(poly, 5)
+    n = len(pts_2d)
+    if n < 3 or round(z1, 5) <= round(z0, 5):
+        return None
+    area2 = sum(pts_2d[i][0] * pts_2d[(i + 1) % n][1] - pts_2d[(i + 1) % n][0] * pts_2d[i][1] for i in range(n))
+    pts = list(reversed(pts_2d)) if area2 < 0.0 else list(pts_2d)
+    rz0, rz1 = round(z0, 5), round(z1, 5)
+    verts = [[x, y, rz0] for x, y in pts] + [[x, y, rz1] for x, y in pts]
     faces: list[list[int]] = []
     for i in range(1, n - 1):
         ax, ay = pts[0]
@@ -125,7 +129,7 @@ def _extrude_polygon_prism(poly: list[tuple[float, float]], z0: float, z1: float
     for i in range(n):
         j = (i + 1) % n
         faces.extend(([i, j, n + j], [i, n + j, n + i]))
-    return verts, faces
+    return (verts, faces) if faces else None
 
 
 def normalize_dxf_layers(dxf_layers: dict[str, Any] | None) -> dict[str, set[str]]:
@@ -772,8 +776,8 @@ def parse_ascii_dxf(workspace: Path, dxf_name: str, *, dxf_layers: dict[str, Any
         if role == "obstacles":
             if len(obstacles) < MAX_OBSTACLES:
                 simp, _ = _simplify_closed_polygon(pts2, 48)
-                if len(simp) >= 3:
-                    verts, faces = _extrude_polygon_prism(simp, z_base, z_base + h)
+                if len(simp) >= 3 and (prism := _extrude_polygon_prism(simp, z_base, z_base + h)) is not None:
+                    verts, faces = prism
                     oname = f"DXF_Obs_{idx_tag}"
                     while oname.casefold() in used_obs:
                         oname += "_1"
@@ -798,12 +802,16 @@ def parse_ascii_dxf(workspace: Path, dxf_name: str, *, dxf_layers: dict[str, Any
                 terrain_pts.extend(pts3)
                 continue
             pts2 = [(p[0], p[1]) for p in pts3]
-            closed = ent["closed"] or (len(pts2) >= 4 and math.hypot(pts2[0][0] - pts2[-1][0], pts2[0][1] - pts2[-1][1]) <= 1e-4)
+            auto_closed = not ent["closed"] and len(pts2) >= 4 and math.hypot(pts2[0][0] - pts2[-1][0], pts2[0][1] - pts2[-1][1]) <= 1e-4
+            if auto_closed:
+                pts2 = pts2[:-1]
+            closed = ent["closed"] or auto_closed
             if closed and len(pts2) >= 3:
                 zs_p = [p[2] for p in pts3]
                 zmin, zmax, thick = min(zs_p), max(zs_p), ent["thick"] * scale
-                h = thick if thick > 0 else ((zmax - zmin) if zmax - zmin > 0.05 else (zmin if zmin > 0 else 4.0))
-                z_base = zmin if (zmax - zmin > 0.05 or thick > 0) else 0.0
+                dz = zmax - zmin
+                h = thick if thick > 1e-3 else (dz if dz > 0.05 else (zmin if zmin > 1e-3 else 4.0))
+                z_base = zmin if (dz > 0.05 or thick > 1e-3) else 0.0
                 _route_closed(pts2, role, z_base, h, idx_e + 1)
             elif len(pts2) >= 2:
                 open_chains.setdefault((layer.casefold(), role), []).append(pts2)
@@ -847,7 +855,7 @@ def parse_ascii_dxf(workspace: Path, dxf_name: str, *, dxf_layers: dict[str, Any
     excl_candidates: list[tuple[float, list[list[float]]]] = []
     for raw_ex in exclusion_polys:
         simp_ex, _ = _simplify_closed_polygon(raw_ex, 64)
-        rounded_ex = [[round(x, 4), round(y, 4)] for x, y in simp_ex]
+        rounded_ex = round_closed_polygon(simp_ex, 4)
         if len(rounded_ex) < 3:
             continue
         pts_ex = [(p[0], p[1]) for p in rounded_ex]
@@ -869,25 +877,14 @@ def parse_ascii_dxf(workspace: Path, dxf_name: str, *, dxf_layers: dict[str, Any
     if not candidates:
         raise ValueError(f"No closed boundary polygon found in DXF {dxf_name!r}; verify layer mapping via dxf_layers.boundary")
     simp_poly, simplified = _simplify_closed_polygon(max(candidates, key=polygon_area), 64)
-    validated = validate_site_polygon([[round(x, 4), round(y, 4)] for x, y in simp_poly])
+    validated = validate_site_polygon(round_closed_polygon(simp_poly, 4))
     site_polygon = [[x, y] for x, y in validated]
     return {
-        "format": "ascii_dxf",
-        "file_name": dxf_name,
-        "unit_scale": scale,
-        "insunits_code": insunits_code,
-        "layers": sorted(layers_seen),
-        "entity_counts": entity_counts,
-        "site_polygon": site_polygon,
-        "site_area_m2": round(polygon_area(validated), 2),
-        "boundary_simplified": simplified,
-        "exclusion_zones": exclusion_zones,
-        "obstacles": obstacles,
+        "format": "ascii_dxf", "file_name": dxf_name, "unit_scale": scale, "insunits_code": insunits_code,
+        "layers": sorted(layers_seen), "entity_counts": entity_counts, "site_polygon": site_polygon,
+        "site_area_m2": round(polygon_area(validated), 2), "boundary_simplified": simplified,
+        "exclusion_zones": exclusion_zones, "obstacles": obstacles,
         "terrain_points": downsample_xyz_points(terrain_pts) if len(terrain_pts) >= 3 else [],
-        "bounds_m": {
-            "min_x": round(min(p[0] for p in site_polygon), 3),
-            "max_x": round(max(p[0] for p in site_polygon), 3),
-            "min_y": round(min(p[1] for p in site_polygon), 3),
-            "max_y": round(max(p[1] for p in site_polygon), 3),
-        },
+        "bounds_m": {"min_x": round(min(p[0] for p in site_polygon), 3), "max_x": round(max(p[0] for p in site_polygon), 3),
+                     "min_y": round(min(p[1] for p in site_polygon), 3), "max_y": round(max(p[1] for p in site_polygon), 3)},
     }

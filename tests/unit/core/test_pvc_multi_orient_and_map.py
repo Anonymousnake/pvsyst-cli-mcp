@@ -704,7 +704,7 @@ class PvcMultiOrientAndReportMapTests(unittest.TestCase):
             _assert_rect(corners, 20.0, 4.0)
             if type_orig == 1:
                 for ax, exp in enumerate(orig):
-                    self.assertAlmostEqual(corners[0][ax], exp, places=6)
+                    self.assertAlmostEqual(corners[1][ax], exp, places=6)
             elif type_orig == 2:
                 for ax, exp in enumerate(orig):
                     self.assertAlmostEqual(0.5 * (corners[0][ax] + corners[1][ax]), exp, places=6)
