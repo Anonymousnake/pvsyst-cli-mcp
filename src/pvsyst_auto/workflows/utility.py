@@ -40,7 +40,7 @@ from pvsyst_auto.workflows.utility_validation import (
 
 def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name: str, met_name: str,
                           plan: dict, pnom_ac: float, allow_missing_met: bool = False,
-                          horizon: dict | None = None) -> dict:
+                          allow_missing_site: bool = False, horizon: dict | None = None) -> dict:
     scope = spec["scope"]
     layout = dict(spec.get("ground_layout") or {})
     field_type, include_3d = resolve_utility_field_type(scope, layout)
@@ -102,6 +102,7 @@ def _build_utility_kwargs(spec: dict, *, pan_name: str, ond_name: str, site_name
         "site_name": site_name,
         "met_name": met_name,
         "allow_missing_met": allow_missing_met,
+        "allow_missing_site": allow_missing_site,
         "field_type": field_type,
         "pan_name": pan_name,
         "ond_name": ond_name,
@@ -228,6 +229,80 @@ def _extract_electrical_shading_metrics(csv_path: Path, units: dict) -> dict:
     }
 
 
+def preflight_utility_synthesis(
+    store,
+    *,
+    spec: dict,
+    pan_info: dict,
+    ond_info: dict,
+    capacity_plan: dict,
+    sit_name: str,
+    met_name: str,
+    allow_missing_site: bool = False,
+    allow_missing_met: bool = False,
+    horizon: dict | None = None,
+) -> tuple[dict | None, list[dict], list[str]]:
+    """Run deterministic in-memory utility synthesis and geometry/electrical/transformer validation."""
+    issues: list[dict] = []
+    warnings: list[str] = []
+    pan_name = Path(pan_info["name"]).name
+    ond_name = Path(ond_info["name"]).name
+    nominal_dc_kw = float(capacity_plan["installed_dc_kw"])
+    try:
+        pnom_ac = _ond_pnom_kw(ond_info["electrical"])
+        kwargs = _build_utility_kwargs(
+            spec, pan_name=pan_name, ond_name=ond_name,
+            site_name=sit_name, met_name=met_name,
+            plan=capacity_plan, pnom_ac=pnom_ac,
+            allow_missing_met=allow_missing_met,
+            allow_missing_site=allow_missing_site,
+            horizon=horizon,
+        )
+        synth_preview = synthesize_utility_project(store, **kwargs)
+        ground_3d = synth_preview["utility_summary"].get("ground_3d_layout")
+        if isinstance(ground_3d, dict) and "total_modules" in ground_3d:
+            scene_modules = int(ground_3d["total_modules"])
+            electrical_modules = int(capacity_plan["module_count"])
+            if scene_modules != electrical_modules:
+                raise ValueError(
+                    f"3D site_polygon/dxf scene module count ({scene_modules}) "
+                    f"disagrees with electrical module count ({electrical_modules}); "
+                    "adjust site_polygon/dxf boundary, exclusion_zones, setback_m, pitch_m, module_rows, or target capacity to match the electrical design"
+                )
+        if (cad_meta := synth_preview["utility_summary"].get("cad_import")) is not None:
+            from pvsyst_auto.scene.cad_import import check_pvc_electrical_area
+            check_pvc_electrical_area(cad_meta, synth_preview["utility_summary"], capacity_plan["module_count"], warnings)
+        if synth_preview["utility_summary"]["bifacial_enabled"]:
+            is_bifi_pan = _pan_is_bifacial(store, pan_info)
+            if is_bifi_pan is False:
+                issues.append({
+                    "field": "bifacial",
+                    "message": (
+                        f"Selected PAN {pan_name} is monofacial (pvModule Flags lacks bifacial bit 23 / $00800000); "
+                        "PVsystCLI ignores pvBiFacial unless the .PAN module declares bifaciality"
+                    ),
+                })
+        trf_spec = spec.get("transformers")
+        if trf_spec:
+            from pvsyst_auto.energy.transformers import apply_transformers_to_variant_text
+            vc0_with_trf, trf_summary = apply_transformers_to_variant_text(
+                synth_preview["vc0_text"],
+                mv=trf_spec.get("mv"),
+                hv=trf_spec.get("hv"),
+                default_ref_power_kw=nominal_dc_kw,
+                components=getattr(store, "components", None),
+            )
+            synth_preview["vc0_text"] = vc0_with_trf
+            synth_preview["utility_summary"]["transformers"] = trf_summary
+            warnings.extend(trf_summary.get("warnings") or ())
+        from pvsyst_auto.components.editor import objects as parse_objects
+        parse_objects(synth_preview["vc0_text"].lstrip("\ufeff"))
+        return synth_preview, issues, warnings
+    except (ValueError, OSError, KeyError) as exc:
+        issues.append({"field": "utility_synthesis", "message": str(exc)})
+        return None, issues, warnings
+
+
 def run_utility_design(
     cli, store, *,
     spec: dict,
@@ -271,8 +346,20 @@ def run_utility_design(
         "native_consumption_verified": False,
     }
     if prepare_only:
+        req = {
+            "year": year,
+            "new_project": new_project,
+            "variant": variant,
+            "pan_name": pan_name,
+            "ond_name": ond_name,
+            "site_name": sit_name,
+            "met_name": f"{Path(sit_name).stem}_Synthetic.MET" if synthetic_weather else met_name,
+        }
+        for opt_key in ("tilt", "azimuth", "losses"):
+            if spec.get(opt_key) is not None:
+                req[opt_key] = spec[opt_key]
         result.update(operation="prepare_project", prepared=False, simulated=False,
-                      preparation_context=preparation_context or {})
+                      request=req, preparation_context=preparation_context or {})
 
     def issue(field: str, message) -> None:
         result["issues"].append({"field": field, "message": str(message)})
@@ -317,57 +404,22 @@ def run_utility_design(
     nominal_dc_kw = float(capacity_plan["installed_dc_kw"])
     result["nominal_dc_power_kw"] = nominal_dc_kw
     if not result["issues"]:
-        try:
-            pnom_ac = _ond_pnom_kw(ond_info["electrical"])
-            effective_met = f"{Path(sit_name).stem}_Synthetic.MET" if synthetic_weather else met_name
-            kwargs = _build_utility_kwargs(
-                spec, pan_name=pan_name, ond_name=ond_name,
-                site_name=sit_name, met_name=effective_met,
-                plan=capacity_plan, pnom_ac=pnom_ac,
-                allow_missing_met=synthetic_weather,
-                horizon=horizon,
-            )
-            synth_preview = synthesize_utility_project(store, **kwargs)
+        effective_met = f"{Path(sit_name).stem}_Synthetic.MET" if synthetic_weather else met_name
+        synth_preview, synth_issues, synth_warnings = preflight_utility_synthesis(
+            store,
+            spec=spec,
+            pan_info=pan_info,
+            ond_info=ond_info,
+            capacity_plan=capacity_plan,
+            sit_name=sit_name,
+            met_name=effective_met,
+            allow_missing_met=synthetic_weather,
+            horizon=horizon,
+        )
+        result["issues"].extend(synth_issues)
+        result["warnings"].extend(synth_warnings)
+        if synth_preview is not None:
             result["utility_summary"] = synth_preview["utility_summary"]
-            ground_3d = synth_preview["utility_summary"].get("ground_3d_layout")
-            if isinstance(ground_3d, dict) and "total_modules" in ground_3d:
-                scene_modules = int(ground_3d["total_modules"])
-                electrical_modules = int(capacity_plan["module_count"])
-                if scene_modules != electrical_modules:
-                    raise ValueError(
-                        f"3D site_polygon/dxf scene module count ({scene_modules}) "
-                        f"disagrees with electrical module count ({electrical_modules}); "
-                        "adjust site_polygon/dxf boundary, exclusion_zones, setback_m, pitch_m, module_rows, or target capacity to match the electrical design"
-                    )
-            if (cad_meta := synth_preview["utility_summary"].get("cad_import")) is not None:
-                from pvsyst_auto.scene.cad_import import check_pvc_electrical_area
-                check_pvc_electrical_area(cad_meta, synth_preview["utility_summary"], capacity_plan["module_count"], result["warnings"])
-            if synth_preview["utility_summary"]["bifacial_enabled"]:
-                is_bifi_pan = _pan_is_bifacial(store, pan_info)
-                if is_bifi_pan is False:
-                    issue(
-                        "bifacial",
-                        f"Selected PAN {pan_name} is monofacial (pvModule Flags lacks bifacial bit 23 / $00800000); "
-                        "PVsystCLI ignores pvBiFacial unless the .PAN module declares bifaciality",
-                    )
-            trf_spec = spec.get("transformers")
-            if trf_spec:
-                from pvsyst_auto.energy.transformers import apply_transformers_to_variant_text
-                vc0_with_trf, trf_summary = apply_transformers_to_variant_text(
-                    synth_preview["vc0_text"],
-                    mv=trf_spec.get("mv"),
-                    hv=trf_spec.get("hv"),
-                    default_ref_power_kw=nominal_dc_kw,
-                    components=getattr(store, "components", None),
-                )
-                synth_preview["vc0_text"] = vc0_with_trf
-                result["utility_summary"]["transformers"] = trf_summary
-                result["warnings"].extend(trf_summary.get("warnings") or ())
-            # Validate synthesized .VC0 object structure in memory during preflight (including dry_run)
-            from pvsyst_auto.components.editor import objects as parse_objects
-            parse_objects(synth_preview["vc0_text"].lstrip("\ufeff"))
-        except (ValueError, OSError, KeyError) as exc:
-            issue("utility_synthesis", exc)
 
     result["inputs"] = assets
     if result["issues"]:

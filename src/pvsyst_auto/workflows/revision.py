@@ -466,10 +466,16 @@ def prepare_storage_revision(store, project, variant, new_variant, updates, load
                 raise ValueError("Native hourly load cache/time settings differ from the prepared load; rebind using the existing load tool")
             if availability is not None:
                 if not isinstance(availability, dict): raise ValueError("Grid availability must be an explicit declaration")
-                if any(availability.get(key) != record[key] for key in ("year", "utc_offset_hours", "time_basis")):
+                is_gen_avail = availability.get("mode") == "generated"
+                if any((availability.get(key) is not None if is_gen_avail else True) and availability.get(key) != record[key]
+                       for key in ("year", "utc_offset_hours", "time_basis")):
                     raise ValueError("Grid availability and prepared load must use the same year and standard time basis")
-                path = workspace_file(store.workspace, "UserData", availability["csv_name"], ".csv")
-                snapshots[path] = path.read_bytes()
+                if not is_gen_avail:
+                    csv_name = availability.get("csv_name")
+                    if not isinstance(csv_name, str) or not csv_name.strip():
+                        raise ValueError("Grid availability CSV mode requires availability.csv_name")
+                    path = workspace_file(store.workspace, "UserData", csv_name, ".csv")
+                    snapshots[path] = path.read_bytes()
             if updates == {} and availability is None:
                 validate_storage(before)
                 if store._path(project, new_variant).exists(): raise FileExistsError("Choose a new grid storage variant")
@@ -486,8 +492,16 @@ def prepare_storage_revision(store, project, variant, new_variant, updates, load
                 path = workspace_file(store.workspace, folder, name, ".json" if label == "load_manifest" else ".csv")
                 assets[label] = {"folder": folder, "name": name, "library": "workspace", "sha256": fingerprint(path)}
             if availability is not None:
-                path = workspace_file(store.workspace, "UserData", availability["csv_name"], ".csv")
-                assets["grid_availability"] = {"folder": "UserData", "name": availability["csv_name"], "library": "workspace", "sha256": fingerprint(path)}
+                if availability.get("mode") == "generated":
+                    assets["grid_availability"] = {
+                        "mode": "generated",
+                        "outage_count": availability.get("outage_count"),
+                        "average_duration_hours": availability.get("average_duration_hours"),
+                        "seed": availability.get("seed"),
+                    }
+                else:
+                    path = workspace_file(store.workspace, "UserData", availability["csv_name"], ".csv")
+                    assets["grid_availability"] = {"folder": "UserData", "name": availability["csv_name"], "library": "workspace", "sha256": fingerprint(path)}
             libraries = ("workspace", "builtin") if store.components.builtin else ("workspace",)
             battery = before["battery_file"]
             library = next((item for item in libraries if store.components._path("BTR", battery, item).is_file()), None)

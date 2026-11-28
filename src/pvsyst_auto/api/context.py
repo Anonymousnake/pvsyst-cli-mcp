@@ -19,7 +19,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 from pvsyst_auto.components.store import ComponentStore
 from pvsyst_auto.native.cli import PVsystCLI, PVsystError, REPORT_PAGES, VAR_GROUPS
-from pvsyst_auto.project.paths import workspace_file
+from pvsyst_auto.project.paths import VARIANT_ID_RE, workspace_file
 from pvsyst_auto.project.variants import VariantStore
 
 _cli: PVsystCLI | None = None
@@ -188,7 +188,7 @@ def build_server_instructions(active_tools: Collection[str] | None = None) -> st
     design_bullets: list[str] = []
     if _has("pvsyst_simulate_design"):
         design_bullets.extend([
-            "   - Use `pvsyst_simulate_design` with `scope=\"fixed_unshaded_grid\" | \"ground_sheds\" | \"ground_tracker\" | \"stand_alone\"`.",
+            "   - Use `pvsyst_simulate_design` with `scope=\"fixed_unshaded_grid\" | \"ground_sheds\" | \"ground_tracker\" | \"ground_dome\" | \"stand_alone\"`.",
             "   - For utility ground PV, pass optional `ground_layout` (`model_mode=\"unlimited\" | \"3d\"`, `site_polygon`, `obstacles`, `base_slope_deg`, or 3D DEM `terrain` from XYZ JSON/CSV/GeoTIFF), `bifacial`, and MV/HV `transformers`.",
             "   - For off-grid Stand-Alone (`scope=\"stand_alone\"`), pass `standalone` (`.BTR` battery bank, MPPT/direct `.RLT` controller, optional `.GEN` backup generator or inline `genset_spec`, load profile, and diesel-fuel economics).",
         ])
@@ -196,7 +196,7 @@ def build_server_instructions(active_tools: Collection[str] | None = None) -> st
     if _has("pvsyst_configure_transformers"):
         variant_parts.append("configure multi-stage MV/HV transformers & AC collection cables via `pvsyst_configure_transformers`")
     if _has("pvsyst_convert_orientation"):
-        variant_parts.append("convert orientation type in-place (`fixed`/`seasonal`/`sheds`/`tracker_ns`/`tracker_2axis`) via `pvsyst_convert_orientation`")
+        variant_parts.append("convert orientation type in-place (`fixed`/`seasonal`/`sheds`/`tracker_ns`/`tracker_2axis`/`dome`) via `pvsyst_convert_orientation`")
     if _has("pvsyst_update_variant_parameters"):
         variant_parts.append("update spectral correction, random unavailability, and native `TEcoEvaluation` PDF financials via `pvsyst_update_variant_parameters`")
     if variant_parts:
@@ -281,7 +281,7 @@ WORKFLOW_GUIDE_MD = """# PVsyst CLI MCP — Agent Workflow Playbook
 1. `pvsyst_project_handoff(project=..., variant=...)` to inspect equipment, counts, weather, load, and storage
 2. Load (skip for `peak_shaving`): `pvsyst_create_native_load_variant` (`constant` / `monthly` / `daily` / `household` / `probability`) or `pvsyst_prepare_load_profile` (hourly CSV in `UserData`; required for `self_consumption` and `weak_grid`)
 3. Storage: `pvsyst_create_grid_storage_system` (`self_consumption` / `weak_grid` require `load_manifest_name`; `peak_shaving` requires a source variant without `pvLoad` and must omit `load_manifest_name`; `power_shift` accepts either; `weak_grid` also supports deterministic `mode="generated"` outage schedules)
-4. MV/HV Transformers & Orientation: `pvsyst_configure_transformers` (MV-only, parallel MV, or cascaded MV+HV + cables + night disconnect) and `pvsyst_convert_orientation` (`fixed`/`seasonal`/`sheds`/`tracker_ns`/`tracker_2axis`)
+4. MV/HV Transformers & Orientation: `pvsyst_configure_transformers` (MV-only, parallel MV, or cascaded MV+HV + cables + night disconnect) and `pvsyst_convert_orientation` (`fixed`/`seasonal`/`sheds`/`tracker_ns`/`tracker_2axis`/`dome`)
 5. Simulate & read: `pvsyst_build_sfi(variables="grid_storage" | "transformers" | "stand_alone")` -> `pvsyst_run_simulation` -> `pvsyst_read_results`
 
 ## 4. Stand-Alone Off-Grid PV + BESS + Backup Genset (`pvsyst_simulate_design`)
@@ -447,7 +447,7 @@ def register_guidance(server, active_tools: Collection[str] | None = None) -> No
                 suf = entry.suffix.lstrip(".")
                 if suf.lower() == "prj":
                     prjs.append(entry)
-                elif re.fullmatch(r"V[A-Z0-9]{2}", suf.upper()):
+                elif VARIANT_ID_RE.fullmatch(suf):
                     variants_by_stem.setdefault(entry.stem.casefold(), []).append(suf.upper())
             for prj in sorted(prjs)[:200]:
                 items.append({"project": prj.name, "variants": sorted(variants_by_stem.get(prj.stem.casefold(), ()))})

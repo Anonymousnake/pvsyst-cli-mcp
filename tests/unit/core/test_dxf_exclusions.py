@@ -264,7 +264,7 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
             half_w = 0.5 * float(tbl["long_shed_m"])
             for ex in ent_ocs["exclusion_zones"]:
                 self.assertFalse(rect_overlaps_polygon(
-                    ox - half_w, ox + half_w, oy, oy + ent_plan["proj_depth_m"], [(p[0], p[1]) for p in ex], tol=1e-4,
+                    ox - half_w, ox + half_w, oy - ent_plan["proj_depth_m"], oy, [(p[0], p[1]) for p in ex], tol=1e-4,
                 ))
 
         # Elevated 2D POLYLINE uses owning POLYLINE elevation (30=20) with tilted extrusion (210=0, 220=0.6, 230=0.8) even when vertices carry 30=0
@@ -295,7 +295,7 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
             ox, oy, _ = tbl["origin_m"]
             half_w = 0.5 * float(tbl["long_shed_m"])
             self.assertFalse(rect_overlaps_polygon(
-                ox - half_w, ox + half_w, oy, oy + ep_plan["proj_depth_m"], [(p[0], p[1]) for p in ez], tol=1e-4,
+                ox - half_w, ox + half_w, oy - ep_plan["proj_depth_m"], oy, [(p[0], p[1]) for p in ez], tol=1e-4,
             ))
 
         # Expansion budget guard: huge MINSERT, empty-block 1e9 MINSERT, and nested array explosion fail fast cleanly
@@ -448,7 +448,7 @@ class DxfBlocksAndCurvesTests(unittest.TestCase):
         for z in ell_parsed["exclusion_zones"]:
             pts = [(p[0], p[1]) for p in z]
             for tbl in ell_plan["tables"]:
-                cx, cy = tbl["origin_m"][0] + 0.5 * tbl["long_shed_m"], tbl["origin_m"][1] + 0.5 * ell_plan["proj_depth_m"]
+                cx, cy = tbl["origin_m"][0], tbl["origin_m"][1] - 0.5 * ell_plan["proj_depth_m"]
                 self.assertFalse(point_in_polygon(cx, cy, pts))
 
         # 2. > MAX_EXCLUSION_ZONES (129 in DXF or 128 in DXF + 1 user keepout) fails loudly
@@ -536,7 +536,7 @@ class ThreeScopeExclusionLayoutTests(unittest.TestCase):
             else:
                 assert proj_depth is not None
                 half_u = 0.5 * float(tbl["long_shed_m"])
-                u0, u1, v0, v1 = u_c - half_u, u_c + half_u, v_c, v_c + proj_depth
+                u0, u1, v0, v1 = u_c - half_u, u_c + half_u, v_c - proj_depth, v_c
             for e_idx, e_poly in enumerate(excl_rot):
                 self.assertFalse(
                     rect_overlaps_polygon(u0, u1, v0, v1, e_poly, tol=1e-4),

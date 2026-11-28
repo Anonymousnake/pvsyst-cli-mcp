@@ -6,6 +6,7 @@ import re
 
 from pvsyst_auto.components.editor import objects, replace_value, root_block
 from pvsyst_auto.components.store import FIELD
+from pvsyst_auto.project.paths import VARIANT_ID_RE
 from pvsyst_auto.project.circuit_core import (
     MAX_COUNT,
     _encode_candidate,
@@ -179,7 +180,7 @@ def clone_subarray(store, project: str, variant: str, source_subarray_id: int, e
         store._check_hash(data, expected_sha256)
         reserved_ids = set()
         for item in store._root().iterdir():
-            if item.stem.casefold() == project[:-4].casefold() and re.fullmatch(r"\.VC[A-Za-z0-9]+", item.suffix, re.I):
+            if item.stem.casefold() == project[:-4].casefold() and item.suffix.startswith(".") and VARIANT_ID_RE.fullmatch(item.suffix[1:]):
                 reserved_ids.update(store._sections(store._text(store._read(store._path(project, item.suffix[1:])))[1])[0])
         candidate, details = clone_subarray_data(store, data, source_subarray_id, clone_orientation=clone_orientation,
                                                  share_inverter=share_inverter, reserved_ids=reserved_ids)
@@ -298,89 +299,97 @@ def remove_subarray(store, project: str, variant: str, subarray_id: int, expecte
                 "orientation_id_map": orientation_id_map, "remaining_member_id": remaining_member,
                 "inverter_group_count": len(matches), "backup_name": backup, "sha256": hashlib.sha256(candidate).hexdigest()}
 
+def validate_structure_lines(store, lines: list[str]) -> dict:
+    """Check cross-object references inside in-memory variant lines."""
+    arrays, system = store._sections(lines)
+    issues, warnings, orientation_ids = [], [], set()
+    for index, line in enumerate(lines):
+        if line.strip() not in ("PVObject_=pvOrient", "PVObject_=pvDomeOrient"):
+            continue
+        closing = "End of TOrientGroup" if line.strip() == "PVObject_=pvOrient" else "End of TDomeOrientGroup"
+        if (end := next((i for i in range(index + 1, len(lines)) if lines[i].strip() == closing), None)) is None:
+            issues.append("Unclosed orientation")
+        elif len(identifiers := store._field_indices(lines, (index, end), "NoOrient")) != 1:
+            issues.append("Orientation needs one NoOrient")
+        elif not (raw := FIELD.fullmatch(lines[identifiers[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) in orientation_ids:
+            issues.append(f"Duplicate or invalid orientation ID: {raw}")
+        else:
+            orientation_ids.add(int(raw))
+    list_headers, list_unchecked = [ln.strip() for ln in lines if ln.strip().startswith("Orientations, list of=")], []
+    if list_headers:
+        if any(not ln.endswith(" TOrientGroup") for ln in list_headers):
+            list_unchecked.append("orientation list counts for unknown list types")
+        else:
+            try:
+                store._orientation_list(lines)
+            except ValueError as exc:
+                issues.append(str(exc))
+    for ident, bounds in arrays.items():
+        try:
+            root = root_block(lines, bounds)
+            fl_raw = root.one("Flags")[1] if "Flags" in root.fields else ""
+            f2_raw = root.one("Flags2")[1] if "Flags2" in root.fields else ""
+            nstr_raw = root.one("NStringCh")[1] if "NStringCh" in root.fields else ""
+            nso1_raw = root.one("NStrOrient1")[1] if "NStrOrient1" in root.fields else ""
+            ps_raw = root.one("PowerSharingInverterId")[1] if "PowerSharingInverterId" in root.fields else None
+        except ValueError as exc:
+            issues.append(f"Subarray {ident}: {exc}")
+            continue
+        if len(indices := store._field_indices(lines, bounds, "NoOrientation")) != 1:
+            issues.append(f"Subarray {ident} needs one NoOrientation")
+            continue
+        if not (raw := FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) not in orientation_ids:
+            issues.append(f"Subarray {ident} references unknown orientation {raw}")
+            continue
+        fl_val = int(fl_raw[1:], 16) if re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", fl_raw) else None
+        if indices2 := store._field_indices(lines, bounds, "NoOrientation2"):
+            if len(indices2) != 1:
+                issues.append(f"Subarray {ident} has repeated NoOrientation2")
+            elif not (raw2 := FIELD.fullmatch(lines[indices2[0]].rstrip("\r\n"))[2]).isdigit() or int(raw2) not in orientation_ids or int(raw2) == int(raw):
+                issues.append(f"Subarray {ident} references invalid NoOrientation2 {raw2}")
+            if not nstr_raw.isdigit() or not nso1_raw.isdigit() or not 1 <= int(nso1_raw) < int(nstr_raw):
+                issues.append(f"Subarray {ident} mixed NStrOrient1 must satisfy 1 <= NStrOrient1 < NStringCh")
+            if fl_val is None or not (fl_val & 0x40):
+                issues.append(f"Subarray {ident} requires mixed-orientation Flags bit $40 with NoOrientation2")
+            if fl_val is not None and (fl_val & 0x100):
+                issues.append(f"Subarray {ident} cannot set power-sharing Flags bit $100 with NoOrientation2")
+            if fl_val is not None and (fl_val & 0x400):
+                issues.append(f"Subarray {ident} cannot set independent-MPPT Flags bit $400 with NoOrientation2")
+            f2_val = int(f2_raw[1:], 16) if re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", f2_raw) else None
+            if f2_val is None or not (f2_val & 0x1):
+                issues.append(f"Subarray {ident} requires Flags2 bit $01 with NoOrientation2")
+            if ps_raw != "-1":
+                issues.append(f"Subarray {ident} with NoOrientation2 requires explicit PowerSharingInverterId=-1")
+        elif fl_val is not None and (fl_val & 0x40):
+            issues.append(f"Subarray {ident} sets mixed-orientation flag without NoOrientation2")
+    system_type, unchecked, circuit_res = None, list_unchecked, None
+    if system is None:
+        issues.append("Missing pvSystem section")
+        unchecked.append("system circuit references")
+    elif len(kinds := store._field_indices(lines, system, "SystemType")) != 1:
+        issues.append("System needs exactly one SystemType")
+        unchecked.append("system circuit references")
+    else:
+        if not (system_type := FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2]):
+            issues.append("SystemType must not be empty")
+        if system_type == "Grid":
+            circuit_res = inventory(lines, arrays)
+            issues.extend(circuit_res["issues"])
+            unchecked.extend(circuit_res["unchecked_checks"])
+        else:
+            unchecked.append("system circuit references")
+            warnings.append(f"Circuit checks are not implemented for SystemType={system_type!r}")
+    if any("PVObject_ShdTable" in ln or "ListeObjets, list of=" in ln for ln in lines):
+        warnings.append("Shading geometry and derived factor tables require simulation verification")
+    return {"valid": False if issues else None if unchecked else True, "checks_complete": not unchecked,
+            "unchecked_checks": unchecked, "system_type": system_type, "grid_circuit": circuit_res,
+            "issues": issues, "warnings": warnings, "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids)}
+
+
 def validate_structure(store, project: str, variant: str) -> dict:
     """Check cross-object references inside a variant."""
     with store.lock:
         store._check_project(project)
-        arrays, system = store._sections(lines := store._text(data := store._read(store._path(project, variant)))[1])
-        issues, warnings, orientation_ids = [], [], set()
-        for index, line in enumerate(lines):
-            if line.strip() not in ("PVObject_=pvOrient", "PVObject_=pvDomeOrient"):
-                continue
-            closing = "End of TOrientGroup" if line.strip() == "PVObject_=pvOrient" else "End of TDomeOrientGroup"
-            if (end := next((i for i in range(index + 1, len(lines)) if lines[i].strip() == closing), None)) is None:
-                issues.append("Unclosed orientation")
-            elif len(identifiers := store._field_indices(lines, (index, end), "NoOrient")) != 1:
-                issues.append("Orientation needs one NoOrient")
-            elif not (raw := FIELD.fullmatch(lines[identifiers[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) in orientation_ids:
-                issues.append(f"Duplicate or invalid orientation ID: {raw}")
-            else:
-                orientation_ids.add(int(raw))
-        list_headers, list_unchecked = [ln.strip() for ln in lines if ln.strip().startswith("Orientations, list of=")], []
-        if list_headers:
-            if any(not ln.endswith(" TOrientGroup") for ln in list_headers):
-                list_unchecked.append("orientation list counts for unknown list types")
-            else:
-                try:
-                    store._orientation_list(lines)
-                except ValueError as exc:
-                    issues.append(str(exc))
-        for ident, bounds in arrays.items():
-            try:
-                root = root_block(lines, bounds)
-                fl_raw = root.one("Flags")[1] if "Flags" in root.fields else ""
-                f2_raw = root.one("Flags2")[1] if "Flags2" in root.fields else ""
-                nstr_raw = root.one("NStringCh")[1] if "NStringCh" in root.fields else ""
-                nso1_raw = root.one("NStrOrient1")[1] if "NStrOrient1" in root.fields else ""
-                ps_raw = root.one("PowerSharingInverterId")[1] if "PowerSharingInverterId" in root.fields else None
-            except ValueError as exc:
-                issues.append(f"Subarray {ident}: {exc}")
-                continue
-            if len(indices := store._field_indices(lines, bounds, "NoOrientation")) != 1:
-                issues.append(f"Subarray {ident} needs one NoOrientation")
-                continue
-            if not (raw := FIELD.fullmatch(lines[indices[0]].rstrip("\r\n"))[2]).isdigit() or int(raw) not in orientation_ids:
-                issues.append(f"Subarray {ident} references unknown orientation {raw}")
-                continue
-            fl_val = int(fl_raw[1:], 16) if re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", fl_raw) else None
-            if indices2 := store._field_indices(lines, bounds, "NoOrientation2"):
-                if len(indices2) != 1:
-                    issues.append(f"Subarray {ident} has repeated NoOrientation2")
-                elif not (raw2 := FIELD.fullmatch(lines[indices2[0]].rstrip("\r\n"))[2]).isdigit() or int(raw2) not in orientation_ids or int(raw2) == int(raw):
-                    issues.append(f"Subarray {ident} references invalid NoOrientation2 {raw2}")
-                if not nstr_raw.isdigit() or not nso1_raw.isdigit() or not 1 <= int(nso1_raw) < int(nstr_raw):
-                    issues.append(f"Subarray {ident} mixed NStrOrient1 must satisfy 1 <= NStrOrient1 < NStringCh")
-                if fl_val is None or not (fl_val & 0x40):
-                    issues.append(f"Subarray {ident} requires mixed-orientation Flags bit $40 with NoOrientation2")
-                if fl_val is not None and (fl_val & 0x100):
-                    issues.append(f"Subarray {ident} cannot set power-sharing Flags bit $100 with NoOrientation2")
-                f2_val = int(f2_raw[1:], 16) if re.fullmatch(r"\$[0-9A-Fa-f]{1,8}", f2_raw) else None
-                if f2_val is None or not (f2_val & 0x1):
-                    issues.append(f"Subarray {ident} requires Flags2 bit $01 with NoOrientation2")
-                if ps_raw != "-1":
-                    issues.append(f"Subarray {ident} with NoOrientation2 requires explicit PowerSharingInverterId=-1")
-            elif fl_val is not None and (fl_val & 0x40):
-                issues.append(f"Subarray {ident} sets mixed-orientation flag without NoOrientation2")
-        system_type, unchecked, circuit_res = None, list_unchecked, None
-        if system is None:
-            issues.append("Missing pvSystem section")
-            unchecked.append("system circuit references")
-        elif len(kinds := store._field_indices(lines, system, "SystemType")) != 1:
-            issues.append("System needs exactly one SystemType")
-            unchecked.append("system circuit references")
-        else:
-            if not (system_type := FIELD.fullmatch(lines[kinds[0]].rstrip("\r\n"))[2]):
-                issues.append("SystemType must not be empty")
-            if system_type == "Grid":
-                circuit_res = inventory(lines, arrays)
-                issues.extend(circuit_res["issues"])
-                unchecked.extend(circuit_res["unchecked_checks"])
-            else:
-                unchecked.append("system circuit references")
-                warnings.append(f"Circuit checks are not implemented for SystemType={system_type!r}")
-        if any("PVObject_ShdTable" in ln or "ListeObjets, list of=" in ln for ln in lines):
-            warnings.append("Shading geometry and derived factor tables require simulation verification")
+        lines = store._text(data := store._read(store._path(project, variant)))[1]
         return {"project": project, "variant": variant.upper(), "sha256": hashlib.sha256(data).hexdigest(),
-                "valid": False if issues else None if unchecked else True, "checks_complete": not unchecked,
-                "unchecked_checks": unchecked, "system_type": system_type, "grid_circuit": circuit_res,
-                "issues": issues, "warnings": warnings, "subarray_ids": sorted(arrays), "orientation_ids": sorted(orientation_ids)}
+                **validate_structure_lines(store, lines)}

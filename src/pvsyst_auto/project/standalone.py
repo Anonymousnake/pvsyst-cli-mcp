@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi, summarize_results
+from pvsyst_auto.native.cli import VAR_GROUPS, build_sfi, summarize_results, validate_report_pages
 from pvsyst_auto.native.load import native_load_block
 from pvsyst_auto.project.paths import project_name as normalize_project_name, safe_filename, workspace_file
 from pvsyst_auto.project.synthesize import (
@@ -24,6 +24,7 @@ from pvsyst_auto.project.synthesize import (
 from pvsyst_auto.validation import bounded_number as _finite
 
 STANDALONE_SCOPE = "stand_alone"
+_SUPPORTED_REPORT_LANGUAGES = frozenset({"en", "fr", "de", "es", "it", "pt", "tr", "ko", "zh", "ja", "pl", "ru"})
 DEFAULT_MPPT_CONTROLLER = "Universal_Controller_LA_MPPT.RLT"
 DEFAULT_DIRECT_CONTROLLER = "Universal_Controller_LA_Direct.RLT"
 VALID_GENSET_TYPES = ("Diesel", "Gas", "Essence", "Biogas", "Other")
@@ -431,7 +432,29 @@ def run_standalone_design(
         if gen_dir.is_dir() and any(p.name.casefold() == genset_file.casefold() for p in gen_dir.iterdir()):
             raise FileExistsError(f"Generated GEN already exists: {genset_file}")
 
-    # Preflight project collision and economics config BEFORE dry_run returns or any file is written
+    # Preflight project collision, output collisions, report params, CLI readiness, and economics BEFORE dry_run or writes
+    report_pages = spec.get("report_pages")
+    validate_report_pages(report_pages)
+    report_language = spec.get("report_language")
+    if report_language is not None and report_language not in _SUPPORTED_REPORT_LANGUAGES:
+        raise ValueError(f"Unsupported report language: {report_language}")
+    sfi_path = store.workspace / "Models" / f"{stem}_standalone.SFI"
+    out_csv = store.workspace / "Results" / f"{stem}_VC0_standalone.csv"
+    report_pdf_path = (store.workspace / "Results" / f"{stem}_VC0_standalone.pdf") if report_pages else None
+    for existing in (sfi_path, out_csv, report_pdf_path):
+        if existing is not None and existing.exists():
+            raise FileExistsError(f"Planned stand-alone artifact already exists: {existing.name}; choose a new project filename")
+    if callable(getattr(cli, "_require", None)):
+        cli._require("run-simulation", "input-sfi-file", allow_window_creation=allow_window_creation)
+        cli._require("run-simulation", "time-step", allow_window_creation=allow_window_creation)
+    if callable(getattr(cli, "license_info", None)):
+        licence = cli.license_info(allow_window_creation=allow_window_creation)
+        if isinstance(licence, dict):
+            lic_status = licence.get("status")
+            if lic_status in ("EXPIRED", "INVALID", "NO_LICENSE") or (
+                lic_status == "TRIAL" and licence.get("remaining_executions") == 0
+            ):
+                raise ValueError(f"PVsyst CLI license is not ready for simulation: {lic_status}")
     proj_root = store._root()
     if proj_root.is_dir() and any(store._belongs_to_project(p, prj) for p in proj_root.iterdir()):
         raise FileExistsError(f"Working project already exists: {prj}; choose a new project filename")
@@ -504,14 +527,9 @@ def run_standalone_design(
 
     # Run live PVsystCLI simulation with stand_alone variable group
     sfi_vars = list(VAR_GROUPS["stand_alone"])
-    sfi_path = store.workspace / "Models" / f"{stem}_standalone.SFI"
     sfi_path.parent.mkdir(parents=True, exist_ok=True)
     build_sfi(sfi_path, sfi_vars, time_step="hour")
-    out_csv = store.workspace / "Results" / f"{stem}_VC0_standalone.csv"
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    report_pdf_path = None
-    if spec.get("report_pages"):
-        report_pdf_path = store.workspace / "Results" / f"{stem}_VC0_standalone.pdf"
 
     sim = cli.run_simulation(
         prj,
@@ -519,8 +537,8 @@ def run_standalone_design(
         sfi=sfi_path,
         out_csv=out_csv,
         report_pdf=report_pdf_path,
-        report_pages=spec.get("report_pages"),
-        report_language=spec.get("report_language"),
+        report_pages=report_pages,
+        report_language=report_language,
         allow_window_creation=allow_window_creation,
     )
 

@@ -9,6 +9,7 @@ from pvsyst_auto.components.editor import objects
 from pvsyst_auto.project.paths import project_path
 from pvsyst_auto.scene.author import obstacle_profiles
 from pvsyst_auto.scene.terrain import build_terrain_mesh, triangulate_2d
+from pvsyst_auto.validation import finite_number as _finite
 
 _LAYOUT_I18N = {
     "zh": {
@@ -307,29 +308,87 @@ def _convex_hull_2d(pts: list[tuple[float, float]]) -> list[tuple[float, float]]
     return lower[:-1] + upper[:-1]
 
 
-def _table_corners_3d(tbl: dict[str, Any]) -> list[tuple[float, float, float]]:
-    if poly := tbl.get("footprint") or tbl.get("polygon"):
-        z0 = float((tbl.get("origin_m") or [0, 0, 0])[2]) if len(tbl.get("origin_m") or ()) >= 3 else 0.0
-        return [(float(p[0]), float(p[1]), float(p[2]) if len(p) >= 3 else z0) for p in poly]
+def _as_pt2(pt: Any, label: str) -> tuple[float, float]:
+    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+        raise ValueError(f"{label} must be a [x, y] coordinate pair")
+    return _finite(pt[0], f"{label}[0]"), _finite(pt[1], f"{label}[1]")
 
-    orig = [float(v) for v in (tbl.get("origin_m") or [0.0, 0.0, 0.0])]
-    ox, oy, oz = orig[0], orig[1], orig[2] if len(orig) >= 3 else 0.0
-    long_s = float(tbl.get("long_shed_m") or 4.0)
-    larg_s = float(tbl.get("larg_shed_m") or 2.0)
+
+def _as_pt3(pt: Any, label: str) -> tuple[float, float, float]:
+    if not isinstance(pt, (list, tuple)) or len(pt) < 3:
+        raise ValueError(f"{label} must be a 3D [x, y, z] coordinate")
+    return _finite(pt[0], f"{label}[0]"), _finite(pt[1], f"{label}[1]"), _finite(pt[2], f"{label}[2]")
+
+
+def _validate_mesh_dict(mesh: Any, label: str) -> dict[str, Any]:
+    if not isinstance(mesh, dict):
+        raise ValueError(f"{label} must be an object")
+    verts_raw = mesh.get("vertices")
+    if not isinstance(verts_raw, list) or not verts_raw:
+        raise ValueError(f"{label}.vertices must be a non-empty list of 3D [x, y, z] vertices")
+    verts = [list(_as_pt3(v, f"{label}.vertices[{i}]")) for i, v in enumerate(verts_raw)]
+    tris_raw = mesh.get("triangles")
+    tris: list[list[int]] = []
+    if tris_raw is not None:
+        if not isinstance(tris_raw, list):
+            raise ValueError(f"{label}.triangles must be a list of [i, j, k] index triples")
+        n_v = len(verts)
+        for ti, tri in enumerate(tris_raw):
+            if not isinstance(tri, (list, tuple)) or len(tri) != 3 or any(type(idx) is not int or not 0 <= idx < n_v for idx in tri):
+                raise ValueError(f"{label}.triangles[{ti}] must contain 3 valid vertex indices in 0..{n_v - 1}")
+            tris.append([tri[0], tri[1], tri[2]])
+    out = dict(mesh)
+    out["vertices"] = verts
+    if tris_raw is not None:
+        out["triangles"] = tris
+    return out
+
+
+def _table_corners_3d(tbl: Any, idx: int = 0) -> list[tuple[float, float, float]]:
+    if not isinstance(tbl, dict):
+        raise ValueError(f"layout_preview.tables[{idx}] must be an object")
+    pfx = f"layout_preview.tables[{idx}]"
+    orig_raw = tbl.get("origin_m")
+    if orig_raw is not None:
+        if not isinstance(orig_raw, (list, tuple)) or len(orig_raw) < 2:
+            raise ValueError(f"{pfx}.origin_m must be [x, y] or [x, y, z]")
+        ox = _finite(orig_raw[0], f"{pfx}.origin_m[0]")
+        oy = _finite(orig_raw[1], f"{pfx}.origin_m[1]")
+        oz = _finite(orig_raw[2], f"{pfx}.origin_m[2]") if len(orig_raw) >= 3 else 0.0
+    else:
+        ox, oy, oz = 0.0, 0.0, 0.0
+
+    poly = tbl.get("footprint") if tbl.get("footprint") is not None else tbl.get("polygon")
+    if poly is not None:
+        if not isinstance(poly, (list, tuple)) or len(poly) < 3:
+            raise ValueError(f"{pfx} footprint/polygon must have at least 3 vertices")
+        corners: list[tuple[float, float, float]] = []
+        for vi, p in enumerate(poly):
+            if isinstance(p, (list, tuple)) and len(p) >= 3:
+                corners.append(_as_pt3(p, f"{pfx}.polygon[{vi}]"))
+            else:
+                x, y = _as_pt2(p, f"{pfx}.polygon[{vi}]")
+                corners.append((x, y, oz))
+        return corners
+
+    long_s = _finite(tbl.get("long_shed_m", 4.0) if tbl.get("long_shed_m") is not None else 4.0, f"{pfx}.long_shed_m", positive=True)
+    larg_s = _finite(tbl.get("larg_shed_m", 2.0) if tbl.get("larg_shed_m") is not None else 2.0, f"{pfx}.larg_shed_m", positive=True)
     kind = tbl.get("kind") or ("tracker" if "axis_azimuth_deg" in tbl else "fixed")
 
     if kind == "tracker":
-        az = float(tbl.get("axis_azimuth_deg", tbl.get("azimuth_deg", 0.0)))
-        axis_tilt = float(tbl.get("axis_tilt_deg", 0.0))
+        az = _finite(tbl.get("axis_azimuth_deg", tbl.get("azimuth_deg", 0.0)), f"{pfx}.axis_azimuth_deg")
+        axis_tilt = _finite(tbl.get("axis_tilt_deg", 0.0), f"{pfx}.axis_tilt_deg")
         ca, sa = math.cos(math.radians(axis_tilt)), math.sin(math.radians(axis_tilt))
-        type_orig = int(tbl.get("type_origine", 7))
-        v0, v1 = (-0.5 * larg_s, 0.5 * larg_s) if type_orig == 7 else (0.0, larg_s)
+        type_orig_raw = tbl.get("type_origine", 7)
+        if type(type_orig_raw) is not int:
+            raise ValueError(f"{pfx}.type_origine must be an integer")
+        v0, v1 = (-0.5 * larg_s, 0.5 * larg_s) if type_orig_raw == 7 else (0.0, larg_s)
         local = [(-0.5 * long_s, v0), (0.5 * long_s, v0), (0.5 * long_s, v1), (-0.5 * long_s, v1)]
         return [(*_rotate_local_to_world(ox, oy, du, dv * ca, az), oz + dv * sa) for du, dv in local]
 
-    tilt = float(tbl.get("tilt_deg", 20.0))
-    az = float(tbl.get("azimuth_deg", 0.0))
-    slope = float(tbl.get("base_slope_deg", 0.0))
+    tilt = _finite(tbl.get("tilt_deg", 20.0), f"{pfx}.tilt_deg")
+    az = _finite(tbl.get("azimuth_deg", 0.0), f"{pfx}.azimuth_deg")
+    slope = _finite(tbl.get("base_slope_deg", 0.0), f"{pfx}.base_slope_deg")
     cs, ss = math.cos(math.radians(slope)), math.sin(math.radians(slope))
     proj_v = larg_s * math.cos(math.radians(tilt))
     rise_z = larg_s * math.sin(math.radians(tilt))
@@ -341,7 +400,7 @@ def _table_corners_3d(tbl: dict[str, Any]) -> list[tuple[float, float, float]]:
         return wx, wy, oz + dz1
 
     if kind == "dome":
-        top_sp = float(tbl.get("top_spacing_m", 0.2))
+        top_sp = _finite(tbl.get("top_spacing_m", 0.2), f"{pfx}.top_spacing_m", minimum=0.0)
         is_back = tbl.get("dome_face") == "back"
         v_lo = -(proj_v + top_sp) if is_back else 0.0
         v_hi = -(2.0 * proj_v + top_sp) if is_back else -proj_v
@@ -349,8 +408,10 @@ def _table_corners_3d(tbl: dict[str, Any]) -> list[tuple[float, float, float]]:
         local = [(-0.5 * long_s, v_lo, dz_lo), (0.5 * long_s, v_lo, dz_lo), (0.5 * long_s, v_hi, dz_hi), (-0.5 * long_s, v_hi, dz_hi)]
         return [_place(du, dv, dz) for du, dv, dz in local]
 
-    type_orig = int(tbl.get("type_origine", 2))
-    u0, u1 = (0.0, long_s) if type_orig == 1 else (-0.5 * long_s, 0.5 * long_s)
+    type_orig = tbl.get("type_origine", 2)
+    if type(type_orig) is not int:
+        raise ValueError(f"{pfx}.type_origine must be an integer")
+    u0, u1 = (-long_s, 0.0) if type_orig == 1 else (-0.5 * long_s, 0.5 * long_s)
     v0, v1 = (0.5 * proj_v, -0.5 * proj_v) if type_orig == 7 else (0.0, -proj_v)
     dz0, dz1 = (-0.5 * rise_z, 0.5 * rise_z) if type_orig == 7 else (0.0, rise_z)
     local = [(u0, v0, dz0), (u1, v0, dz0), (u1, v1, dz1), (u0, v1, dz1)]
@@ -358,26 +419,76 @@ def _table_corners_3d(tbl: dict[str, Any]) -> list[tuple[float, float, float]]:
 
 
 def _normalize_zones(raw_zones: Any) -> list[dict[str, Any]]:
-    zones: list[dict[str, Any]] = []
+    if raw_zones is None:
+        return []
     if not isinstance(raw_zones, list):
-        return zones
+        raise ValueError("layout_preview.exclusion_zones must be a list")
+    zones: list[dict[str, Any]] = []
     for idx, item in enumerate(raw_zones, start=1):
-        if isinstance(item, dict) and isinstance(item.get("polygon"), list) and len(item["polygon"]) >= 3:
-            pts = [(float(p[0]), float(p[1])) for p in item["polygon"] if isinstance(p, (list, tuple)) and len(p) >= 2]
-            if len(pts) >= 3:
-                zones.append({"name": str(item.get("name") or f"Exclusion_{idx}"), "polygon": pts})
-        elif isinstance(item, list) and len(item) >= 3 and all(isinstance(p, (list, tuple)) and len(p) >= 2 for p in item):
-            zones.append({"name": f"Exclusion_{idx}", "polygon": [(float(p[0]), float(p[1])) for p in item]})
+        if isinstance(item, dict):
+            raw_poly = item.get("polygon")
+            if not isinstance(raw_poly, list) or len(raw_poly) < 3:
+                raise ValueError(f"layout_preview.exclusion_zones[{idx - 1}].polygon must have at least 3 points")
+            pts = [_as_pt2(p, f"layout_preview.exclusion_zones[{idx - 1}].polygon[{vi}]") for vi, p in enumerate(raw_poly)]
+            zones.append({"name": str(item.get("name") or f"Exclusion_{idx}"), "polygon": pts})
+        elif isinstance(item, list) and len(item) >= 3:
+            pts = [_as_pt2(p, f"layout_preview.exclusion_zones[{idx - 1}][{vi}]") for vi, p in enumerate(item)]
+            zones.append({"name": f"Exclusion_{idx}", "polygon": pts})
+        else:
+            raise ValueError(f"layout_preview.exclusion_zones[{idx - 1}] must be a polygon list or {{'polygon': [...]}} object")
     return zones
 
 
 def _normalize_obstacles_for_plot(raw_obs: Any) -> list[dict[str, Any]]:
-    if not isinstance(raw_obs, list) or not raw_obs:
+    if raw_obs is None:
         return []
-    already_mesh_or_tree = [o for o in raw_obs if isinstance(o, dict) and ("vertices" in o or o.get("kind") == "tree")]
-    to_author = [o for o in raw_obs if isinstance(o, dict) and o not in already_mesh_or_tree]
+    if not isinstance(raw_obs, list):
+        raise ValueError("layout_preview.obstacles must be a list")
+    if not raw_obs:
+        return []
+    meshes_or_trees: list[dict[str, Any]] = []
+    to_author: list[dict[str, Any]] = []
+    for idx, obs in enumerate(raw_obs):
+        if not isinstance(obs, dict):
+            raise ValueError(f"layout_preview.obstacles[{idx}] must be an object")
+        if "vertices" in obs:
+            meshes_or_trees.append(_validate_mesh_dict(obs, f"layout_preview.obstacles[{idx}]"))
+        elif obs.get("kind") == "tree" and "middle_height_m" not in obs:
+            orig = _as_pt3(obs.get("origin_m"), f"layout_preview.obstacles[{idx}].origin_m")
+            top_h = _finite(obs.get("top_height_m"), f"layout_preview.obstacles[{idx}].top_height_m", positive=True)
+            crown_d = _finite(obs.get("crown_diameter_m"), f"layout_preview.obstacles[{idx}].crown_diameter_m", positive=True)
+            meshes_or_trees.append({**obs, "origin_m": list(orig), "top_height_m": top_h, "crown_diameter_m": crown_d})
+        else:
+            to_author.append(obs)
     authored = obstacle_profiles(to_author) if to_author else []
-    return [*already_mesh_or_tree, *authored]
+    return [*meshes_or_trees, *authored]
+
+
+def _validate_layout_collections(layout: dict[str, Any]) -> None:
+    if (site_poly := layout.get("site_polygon")) is not None:
+        if not isinstance(site_poly, (list, tuple)):
+            raise ValueError("layout_preview.site_polygon must be a list of points")
+        for i, p in enumerate(site_poly):
+            _as_pt2(p, f"layout_preview.site_polygon[{i}]")
+            if len(p) >= 3:
+                _finite(p[2], f"layout_preview.site_polygon[{i}][2]")
+    if (tpts := layout.get("terrain_points")) is not None:
+        if not isinstance(tpts, (list, tuple)):
+            raise ValueError("layout_preview.terrain_points must be a list of [x, y, z] points")
+        for i, p in enumerate(tpts):
+            _as_pt3(p, f"layout_preview.terrain_points[{i}]")
+    if layout.get("terrain_mesh") is not None:
+        layout["terrain_mesh"] = _validate_mesh_dict(layout["terrain_mesh"], "layout_preview.terrain_mesh")
+    if (tables := layout.get("tables")) is not None:
+        if not isinstance(tables, list):
+            raise ValueError("layout_preview.tables must be a list")
+        for i, tbl in enumerate(tables):
+            _table_corners_3d(tbl, i)
+            if tbl.get("orientation_id") is not None and type(tbl["orientation_id"]) is not int:
+                raise ValueError(f"layout_preview.tables[{i}].orientation_id must be an integer")
+
+
+_NONEMPTY_MERGE_KEYS = frozenset(("tables", "obstacles", "exclusion_zones", "terrain_points", "site_polygon", "terrain", "terrain_mesh"))
 
 
 def resolve_report_layout(
@@ -417,15 +528,22 @@ def resolve_report_layout(
 
     merged: dict[str, Any] = dict(vc_lp or {})
     if explicit_lp:
-        if ("terrain" in explicit_lp or "terrain_points" in explicit_lp) and "terrain_mesh" not in explicit_lp:
+        exp_tpts = explicit_lp.get("terrain_points")
+        exp_terr = explicit_lp.get("terrain")
+        has_exp_terrain_pts = isinstance(exp_tpts, list) and len(exp_tpts) >= 3
+        has_exp_terrain_cfg = isinstance(exp_terr, dict) and bool(exp_terr)
+        if (has_exp_terrain_cfg or has_exp_terrain_pts) and not explicit_lp.get("terrain_mesh"):
             merged.pop("terrain_mesh", None)
         for key, val in explicit_lp.items():
-            if val is not None:
-                merged[key] = val
+            if val is None:
+                continue
+            if key in _NONEMPTY_MERGE_KEYS and val in ([], {}) and merged.get(key):
+                continue
+            merged[key] = val
     merged["exclusion_zones"] = _normalize_zones(merged.get("exclusion_zones"))
     merged["obstacles"] = _normalize_obstacles_for_plot(merged.get("obstacles"))
 
-    if merged.get("terrain_mesh") is None and isinstance(merged.get("terrain"), dict):
+    if merged.get("terrain_mesh") is None and isinstance(merged.get("terrain"), dict) and merged["terrain"]:
         try:
             mesh = build_terrain_mesh(merged["terrain"], workspace=workspace)
             merged["terrain_mesh"] = {
@@ -437,6 +555,7 @@ def resolve_report_layout(
             if pts := merged["terrain"].get("points"):
                 merged.setdefault("terrain_points", pts)
 
+    _validate_layout_collections(merged)
     suffix = f" ({primary_scenario['label']})" if len(all_scenarios) > 1 else ""
     return merged, include_3d, suffix
 
@@ -507,6 +626,7 @@ def build_layout_figures(
     import plotly.graph_objects as go
 
     lbl = _LAYOUT_I18N[language]
+    _validate_layout_collections(dict(layout))
     site_poly = layout.get("site_polygon") or []
     exclusions = _normalize_zones(layout.get("exclusion_zones"))
     tables = layout.get("tables") or []
@@ -516,7 +636,7 @@ def build_layout_figures(
 
     has_2d_content = bool(len(site_poly) >= 3 or exclusions or tables or obstacles)
     has_terrain = bool((terrain_mesh and terrain_mesh.get("vertices")) or len(terrain_pts) >= 3)
-    all_table_corners = [_table_corners_3d(tbl) for tbl in tables]
+    all_table_corners = [_table_corners_3d(tbl, i) for i, tbl in enumerate(tables)]
     z_vals = [c[2] for corners in all_table_corners for c in corners]
     has_z_relief = len(z_vals) >= 2 and (max(z_vals) - min(z_vals) > 1e-3)
     has_3d_site = any(isinstance(p, (list, tuple)) and len(p) >= 3 for p in site_poly)

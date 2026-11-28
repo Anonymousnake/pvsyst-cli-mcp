@@ -180,6 +180,18 @@ def is_self_intersecting_polygon(pts: list[tuple[float, float]]) -> bool:
     return False
 
 
+def round_closed_polygon(pts: list[tuple[float, float]], decimals: int = 4) -> list[list[float]]:
+    """Round polygon vertices and drop consecutive or closing duplicate points."""
+    out: list[list[float]] = []
+    for x, y in pts:
+        pt = [round(x, decimals), round(y, decimals)]
+        if not out or pt != out[-1]:
+            out.append(pt)
+    while len(out) > 1 and out[0] == out[-1]:
+        out.pop()
+    return out
+
+
 def validate_exclusion_zones(exclusion_zones: Any) -> list[list[tuple[float, float]]]:
     """Validate optional list of 2D exclusion polygons [[x, y], ...]."""
     if exclusion_zones is None:

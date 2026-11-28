@@ -870,7 +870,10 @@ class OrientationSpectralAndNativeEcoTests(unittest.TestCase):
                 self.assertEqual(res["orientation_conversion"]["target_type"], target)
                 txt = (self.ws / "Projects" / f"Phase5Test.{new_vc}").read_text(encoding="latin-1")
                 self.assertIn(expected_marker, txt)
-                self.assertNotIn("PVObject_Ombrage=pvShading", txt)
+                self.assertIn("PVObject_Ombrage=pvShading", txt)
+                self.assertIn("Flags=$00080000", txt)
+                self.assertNotIn("ListeObjets", txt)
+                self.assertFalse(res["orientation_conversion"]["stripped_3d_shading"])
     def test_public_convert_orientation_dome_and_paired_subarray_guards(self) -> None:
         from typing import get_args, get_type_hints
         from pvsyst_auto.api.projects import OrientationConvertParams, pvsyst_convert_orientation

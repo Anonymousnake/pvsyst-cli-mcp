@@ -46,6 +46,53 @@ def _within_saved_precision(actual, declared):
         return abs(_number(actual) - declared) <= SAVED_TOLERANCE
 
 
+_UTILITY_FIELD_TYPES = {
+    "ground_sheds": ("FixedPlane", "Sheds", "RegularSheds"),
+    "ground_tracker": ("UnlimTracking", "TrackHorizNSAxis"),
+    "ground_dome": ("Dome", "DomeBackfaces"),
+}
+
+
+def _reconstruct_utility_request(baseline: dict, prep_req: dict) -> dict:
+    inputs = baseline.get("inputs") or {}
+    weather = prep_req.get("weather") or {}
+    selected = (baseline.get("preparation_context") or {}).get("selected") or {}
+
+    def _asset_name(keys: tuple[str, ...], fallback: str = "") -> str:
+        for k in keys:
+            item = inputs.get(k)
+            if isinstance(item, dict):
+                name = item.get("name") or (Path(item["path"]).name if item.get("path") else "")
+                if name:
+                    return name
+        return fallback
+
+    pan_name = _asset_name(("PAN",), Path((selected.get("PAN") or {}).get("name") or (prep_req.get("module") or {}).get("file_name") or "").name)
+    ond_name = _asset_name(("OND",), Path((selected.get("OND") or {}).get("name") or (prep_req.get("inverter") or {}).get("file_name") or "").name)
+    site_name = _asset_name(("site_name", "site", "SIT"), Path(weather.get("sit_name") or "").name)
+    if not site_name and prep_req.get("new_project"):
+        site_name = f"{Path(prep_req['new_project']).stem}.SIT"
+    default_met = (
+        f"{Path(site_name).stem}_Synthetic.MET"
+        if weather.get("mode") == "synthetic_from_site" and site_name
+        else Path(weather.get("met_name") or "").name
+    )
+    met_name = _asset_name(("met_name", "meteo", "MET"), default_met)
+    req = {
+        "year": prep_req.get("year"),
+        "new_project": prep_req.get("new_project") or baseline.get("working_project"),
+        "variant": baseline.get("working_variant") or "VC0",
+        "pan_name": pan_name,
+        "ond_name": ond_name,
+        "site_name": site_name,
+        "met_name": met_name,
+    }
+    for opt_key in ("tilt", "azimuth", "losses"):
+        if prep_req.get(opt_key) is not None:
+            req[opt_key] = prep_req[opt_key]
+    return req
+
+
 def review_project_inputs(store, *, project, variant, preparation_manifest_name):
     result = {"status": "blocked", "readonly": True, "issues": [], "comparisons": [], "declared_not_native": [],
               "native_consumption_verified": False, "runtime_state_observed": False, "repairs_applied": False}
@@ -58,9 +105,17 @@ def review_project_inputs(store, *, project, variant, preparation_manifest_name)
             if (not isinstance(baseline, dict) or baseline.get("operation") != "prepare_project"
                     or baseline.get("status") not in ("prepared", "needs_review") or baseline.get("prepared") is not True
                     or baseline.get("simulated") is not False or baseline.get("metrics") is not None
-                    or not isinstance(baseline.get("request"), dict) or not isinstance(baseline.get("preparation_context"), dict)):
+                    or not isinstance(baseline.get("preparation_context"), dict)):
                 raise ValueError("Require a completed source-preparation baseline, not an annual/job result")
-            request, source, member = baseline["request"], project_name(baseline["working_project"]), variant_id(baseline["working_variant"])
+            scope_name = baseline.get("scope")
+            is_utility = scope_name in _UTILITY_FIELD_TYPES
+            request = baseline.get("request")
+            if not isinstance(request, dict):
+                prep_req = baseline["preparation_context"].get("request")
+                if not is_utility or not isinstance(prep_req, dict):
+                    raise ValueError("Require a completed source-preparation baseline, not an annual/job result")
+                request = _reconstruct_utility_request(baseline, prep_req)
+            source, member = project_name(baseline["working_project"]), variant_id(baseline["working_variant"])
             year = request["year"]
             if type(year) is not int or not 1969 <= year <= 2068:
                 raise ValueError("Baseline year is outside the supported request range")
@@ -69,19 +124,28 @@ def review_project_inputs(store, *, project, variant, preparation_manifest_name)
                 raise ValueError("Baseline filename/project/variant declarations disagree")
             for key, extension in (("pan_name", ".PAN"), ("ond_name", ".OND"), ("site_name", ".SIT"), ("met_name", ".MET")):
                 safe_filename(request[key], extension)
-            _number(request["tilt"])
+            if request.get("tilt") is not None:
+                _number(request["tilt"])
+            elif not is_utility:
+                raise ValueError("Baseline is missing declared tilt angle")
             if request.get("azimuth") is not None:
                 _number(request["azimuth"])
             before, parameters, references = store.inspect_project(project), store.inspect_parameters(project, variant), store.inspect(project, variant)
-            if (parameters["system_parameters"].get("SystemType") != "Grid"
-                    or len(parameters["subarrays"]) != 1 or len(parameters["orientations"]) != 1 or len(references["subarrays"]) != 1):
+            subarrays, orientations = parameters["subarrays"], parameters["orientations"]
+            if parameters["system_parameters"].get("SystemType") != "Grid" or not subarrays or not orientations or len(references["subarrays"]) != len(subarrays):
+                raise ValueError("Initial review supports Grid subarrays/orientations matching references")
+            if not is_utility and (len(subarrays) != 1 or len(orientations) != 1):
                 raise ValueError("Initial review supports one Grid subarray/orientation; no automatic topology mapping")
-            array, orient = parameters["subarrays"][0], parameters["orientations"][0]
+            array, orient = subarrays[0], orientations[0]
             values = orient["values"]
-            if (values.get("FieldType") != "FixedPlane"
-                    or any(values.get(key, "False") != "False" for key in ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"))
-                    or array["values"].get("NoOrientation") != str(orient["id"])):
-                raise ValueError("Require a single assigned fixed non-seasonal plane for angle comparison")
+            allowed_fts = _UTILITY_FIELD_TYPES[scope_name] if is_utility else ("FixedPlane",)
+            orient_ids = {str(o["id"]) for o in orientations}
+            if (any(o["values"].get("FieldType") not in allowed_fts
+                    or any(o["values"].get(k, "False") != "False" for k in ("UsesTiltAver", "UsesAzimAver", "UsesSlopeAver"))
+                    for o in orientations)
+                    or (not is_utility and array["values"].get("NoOrientation") != str(orient["id"]))
+                    or any(s["values"].get("NoOrientation") not in orient_ids for s in subarrays)):
+                raise ValueError("Require assigned non-seasonal planes matching baseline scope for angle comparison")
 
             def compare(field, expected, actual, owner, unit=None, integer=False, text=False):
                 if text:
@@ -108,18 +172,45 @@ def review_project_inputs(store, *, project, variant, preparation_manifest_name)
             for key, kind in (("site_name", "site"), ("met_name", "meteo")):
                 compare(key, request[key], actual_sources[kind]["name"], "variant_sources", text=True)
                 compare("project_" + key, request[key], before["sources"][store._path(project).name][kind]["name"], "project_sources", text=True)
-            compare("tilt", request["tilt"], values.get("FieldTilt"), f"orientation:{orient['id']}", "deg")
+            if request.get("tilt") is not None:
+                compare("tilt", request["tilt"], values.get("FieldTilt"), f"orientation:{orient['id']}", "deg")
             if request.get("azimuth") is not None:
-                compare("azimuth", request["azimuth"], values.get("FieldAzim"), f"orientation:{orient['id']}", "PVsyst_deg")
+                azim_key = "AxisAzim" if values.get("FieldType") in ("UnlimTracking", "TrackHorizNSAxis") else "FieldAzim"
+                compare("azimuth", request["azimuth"], values.get(azim_key), f"orientation:{orient['id']}", "PVsyst_deg")
             plan = baseline.get("capacity_plan")
             if not isinstance(plan, dict) or plan.get("status") != "ready":
                 raise ValueError("Baseline lacks its accepted capacity plan; counts are not inferred")
-            for key, field in (("series_modules", "NModSerie"), ("string_count", "NStringCh"), ("inverter_count", "NInverter")):
-                compare(field, plan[key], array["values"].get(field), f"subarray:{array['id']}", "count", integer=True)
+            if len(subarrays) == 1:
+                for key, field in (("series_modules", "NModSerie"), ("string_count", "NStringCh"), ("inverter_count", "NInverter")):
+                    compare(field, plan[key], array["values"].get(field), f"subarray:{array['id']}", "count", integer=True)
+            else:
+                nms_vals = {s["values"].get("NModSerie") for s in subarrays}
+                compare("NModSerie", plan["series_modules"], array["values"].get("NModSerie") if len(nms_vals) == 1 else "mixed", "subarrays", "count", integer=True)
+                str_vals = [s["values"].get("NStringCh") for s in subarrays]
+                total_strings = str(sum(int(v) for v in str_vals)) if all(isinstance(v, str) and v.isdigit() for v in str_vals) else None
+                compare("NStringCh", plan["string_count"], total_strings, "subarrays", "count", integer=True)
+                inv_vals = [s["values"].get("NInverter") for s in subarrays]
+                shared_inv = any(str(s["values"].get("PowerSharingInverterId", "-1")) not in ("-1", "") for s in subarrays)
+                if all(isinstance(v, str) and v.isdigit() for v in inv_vals):
+                    total_invs = inv_vals[0] if (shared_inv and len(set(inv_vals)) == 1) else str(sum(int(v) for v in inv_vals))
+                else:
+                    total_invs = None
+                compare("NInverter", plan["inverter_count"], total_invs, "subarrays", "count", integer=True)
             losses = request.get("losses") or {}
-            if not isinstance(losses, dict) or set(losses) - {"LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor"}:
+            if not isinstance(losses, dict) or set(losses) - {"LIDLoss", "PMismMPP", "ModuleQualityLoss", "UFactor", "ageing"}:
                 raise ValueError("Baseline contains an unsupported loss declaration")
             for key, value in losses.items():
+                if key == "ageing":
+                    from pvsyst_auto.energy.ageing import normalize_ageing_spec
+                    age_norm = normalize_ageing_spec(value)
+                    age_saved = parameters.get("ageing") or {}
+                    compare("ageing.enabled", str(age_norm["enabled"]), None if age_saved.get("enabled") is None else str(age_saved.get("enabled")), "main_array", text=True)
+                    if age_norm["enabled"]:
+                        compare("ageing.simulation_year", age_norm["simulation_year"], age_saved.get("simulation_year"), "main_array", integer=True)
+                        for akey in ("annual_module_degradation_percent", "imp_degrad_sharing_percent", "modules_rms_year_isc_percent", "modules_rms_year_voc_percent"):
+                            compare("ageing." + akey, age_norm[akey], age_saved.get(akey), "main_array", "%")
+                        compare("ageing.keep_mc_values", str(age_norm["keep_mc_values"]), None if age_saved.get("keep_mc_values") is None else str(age_saved.get("keep_mc_values")), "main_array", text=True)
+                    continue
                 fields = ("PQualityModU", "PQualityModI") if key == "ModuleQualityLoss" else (key,)
                 owner = "main_array" if key == "UFactor" else f"subarray:{array['id']}"
                 actual = parameters["main_array"]["values"] if key == "UFactor" else array["values"]

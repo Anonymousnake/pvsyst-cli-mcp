@@ -208,15 +208,13 @@ def propose_remediations(
             ft = ovals.get("FieldType")
             if ft in ("Sheds", "UnlimSheds", "UnlimTracking") and "Pitch" in ovals:
                 cur_pitch = _parse_float(ovals.get("Pitch"))
-                if cur_pitch is not None and cur_pitch > 0 and "Pitch" not in orient_updates:
+                if cur_pitch is not None and cur_pitch > 0:
                     new_pitch = round(cur_pitch * 1.15, 2)
-                    orient_updates["Pitch"] = new_pitch
-                    actions.append({
+                    tool_name = "pvsyst_create_tracking_variant" if ft == "UnlimTracking" else "pvsyst_create_shed_geometry_variant"
+                    advisories.append({
                         "finding_code": code,
-                        "target": f"orientation[{orient0['id']}].Pitch",
-                        "before": cur_pitch,
-                        "after": new_pitch,
-                        "reason": f"Increase row pitch +15% ({cur_pitch} m -> {new_pitch} m) to reduce inter-row shading",
+                        "action": "manual_tool_call",
+                        "message": f"Increase row pitch +15% ({cur_pitch} m -> {new_pitch} m) using {tool_name} to reduce inter-row shading.",
                     })
             elif ft == "FixedPlane" and "FieldTilt" in ovals:
                 cur_tilt = _parse_float(ovals.get("FieldTilt"))
@@ -248,16 +246,28 @@ def propose_remediations(
 
     diff_preview = ""
     if sub_updates or orient_updates:
-        preview = store.update_parameters(
-            project,
-            variant,
-            orientation_id=orient0["id"] if (orient_updates and orient0) else None,
-            subarray_id=sub0["id"] if (sub_updates and sub0) else None,
-            orientation_updates=orient_updates or None,
-            subarray_updates=sub_updates or None,
-            dry_run=True,
-        )
-        diff_preview = preview.get("diff", "")
+        try:
+            preview = store.update_parameters(
+                project,
+                variant,
+                orientation_id=orient0["id"] if (orient_updates and orient0) else None,
+                subarray_id=sub0["id"] if (sub_updates and sub0) else None,
+                orientation_updates=orient_updates or None,
+                subarray_updates=sub_updates or None,
+                dry_run=True,
+            )
+            diff_preview = preview.get("diff", "")
+        except ValueError as exc:
+            for act in actions:
+                advisories.append({
+                    "finding_code": act["finding_code"],
+                    "action": "manual_review",
+                    "message": f"{act['reason']} (automatic variant update unavailable: {exc})",
+                })
+            sub_updates = {}
+            orient_updates = {}
+            actions = []
+            diff_preview = ""
 
     return {
         "has_executable_patch": bool(sub_updates or orient_updates),

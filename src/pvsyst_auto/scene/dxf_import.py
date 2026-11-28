@@ -8,7 +8,7 @@ from typing import Any
 
 from pvsyst_auto.project.paths import workspace_file
 from pvsyst_auto.scene.author import MAX_OBSTACLES, obstacle_profiles
-from pvsyst_auto.scene.exclusions import MAX_EXCLUSION_ZONES, is_self_intersecting_polygon, polygon_area, validate_exclusion_zones
+from pvsyst_auto.scene.exclusions import MAX_EXCLUSION_ZONES, is_self_intersecting_polygon, polygon_area, round_closed_polygon, validate_exclusion_zones
 from pvsyst_auto.scene.reader import validate_site_polygon
 from pvsyst_auto.validation import finite_number as _finite
 
@@ -16,6 +16,7 @@ MAX_DXF_BYTES = 64 * 1024 * 1024
 MAX_DXF_TERRAIN_POINTS = 2500
 MAX_DXF_INSERT_DEPTH = 8
 MAX_DXF_ENTITIES = 50000
+MAX_DXF_VERTICES = 500_000
 
 _INSUNITS_TO_M: dict[int, float] = {
     0: 1.0, 1: 0.0254, 2: 0.3048, 3: 1609.344, 4: 0.001, 5: 0.01,
@@ -110,11 +111,15 @@ def _simplify_closed_polygon(pts: list[tuple[float, float]], max_verts: int = 64
     return best, True
 
 
-def _extrude_polygon_prism(poly: list[tuple[float, float]], z0: float, z1: float) -> tuple[list[list[float]], list[list[int]]]:
-    n = len(poly)
-    area2 = sum(poly[i][0] * poly[(i + 1) % n][1] - poly[(i + 1) % n][0] * poly[i][1] for i in range(n))
-    pts = list(reversed(poly)) if area2 < 0.0 else list(poly)
-    verts = [[round(x, 5), round(y, 5), round(z0, 5)] for x, y in pts] + [[round(x, 5), round(y, 5), round(z1, 5)] for x, y in pts]
+def _extrude_polygon_prism(poly: list[tuple[float, float]], z0: float, z1: float) -> tuple[list[list[float]], list[list[int]]] | None:
+    pts_2d = round_closed_polygon(poly, 5)
+    n = len(pts_2d)
+    if n < 3 or round(z1, 5) <= round(z0, 5):
+        return None
+    area2 = sum(pts_2d[i][0] * pts_2d[(i + 1) % n][1] - pts_2d[(i + 1) % n][0] * pts_2d[i][1] for i in range(n))
+    pts = list(reversed(pts_2d)) if area2 < 0.0 else list(pts_2d)
+    rz0, rz1 = round(z0, 5), round(z1, 5)
+    verts = [[x, y, rz0] for x, y in pts] + [[x, y, rz1] for x, y in pts]
     faces: list[list[int]] = []
     for i in range(1, n - 1):
         ax, ay = pts[0]
@@ -125,7 +130,7 @@ def _extrude_polygon_prism(poly: list[tuple[float, float]], z0: float, z1: float
     for i in range(n):
         j = (i + 1) % n
         faces.extend(([i, j, n + j], [i, n + j, n + i]))
-    return verts, faces
+    return (verts, faces) if faces else None
 
 
 def normalize_dxf_layers(dxf_layers: dict[str, Any] | None) -> dict[str, set[str]]:
@@ -648,15 +653,19 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
     """Expand top-level entities and nested BLOCK/INSERT references into concrete entities."""
     expanded: list[dict[str, Any]] = []
     entity_counts: dict[str, int] = {}
-    work_steps = [0]
+    work_steps, vertex_steps = [0], [0]
+
+    def _charge_verts(n: int) -> None:
+        vertex_steps[0] += n
+        if vertex_steps[0] > MAX_DXF_VERTICES:
+            raise ValueError(f"DXF expanded vertex count exceeded ceiling ({MAX_DXF_VERTICES})")
 
     def _walk(items: list[dict[str, Any]], mat: tuple[tuple[float, float, float, float], ...], parent_layer: str, depth: int, active: set[str]) -> None:
         for ent in items:
             work_steps[0] += 1
             if work_steps[0] > MAX_DXF_ENTITIES:
                 raise ValueError(f"DXF entity/INSERT expansion exceeded maximum budget ({MAX_DXF_ENTITIES})")
-            t = ent["type"]
-            raw_layer = ent.get("layer", "0")
+            t, raw_layer = ent["type"], ent.get("layer", "0")
             layer = parent_layer if (raw_layer == "0" and parent_layer != "0") else raw_layer
             if t == "INSERT":
                 entity_counts["INSERT"] = entity_counts.get("INSERT", 0) + 1
@@ -689,41 +698,40 @@ def _expand_dxf_entities(raw_entities: list[dict[str, Any]], blocks: dict[str, d
                 continue
 
             entity_counts[t] = entity_counts.get(t, 0) + 1
-            has_ocs = "nx" in ent or "ny" in ent or "nz" in ent
-            m_ent = _mat_mul(mat, _ocs_matrix(ent.get("nx", 0.0), ent.get("ny", 0.0), ent.get("nz", 1.0))) if has_ocs else mat
+            m_ent = _mat_mul(mat, _ocs_matrix(ent.get("nx", 0.0), ent.get("ny", 0.0), ent.get("nz", 1.0))) if ("nx" in ent or "ny" in ent or "nz" in ent) else mat
             z_scale = abs(m_ent[2][2])
             if t == "LWPOLYLINE":
+                _charge_verts(len(ent["pts"]))
                 local = _discretize_bulge_chain([(p[0], p[1], ent["z0"], p[2]) for p in ent["pts"]], ent["closed"])
+                _charge_verts(max(0, len(local) - len(ent["pts"])))
                 expanded.append({"type": "CURVE", "layer": layer, "closed": ent["closed"], "thick": ent["thick"] * z_scale, "pts": [_apply_mat(m_ent, p) for p in local]})
             elif t == "POLYLINE":
                 vlist = ent["vertices"]
+                _charge_verts(len(vlist))
                 if ent["flag"] & 64:
-                    expanded.append({"type": "POLYFACE", "layer": layer, "vertices": vlist,
-                                     "pts3": [_apply_mat(mat, (v["x"], v["y"], v["z"])) for v in vlist if (v["flag"] & 128) and (v["flag"] & 64)]})
+                    expanded.append({"type": "POLYFACE", "layer": layer, "vertices": vlist, "pts3": [_apply_mat(mat, (v["x"], v["y"], v["z"])) for v in vlist if (v["flag"] & 128) and (v["flag"] & 64)]})
                 else:
                     closed, is_3d_poly = bool(ent["flag"] & 1), bool(ent["flag"] & 8)
                     m_poly = mat if is_3d_poly else m_ent
                     local = _discretize_bulge_chain([(v["x"], v["y"], v["z"] if is_3d_poly else ent["z0"], v.get("bulge", 0.0)) for v in vlist], closed)
+                    _charge_verts(max(0, len(local) - len(vlist)))
                     expanded.append({"type": "CURVE", "layer": layer, "closed": closed, "thick": ent["thick"] * abs(m_poly[2][2]), "pts": [_apply_mat(m_poly, p) for p in local]})
-            elif t == "CIRCLE":
-                local = _discretize_circle(ent["cx"], ent["cy"], ent["cz"], ent["r"])
-                expanded.append({"type": "CURVE", "layer": layer, "closed": True, "thick": ent["thick"] * z_scale, "pts": [_apply_mat(m_ent, p) for p in local]})
-            elif t == "ARC":
-                local, full = _discretize_arc(ent["cx"], ent["cy"], ent["cz"], ent["r"], ent["start"], ent["end"])
-                expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": ent["thick"] * z_scale, "pts": [_apply_mat(m_ent, p) for p in local]})
-            elif t == "ELLIPSE":
-                local, full = _discretize_ellipse(ent)
-                expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": 0.0, "pts": [_apply_mat(mat, p) for p in local]})
+            elif t in ("CIRCLE", "ARC", "ELLIPSE", "SPLINE"):
+                if t == "CIRCLE": local, full, tk, mt = _discretize_circle(ent["cx"], ent["cy"], ent["cz"], ent["r"]), True, ent["thick"] * z_scale, m_ent
+                elif t == "ARC": local, full = _discretize_arc(ent["cx"], ent["cy"], ent["cz"], ent["r"], ent["start"], ent["end"]); tk, mt = ent["thick"] * z_scale, m_ent
+                elif t == "ELLIPSE": local, full = _discretize_ellipse(ent); tk, mt = 0.0, mat
+                else: local, full = _discretize_spline(ent); tk, mt = 0.0, mat
+                _charge_verts(len(local))
+                expanded.append({"type": "CURVE", "layer": layer, "closed": full, "thick": tk, "pts": [_apply_mat(mt, p) for p in local]})
             elif t == "LINE":
-                expanded.append({"type": "CURVE", "layer": layer, "closed": False, "thick": 0.0,
-                                 "pts": [_apply_mat(mat, (ent["x1"], ent["y1"], ent["z1"])), _apply_mat(mat, (ent["x2"], ent["y2"], ent["z2"]))]})
-            elif t == "SPLINE":
-                local, s_closed = _discretize_spline(ent)
-                expanded.append({"type": "CURVE", "layer": layer, "closed": s_closed, "thick": 0.0, "pts": [_apply_mat(mat, p) for p in local]})
+                _charge_verts(2)
+                expanded.append({"type": "CURVE", "layer": layer, "closed": False, "thick": 0.0, "pts": [_apply_mat(mat, (ent["x1"], ent["y1"], ent["z1"])), _apply_mat(mat, (ent["x2"], ent["y2"], ent["z2"]))]})
             elif t == "3DFACE":
+                _charge_verts(4)
                 c = ent["coords"]
                 expanded.append({"type": "3DFACE", "layer": layer, "pts": [_apply_mat(mat, (c.get(10 + k, 0.0), c.get(20 + k, 0.0), c.get(30 + k, 0.0))) for k in range(4)]})
             elif t == "POINT":
+                _charge_verts(1)
                 wx, wy, wz = _apply_mat(mat, (ent["x"], ent["y"], ent["z"]))
                 expanded.append({"type": "POINT", "layer": layer, "x": wx, "y": wy, "z": wz})
 
@@ -772,8 +780,8 @@ def parse_ascii_dxf(workspace: Path, dxf_name: str, *, dxf_layers: dict[str, Any
         if role == "obstacles":
             if len(obstacles) < MAX_OBSTACLES:
                 simp, _ = _simplify_closed_polygon(pts2, 48)
-                if len(simp) >= 3:
-                    verts, faces = _extrude_polygon_prism(simp, z_base, z_base + h)
+                if len(simp) >= 3 and (prism := _extrude_polygon_prism(simp, z_base, z_base + h)) is not None:
+                    verts, faces = prism
                     oname = f"DXF_Obs_{idx_tag}"
                     while oname.casefold() in used_obs:
                         oname += "_1"
@@ -798,12 +806,16 @@ def parse_ascii_dxf(workspace: Path, dxf_name: str, *, dxf_layers: dict[str, Any
                 terrain_pts.extend(pts3)
                 continue
             pts2 = [(p[0], p[1]) for p in pts3]
-            closed = ent["closed"] or (len(pts2) >= 4 and math.hypot(pts2[0][0] - pts2[-1][0], pts2[0][1] - pts2[-1][1]) <= 1e-4)
+            auto_closed = not ent["closed"] and len(pts2) >= 4 and math.hypot(pts2[0][0] - pts2[-1][0], pts2[0][1] - pts2[-1][1]) <= 1e-4
+            if auto_closed:
+                pts2 = pts2[:-1]
+            closed = ent["closed"] or auto_closed
             if closed and len(pts2) >= 3:
                 zs_p = [p[2] for p in pts3]
                 zmin, zmax, thick = min(zs_p), max(zs_p), ent["thick"] * scale
-                h = thick if thick > 0 else ((zmax - zmin) if zmax - zmin > 0.05 else (zmin if zmin > 0 else 4.0))
-                z_base = zmin if (zmax - zmin > 0.05 or thick > 0) else 0.0
+                dz = zmax - zmin
+                h = thick if thick > 1e-3 else (dz if dz > 0.05 else (zmin if zmin > 1e-3 else 4.0))
+                z_base = zmin if (dz > 0.05 or thick > 1e-3) else 0.0
                 _route_closed(pts2, role, z_base, h, idx_e + 1)
             elif len(pts2) >= 2:
                 open_chains.setdefault((layer.casefold(), role), []).append(pts2)
@@ -847,7 +859,7 @@ def parse_ascii_dxf(workspace: Path, dxf_name: str, *, dxf_layers: dict[str, Any
     excl_candidates: list[tuple[float, list[list[float]]]] = []
     for raw_ex in exclusion_polys:
         simp_ex, _ = _simplify_closed_polygon(raw_ex, 64)
-        rounded_ex = [[round(x, 4), round(y, 4)] for x, y in simp_ex]
+        rounded_ex = round_closed_polygon(simp_ex, 4)
         if len(rounded_ex) < 3:
             continue
         pts_ex = [(p[0], p[1]) for p in rounded_ex]
@@ -869,25 +881,14 @@ def parse_ascii_dxf(workspace: Path, dxf_name: str, *, dxf_layers: dict[str, Any
     if not candidates:
         raise ValueError(f"No closed boundary polygon found in DXF {dxf_name!r}; verify layer mapping via dxf_layers.boundary")
     simp_poly, simplified = _simplify_closed_polygon(max(candidates, key=polygon_area), 64)
-    validated = validate_site_polygon([[round(x, 4), round(y, 4)] for x, y in simp_poly])
+    validated = validate_site_polygon(round_closed_polygon(simp_poly, 4))
     site_polygon = [[x, y] for x, y in validated]
     return {
-        "format": "ascii_dxf",
-        "file_name": dxf_name,
-        "unit_scale": scale,
-        "insunits_code": insunits_code,
-        "layers": sorted(layers_seen),
-        "entity_counts": entity_counts,
-        "site_polygon": site_polygon,
-        "site_area_m2": round(polygon_area(validated), 2),
-        "boundary_simplified": simplified,
-        "exclusion_zones": exclusion_zones,
-        "obstacles": obstacles,
+        "format": "ascii_dxf", "file_name": dxf_name, "unit_scale": scale, "insunits_code": insunits_code,
+        "layers": sorted(layers_seen), "entity_counts": entity_counts, "site_polygon": site_polygon,
+        "site_area_m2": round(polygon_area(validated), 2), "boundary_simplified": simplified,
+        "exclusion_zones": exclusion_zones, "obstacles": obstacles,
         "terrain_points": downsample_xyz_points(terrain_pts) if len(terrain_pts) >= 3 else [],
-        "bounds_m": {
-            "min_x": round(min(p[0] for p in site_polygon), 3),
-            "max_x": round(max(p[0] for p in site_polygon), 3),
-            "min_y": round(min(p[1] for p in site_polygon), 3),
-            "max_y": round(max(p[1] for p in site_polygon), 3),
-        },
+        "bounds_m": {"min_x": round(min(p[0] for p in site_polygon), 3), "max_x": round(max(p[0] for p in site_polygon), 3),
+                     "min_y": round(min(p[1] for p in site_polygon), 3), "max_y": round(max(p[1] for p in site_polygon), 3)},
     }

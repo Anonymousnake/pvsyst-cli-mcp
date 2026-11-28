@@ -216,8 +216,8 @@ def _simulate_template(cli, store, template_project="", variant="", new_project=
             issue("nominal_dc_power_kw", "Tracking flow requires explicit positive finite nameplate kWp, cross-checked with native PR after the run")
         if not isinstance(tracking_power_source, str) or not tracking_power_source.strip() or not tracking_power_source.isprintable():
             issue("tracking_power_source", "Declare the nameplate power source; no database model or nameplate is inferred")
-        if prepare_only or any(value is not None for value in (tilt, azimuth, capacity, losses)):
-            issue("tracking", "Tracking flow preserves source equipment/counts/losses and forbids fixed angles, capacity/loss edits or preparation-only mode")
+        if prepare_only or any(value is not None for value in (tilt, azimuth, capacity, losses, horizon, p50_p90)):
+            issue("tracking", "Tracking flow preserves source equipment/counts/losses and forbids fixed angles, capacity/loss edits, horizon/p50_p90, or preparation-only mode")
     elif tracking_variant or nominal_dc_power_kw is not None or tracking_power_source:
         issue("tracking", "Tracking-only variant/power/source inputs require explicit tracking controls")
 

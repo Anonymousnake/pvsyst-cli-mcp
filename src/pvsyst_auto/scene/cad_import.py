@@ -23,6 +23,7 @@ from pvsyst_auto.scene.pvc_clustering import (
     cluster_fixed_pvc_orientations,
     estimate_pvc_pitch as _estimate_pvc_pitch,
     filter_pvc_subset,
+    normalize_azimuth_deg,
 )
 from pvsyst_auto.scene.reader import build_ground_3d_shading
 from pvsyst_auto.scene.terrain import build_terrain_mesh
@@ -32,6 +33,9 @@ from pvsyst_auto.validation import is_finite_number as _is_number
 
 COLLADA_141_NS = "http://www.collada.org/2005/11/COLLADASchema"
 MAX_CAD_TABLES = 2000
+MAX_PVC_NODE_DEPTH = 64
+MAX_PVC_INSTANCES = 50_000
+MAX_PVC_TERRAIN_POINTS = 500_000
 _EPS = 1e-9
 _TERRAIN_RE = re.compile(r"(?:topo|terrain|dtm|dem|contour|elev|ground|grade|surf)", re.I)
 
@@ -250,20 +254,28 @@ def _extract_top_quad(wpts: list[tuple[float, float, float]], tris: list[list[in
 
 def _fixed_table_from_pvc(name: str, wpts: list[tuple[float, float, float]], tris: list[list[int]], params: dict[str, Any]) -> dict[str, Any]:
     quad, n = _extract_top_quad(wpts, tris)
-    tilt_deg = round(math.degrees(math.acos(_clamp(n[2], -1.0, 1.0))), 3)
-    az_deg = round(math.degrees(math.atan2(n[0], n[1])), 3) if math.hypot(n[0], n[1]) > 1e-6 else 0.0
     slope_dir = (n[0], n[1], n[2]) if math.hypot(n[0], n[1]) > 1e-6 else (0.0, 1.0, 0.0)
 
-    def _pair_score(pair: tuple[tuple[tuple[float, float, float], tuple[float, float, float]], tuple[tuple[float, float, float], tuple[float, float, float]]]) -> float:
+    def _pair_metrics(pair: tuple[tuple[tuple[float, float, float], tuple[float, float, float]], tuple[tuple[float, float, float], tuple[float, float, float]]]):
         e1, e2 = pair
         m1 = tuple(0.5 * (e1[0][ax] + e1[1][ax]) for ax in range(3))
         m2 = tuple(0.5 * (e2[0][ax] + e2[1][ax]) for ax in range(3))
-        return abs(m1[2] - m2[2]) + abs((m1[0] - m2[0]) * slope_dir[0] + (m1[1] - m2[1]) * slope_dir[1])
+        long_len = 0.5 * (math.dist(e1[0], e1[1]) + math.dist(e2[0], e2[1]))
+        larg_len = math.dist(m1, m2)
+        sin_chord = abs(m2[2] - m1[2]) / larg_len if larg_len > 1e-6 else 0.0
+        return e1, e2, m1, m2, long_len, larg_len, sin_chord
 
-    pair_a, pair_b = ((quad[0], quad[1]), (quad[3], quad[2])), ((quad[1], quad[2]), (quad[0], quad[3]))
-    e1, e2 = pair_a if _pair_score(pair_a) >= _pair_score(pair_b) else pair_b
-    m1 = tuple(0.5 * (e1[0][ax] + e1[1][ax]) for ax in range(3))
-    m2 = tuple(0.5 * (e2[0][ax] + e2[1][ax]) for ax in range(3))
+    pa = _pair_metrics(((quad[0], quad[1]), (quad[3], quad[2])))
+    pb = _pair_metrics(((quad[1], quad[2]), (quad[0], quad[3])))
+    if pa[4] <= 1e-6 or pa[5] <= 1e-6 or pb[4] <= 1e-6 or pb[5] <= 1e-6:
+        raise ValueError(f"PV frame {name!r} has degenerate zero-area dimensions")
+    if abs(pa[6] - pb[6]) <= 1e-4:
+        chosen = pa if pa[4] >= pb[4] else pb
+    else:
+        hi, lo = (pa, pb) if pa[6] >= pb[6] else (pb, pa)
+        # Guard flat or near-flat long sheds on sloped terrain (wide span, shallow chord slope).
+        chosen = lo if (hi[5] > 2.0 * hi[4] and hi[5] > 10.0 and hi[6] < 0.25) else hi
+    e1, e2, m1, m2, _, _, _ = chosen
     if m1[2] <= m2[2] - 1e-4 or (abs(m1[2] - m2[2]) <= 1e-4 and (m1[0] * slope_dir[0] + m1[1] * slope_dir[1]) >= (m2[0] * slope_dir[0] + m2[1] * slope_dir[1])):
         bot, origin_m, top_mid = e1, m1, m2
     else:
@@ -271,21 +283,29 @@ def _fixed_table_from_pvc(name: str, wpts: list[tuple[float, float, float]], tri
     long_shed, larg_shed = math.dist(bot[0], bot[1]), math.dist(origin_m, top_mid)
     if long_shed <= 1e-6 or larg_shed <= 1e-6:
         raise ValueError(f"PV frame {name!r} has degenerate zero-area dimensions")
-    az_rad = math.radians(az_deg)
+    e_up = _norm(_sub(top_mid, origin_m))
+    assert e_up is not None
     edge_vec = _sub(bot[1], bot[0])
-    if _dot(edge_vec, (math.cos(az_rad), -math.sin(az_rad), 0.0)) < 0.0:
+    if _dot(edge_vec, _cross(n, e_up)) < 0.0:
         edge_vec = _sub(bot[0], bot[1])
-    horiz = math.hypot(edge_vec[0], edge_vec[1])
-    base_slope = _clamp(math.degrees(math.atan2(edge_vec[2], horiz)) if horiz > 1e-6 else 0.0, -45.0, 45.0)
+    e_long = _norm(edge_vec)
+    assert e_long is not None
+    horiz = math.hypot(e_long[0], e_long[1])
+    base_slope = _clamp(math.degrees(math.atan2(e_long[2], horiz)) if horiz > 1e-6 else 0.0, -45.0, 45.0)
+    az_deg = round(normalize_azimuth_deg(math.degrees(math.atan2(-e_long[1], e_long[0]))), 3) if horiz > 1e-6 else 0.0
+    if abs(az_deg) < 1e-9:
+        az_deg = 0.0
+    tilt_deg = round(math.degrees(math.atan2(max(0.0, e_up[2]), max(0.0, n[2]))), 3)
     mw, ml, sx, sy = _pvc_module_params(params)
     orient, n_rows, n_cols = _infer_grid_counts(long_shed, larg_shed, mw, ml, sx, sy, tracker=False)
+    az_rad = math.radians(az_deg)
     return {
         "kind": "fixed", "name": name, "origin_m": [round(origin_m[0], 6), round(origin_m[1], 6), round(origin_m[2], 6)],
         "long_shed_m": round(long_shed, 6), "larg_shed_m": round(larg_shed, 6), "tilt_deg": tilt_deg,
         "azimuth_deg": az_deg, "base_slope_deg": round(base_slope, 3), "module_orient": orient,
         "module_rows": n_rows, "module_columns": n_cols, "module_count": n_rows * n_cols,
         "module_width_m": mw, "module_length_m": ml, "spacing_x_m": sx, "spacing_y_m": sy,
-        "normal_xy": (round(n[0], 6), round(n[1], 6)),
+        "normal_xy": (round(math.sin(az_rad), 6), round(math.cos(az_rad), 6)),
     }
 
 
@@ -352,8 +372,11 @@ def parse_pvc_141(workspace: Path, pvc_name: str, *, pvc_subset: str | None = No
         raise ValueError("Missing library_visual_scenes/visual_scene in .pvc file")
 
     fixed_tables, tracker_tables, obstacles, terrain_pts, used_names = [], [], [], [], set()
+    instance_count = [0]
 
-    def _walk(node: ET.Element, parent_m: list[list[float]]) -> None:
+    def _walk(node: ET.Element, parent_m: list[list[float]], depth: int = 0) -> None:
+        if depth > MAX_PVC_NODE_DEPTH:
+            raise ValueError(f".pvc node nesting depth exceeds ceiling ({MAX_PVC_NODE_DEPTH})")
         m = parent_m
         for ch in node:
             tag = ch.tag.split("}")[-1]
@@ -380,9 +403,16 @@ def parse_pvc_141(workspace: Path, pvc_name: str, *, pvc_subset: str | None = No
                 geom = geoms.get((gid := (ch.get("url") or "").lstrip("#")))
                 if geom is None:
                     continue
+                instance_count[0] += 1
+                if instance_count[0] > MAX_PVC_INSTANCES:
+                    raise ValueError(f".pvc instance count exceeds ceiling ({MAX_PVC_INSTANCES})")
                 if len(fixed_tables) + len(tracker_tables) >= MAX_CAD_TABLES:
                     raise ValueError(f".pvc table count exceeds ceiling ({MAX_CAD_TABLES})")
                 bound_names = [materials.get((im.get("target") or "").lstrip("#"), im.get("symbol", "")) for im in ch.findall(".//c:instance_material", ns)]
+                label_all = " ".join([gid, geom["name"], node_label, *bound_names, *geom["material_symbols"]])
+                is_terrain = geom["kind"] not in ("fixed", "tracker") and bool(_TERRAIN_RE.search(label_all))
+                if is_terrain and len(terrain_pts) + len(geom["points"]) > MAX_PVC_TERRAIN_POINTS:
+                    raise ValueError(f".pvc terrain point count exceeds ceiling ({MAX_PVC_TERRAIN_POINTS})")
                 wpts = [_mat_apply(m, p) for p in geom["points"]]
                 base_name = f"{node_label}_{gid}" if len(node_label) < 60 else gid
                 if geom["kind"] == "fixed":
@@ -390,8 +420,7 @@ def parse_pvc_141(workspace: Path, pvc_name: str, *, pvc_subset: str | None = No
                 elif geom["kind"] == "tracker":
                     tracker_tables.append(_tracker_table_from_pvc(base_name, wpts, geom["triangles"], geom["params"], m))
                 else:
-                    label_all = " ".join([gid, geom["name"], node_label, *bound_names, *geom["material_symbols"]])
-                    if _TERRAIN_RE.search(label_all):
+                    if is_terrain:
                         terrain_pts.extend(wpts)
                     elif geom["triangles"] and len(obstacles) < MAX_OBSTACLES:
                         uniq, suffix = base_name, 1
@@ -414,10 +443,10 @@ def parse_pvc_141(workspace: Path, pvc_name: str, *, pvc_subset: str | None = No
                         if vtris:
                             obstacles.append({"kind": "mesh", "name": uniq, "vertices": cverts, "triangles": vtris})
             elif tag == "node":
-                _walk(ch, m)
+                _walk(ch, m, depth + 1)
 
     for top_node in vis_scene.findall("c:node", ns):
-        _walk(top_node, _mat_identity())
+        _walk(top_node, _mat_identity(), 0)
 
     scene_kind = "mixed" if (fixed_tables and tracker_tables) else ("fixed" if fixed_tables else ("tracker" if tracker_tables else None))
     if scene_kind is None:

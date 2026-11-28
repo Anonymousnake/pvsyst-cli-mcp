@@ -60,6 +60,22 @@ _COMPOSABLE_CONTROLS = frozenset({
     "inverter_temperature_updates", "power_factor_updates", "p50_p90_updates", "horizon_updates",
     "power_controls_updates", "bifacial_updates", "spectral_updates", "native_economics_updates",
 })
+_PV_SYSTEM_CONTROLS = frozenset({
+    "system_unavailability_updates", "grid_limit_updates", "auxiliary_updates",
+    "inverter_temperature_updates", "power_factor_updates", "power_controls_updates",
+})
+_HORIZON_SENSITIVE_CONTROLS = frozenset({
+    "seasonal_updates", "inverter_temperature_updates", "power_factor_updates", "power_controls_updates",
+    "string_mismatch_updates", "ageing_updates", "ageing_enabled", "iam_updates",
+})
+
+
+def _is_removal_control(param_key: str, payload: Any) -> bool:
+    """True when payload removes/clears a composable feature rather than enabling or mutating it."""
+    return isinstance(payload, dict) and (
+        payload.get("mode") == "none"
+        or (param_key == "inverter_temperature_updates" and payload.get("mode") == "ambient")
+    )
 
 
 # --- New-variant transaction runner ---
@@ -238,6 +254,24 @@ def _validate_request(store, *, requested, generator_updates, dry_run, add_utf8_
         if any(p == "system_unavailability_updates" for p, _, _ in active):
             label, verb = "System-unavailability removal", "requires"
         raise ValueError(f"{label} {verb} a separate transaction; variant_name may accompany it")
+    if len(active) > 1:
+        active_keys = {p for p, _, _ in active}
+        if "power_controls_updates" in active_keys and (active_keys & {"grid_limit_updates", "power_factor_updates", "auxiliary_updates"}):
+            raise ValueError("power_controls_updates already manages grid limit, power factor, and auxiliary settings; do not combine with individual pvSystem controls")
+        pv_sys_setters = [
+            p for p, _, _ in active
+            if p in _PV_SYSTEM_CONTROLS and not _is_removal_control(p, control_params[p])
+        ]
+        if len(pv_sys_setters) > 1:
+            raise ValueError("Multiple active pvSystem flag-owning controls cannot be combined in one transaction; use power_controls_updates for combined grid limit and power factor")
+        hz = control_params.get("horizon_updates")
+        aux = control_params.get("auxiliary_updates")
+        aux_profile = isinstance(aux, dict) and aux.get("mode") == "profile"
+        if hz is not None and not _is_removal_control("horizon_updates", hz) and ((active_keys & _HORIZON_SENSITIVE_CONTROLS) or aux_profile):
+            raise ValueError("Horizon updates cannot be combined with horizon-sensitive pvSystem or auxiliary profile controls in one transaction")
+        p50 = control_params.get("p50_p90_updates")
+        if p50 is not None and not _is_removal_control("p50_p90_updates", p50) and aux_profile:
+            raise ValueError("P50/P90 updates cannot be combined with auxiliary profile updates in one transaction")
     if not isinstance(dry_run, bool) or not isinstance(add_utf8_bom, bool):
         raise ValueError("dry_run must be a boolean" if not isinstance(dry_run, bool) else "add_utf8_bom must be a boolean")
     if add_utf8_bom and variant_name is None:
@@ -564,6 +598,7 @@ def update_parameters(store, project: str, variant: str, expected_sha256: str | 
         )
         generator = replace_generator(lines, arrays, system, generator_updates, store.components) if generator_updates is not None else None
         active = [(p, lbl, rkey) for p, lbl, rkey, _ in _EXCLUSIVE_CONTROLS if control_params.get(p) is not None]
+        active.sort(key=lambda item: 0 if _is_removal_control(item[0], control_params[item[0]]) else 1)
         control_extras = {}
         for param_key, control, result_key in active:
             cur_arrays, cur_system = store._sections(lines)

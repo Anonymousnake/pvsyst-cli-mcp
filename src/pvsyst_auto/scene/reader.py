@@ -551,7 +551,7 @@ def plan_ground_polygon_layout(
                                and (not excl_rot or not rect_overlaps_any_polygon(u, u + (k * cell_w + (k - 1) * spacing_x_m), v, v + proj_depth, excl_rot))), 0)
                 if fitted > 0:
                     span = fitted * cell_w + (fitted - 1) * spacing_x_m
-                    wx, wy = _rotate(u + 0.5 * span, v, -rot_rad)
+                    wx, wy = _rotate(u + 0.5 * span, v + proj_depth, -rot_rad)
                     row_tables += 1
                     tables.append({
                         "name": f"GroundRow{row_idx + 1:02d}_T{row_tables:02d}", "row_index": row_idx + 1,

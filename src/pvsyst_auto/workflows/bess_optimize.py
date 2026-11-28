@@ -780,9 +780,10 @@ def optimize_bess_sizing(
                                                reserved=reserved, candidates=_VARIANT_IDS[1:36])
                 reserved.append(new_variant)
             else:
-                new_variant = variant_id(f"{prefix.strip()}{idx}")
-                if len(new_variant) != 3:
+                cand = f"{prefix.strip()}{idx}"
+                if len(cand) != 3:
                     raise ValueError("Stage 2 variant identifiers must be three characters, e.g. VC1")
+                new_variant = variant_id(cand)
                 if new_variant in existing_vars or new_variant in reserved:
                     raise FileExistsError(
                         f"Stage 2 variant {new_variant} already exists for {verify_config['project']}"
