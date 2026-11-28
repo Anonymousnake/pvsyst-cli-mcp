@@ -884,6 +884,18 @@ class OrientationSpectralAndNativeEcoTests(unittest.TestCase):
                     result = pvsyst_convert_orientation(self.project, "VC0", "VC9", target_type=target_type, dry_run=False)
                 self.assertEqual(result["status"], "blocked")
                 self.assertFalse(blocked_vc.exists())
+    def test_identical_economics_preserves_saved_results(self) -> None:
+        args = {"native_economics_updates": {"capex_total": 100, "currency": "EUR"}, "dry_run": False}
+        self.store.update_parameters(self.project, self.variant, **args)
+        path = self.ws / "Projects" / "Phase5Test.VC0"
+        cold = path.read_bytes()
+        cache = b"  VarList, list of=1 TVarSimul\r\n    VarSimul_1=E_Grid\r\n    End of VarSimul=E_Grid\r\n  End of the List VarList\r\n"
+        warm = cold.replace(b"End of PVObject pvVCalcul", cache + b"End of PVObject pvVCalcul")
+        path.write_bytes(warm)
+        replay = self.store.update_parameters(self.project, self.variant, **args)
+        self.assertFalse(replay["changed"])
+        self.assertNotIn("backup_name", replay)
+        self.assertEqual(path.read_bytes(), warm)
     def test_native_economics_write_and_remove(self) -> None:
         res = self.store.update_parameters(self.project, self.variant, native_economics_updates={
                 "mode": "set", "capex_total": 450000.0, "annual_opex": 8000.0, "subsidies": 50000.0,
