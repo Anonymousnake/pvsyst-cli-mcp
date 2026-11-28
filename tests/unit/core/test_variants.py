@@ -819,6 +819,16 @@ class OrientationSpectralAndNativeEcoTests(unittest.TestCase):
         self.store.create_project("Phase5Test.PRJ", synth["prj_text"], {"VC0": self._base_vc0})
         self.project = "Phase5Test.PRJ"
         self.variant = "VC0"
+    def test_unclosed_spectral_block_preserves_main_array(self) -> None:
+        path = self.ws / "Projects" / "Phase5Test.VC0"
+        source = path.read_bytes()
+        marker = b"  Flags2=$082A"
+        self.assertEqual(source.count(marker), 1)
+        malformed = source.replace(marker, b"  SpectralCorrection=Start\r\n    CoeffSet=SiMono\r\n" + marker)
+        path.write_bytes(malformed)
+        with self.assertRaisesRegex(ValueError, "SpectralCorrection"):
+            self.store.update_parameters(self.project, self.variant, spectral_updates={"enabled": False}, dry_run=False)
+        self.assertEqual(path.read_bytes(), malformed)
     def test_spectral_correction_enable_custom_disable(self) -> None:
         res = self.store.update_parameters(self.project, self.variant, spectral_updates={"enabled": True, "coeff_set": "CdTe", "use_rel_hum": False},
             dry_run=False)
