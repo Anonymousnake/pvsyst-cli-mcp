@@ -209,11 +209,12 @@ def replace_native_economics(lines: list[str], updates: dict[str, Any]) -> dict[
     end = next((i for i, ln in enumerate(lines) if ln.strip() == "End of TEcoEvaluation"), None)
     had_block = start is not None and end is not None and start < end
     cand = list(lines)
+    eco_lines = format_native_economics_block(updates, eol) if mode == "set" else []
     if had_block:
-        del cand[start:end + 1]
-    if mode == "set":
+        cand[start:end + 1] = eco_lines
+    elif mode == "set":
         anchor = next((i for i, ln in enumerate(cand) if ln.strip() in ("SimulPlots=Start", "End of PVObject pvVCalcul")), len(cand) - 1)
-        cand[anchor:anchor] = [eol, *format_native_economics_block(updates, eol), eol]
+        cand[anchor:anchor] = [eol, *eco_lines, eol]
     lines[:] = cand
     return {
         "mode": mode, "previously_configured": had_block, "configured": mode == "set",
