@@ -730,8 +730,9 @@ def run_feasibility_study(
         if report_scenarios:
             report_result = generate_report(
                 workspace=ws, store=store, title=report_cfg.get("title") or f"{study_name} Feasibility Report",
-                output_name=safe_out, scenarios=report_scenarios, financial=financial_cfg, tariff=tariff_cfg,
-                sensitivity=sensitivity_cfg, p50_p90=study_p50_pass, bess_optimization=bess_result,
+                output_name=safe_out, scenarios=report_scenarios, ageing_batch_csv=ageing_batch_csv,
+                financial=financial_cfg, tariff=tariff_cfg, sensitivity=sensitivity_cfg,
+                p50_p90=study_p50_pass, bess_optimization=bess_result,
                 language=report_cfg.get("language", "zh"), plotlyjs=report_cfg.get("plotlyjs", "cdn"),
                 thresholds=spec.get("thresholds"), overwrite=bool(report_cfg.get("overwrite", False)), dry_run=dry_run,
             )
