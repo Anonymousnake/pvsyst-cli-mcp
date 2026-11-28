@@ -28,6 +28,26 @@ class TransformersTests(unittest.TestCase):
             n_mod_serie=20, n_string_ch=100, n_inverter=10, n_inv_mppt=1, independent_mppt=False, pnom_ac_in_mppt=50.0, tilt_deg=25.0, azimuth_deg=0.0)
         vc0 = synth["vc0_text"].replace("      NoOrientation=1", "      PNomSizing=440.0\n      NoOrientation=1")
         self.store.create_project("TrfTest.PRJ", synth["prj_text"], {"VC0": vc0})
+    def test_incomplete_sizing_uses_entire_installed_array(self) -> None:
+        subs = [dict(subarray_id=i, orientation_id=i, n_mod_serie=20, n_string_ch=5,
+                     n_inverter=1, n_inv_mppt=1, independent_mppt=True,
+                     power_sharing_inverter_id=-1, pnom_ac_in_mppt=50)
+                for i in (1, 2)]
+        synth = synthesize_project_and_variant(
+            self.store, site_name="Geneva_MN90.SIT", met_name="Geneva_MN90_SYN.MET",
+            pan_name="Lab440.PAN", ond_name="Lab50.OND",
+            orientations=[{"id": 1}, {"id": 2}], subarrays=subs,
+        )
+        source = synth["vc0_text"].replace("      NoOrientation=1", "      PNomSizing=44.0\r\n      NoOrientation=1", 1)
+        self.store.create_project("Dual.PRJ", synth["prj_text"], {"VC0": source})
+        result = configure_transformers(
+            self.store, project="Dual.PRJ", source_variant="VC0", new_variant="VC1",
+            mv={"iron_loss_frac": 0.006}, dry_run=False,
+        )
+        self.assertEqual(result["status"], "created", result["issues"])
+        summary = result["transformers"]
+        self.assertEqual((summary["stc_ref_power_source"], summary["stc_ref_power_kw"]), ("pan_subarray_stc", 88))
+        self.assertAlmostEqual(summary["mv"]["stc_iron_loss_frac"], 0.6 / 88, places=5)
     def test_public_tool_requires_reference_when_source_has_none(self) -> None:
         from unittest.mock import patch
         from pvsyst_auto.api.projects import pvsyst_configure_transformers

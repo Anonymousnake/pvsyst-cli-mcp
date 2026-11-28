@@ -236,18 +236,22 @@ def _infer_ref_power_kw(lines: list[str], default_ref_kw: float | None = None, *
     if default_ref_kw is not None and default_ref_kw > 0:
         return float(default_ref_kw), "explicit_default"
     blocks = objects("".join(lines))
+    subarrays = [b for b in blocks if b.object_type == "pvSubArray"]
     total_pnom = 0.0
-    for b in blocks:
-        if b.object_type == "pvSubArray" and "PNomSizing" in b.fields:
-            try:
-                val = float(b.one("PNomSizing")[1])
-                if math.isfinite(val) and val > 0:
-                    total_pnom += val
-            except (ValueError, TypeError):
-                pass
-    if total_pnom > 0:
-        return total_pnom, "pnom_sizing"
-    if components is not None and (subarrays := [b for b in blocks if b.object_type == "pvSubArray"]):
+    for sa in subarrays:
+        if "PNomSizing" not in sa.fields:
+            break
+        try:
+            val = float(sa.one("PNomSizing")[1])
+        except (ValueError, TypeError):
+            break
+        if not math.isfinite(val) or val <= 0:
+            break
+        total_pnom += val
+    else:
+        if total_pnom > 0:
+            return total_pnom, "pnom_sizing"
+    if components is not None and subarrays:
         derived_kw = 0.0
         for sa in subarrays:
             try:
