@@ -140,6 +140,24 @@ class TransformersTests(unittest.TestCase):
                 prefix = f"{stage}TrfDS{tag}="
                 value, = [line.strip()[len(prefix):] for line in source.splitlines() if line.strip().startswith(prefix)]
                 self.assertEqual(float(value), spec[key], prefix)
+        # Small positive HV iron_loss_kw (0.000004) keeps matching precision on STCIronLoss, DSIronLoss, and HVTrfDSIronLoss
+        small_hv = configure_transformers(
+            self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC2",
+            mv=mv, hv={"nominal_power_kva": 500.0, "iron_loss_kw": 0.000004, "copper_loss_kw": 1.0}, dry_run=False,
+        )
+        self.assertEqual(small_hv["status"], "created", small_hv["issues"])
+        vc2 = (self.root / "Projects" / "TrfTest.VC2").read_text(encoding="utf-8-sig")
+        self.assertIn("STCIronLoss=0.000004", vc2)
+        self.assertIn("DSIronLoss=0.000004", vc2)
+        self.assertIn("HVTrfDSIronLoss=0.000004", vc2)
+        # Tiny fractional loss does not expand into hundreds of zeros
+        tiny = configure_transformers(
+            self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC3",
+            mv={"stc_ref_power_kw": 440.0, "iron_loss_frac": 1e-200, "copper_loss_frac": 0.001}, dry_run=False,
+        )
+        self.assertEqual(tiny["status"], "created", tiny["issues"])
+        vc3 = (self.root / "Projects" / "TrfTest.VC3").read_text(encoding="utf-8-sig")
+        self.assertIn("TrfIronLossFrac=0.00000", vc3)
     def test_validation_rejects_invalid_combinations(self) -> None:
         r1 = configure_transformers(self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC9",
             mv={"count": 1}, remove_transformers=True, dry_run=True)
@@ -283,9 +301,12 @@ class TransformersTests(unittest.TestCase):
                 hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 10120.0, "nominal_power_kva": 3999.0, "iron_loss_kw": 20.0, "copper_loss_kw": 150.0},
                 components=self.comp)
         # Omitted hv.nominal_power_kva defaults to 1.15x PNomInvAC (9,200 kVA), safe even at high DC/AC
-        _, s_def = apply_transformers_to_variant_text(vc_demo, mv=mv_ok,
+        out_def, s_def = apply_transformers_to_variant_text(vc_demo, mv=mv_ok,
             hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 18000.0}, components=self.comp)
         self.assertAlmostEqual(s_def["hv"]["ds_nom_power"], 9200.0, places=2)
+        for prefix in ("HVTrfDSCopperLoss=", "DSCopperLoss="):
+            raw_val, = [ln.strip()[len(prefix):] for ln in out_def.splitlines() if ln.strip().startswith(prefix)]
+            self.assertLessEqual(len(raw_val.split(".", 1)[1]), 9, prefix)
     def test_fractional_runtime_loss_matches_preflight(self) -> None:
         result = configure_transformers(
             self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC1",

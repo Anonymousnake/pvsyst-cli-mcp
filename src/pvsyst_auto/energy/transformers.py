@@ -116,12 +116,14 @@ def _normalize_mv(raw: dict[str, Any], default_ref_kw: float | None, *, inverter
         raise ValueError(f"MV transformer loss fractions exceed PVsyst 8.1.7 native limits (iron <= {NATIVE_MAX_IRON_LOSS_FRAC * 100:g}%, copper <= {NATIVE_MAX_COPPER_LOSS_FRAC * 100:g}%; got iron={stc_iron_frac * 100:.2f}%, copper={stc_copper_frac * 100:.2f}% using stc_ref_power_kw={ref_kw:g} kW{ac_suffix})")
     return {
         "count": count, "output_voltage_kv": v_kv, "output_voltage_v": int(round(v_kv * 1000.0)), "stc_ref_power_kw": round(ref_kw, 5),
-        "iron_loss_frac": round(stc_iron_frac, 5) if has_ds else main_iron_frac, "copper_loss_frac": round(stc_copper_frac, 5) if has_ds else main_copper_frac,
-        "main_iron_loss_frac": main_iron_frac, "main_copper_loss_frac": main_copper_frac,
+        "iron_loss_frac": round(stc_iron_frac, 5) if has_ds else round(main_iron_frac, 9),
+        "copper_loss_frac": round(stc_copper_frac, 5) if has_ds else round(main_copper_frac, 9),
+        "main_iron_loss_frac": round(main_iron_frac, 9), "main_copper_loss_frac": round(main_copper_frac, 9),
         "stc_iron_loss_frac": round(stc_iron_frac, 5), "stc_copper_loss_frac": round(stc_copper_frac, 5),
-        "iron_loss_kw": round(total_iron_kw, 5), "loss_basis": loss_basis, "loss_basis_power_kw": round(loss_basis_kw, 5),
-        "from_datasheet": has_ds, "ds_nom_power": ds_nom_f,
-        "ds_iron_loss": ds_iron_f, "ds_copper_loss": ds_copper_f,
+        "iron_loss_kw": round(total_iron_kw, 9), "loss_basis": loss_basis, "loss_basis_power_kw": round(loss_basis_kw, 5),
+        "from_datasheet": has_ds, "ds_nom_power": round(ds_nom_f, 9) if ds_nom_f is not None else None,
+        "ds_iron_loss": round(ds_iron_f, 9) if ds_iron_f is not None else None,
+        "ds_copper_loss": round(ds_copper_f, 9) if ds_copper_f is not None else None,
         "night_disconnect": night, "cable": cable,
     }
 
@@ -150,10 +152,10 @@ def _normalize_hv(raw: dict[str, Any], default_ref_kw: float | None, *, inverter
         raise ValueError(f"HV transformer datasheet losses exceed PVsyst 8.1.7 native limits (iron/nom <= {NATIVE_MAX_IRON_LOSS_FRAC * 100:g}%, copper/nom <= {NATIVE_MAX_COPPER_LOSS_FRAC * 100:g}%; got iron={nom_iron_frac * 100:.2f}%, copper={nom_copper_frac * 100:.2f}% for nominal_power_kva={ds_nom:g} kVA)")
     return {
         "output_voltage_kv": v_kv, "output_voltage_v": int(round(v_kv * 1000.0)), "stc_ref_power_kw": round(ref_kw, 5),
-        "iron_loss_frac": round(iron_frac, 5), "iron_loss_kw": ds_iron, "copper_loss_frac": round(copper_frac, 5),
+        "iron_loss_frac": round(iron_frac, 5), "iron_loss_kw": round(ds_iron, 9), "copper_loss_frac": round(copper_frac, 5),
         "nom_iron_loss_frac": round(nom_iron_frac, 5), "nom_copper_loss_frac": round(nom_copper_frac, 5),
-        "loss_basis": "datasheet_hv", "ds_nom_power": ds_nom, "ds_iron_loss": ds_iron,
-        "ds_copper_loss": ds_copper, "night_disconnect": night, "cable": cable,
+        "loss_basis": "datasheet_hv", "ds_nom_power": round(ds_nom, 9), "ds_iron_loss": round(ds_iron, 9),
+        "ds_copper_loss": round(ds_copper, 9), "night_disconnect": night, "cable": cable,
     }
 
 
@@ -301,10 +303,18 @@ def _extract_inverter_subtrees(lines: list[str]) -> tuple[int, int, list[list[st
     return inj.line - 1, inj.end_line, inv_blocks, eol
 
 
-def _native_decimal(value: float, places: int) -> str:
-    """Keep native padding when exact and retain validated precision otherwise."""
+def _native_decimal(value: float, places: int, *, max_places: int = 9) -> str:
+    """Keep native padding when exact, otherwise retain up to max_places decimals without trailing zeros."""
+    if value == 0.0:
+        return f"{0.0:.{places}f}"
     padded = f"{value:.{places}f}"
-    return padded if float(padded) == value else format(Decimal(str(value)), "f")
+    if float(padded) == value:
+        return padded
+    bounded = round(value, max(places, max_places))
+    if bounded == 0.0:
+        return f"{0.0:.{places}f}"
+    rendered = format(Decimal(str(bounded)), "f").rstrip("0").rstrip(".")
+    return rendered if "." in rendered and len(rendered.split(".", 1)[1]) > places else f"{bounded:.{places}f}"
 
 
 def _format_kv(v_kv: float) -> str:
@@ -321,7 +331,7 @@ def _render_transformer_node(spec: dict[str, Any], *, is_hv: bool, children_line
     out.extend([
         f"{indent}OutputVoltage={_format_kv(spec['output_voltage_kv'])}{eol}",
         f"{indent}STCRefPower={spec['stc_ref_power_kw']:.5f}{eol}",
-        f"{indent}STCIronLossFrac={node_iron:.5f}{eol}", f"{indent}STCIronLoss={spec['iron_loss_kw']:.5f}{eol}",
+        f"{indent}STCIronLossFrac={node_iron:.5f}{eol}", f"{indent}STCIronLoss={_native_decimal(spec['iron_loss_kw'], 5)}{eol}",
         f"{indent}STCCopperLossFrac={node_copper:.5f}{eol}",
     ])
     if is_hv or spec.get("from_datasheet"):
