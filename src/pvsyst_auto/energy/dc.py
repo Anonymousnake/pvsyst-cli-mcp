@@ -585,10 +585,19 @@ def replace_spectral_correction(lines: list[str], main: tuple[int, int] | None, 
     kept, in_spec = [], False
     for idx in range(start, circ_idx):
         s = lines[idx].strip()
-        if s in ("SpectralCorrection=Start", "SpectralCorrection=End"):
-            in_spec = s == "SpectralCorrection=Start"
-        elif not in_spec and not s.startswith(("UseSpectralCorr=", "UseSpctCrrDefCoeffs=")):
+        if s == "SpectralCorrection=Start":
+            if in_spec:
+                raise ValueError("Nested SpectralCorrection block in pvMainArray")
+            in_spec = True
+        elif in_spec:
+            if s == "SpectralCorrection=End":
+                in_spec = False
+        elif s == "SpectralCorrection=End":
+            raise ValueError("Unexpected SpectralCorrection terminator in pvMainArray")
+        elif not s.startswith(("UseSpectralCorr=", "UseSpctCrrDefCoeffs=")):
             kept.append(lines[idx])
+    if in_spec:
+        raise ValueError("Unclosed SpectralCorrection block in pvMainArray")
     new_spec = [f"  UseSpectralCorr={'True' if enabled else 'False'}{eol}"]
     if enabled:
         new_spec.extend([f"  UseSpctCrrDefCoeffs={'True' if use_default else 'False'}{eol}", f"  SpectralCorrection=Start{eol}", f"    CoeffSet={coeff_set}{eol}"])
