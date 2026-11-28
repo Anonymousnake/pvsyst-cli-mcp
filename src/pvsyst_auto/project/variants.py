@@ -140,7 +140,7 @@ def economic_block(lines: list[str]) -> dict:
             closes += 1
         elif lst := list_open.match(stripped):
             opens += 1
-            if opens == 1:
+            if opens == closes + 1:
                 lists[lst.group(1)] = {"type": lst.group(3), "declared_count": int(lst.group(2))}
         elif opens == closes and (field := FIELD.fullmatch(stripped)):
             scalars.setdefault(field.group(1), []).append(field.group(2))

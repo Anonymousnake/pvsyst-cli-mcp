@@ -835,6 +835,16 @@ class OrientationSpectralAndNativeEcoTests(unittest.TestCase):
         self.assertEqual(res2["spectral"]["after"]["use_default_coeffs"], False)
         res3 = self.store.update_parameters(self.project, self.variant, spectral_updates={"enabled": False}, dry_run=False)
         self.assertEqual(res3["spectral"]["after"]["enabled"], False)
+    def test_native_economics_reads_both_cost_lists(self) -> None:
+        self.store.update_parameters(
+            self.project, self.variant,
+            native_economics_updates={"capex_total": 100, "annual_opex": 7}, dry_run=False,
+        )
+        result = self.store.inspect_parameters(self.project, self.variant, include_economics=True)
+        self.assertEqual(result["economics"]["lists"], {
+            "InvestmentCosts": {"type": "InvestmentCost", "declared_count": 1},
+            "OperatingCosts": {"type": "OperatingCost", "declared_count": 1},
+        })
     def test_convert_orientation_all_targets(self) -> None:
         targets = [("fixed", {"tilt_deg": 28.0, "azimuth_deg": 10.0}, "FieldType=FixedPlane"),
             ("seasonal", {"summer_tilt_deg": 15.0, "winter_tilt_deg": 45.0, "winter_months": [1, 2, 11, 12]}, "FieldType=SeasonalTilt"),
