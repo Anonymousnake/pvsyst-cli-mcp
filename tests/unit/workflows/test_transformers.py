@@ -393,4 +393,46 @@ class TransformersTests(unittest.TestCase):
             self.assertIn("MVWireNoSect=2", vc_off)
             self.assertIn("NightDisconnect=False", vc_off)
             self.assertEqual([line.strip() for line in vc_off.splitlines() if "STC" in line], stc_before)
+    def test_in_place_cascaded_mv_hv_night_disconnect_preserves_hv_and_custom_mv(self) -> None:
+        from unittest.mock import patch
+        from pvsyst_auto.api.projects import pvsyst_configure_transformers
+        from pvsyst_auto.api.schemas import MvTransformerSpec
+
+        init_res = configure_transformers(
+            self.store, project="TrfTest.PRJ", source_variant="VC0", new_variant="VC1",
+            mv={"count": 2, "output_voltage_kv": 35.0, "stc_ref_power_kw": 440.0,
+                "nominal_power_kva": 315.0, "iron_loss_kw": 0.45, "copper_loss_kw": 3.5, "night_disconnect": False,
+                "cable": {"length_m": 600.0, "metal": "Copper", "section_mm2": 185}},
+            hv={"output_voltage_kv": 110.0, "stc_ref_power_kw": 440.0,
+                "nominal_power_kva": 630.0, "iron_loss_kw": 0.7, "copper_loss_kw": 4.5, "night_disconnect": False,
+                "cable": {"length_m": 2500.0, "metal": "Aluminium", "section_mm2": 240}},
+            dry_run=False,
+        )
+        self.assertEqual(init_res["status"], "created", init_res)
+        with patch("pvsyst_auto.api.projects.variant_store", return_value=self.store):
+            on_res = pvsyst_configure_transformers(
+                "TrfTest.PRJ", "VC1", "VC2", mv=MvTransformerSpec(night_disconnect=True), dry_run=False,
+            )
+        self.assertEqual(on_res["status"], "created", on_res)
+        trf = on_res["transformers"]
+        self.assertEqual(trf["layers"], 2)
+        self.assertTrue(trf["nested_hv_mv"])
+        self.assertEqual(trf["mv"]["count"], 2)
+        self.assertEqual(trf["mv"]["output_voltage_kv"], 35.0)
+        self.assertTrue(trf["mv"]["night_disconnect"])
+        self.assertIsNotNone(trf["hv"])
+        self.assertEqual(trf["hv"]["output_voltage_kv"], 110.0)
+        self.assertEqual(trf["hv"]["ds_nom_power"], 630.0)
+        self.assertFalse(trf["hv"]["night_disconnect"])
+        vc2_lines = (self.root / "Projects" / "TrfTest.VC2").read_text(encoding="utf-8-sig").splitlines(keepends=True)
+        st = transformer_state(vc2_lines)
+        self.assertEqual((st["count"], st["nested"]), (2, True))
+        self.assertEqual(st["layers"][0]["fields"]["NightDisconnect"], "False")
+        self.assertEqual(st["layers"][1]["fields"]["NightDisconnect"], "True")
+        vc2_text = "".join(vc2_lines)
+        self.assertIn("VOutHVTransfo=110000", vc2_text)
+        self.assertIn("VOutTransfo=35000", vc2_text)
+        self.assertIn("MVNbTransfos=2", vc2_text)
+        self.assertIn("MVTrfDSNomPower=315.00", vc2_text)
+        self.assertIn("HVTrfDSNomPower=630.00", vc2_text)
 if __name__ == "__main__": unittest.main()

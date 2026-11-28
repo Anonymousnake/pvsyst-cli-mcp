@@ -379,18 +379,28 @@ def _toggle_existing_mv_night_disconnect(
     """In-place NightDisconnect toggle when mv only sets night_disconnect on an existing MV variant."""
     if type(night_disconnect) is not bool:
         raise ValueError("mv.night_disconnect must be a strict boolean")
-    if not (flags_val & MV_FLAG) or (flags_val & HV_FLAG):
+    if not (flags_val & MV_FLAG):
         return None
+    has_hv = bool(flags_val & HV_FLAG)
     trf_nodes = [n for r in circuit_nodes(clean_lines) for n in _walk_nodes(r) if n.kind == "TransformerNode"]
     flags_entries = main_block.fields.get("Flags", ())
-    if (
-        len(trf_nodes) != 1
-        or trf_nodes[0].fields.get("IsHVTransformer") != ["False"]
-        or len(trf_nodes[0].field_lines.get("NightDisconnect", ())) != 1
-        or len(flags_entries) != 1
-    ):
-        return None
-    mv_node = trf_nodes[0]
+    hv_node = None
+    if has_hv:
+        valid_topology = (
+            len(trf_nodes) == 2
+            and trf_nodes[0].fields.get("IsHVTransformer") == ["True"]
+            and trf_nodes[1].fields.get("IsHVTransformer") == ["False"]
+            and any(child is trf_nodes[1] for child in trf_nodes[0].children)
+        )
+        hv_node, mv_node = (trf_nodes[0], trf_nodes[1]) if valid_topology else (None, None)
+    else:
+        valid_topology = len(trf_nodes) == 1 and trf_nodes[0].fields.get("IsHVTransformer") == ["False"]
+        mv_node = trf_nodes[0] if valid_topology else None
+    if not valid_topology or mv_node is None or len(mv_node.field_lines.get("NightDisconnect", ())) != 1 or len(flags_entries) != 1:
+        raise ValueError(
+            "Cannot toggle mv.night_disconnect in-place on an unrecognized existing transformer circuit; "
+            "provide full mv/hv parameters"
+        )
     new_flags = (flags_val | NIGHT_FLAG) if night_disconnect else (flags_val & ~NIGHT_FLAG)
     cand = list(clean_lines)
     flags_line = flags_entries[0][0]
@@ -400,8 +410,12 @@ def _toggle_existing_mv_night_disconnect(
     cand, _ = strip_result_cache(cand)
     objects("".join(cand))
     state = transformer_state(cand)
-    if state["issues"] or state["count"] != 1:
-        raise ValueError("Generated transformer circuit failed validation: " + "; ".join(state["issues"] or ["expected 1 MV layer"]))
+    expected_layers = 2 if has_hv else 1
+    if state["issues"] or state["count"] != expected_layers or (has_hv and not state["nested"]):
+        raise ValueError(
+            "Generated transformer circuit failed validation: "
+            + "; ".join(state["issues"] or [f"expected {expected_layers} layer(s)"])
+        )
 
     def _opt_float(block, key: str) -> float | None:
         if key not in block.fields:
@@ -428,8 +442,26 @@ def _toggle_existing_mv_night_disconnect(
         "night_disconnect": night_disconnect,
         "preserved_existing_mv": True,
     }
+    hv_summary = None
+    if hv_node is not None:
+        v_out_hv = _opt_float(main_block, "VOutHVTransfo")
+        hv_nd = hv_node.fields.get("NightDisconnect")
+        hv_summary = {
+            "output_voltage_kv": round(v_out_hv / 1000.0, 5) if v_out_hv is not None else None,
+            "output_voltage_v": int(round(v_out_hv)) if v_out_hv is not None else None,
+            "stc_ref_power_kw": _opt_float(hv_node, "STCRefPower") or stc_ref,
+            "iron_loss_frac": _opt_float(hv_node, "STCIronLossFrac"),
+            "copper_loss_frac": _opt_float(hv_node, "STCCopperLossFrac"),
+            "iron_loss_kw": _opt_float(hv_node, "STCIronLoss"),
+            "ds_nom_power": _opt_float(hv_node, "DSNomPower") or _opt_float(main_block, "HVTrfDSNomPower"),
+            "ds_iron_loss": _opt_float(hv_node, "DSIronLoss") or _opt_float(main_block, "HVTrfDSIronLoss"),
+            "ds_copper_loss": _opt_float(hv_node, "DSCopperLoss") or _opt_float(main_block, "HVTrfDSCopperLoss"),
+            "night_disconnect": (hv_nd[0] == "True") if hv_nd else None,
+            "preserved_existing_hv": True,
+        }
     if has_bom and cand:
         cand[0] = "\ufeff" + cand[0]
+    scope_lbl = "MV/HV ratings" if has_hv else "MV rating"
     return cand, {
         "remove_transformers": False,
         "main_array_flags": f"${new_flags:08X}",
@@ -439,11 +471,11 @@ def _toggle_existing_mv_night_disconnect(
         "inverter_ac_power_source": ac_source,
         "grid_limit_kw": grid_limit_kw,
         "mv": mv_summary,
-        "hv": None,
+        "hv": hv_summary,
         "transformer_state": state,
         "warnings": [
-            "Toggled MV NightDisconnect and pvMainArray bit 29 in-place; "
-            "existing MV rating, losses, default-loss flags, and cable configuration were preserved."
+            f"Toggled MV NightDisconnect and pvMainArray bit 29 in-place; "
+            f"existing {scope_lbl}, losses, default-loss flags, and cable configuration were preserved."
         ],
     }
 
