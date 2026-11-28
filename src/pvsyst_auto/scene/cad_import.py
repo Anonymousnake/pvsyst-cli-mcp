@@ -132,7 +132,7 @@ def _parse_pvc_geometries(root: ET.Element, unit_meter: float) -> tuple[dict[str
             sid = src.get("id", "")
             fa = src.find("c:float_array", ns)
             if sid and fa is not None and fa.text:
-                sources[sid] = [float(v) * unit_meter for v in fa.text.split()]
+                sources[sid] = [_finite(float(v) * unit_meter, f"{gid}.float_array") for v in fa.text.split()]
 
         pos_id: str | None = None
         verts_el = mesh.find("c:vertices", ns)
@@ -153,7 +153,10 @@ def _parse_pvc_geometries(root: ET.Element, unit_meter: float) -> tuple[dict[str
                 if mat_sym := prim.get("material", ""):
                     tri_mats.append(mat_sym)
                 inputs = prim.findall("c:input", ns)
-                stride = max([int(i.get("offset", "0")) for i in inputs], default=0) + 1
+                offsets = [int(i.get("offset", "0")) for i in inputs]
+                if any(o < 0 for o in offsets):
+                    raise ValueError(f"Geometry {gid!r} contains negative input offset")
+                stride = max(offsets, default=0) + 1
                 v_off = next((int(i.get("offset", "0")) for i in inputs if i.get("semantic") in ("VERTEX", "POSITION")), 0)
                 p_el = prim.find("c:p", ns)
                 if p_el is None or not p_el.text:
@@ -169,6 +172,8 @@ def _parse_pvc_geometries(root: ET.Element, unit_meter: float) -> tuple[dict[str
                     pos = 0
                     for vc_str in vcount_el.text.split():
                         vc = int(vc_str)
+                        if vc < 3 or pos + vc * stride > len(idx_vals):
+                            raise ValueError(f"Geometry {gid!r} polylist index count is truncated")
                         poly = [idx_vals[pos + k * stride + v_off] for k in range(vc)]
                         pos += vc * stride
                         for k in range(1, vc - 1):
@@ -225,7 +230,13 @@ def _extract_top_quad(wpts: list[tuple[float, float, float]], tris: list[list[in
         if d >= max_d - 0.01 and not any(math.dist(p, q) <= 1e-4 for q in top_pts):
             top_pts.append(p)
     if len(top_pts) < 4:
-        top_pts = wpts[:4]
+        dedup: list[tuple[float, float, float]] = []
+        for p in wpts:
+            if not any(math.dist(p, q) <= 1e-4 for q in dedup):
+                dedup.append(p)
+        top_pts = dedup[:4]
+    if len(top_pts) < 4:
+        raise ValueError("PV frame geometry requires at least 4 distinct vertices")
     center = tuple(sum(p[ax] for p in top_pts) / len(top_pts) for ax in range(3))
     ref = (1.0, 0.0, 0.0) if abs(best_n[0]) < 0.9 else (0.0, 1.0, 0.0)
     u_ax = _norm(_cross(best_n, ref))
@@ -258,6 +269,8 @@ def _fixed_table_from_pvc(name: str, wpts: list[tuple[float, float, float]], tri
     else:
         bot, origin_m, top_mid = e2, m2, m1
     long_shed, larg_shed = math.dist(bot[0], bot[1]), math.dist(origin_m, top_mid)
+    if long_shed <= 1e-6 or larg_shed <= 1e-6:
+        raise ValueError(f"PV frame {name!r} has degenerate zero-area dimensions")
     az_rad = math.radians(az_deg)
     edge_vec = _sub(bot[1], bot[0])
     if _dot(edge_vec, (math.cos(az_rad), -math.sin(az_rad), 0.0)) < 0.0:
@@ -455,7 +468,7 @@ def build_pvc_3d_shading(parsed: dict[str, Any], *, module_name: str, obstacles:
     lines, _ = build_tracker_3d_shading(
         tables, module_name=module_name, module_width_m=rep["module_width_m"], module_length_m=rep["module_length_m"],
         module_orient=rep["module_orient"], spacing_x_m=rep["spacing_x_m"], spacing_y_m=rep["spacing_y_m"],
-        ground_clearance_m=float(tables[0]["origin_m"][2]), obstacles=obstacles,
+        ground_clearance_m=0.0, obstacles=obstacles,
         terrain_mesh=terrain_mesh, terrain_opts={"drape_tables": False},
         electrical_shading=electrical_shading, series_modules=series_modules, is_half_cut=is_half_cut, version=version,
     )
